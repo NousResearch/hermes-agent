@@ -598,6 +598,50 @@ export const api = {
   stopGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
 
+  // ── Admin: Dashboard service and secure access ─────────────────────
+  getDashboardService: () =>
+    fetchJSON<DashboardServiceStatus>("/api/dashboard/service/status"),
+  installDashboardService: (body: DashboardServiceInstallRequest) =>
+    fetchJSON<ActionResponse>("/api/dashboard/service/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  startDashboardService: () =>
+    fetchJSON<ActionResponse>("/api/dashboard/service/start", { method: "POST" }),
+  stopDashboardService: () =>
+    fetchJSON<ActionResponse>("/api/dashboard/service/stop", { method: "POST" }),
+  restartDashboardService: () =>
+    fetchJSON<ActionResponse>("/api/dashboard/service/restart", {
+      method: "POST",
+    }),
+  uninstallDashboardService: () =>
+    fetchJSON<ActionResponse>("/api/dashboard/service/uninstall", {
+      method: "POST",
+    }),
+  applyTailscaleServe: (body: TailscaleServeRequest) =>
+    fetchJSON<ActionResponse>("/api/dashboard/access/tailscale-serve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  generateCloudflareConfig: (body: CloudflareConfigRequest) =>
+    fetchJSON<{ ok: boolean; config: string }>(
+      "/api/dashboard/access/cloudflare-config",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  runCloudflareService: (
+    verb: "install" | "uninstall" | "start" | "stop" | "restart",
+  ) =>
+    fetchJSON<ActionResponse>(
+      `/api/dashboard/access/cloudflare-service/${verb}`,
+      { method: "POST" },
+    ),
+
   // ── Admin: Operations ───────────────────────────────────────────────
   runDoctor: () =>
     fetchJSON<ActionResponse>("/api/ops/doctor", { method: "POST" }),
@@ -789,6 +833,47 @@ export interface CheckpointsResponse {
   total_bytes: number;
 }
 
+export interface DashboardServiceStatus {
+  manager: string;
+  installed: boolean;
+  running: boolean;
+  name: string;
+  path: string;
+  scope: string | null;
+}
+
+export interface DashboardServiceInstallRequest {
+  host: string;
+  port: number;
+  tui: boolean;
+  insecure: boolean;
+  allowed_hosts: string[];
+  public_url: string;
+  force: boolean;
+  system: boolean;
+  run_as_user?: string;
+  start_now: boolean;
+  start_on_login: boolean;
+}
+
+export interface TailscaleServeRequest {
+  port: number;
+  target?: string;
+  https?: number | null;
+  http?: number | null;
+  set_path?: string;
+  foreground?: boolean;
+  interactive?: boolean;
+}
+
+export interface CloudflareConfigRequest {
+  tunnel: string;
+  credentials_file: string;
+  hostname: string;
+  service?: string;
+  port: number;
+}
+
 /** Per-call overrides for {@link fetchJSON}. */
 interface FetchJSONOptions {
   /** When true, a 401 response is surfaced as a normal thrown error rather
@@ -815,6 +900,7 @@ export interface PlatformStatus {
 
 export interface StatusResponse {
   active_sessions: number;
+  allowed_hosts?: string[];
   /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
    * (public bind, no ``--insecure``). Read alongside ``auth_providers``
    * to render a "gated / loopback" badge. */

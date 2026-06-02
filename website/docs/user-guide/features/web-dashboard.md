@@ -28,7 +28,9 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--allowed-hosts` | — | Extra Host headers accepted for loopback proxy/tunnel access |
 | `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
+| `--skip-build` | off | Serve the existing bundled web dist without running the frontend build |
 
 ```bash
 # Custom port
@@ -43,6 +45,69 @@ hermes dashboard --no-open
 # Enable the in-browser Chat tab
 hermes dashboard --tui
 ```
+
+## Durable service
+
+Use `hermes dashboard service` to run the dashboard under the host service
+manager, matching the gateway service workflow:
+
+```bash
+# Linux systemd user service, macOS launchd, or Windows Scheduled Task
+hermes dashboard service install --tui --start-now
+hermes dashboard service status
+hermes dashboard service restart
+hermes dashboard service stop
+hermes dashboard service uninstall
+
+# Linux boot-time system service
+sudo hermes dashboard service install --system --run-as-user "$USER" --start-now
+```
+
+The generated service runs `hermes dashboard --no-open --skip-build` with the
+selected host, port, embedded-chat mode, profile, `HERMES_HOME`, PATH, and venv
+captured at install time. Pre-build the dashboard before installing if your
+deployment does not ship `hermes_cli/web_dist`.
+
+### Secure remote access
+
+The safest default is still a loopback-bound dashboard:
+
+```bash
+hermes dashboard service install --host 127.0.0.1 --port 9119
+```
+
+Expose that loopback service through an identity-aware tunnel or reverse proxy:
+
+```bash
+# Tailscale or headscale tailnet-only access
+hermes dashboard access tailscale-serve --port 9119 --apply
+
+# Generate a locally managed cloudflared tunnel config
+hermes dashboard access cloudflare-config \
+  --tunnel <uuid-or-name> \
+  --credentials-file ~/.cloudflared/<uuid>.json \
+  --hostname dashboard.example.com
+
+# Install/manage cloudflared's native service
+hermes dashboard access cloudflare-service install
+hermes dashboard access cloudflare-service restart
+```
+
+When a proxy forwards requests with a hostname other than `localhost`, allow it
+explicitly while keeping DNS-rebinding protection on:
+
+```bash
+hermes dashboard service install \
+  --allowed-hosts device.tailnet.ts.net,dashboard.example.com \
+  --public-url https://dashboard.example.com \
+  --start-now
+```
+
+`dashboard.allowed_hosts` in `config.yaml` and
+`HERMES_DASHBOARD_ALLOWED_HOSTS` provide the same allowlist for direct
+`hermes dashboard` runs. Public internet hostnames should be protected by
+Cloudflare Access, an OAuth `DashboardAuthProvider`, or an equivalent upstream
+identity policy.
 
 ## Prerequisites
 
@@ -365,6 +430,11 @@ same auth gate as the rest of `/api/`.
 | `PUT /api/memory/provider` | Select a provider (empty = built-in only) |
 | `POST /api/memory/reset` | Reset built-in memory. Body: `{target: all\|memory\|user}` |
 | `POST /api/gateway/start` · `/stop` · `/restart` | Gateway lifecycle (backgrounded) |
+| `GET /api/dashboard/service/status` | Dashboard service manager status |
+| `POST /api/dashboard/service/install` · `/start` · `/stop` · `/restart` · `/uninstall` | Dashboard service lifecycle (backgrounded) |
+| `POST /api/dashboard/access/tailscale-serve` | Apply Tailscale/headscale Serve for loopback dashboard access |
+| `POST /api/dashboard/access/cloudflare-config` | Generate a cloudflared tunnel config |
+| `POST /api/dashboard/access/cloudflare-service/{verb}` | Manage cloudflared's native service |
 | `POST /api/ops/doctor` · `/security-audit` · `/backup` · `/import` | Diagnostics & maintenance (backgrounded; tail via `/api/actions/{name}/status`) |
 | `GET /api/ops/hooks` | Configured shell hooks + allowlist status |
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |

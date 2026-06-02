@@ -188,7 +188,47 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _host_header_host(host_header: str) -> str:
+    """Extract a normalized hostname from a Host header or URL netloc."""
+    if not host_header:
+        return ""
+    h = host_header.strip()
+    if "://" in h:
+        parsed = urllib.parse.urlparse(h)
+        h = parsed.netloc or parsed.path
+    if h.startswith("["):
+        close = h.find("]")
+        if close != -1:
+            host_only = h[1:close]
+        else:
+            host_only = h.strip("[]")
+    else:
+        host_only = h.rsplit(":", 1)[0] if ":" in h else h
+    return host_only.strip().strip(".").lower()
+
+
+def _normalize_allowed_hosts(allowed_hosts: Any = None) -> set[str]:
+    if not allowed_hosts:
+        return set()
+    if isinstance(allowed_hosts, str):
+        raw_items = allowed_hosts.replace(",", " ").split()
+    elif isinstance(allowed_hosts, (list, tuple, set)):
+        raw_items = []
+        for item in allowed_hosts:
+            if isinstance(item, str):
+                raw_items.extend(item.replace(",", " ").split())
+            elif item is not None:
+                raw_items.append(str(item))
+    else:
+        raw_items = [str(allowed_hosts)]
+    return {h for h in (_host_header_host(item) for item in raw_items) if h}
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    allowed_hosts: Any = None,
+) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
@@ -199,23 +239,9 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """
     if not host_header:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = _host_header_host(host_header)
+    if host_only in _normalize_allowed_hosts(allowed_hosts):
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -249,13 +275,15 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", ())
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
                     "detail": (
                         "Invalid Host header. Dashboard requests must use "
-                        "the hostname the server was bound to."
+                        "the hostname the server was bound to, or one of "
+                        "the configured dashboard.allowed_hosts entries."
                     ),
                 },
             )
@@ -750,6 +778,7 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+        "allowed_hosts": list(getattr(app.state, "allowed_hosts", ())),
     }
 
 
@@ -770,6 +799,17 @@ _ACTION_LOG_FILES: Dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
     "gateway-start": "gateway-start.log",
     "gateway-stop": "gateway-stop.log",
+    "dashboard-service-install": "dashboard-service-install.log",
+    "dashboard-service-start": "dashboard-service-start.log",
+    "dashboard-service-stop": "dashboard-service-stop.log",
+    "dashboard-service-restart": "dashboard-service-restart.log",
+    "dashboard-service-uninstall": "dashboard-service-uninstall.log",
+    "dashboard-access-tailscale": "dashboard-access-tailscale.log",
+    "dashboard-access-cloudflared-install": "dashboard-access-cloudflared-install.log",
+    "dashboard-access-cloudflared-start": "dashboard-access-cloudflared-start.log",
+    "dashboard-access-cloudflared-stop": "dashboard-access-cloudflared-stop.log",
+    "dashboard-access-cloudflared-restart": "dashboard-access-cloudflared-restart.log",
+    "dashboard-access-cloudflared-uninstall": "dashboard-access-cloudflared-uninstall.log",
     "hermes-update": "hermes-update.log",
     "doctor": "action-doctor.log",
     "security-audit": "action-security-audit.log",
@@ -4218,6 +4258,38 @@ class WebhookCreate(BaseModel):
     secret: Optional[str] = None
 
 
+class DashboardServiceInstallRequest(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = 9119
+    tui: bool = False
+    insecure: bool = False
+    allowed_hosts: List[str] = []
+    public_url: str = ""
+    force: bool = False
+    system: bool = False
+    run_as_user: Optional[str] = None
+    start_now: bool = False
+    start_on_login: bool = True
+
+
+class TailscaleServeRequest(BaseModel):
+    port: int = 9119
+    target: Optional[str] = None
+    https: Optional[int] = 443
+    http: Optional[int] = None
+    set_path: str = ""
+    foreground: bool = False
+    interactive: bool = False
+
+
+class CloudflareConfigRequest(BaseModel):
+    tunnel: str
+    credentials_file: str
+    hostname: str
+    service: Optional[str] = None
+    port: int = 9119
+
+
 def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> Dict[str, Any]:
     return {
         "name": name,
@@ -4343,6 +4415,182 @@ async def stop_gateway():
         _log.exception("Failed to spawn gateway stop")
         raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard service + secure access endpoints.
+#
+# These mirror the CLI service helpers and intentionally spawn the real CLI for
+# mutating actions. The currently served dashboard may be the service being
+# restarted, so every action returns an action-log handle before the service
+# manager is allowed to interrupt this process.
+# ---------------------------------------------------------------------------
+
+
+def _dashboard_service_install_args(body: DashboardServiceInstallRequest) -> List[str]:
+    if body.port <= 0 or body.port > 65535:
+        raise HTTPException(status_code=400, detail="port must be between 1 and 65535")
+    args = [
+        "dashboard",
+        "service",
+        "install",
+        "--host",
+        body.host or "127.0.0.1",
+        "--port",
+        str(body.port),
+    ]
+    if body.tui:
+        args.append("--tui")
+    if body.insecure:
+        args.append("--insecure")
+    if body.allowed_hosts:
+        args.extend(["--allowed-hosts", ",".join(h.strip() for h in body.allowed_hosts if h.strip())])
+    if body.public_url:
+        args.extend(["--public-url", body.public_url.strip()])
+    if body.force:
+        args.append("--force")
+    if body.system:
+        args.append("--system")
+    if body.run_as_user:
+        args.extend(["--run-as-user", body.run_as_user])
+    if body.start_now:
+        args.append("--start-now")
+    if not body.start_on_login:
+        args.append("--no-start-on-login")
+    return args
+
+
+@app.get("/api/dashboard/service/status")
+async def dashboard_service_status():
+    try:
+        from hermes_cli.dashboard_service import get_dashboard_service_snapshot
+
+        return get_dashboard_service_snapshot()
+    except Exception as exc:
+        _log.exception("Failed to read dashboard service status")
+        raise HTTPException(status_code=500, detail=f"Failed to read service status: {exc}")
+
+
+@app.post("/api/dashboard/service/install")
+async def install_dashboard_service(body: DashboardServiceInstallRequest):
+    try:
+        proc = _spawn_hermes_action(
+            _dashboard_service_install_args(body),
+            "dashboard-service-install",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard service install")
+        raise HTTPException(status_code=500, detail=f"Failed to install dashboard service: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "dashboard-service-install"}
+
+
+def _spawn_dashboard_service_verb(verb: str) -> Dict[str, Any]:
+    if verb not in {"start", "stop", "restart", "uninstall"}:
+        raise HTTPException(status_code=404, detail="unknown dashboard service action")
+    name = f"dashboard-service-{verb}"
+    proc = _spawn_hermes_action(["dashboard", "service", verb], name)
+    return {"ok": True, "pid": proc.pid, "name": name}
+
+
+@app.post("/api/dashboard/service/start")
+async def start_dashboard_service():
+    try:
+        return _spawn_dashboard_service_verb("start")
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard service start")
+        raise HTTPException(status_code=500, detail=f"Failed to start dashboard service: {exc}")
+
+
+@app.post("/api/dashboard/service/stop")
+async def stop_dashboard_service():
+    try:
+        return _spawn_dashboard_service_verb("stop")
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard service stop")
+        raise HTTPException(status_code=500, detail=f"Failed to stop dashboard service: {exc}")
+
+
+@app.post("/api/dashboard/service/restart")
+async def restart_dashboard_service():
+    try:
+        return _spawn_dashboard_service_verb("restart")
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard service restart")
+        raise HTTPException(status_code=500, detail=f"Failed to restart dashboard service: {exc}")
+
+
+@app.post("/api/dashboard/service/uninstall")
+async def uninstall_dashboard_service():
+    try:
+        return _spawn_dashboard_service_verb("uninstall")
+    except Exception as exc:
+        _log.exception("Failed to spawn dashboard service uninstall")
+        raise HTTPException(status_code=500, detail=f"Failed to uninstall dashboard service: {exc}")
+
+
+@app.post("/api/dashboard/access/tailscale-serve")
+async def apply_tailscale_serve(body: TailscaleServeRequest):
+    if body.port <= 0 or body.port > 65535:
+        raise HTTPException(status_code=400, detail="port must be between 1 and 65535")
+    args = ["dashboard", "access", "tailscale-serve", "--port", str(body.port), "--apply"]
+    if body.target:
+        args.extend(["--target", body.target])
+    if body.http is not None:
+        args.extend(["--http", str(body.http)])
+    elif body.https is not None:
+        args.extend(["--https", str(body.https)])
+    if body.set_path:
+        args.extend(["--set-path", body.set_path])
+    if body.foreground:
+        args.append("--foreground")
+    if body.interactive:
+        args.append("--interactive")
+    try:
+        proc = _spawn_hermes_action(args, "dashboard-access-tailscale")
+    except Exception as exc:
+        _log.exception("Failed to spawn tailscale serve")
+        raise HTTPException(status_code=500, detail=f"Failed to apply Tailscale Serve: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "dashboard-access-tailscale"}
+
+
+@app.post("/api/dashboard/access/cloudflare-config")
+async def generate_cloudflare_config(body: CloudflareConfigRequest):
+    if not body.tunnel.strip() or not body.credentials_file.strip() or not body.hostname.strip():
+        raise HTTPException(status_code=400, detail="tunnel, credentials_file, and hostname are required")
+    try:
+        from hermes_cli.dashboard_service import build_cloudflare_config
+
+        service = body.service or f"http://127.0.0.1:{body.port}"
+        return {
+            "ok": True,
+            "config": build_cloudflare_config(
+                tunnel=body.tunnel.strip(),
+                credentials_file=body.credentials_file.strip(),
+                hostname=body.hostname.strip(),
+                service=service,
+            ),
+        }
+    except Exception as exc:
+        _log.exception("Failed to generate cloudflared config")
+        raise HTTPException(status_code=500, detail=f"Failed to generate cloudflared config: {exc}")
+
+
+@app.post("/api/dashboard/access/cloudflare-service/{verb}")
+async def run_cloudflare_service(verb: str):
+    if verb not in {"install", "uninstall", "start", "stop", "restart"}:
+        raise HTTPException(status_code=404, detail="unknown cloudflared service action")
+    name = f"dashboard-access-cloudflared-{verb}"
+    try:
+        proc = _spawn_hermes_action(
+            ["dashboard", "access", "cloudflare-service", verb],
+            name,
+        )
+    except Exception as exc:
+        _log.exception("Failed to spawn cloudflared service action")
+        raise HTTPException(status_code=500, detail=f"Failed to run cloudflared service action: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": name}
 
 
 # ---------------------------------------------------------------------------
@@ -5490,7 +5738,8 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
         return True
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    allowed_hosts = getattr(app.state, "allowed_hosts", ())
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts):
         return False
 
     origin = ws.headers.get("origin", "")
@@ -5510,7 +5759,7 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
     if not parsed.netloc:
         return False
 
-    return _is_accepted_host(parsed.netloc, bound_host)
+    return _is_accepted_host(parsed.netloc, bound_host, allowed_hosts)
 
 
 def _ws_request_is_allowed(ws: "WebSocket") -> bool:
@@ -6957,6 +7206,7 @@ def start_server(
     allow_public: bool = False,
     *,
     embedded_chat: bool = False,
+    allowed_hosts: Any = None,
 ):
     """Start the web UI server."""
     import uvicorn
@@ -7034,6 +7284,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allowed_hosts = tuple(sorted(_normalize_allowed_hosts(allowed_hosts)))
 
     if open_browser:
         import webbrowser

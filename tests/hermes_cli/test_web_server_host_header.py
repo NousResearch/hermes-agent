@@ -54,6 +54,14 @@ class TestHostHeaderValidator:
                     f"bound={bound} must reject attacker host={attacker!r}"
                 )
 
+    def test_loopback_bind_accepts_explicit_allowed_hosts(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = ["node.tailnet.ts.net", "https://dash.example.com/hermes"]
+        assert _is_accepted_host("node.tailnet.ts.net", "127.0.0.1", allowed)
+        assert _is_accepted_host("dash.example.com:443", "127.0.0.1", allowed)
+        assert not _is_accepted_host("evil.example", "127.0.0.1", allowed)
+
     def test_zero_zero_bind_accepts_anything(self):
         """0.0.0.0 means operator explicitly opted into all-interfaces
         (requires --insecure). No Host-layer defence is possible — rely
@@ -114,6 +122,7 @@ class TestHostHeaderMiddleware:
         from hermes_cli.web_server import app
 
         app.state.bound_host = "127.0.0.1"
+        app.state.allowed_hosts = ("node.tailnet.ts.net",)
         try:
             client = TestClient(app)
             # /api/status is in _PUBLIC_API_PATHS — passes auth — so the
@@ -130,6 +139,27 @@ class TestHostHeaderMiddleware:
         finally:
             if hasattr(app.state, "bound_host"):
                 del app.state.bound_host
+            if hasattr(app.state, "allowed_hosts"):
+                del app.state.allowed_hosts
+
+    def test_allowed_proxy_host_request_accepted(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        app.state.bound_host = "127.0.0.1"
+        app.state.allowed_hosts = ("node.tailnet.ts.net",)
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "node.tailnet.ts.net"},
+            )
+            assert resp.status_code != 400
+        finally:
+            if hasattr(app.state, "bound_host"):
+                del app.state.bound_host
+            if hasattr(app.state, "allowed_hosts"):
+                del app.state.allowed_hosts
 
     def test_no_bound_host_skips_validation(self):
         """If app.state.bound_host isn't set (e.g. running under test
@@ -212,6 +242,26 @@ class TestWebSocketHostOriginGuard:
             headers={
                 "Host": "localhost:9119",
                 "Origin": "http://localhost:9119",
+            },
+        ):
+            pass
+
+    def test_allowed_proxy_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "allowed_hosts", ("node.tailnet.ts.net",), raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "node.tailnet.ts.net",
+                "Origin": "https://node.tailnet.ts.net",
             },
         ):
             pass

@@ -2,11 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Brain,
+  Cloud,
   Database,
+  Globe2,
   KeyRound,
+  Network,
   Play,
   Power,
   RotateCw,
+  ServerCog,
   ShieldCheck,
   Stethoscope,
   Terminal,
@@ -32,6 +36,7 @@ import type {
   CredentialPoolProvider,
   CheckpointsResponse,
   HooksResponse,
+  DashboardServiceStatus,
 } from "@/lib/api";
 
 function formatBytes(n: number): string {
@@ -121,6 +126,8 @@ export default function SystemPage() {
     null,
   );
   const [hooks, setHooks] = useState<HooksResponse | null>(null);
+  const [dashboardService, setDashboardService] =
+    useState<DashboardServiceStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Which spawn-action log is currently shown (null = none).
@@ -135,6 +142,23 @@ export default function SystemPage() {
   // Import archive path.
   const [importPath, setImportPath] = useState("");
 
+  // Dashboard service install form.
+  const [dashHost, setDashHost] = useState("127.0.0.1");
+  const [dashPort, setDashPort] = useState("9119");
+  const [dashAllowedHosts, setDashAllowedHosts] = useState("");
+  const [dashPublicUrl, setDashPublicUrl] = useState("");
+  const [dashTui, setDashTui] = useState(false);
+  const [dashStartNow, setDashStartNow] = useState(false);
+  const [dashSystem, setDashSystem] = useState(false);
+  const [dashRunAsUser, setDashRunAsUser] = useState("");
+
+  // Secure access helpers.
+  const [tailscalePort, setTailscalePort] = useState("9119");
+  const [cloudflareHostname, setCloudflareHostname] = useState("");
+  const [cloudflareTunnel, setCloudflareTunnel] = useState("");
+  const [cloudflareCredentials, setCloudflareCredentials] = useState("");
+  const [cloudflareConfig, setCloudflareConfig] = useState("");
+
   const loadAll = useCallback(() => {
     Promise.allSettled([
       api.getStatus(),
@@ -142,13 +166,15 @@ export default function SystemPage() {
       api.getCredentialPool(),
       api.getCheckpoints(),
       api.getHooks(),
+      api.getDashboardService(),
     ])
-      .then(([s, m, p, c, h]) => {
+      .then(([s, m, p, c, h, d]) => {
         if (s.status === "fulfilled") setStatus(s.value);
         if (m.status === "fulfilled") setMemory(m.value);
         if (p.status === "fulfilled") setPool(p.value.providers);
         if (c.status === "fulfilled") setCheckpoints(c.value);
         if (h.status === "fulfilled") setHooks(h.value);
+        if (d.status === "fulfilled") setDashboardService(d.value);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -176,6 +202,86 @@ export default function SystemPage() {
       setTimeout(loadAll, 3000);
     } catch (e) {
       showToast(`Gateway ${verb} failed: ${e}`, "error");
+    }
+  };
+
+  // ── Dashboard service ─────────────────────────────────────────────
+  const runDashboardService = async (
+    verb: "install" | "start" | "stop" | "restart" | "uninstall",
+  ) => {
+    try {
+      let res: { name: string };
+      if (verb === "install") {
+        const port = Number(dashPort || "9119");
+        res = await api.installDashboardService({
+          host: dashHost.trim() || "127.0.0.1",
+          port,
+          tui: dashTui,
+          insecure: false,
+          allowed_hosts: dashAllowedHosts
+            .split(/[,\s]+/)
+            .map((h) => h.trim())
+            .filter(Boolean),
+          public_url: dashPublicUrl.trim(),
+          force: true,
+          system: dashSystem,
+          run_as_user: dashRunAsUser.trim() || undefined,
+          start_now: dashStartNow,
+          start_on_login: true,
+        });
+      } else if (verb === "start") {
+        res = await api.startDashboardService();
+      } else if (verb === "stop") {
+        res = await api.stopDashboardService();
+      } else if (verb === "restart") {
+        res = await api.restartDashboardService();
+      } else {
+        res = await api.uninstallDashboardService();
+      }
+      setActiveAction(res.name);
+      showToast(`Dashboard service ${verb} started`, "success");
+      setTimeout(loadAll, 3000);
+    } catch (e) {
+      showToast(`Dashboard service ${verb} failed: ${e}`, "error");
+    }
+  };
+
+  const applyTailscale = async () => {
+    try {
+      const res = await api.applyTailscaleServe({
+        port: Number(tailscalePort || "9119"),
+      });
+      setActiveAction(res.name);
+      showToast("Tailscale Serve apply started", "success");
+    } catch (e) {
+      showToast(`Tailscale Serve failed: ${e}`, "error");
+    }
+  };
+
+  const generateCloudflare = async () => {
+    try {
+      const res = await api.generateCloudflareConfig({
+        tunnel: cloudflareTunnel.trim(),
+        credentials_file: cloudflareCredentials.trim(),
+        hostname: cloudflareHostname.trim(),
+        port: Number(dashPort || "9119"),
+      });
+      setCloudflareConfig(res.config);
+      showToast("cloudflared config generated", "success");
+    } catch (e) {
+      showToast(`cloudflared config failed: ${e}`, "error");
+    }
+  };
+
+  const runCloudflared = async (
+    verb: "install" | "uninstall" | "start" | "stop" | "restart",
+  ) => {
+    try {
+      const res = await api.runCloudflareService(verb);
+      setActiveAction(res.name);
+      showToast(`cloudflared ${verb} started`, "success");
+    } catch (e) {
+      showToast(`cloudflared ${verb} failed: ${e}`, "error");
     }
   };
 
@@ -370,6 +476,226 @@ export default function SystemPage() {
               >
                 Stop
               </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* ── Dashboard service ─────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+          <ServerCog className="h-4 w-4" /> Dashboard service
+        </H2>
+        <Card>
+          <CardContent className="flex flex-col gap-4 py-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge tone={dashboardService?.running ? "success" : "secondary"}>
+                {dashboardService?.running ? "running" : "stopped"}
+              </Badge>
+              <Badge tone={dashboardService?.installed ? "outline" : "secondary"}>
+                {dashboardService?.installed ? "installed" : "not installed"}
+              </Badge>
+              <span className="text-sm text-muted-foreground">
+                {dashboardService?.manager ?? "—"}
+                {dashboardService?.name ? ` · ${dashboardService.name}` : ""}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+              <div className="grid gap-2 md:col-span-1">
+                <Label htmlFor="dash-host">Host</Label>
+                <Input
+                  id="dash-host"
+                  value={dashHost}
+                  onChange={(e) => setDashHost(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="dash-port">Port</Label>
+                <Input
+                  id="dash-port"
+                  inputMode="numeric"
+                  value={dashPort}
+                  onChange={(e) => setDashPort(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2 md:col-span-2">
+                <Label htmlFor="dash-allowed-hosts">Allowed hosts</Label>
+                <Input
+                  id="dash-allowed-hosts"
+                  value={dashAllowedHosts}
+                  onChange={(e) => setDashAllowedHosts(e.target.value)}
+                  placeholder="device.tailnet.ts.net"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="dash-public-url">Public URL</Label>
+                <Input
+                  id="dash-public-url"
+                  value={dashPublicUrl}
+                  onChange={(e) => setDashPublicUrl(e.target.value)}
+                  placeholder="https://dashboard.example.com"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={dashTui}
+                  onChange={(e) => setDashTui(e.target.checked)}
+                />
+                Chat tab
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={dashStartNow}
+                  onChange={(e) => setDashStartNow(e.target.checked)}
+                />
+                Start now
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={dashSystem}
+                  onChange={(e) => setDashSystem(e.target.checked)}
+                />
+                System service
+              </label>
+              {dashSystem && (
+                <div className="grid gap-2">
+                  <Label htmlFor="dash-run-as-user">Run as user</Label>
+                  <Input
+                    id="dash-run-as-user"
+                    value={dashRunAsUser}
+                    onChange={(e) => setDashRunAsUser(e.target.value)}
+                    placeholder="hermes"
+                  />
+                </div>
+              )}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  className="uppercase"
+                  onClick={() => runDashboardService("install")}
+                  prefix={<ServerCog className="h-3.5 w-3.5" />}
+                >
+                  Install
+                </Button>
+                <Button
+                  size="sm"
+                  ghost
+                  onClick={() => runDashboardService("start")}
+                  disabled={dashboardService?.running}
+                  prefix={<Play className="h-3.5 w-3.5" />}
+                >
+                  Start
+                </Button>
+                <Button
+                  size="sm"
+                  ghost
+                  onClick={() => runDashboardService("restart")}
+                  prefix={<RotateCw className="h-3.5 w-3.5" />}
+                >
+                  Restart
+                </Button>
+                <Button
+                  size="sm"
+                  ghost
+                  className="text-warning"
+                  onClick={() => runDashboardService("stop")}
+                  disabled={!dashboardService?.running}
+                  prefix={<Power className="h-3.5 w-3.5" />}
+                >
+                  Stop
+                </Button>
+                <Button
+                  size="sm"
+                  ghost
+                  className="text-destructive"
+                  onClick={() => runDashboardService("uninstall")}
+                  disabled={!dashboardService?.installed}
+                  prefix={<Trash2 className="h-3.5 w-3.5" />}
+                >
+                  Uninstall
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* ── Secure access ─────────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+          <Network className="h-4 w-4" /> Secure access
+        </H2>
+        <Card>
+          <CardContent className="grid grid-cols-1 gap-4 py-4 lg:grid-cols-2">
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Globe2 className="h-4 w-4 text-muted-foreground" />
+                Tailscale / headscale
+              </div>
+              <div className="flex items-end gap-2">
+                <div className="grid gap-2">
+                  <Label htmlFor="tailscale-port">Local port</Label>
+                  <Input
+                    id="tailscale-port"
+                    inputMode="numeric"
+                    value={tailscalePort}
+                    onChange={(e) => setTailscalePort(e.target.value)}
+                  />
+                </div>
+                <Button size="sm" ghost onClick={applyTailscale}>
+                  Apply Serve
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Cloud className="h-4 w-4 text-muted-foreground" />
+                cloudflared
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <Input
+                  aria-label="Cloudflare hostname"
+                  value={cloudflareHostname}
+                  onChange={(e) => setCloudflareHostname(e.target.value)}
+                  placeholder="dashboard.example.com"
+                />
+                <Input
+                  aria-label="Cloudflare tunnel"
+                  value={cloudflareTunnel}
+                  onChange={(e) => setCloudflareTunnel(e.target.value)}
+                  placeholder="tunnel id"
+                />
+                <Input
+                  aria-label="Cloudflare credentials"
+                  value={cloudflareCredentials}
+                  onChange={(e) => setCloudflareCredentials(e.target.value)}
+                  placeholder="credentials.json"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" ghost onClick={generateCloudflare}>
+                  Generate config
+                </Button>
+                <Button size="sm" ghost onClick={() => runCloudflared("install")}>
+                  Install service
+                </Button>
+                <Button size="sm" ghost onClick={() => runCloudflared("restart")}>
+                  Restart
+                </Button>
+              </div>
+              {cloudflareConfig && (
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-muted-foreground">
+                  {cloudflareConfig}
+                </pre>
+              )}
             </div>
           </CardContent>
         </Card>

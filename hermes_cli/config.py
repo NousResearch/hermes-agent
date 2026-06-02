@@ -1413,6 +1413,12 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Extra Host header names accepted by the dashboard DNS-rebinding
+        # guard when the server stays loopback-bound behind a trusted local
+        # proxy/tunnel such as Tailscale Serve or cloudflared. This is a
+        # list of exact hostnames; command-line ``--allowed-hosts`` and
+        # ``HERMES_DASHBOARD_ALLOWED_HOSTS`` can override it per launch.
+        "allowed_hosts": [],
     },
 
     # Privacy settings

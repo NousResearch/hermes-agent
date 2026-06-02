@@ -200,6 +200,113 @@ class TestOpsEndpoints:
         assert r.status_code == 404
 
 
+class TestDashboardServiceEndpoints:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_status_uses_service_snapshot(self, monkeypatch):
+        import hermes_cli.dashboard_service as dashboard_service
+
+        monkeypatch.setattr(
+            dashboard_service,
+            "get_dashboard_service_snapshot",
+            lambda: {
+                "manager": "systemd",
+                "installed": True,
+                "running": False,
+                "name": "hermes-dashboard",
+                "path": "/tmp/hermes-dashboard.service",
+                "scope": "user",
+            },
+        )
+
+        data = self.client.get("/api/dashboard/service/status").json()
+        assert data["manager"] == "systemd"
+        assert data["installed"] is True
+
+    def test_install_spawns_cli_with_options(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class Proc:
+            pid = 123
+
+        calls = []
+
+        def fake_spawn(subcommand, name):
+            calls.append((subcommand, name))
+            return Proc()
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post(
+            "/api/dashboard/service/install",
+            json={
+                "host": "127.0.0.1",
+                "port": 9120,
+                "tui": True,
+                "allowed_hosts": ["node.tailnet.ts.net"],
+                "public_url": "https://node.tailnet.ts.net",
+                "force": True,
+                "start_now": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "pid": 123,
+            "name": "dashboard-service-install",
+        }
+        subcommand, name = calls[0]
+        assert name == "dashboard-service-install"
+        assert subcommand[:3] == ["dashboard", "service", "install"]
+        assert "--tui" in subcommand
+        assert ["--allowed-hosts", "node.tailnet.ts.net"] == [
+            subcommand[subcommand.index("--allowed-hosts")],
+            subcommand[subcommand.index("--allowed-hosts") + 1],
+        ]
+        assert "--start-now" in subcommand
+
+    def test_access_helpers(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class Proc:
+            pid = 456
+
+        calls = []
+
+        def fake_spawn(subcommand, name):
+            calls.append((subcommand, name))
+            return Proc()
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+
+        r = self.client.post(
+            "/api/dashboard/access/tailscale-serve",
+            json={"port": 9119},
+        )
+        assert r.status_code == 200
+        assert calls[-1][0][:3] == ["dashboard", "access", "tailscale-serve"]
+        assert "--apply" in calls[-1][0]
+
+        cfg = self.client.post(
+            "/api/dashboard/access/cloudflare-config",
+            json={
+                "tunnel": "abc",
+                "credentials_file": "/tmp/abc.json",
+                "hostname": "dash.example.com",
+                "port": 9119,
+            },
+        )
+        assert cfg.status_code == 200
+        assert "hostname: dash.example.com" in cfg.json()["config"]
+
+        r = self.client.post("/api/dashboard/access/cloudflare-service/restart")
+        assert r.status_code == 200
+        assert calls[-1][0] == ["dashboard", "access", "cloudflare-service", "restart"]
+
+
 class TestAdminEndpointsAuthGate:
     """Every admin endpoint must sit behind the dashboard session-token gate."""
 
@@ -219,6 +326,7 @@ class TestAdminEndpointsAuthGate:
             "/api/webhooks",
             "/api/credentials/pool",
             "/api/memory",
+            "/api/dashboard/service/status",
             "/api/ops/hooks",
             "/api/ops/checkpoints",
         ],

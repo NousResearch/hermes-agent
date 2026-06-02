@@ -13,6 +13,13 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## JavaScript / TypeScript Package Manager
+
+Prefer **Yarn** for JavaScript and TypeScript work in this repo. Use `yarn`,
+`yarn <script>`, and `yarn --cwd <dir> <script>` instead of `npm install`,
+`npm run <script>`, or `npm --prefix <dir> run <script>` unless you are
+intentionally preserving an existing npm-lockfile workflow.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
@@ -235,14 +242,14 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 
 ```bash
 cd ui-tui
-npm install       # first time
-npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
-npm start         # production
-npm run build     # full build (hermes-ink + tsc)
-npm run type-check # typecheck only (tsc --noEmit)
-npm run lint      # eslint
-npm run fmt       # prettier
-npm test          # vitest
+yarn install       # first time
+yarn dev           # watch mode (rebuilds hermes-ink + tsx --watch)
+yarn start         # production
+yarn build         # full build (hermes-ink + tsc)
+yarn type-check    # typecheck only (tsc --noEmit)
+yarn lint          # eslint
+yarn fmt           # prettier
+yarn test          # vitest
 ```
 
 ### TUI in the Dashboard (`hermes dashboard` → `/chat`)

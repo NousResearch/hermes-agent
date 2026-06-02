@@ -2840,6 +2840,13 @@ async def get_mission_control_recent_audit_log():
     return recent_audit_log()
 
 
+@app.get("/api/mission-control/artifacts")
+async def get_mission_control_artifacts(kind: str | None = None, status: str | None = None):
+    from hermes_cli.mission_control_artifacts import list_artifacts
+
+    return list_artifacts(kind=kind, status=status)
+
+
 def _mission_control_packet_error(exc: Exception) -> HTTPException:
     from hermes_cli.mission_control import MissionControlPacketError
 

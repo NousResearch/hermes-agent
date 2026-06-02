@@ -426,6 +426,27 @@ def get_attachment(room_id: str, attachment_id: str) -> dict[str, Any]:
     raise FileNotFoundError(attachment_id)
 
 
+def list_attachment_metadata() -> dict[str, Any]:
+    with _LOCK:
+        rooms = _load_rooms_unlocked()
+        attachments: list[dict[str, Any]] = []
+        for room in rooms:
+            room_id = str(room.get("id") or "")
+            if not room_id:
+                continue
+            for attachment in _load_json_list(_attachments_path(room_id), "attachments"):
+                public = dict(attachment)
+                public.pop("storage_filename", None)
+                public.pop("sha256", None)
+                attachments.append(public)
+    return {
+        "generated_at": _now_iso(),
+        "source": "mission_control_project_room_attachments",
+        "items": redact_value(attachments),
+        "warnings": [],
+    }
+
+
 def attachment_file_path(room_id: str, attachment_id: str) -> tuple[Path, dict[str, Any]]:
     with _LOCK:
         room = _find_room_unlocked(room_id)

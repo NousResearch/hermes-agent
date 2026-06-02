@@ -587,6 +587,7 @@ def _packet_summary(packet: dict[str, Any]) -> dict[str, Any]:
         "created_at": packet.get("created_at"),
         "updated_at": packet.get("updated_at"),
         "redacted_payload_preview": packet.get("redacted_payload_preview"),
+        "source_ref_count": len(packet.get("source_refs") or []),
         "warnings": packet.get("warnings") or [],
     }
 

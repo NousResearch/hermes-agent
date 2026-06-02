@@ -29,6 +29,11 @@ QUEUE_REPLY_DECISIONS = {"approve", "reject", "archive", "skip", "complete", "ke
 QUEUE_REPLY_TOOL_DECISIONS = {"approve", "reject", "archive", "skip", "complete", "keep", "demote"}
 QUEUE_REPLY_STATE_TTL_SECONDS = 15 * 60
 MEETING_HANDOFF_STATE_TTL_SECONDS = 15 * 60
+SUPPORTED_RESULT_PACKET_TYPES = {
+    "durable_graph_validation",
+    "publication_observation",
+    "report_admission_receipt",
+}
 
 
 def _sanitize_component(value: str) -> str:
@@ -205,6 +210,128 @@ def _receipt_lines(payload: Any, *, include_request: bool = False) -> list[str]:
     return lines
 
 
+def _first_result_packet(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("packet_type") in SUPPORTED_RESULT_PACKET_TYPES:
+        return payload
+    for key in (
+        "output",
+        "result",
+        "receipt",
+        "publication_observation",
+        "graph_validation",
+        "report_admission_receipt",
+    ):
+        nested = payload.get(key)
+        if isinstance(nested, dict) and nested.get("packet_type") in SUPPORTED_RESULT_PACKET_TYPES:
+            return nested
+    return {}
+
+
+def _warning_lines(warnings: Any, *, limit: int = 3) -> list[str]:
+    if not isinstance(warnings, list) or not warnings:
+        return []
+    lines = [f"Warnings: {len(warnings)}"]
+    for warning in warnings[:limit]:
+        if isinstance(warning, dict):
+            code = _short(warning.get("code") or warning.get("warning"), "")
+            ref = _short(warning.get("ref") or warning.get("path") or warning.get("object_ref"), "")
+            detail = _clip(warning.get("message") or warning.get("detail") or warning.get("summary"), 160)
+            text = " - ".join(part for part in (code, ref, detail) if part)
+            lines.append(f"- {text or 'warning'}")
+        else:
+            lines.append(f"- {_clip(warning, 180)}")
+    return lines
+
+
+def _render_report_admission_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    title = _short(packet.get("title") or packet.get("report_ref"), "Report Admission")
+    status = _short(packet.get("status"))
+    report_ref = _short(packet.get("report_ref"), "")
+    event_ref = _short(packet.get("event_ref"), "")
+    event_role = _short(packet.get("event_role"), "")
+    situation_ref = _short(packet.get("situation_ref"), "")
+    transfers = packet.get("source_transfers") if isinstance(packet.get("source_transfers"), list) else []
+    changed_paths = _changed_paths(packet)
+    validation = packet.get("graph_validation") if isinstance(packet.get("graph_validation"), dict) else {}
+    lines = [
+        "Report Admission",
+        f"Status: {status}",
+        f"Report: {report_ref or title}",
+    ]
+    if title and title != report_ref:
+        lines.append(f"Title: {title}")
+    if event_ref:
+        lines.append(f"Event: {event_ref}" + (f" ({event_role})" if event_role else ""))
+    if situation_ref:
+        lines.append(f"Situation: {situation_ref}")
+    if transfers:
+        lines.append(f"Source files: {len(transfers)}")
+    if changed_paths:
+        lines.append(f"Changed paths: {len(changed_paths)}")
+        lines.extend(_format_changed_paths(changed_paths, limit=5))
+    if validation:
+        lines.append(
+            "Graph validation: "
+            + _short(validation.get("status") or ("ok" if validation.get("ok") else "warning"))
+        )
+    lines.extend(_warning_lines(packet.get("warnings")))
+    if status == "preview":
+        lines.append("No durable write has been made.")
+    return {"title": "Report Admission", "text": "\n".join(lines), "actions": []}
+
+
+def _render_graph_validation_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    status = _short(packet.get("status") or ("ok" if packet.get("ok") else "warning"))
+    warning_count = packet.get("warning_count")
+    error_count = packet.get("error_count")
+    lines = [
+        "KB Graph Validation",
+        f"Status: {status}",
+    ]
+    if warning_count is not None or error_count is not None:
+        lines.append(
+            f"Warnings: {_short(warning_count, '0')} · Errors: {_short(error_count, '0')}"
+        )
+    lines.extend(_warning_lines(packet.get("warnings"), limit=5))
+    return {"title": "KB Graph Validation", "text": "\n".join(lines), "actions": []}
+
+
+def _render_publication_observation_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    state = _short(packet.get("publication_state") or packet.get("status") or packet.get("state"))
+    changed_paths = _changed_paths(packet)
+    lines = [
+        "Publication Observation",
+        f"State: {state}",
+    ]
+    changed_count = packet.get("changed_count")
+    if changed_count is None and changed_paths:
+        changed_count = len(changed_paths)
+    if changed_count is not None:
+        lines.append(f"Changed paths: {_short(changed_count, '0')}")
+    if changed_paths:
+        lines.extend(_format_changed_paths(changed_paths, limit=5))
+    if packet.get("secret_values_exposed") is not None:
+        lines.append("Secrets exposed: " + ("yes" if packet.get("secret_values_exposed") else "no"))
+    lines.extend(_warning_lines(packet.get("warnings")))
+    return {"title": "Publication Observation", "text": "\n".join(lines), "actions": []}
+
+
+def _render_supported_result_packet(payload: Any) -> dict[str, Any] | None:
+    packet = _first_result_packet(payload)
+    if not packet:
+        return None
+    packet_type = packet.get("packet_type")
+    if packet_type == "report_admission_receipt":
+        return _render_report_admission_packet(packet)
+    if packet_type == "durable_graph_validation":
+        return _render_graph_validation_packet(packet)
+    if packet_type == "publication_observation":
+        return _render_publication_observation_packet(packet)
+    return None
+
+
 def _maybe_json(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -339,7 +466,7 @@ def _todo_count_from_summary(summary: dict[str, Any]) -> Any:
 def _display_text(value: Any) -> str:
     text = _short(value, "")
     if text == "Review prioritized queue items through workbench.queue.":
-        return "Review prioritized TODO items; use /kb queue for proposal review."
+        return "Review prioritized attention items; use /kb queue for proposal review."
     return text
 
 
@@ -352,7 +479,7 @@ def _dashboard_section_title(section: dict[str, Any], summary: dict[str, Any]) -
         todo_count = _todo_count_from_summary(summary)
         legacy_queue_count = summary.get("queue_item_count")
         if proposal_count is None or (todo_count is not None and legacy_queue_count == todo_count):
-            return "TODO Focus"
+            return "Attention Queue"
         return "Proposal Queue"
     return title
 
@@ -519,7 +646,7 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
     for section in sections:
         if not isinstance(section, dict):
             continue
-        if str(section.get("id") or "").strip().lower() not in {"situations", "now"}:
+        if str(section.get("id") or "").strip().lower() not in {"closeout", "now", "reports", "situations", "workbench"}:
             continue
         cards = section.get("cards") if isinstance(section.get("cards"), list) else []
         for card in cards:
@@ -533,32 +660,38 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
                     continue
                 if descriptor.get("packet_type") != "dashboard_action_descriptor" or descriptor.get("schema_version") != 2:
                     continue
-                if descriptor.get("mutation") != "read_only":
-                    continue
-                if str(descriptor.get("target_kind") or "") not in {"situation", "component"}:
-                    continue
-                if not (descriptor.get("preview_tool") or descriptor.get("method")):
-                    continue
                 descriptor_copy = dict(descriptor)
                 label = _short(descriptor.get("label") or descriptor.get("action_id") or "Open", "Open")
                 action_id = _short(descriptor.get("action_id") or label, label)
-                actions.append(
-                    KbAction(
-                        label=label,
-                        action_id=f"{action_id}.open",
-                        handler=lambda callback_ctx, d=descriptor_copy: _render_readonly_descriptor_action(
-                            ctx,
-                            target,
-                            descriptor=d,
-                            callback_ctx=callback_ctx,
-                        ),
-                        metadata={
-                            "target_kind": descriptor.get("target_kind"),
-                            "target_ref": descriptor.get("target_ref"),
-                            "preview_tool": descriptor.get("preview_tool") or descriptor.get("method"),
-                        },
+                mutation = _short(descriptor.get("mutation"), "read_only")
+                target_kind = str(descriptor.get("target_kind") or "").strip()
+                if mutation == "read_only":
+                    if target_kind not in {"component", "event", "object_graph", "publication", "report", "situation"}:
+                        continue
+                    if not (descriptor.get("preview_tool") or descriptor.get("method")):
+                        continue
+                    actions.append(
+                        KbAction(
+                            label=label,
+                            action_id=f"{action_id}.open",
+                            handler=lambda callback_ctx, d=descriptor_copy: _render_readonly_descriptor_action(
+                                ctx,
+                                target,
+                                descriptor=d,
+                                callback_ctx=callback_ctx,
+                            ),
+                            metadata={
+                                "target_kind": descriptor.get("target_kind"),
+                                "target_ref": descriptor.get("target_ref"),
+                                "preview_tool": descriptor.get("preview_tool") or descriptor.get("method"),
+                            },
+                        )
                     )
-                )
+                else:
+                    generic = _generic_descriptor_action(ctx, target, descriptor_copy)
+                    if generic is None:
+                        continue
+                    actions.append(generic)
                 guidance = _descriptor_advisory_guidance(descriptor)
                 if guidance:
                     actions.append(
@@ -632,6 +765,9 @@ def _render_readonly_descriptor_action(
     label = _short(descriptor.get("label") or descriptor.get("action_id") or "KB Context", "KB Context")
     if isinstance(payload, dict) and payload.get("error"):
         return {"title": label, "text": f"{label}\n{payload['error']}", "actions": []}
+    packet_card = _render_supported_result_packet(payload)
+    if packet_card is not None:
+        return packet_card
     if not isinstance(payload, dict):
         return {"title": label, "text": f"{label}\n{_short(payload, 'No context returned.')}", "actions": []}
     title = _short(payload.get("title") or payload.get("name") or label, label)
@@ -647,6 +783,148 @@ def _render_readonly_descriptor_action(
         lines.append(f"Ref: {target_ref}")
     lines.extend(_receipt_lines(payload, include_request=True))
     return {"title": label, "text": "\n".join(lines), "actions": []}
+
+
+def _descriptor_params(descriptor: dict[str, Any]) -> dict[str, Any]:
+    params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
+    return dict(params)
+
+
+def _generic_descriptor_action(ctx: Any, target: str, descriptor: dict[str, Any]) -> Any | None:
+    try:
+        from tools.kb_callback_registry import KbAction
+    except Exception:
+        return None
+    if descriptor.get("requires_canonical_tool") is not True:
+        return None
+    preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool") or descriptor.get("method"))
+    confirm_tool = _descriptor_tool_name(target, descriptor.get("confirm_tool"))
+    if not preview_tool or not confirm_tool:
+        return None
+    if str(descriptor.get("target_kind") or "").strip() not in {
+        "event",
+        "object_graph",
+        "publication",
+        "report",
+        "situation",
+    }:
+        return None
+    label = _short(descriptor.get("label") or descriptor.get("action_id") or "Action", "Action")
+    action_id = _short(descriptor.get("action_id") or label, label)
+    return KbAction(
+        label=f"Preview {label}",
+        action_id=f"{action_id}.preview",
+        handler=lambda callback_ctx, d=dict(descriptor): _render_generic_descriptor_preview(
+            ctx,
+            target,
+            descriptor=d,
+            callback_ctx=callback_ctx,
+        ),
+        metadata={
+            "target_kind": descriptor.get("target_kind"),
+            "target_ref": descriptor.get("target_ref"),
+            "preview_tool": preview_tool,
+            "confirm_tool": confirm_tool,
+            "preview_required": True,
+        },
+    )
+
+
+def _generic_preview_text(label: str, payload: Any) -> str:
+    if isinstance(payload, dict) and payload.get("error"):
+        return f"{label} Preview Failed\n{payload['error']}"
+    packet_card = _render_supported_result_packet(payload)
+    if packet_card is not None:
+        return packet_card["text"]
+    if isinstance(payload, dict):
+        lines = [
+            f"{label} Preview",
+            f"Status: {_short(payload.get('status') or payload.get('state'))}",
+        ]
+        lines.extend(_receipt_lines(payload, include_request=True))
+        changed_paths = _changed_paths(payload)
+        if changed_paths:
+            lines.append(f"Changed paths: {len(changed_paths)}")
+            lines.extend(_format_changed_paths(changed_paths, limit=5))
+        summary = _short(payload.get("summary") or payload.get("message"), "")
+        if summary:
+            lines.append("Summary: " + _clip(summary, 260))
+        return "\n".join(lines)
+    return f"{label} Preview\n{_short(payload, 'No structured response returned.')}"
+
+
+def _render_generic_descriptor_preview(
+    ctx: Any,
+    target: str,
+    *,
+    descriptor: dict[str, Any],
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    try:
+        from tools.kb_callback_registry import KbAction
+    except Exception:
+        return {"title": "KB Action", "text": "KB Action\nAction buttons are unavailable.", "actions": []}
+    del callback_ctx
+    label = _short(descriptor.get("label") or descriptor.get("action_id") or "KB Action", "KB Action")
+    action_id = _short(descriptor.get("action_id") or label, label)
+    preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool") or descriptor.get("method"))
+    preview_payload = _result_payload(ctx.dispatch_tool(preview_tool, _descriptor_params(descriptor)))
+    text = _generic_preview_text(label, preview_payload)
+    if not _preview_allows_confirmation(preview_payload):
+        return {"title": label, "text": text, "actions": []}
+    confirm_action = KbAction(
+        label=f"Confirm {label}",
+        action_id=f"{action_id}.confirm",
+        handler=lambda confirm_ctx, d=dict(descriptor): _render_generic_descriptor_confirm(
+            ctx,
+            target,
+            descriptor=d,
+            callback_ctx=confirm_ctx,
+        ),
+        metadata={
+            "target_kind": descriptor.get("target_kind"),
+            "target_ref": descriptor.get("target_ref"),
+            "preview_required": True,
+        },
+    )
+    return {
+        "title": label,
+        "text": text + "\n\nConfirm with the button below only if the preview matches your intent.",
+        "actions": [confirm_action],
+    }
+
+
+def _render_generic_descriptor_confirm(
+    ctx: Any,
+    target: str,
+    *,
+    descriptor: dict[str, Any],
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    label = _short(descriptor.get("label") or descriptor.get("action_id") or "KB Action", "KB Action")
+    preview_tool = _descriptor_tool_name(target, descriptor.get("preview_tool") or descriptor.get("method"))
+    confirm_tool = _descriptor_tool_name(target, descriptor.get("confirm_tool"))
+    preview_payload = _result_payload(ctx.dispatch_tool(preview_tool, _descriptor_params(descriptor)))
+    if not _preview_allows_confirmation(preview_payload):
+        return {"title": label, "text": _generic_preview_text(label, preview_payload), "actions": []}
+    confirm_args = _descriptor_params(descriptor)
+    confirm_args["user_confirmation"] = {
+        "confirmed": True,
+        "surface": "telegram",
+        "action": _short(descriptor.get("action_id") or label, label),
+        "preview_required": True,
+        "confirmation_text": str(descriptor.get("confirmation_copy") or f"Confirm {label}"),
+        "actor_id": _short(getattr(callback_ctx, "actor_id", ""), ""),
+        "actor_name": _short(getattr(callback_ctx, "actor_name", ""), ""),
+    }
+    confirm_args.setdefault("actor", _queue_callback_actor(callback_ctx))
+    confirm_args.setdefault("source", "Hermes Telegram Action Card")
+    confirm_args.setdefault("session_id", f"telegram-kb-card-{int(time.time())}")
+    confirmed_payload = _result_payload(ctx.dispatch_tool(confirm_tool, confirm_args))
+    packet_card = _render_supported_result_packet(confirmed_payload)
+    if packet_card is not None:
+        return packet_card
+    return {"title": label, "text": _generic_preview_text(label.replace("Preview", "Applied"), confirmed_payload), "actions": []}
 
 
 def _strip_env_value(value: str) -> str:
@@ -1407,6 +1685,9 @@ def _confirmed_text(
 ) -> str:
     if isinstance(payload, dict) and payload.get("error"):
         return f"Queue {decision} failed\n{payload['error']}"
+    packet_card = _render_supported_result_packet(payload)
+    if packet_card is not None:
+        return packet_card["text"]
     selection = selection or []
     proposal_ids = proposal_ids or []
     past_tense = _decision_past_tense(decision)
@@ -1579,10 +1860,9 @@ def scoped_mcp_tool_allowlist_for_message(
     """Return exact MCP tools allowed by a matched pending queue action.
 
     This is the stateful bridge between Telegram action cards and the generic
-    MCP posture filter.  A bare reply such as ``Reject`` should not globally
-    expose confirmed tools.  It may expose only the queue preview/confirmed
-    tools when there is fresh queue state for the current gateway session and
-    the reply is one of the choices shown for that visible item.
+    MCP posture filter.  A bare reply such as ``Reject`` should stay preview
+    only.  Confirmed queue tools are reserved for explicit confirm commands or
+    action-card confirmation gestures.
     """
     decision = _bare_queue_reply_decision(message)
     if decision not in QUEUE_REPLY_TOOL_DECISIONS:
@@ -1594,12 +1874,7 @@ def scoped_mcp_tool_allowlist_for_message(
     if choices and decision not in choices:
         return set()
     mcp_target = target or _mcp_target()
-    return {
-        _mcp_tool_name(mcp_target, "queue.decision_preview"),
-        _mcp_tool_name(mcp_target, "queue.decide_confirmed"),
-        _mcp_tool_name(mcp_target, "queue.batch_decide_confirmed"),
-        _mcp_tool_name(mcp_target, "queue.decisions_confirmed"),
-    }
+    return {_mcp_tool_name(mcp_target, "queue.decision_preview")}
 
 
 def _session_id_for_queue_reply_state(session_store: Any, source: Any) -> str:
@@ -1786,7 +2061,6 @@ def _render_iterative_queue_reply_decision(
     actor = "telegram:operator"
     source = "Hermes Telegram iterative queue"
     preview_tool = _mcp_tool_name(target, "queue.decision_preview")
-    confirmed_tool = _mcp_tool_name(target, "queue.batch_decide_confirmed")
     preview_payload = _result_payload(
         ctx.dispatch_tool(
             preview_tool,
@@ -1799,42 +2073,10 @@ def _render_iterative_queue_reply_decision(
             },
         )
     )
-    if not _preview_allows_confirmation(preview_payload):
-        return {
-            "title": "KB Queue",
-            "text": _preview_text(decision, proposal_ids, preview_payload, selection=selection),
-            "actions": [],
-        }
-    confirmed_payload = _result_payload(
-        ctx.dispatch_tool(
-            confirmed_tool,
-            {
-                "proposal_ids": proposal_ids,
-                "decision": decision,
-                "actor": actor,
-                "source": source,
-                "session_id": session_id or f"telegram-kb-reply-{int(time.time())}",
-                "user_confirmation": {
-                    "confirmed": True,
-                    "surface": "telegram",
-                    "action": f"queue.{decision}",
-                    "preview_required": True,
-                    "confirmation_text": decision,
-                    "proposal_ids": proposal_ids,
-                },
-                "note": f"Confirmed from Telegram iterative queue reply for {title}",
-            },
-        )
-    )
-    text = _confirmed_text(decision, confirmed_payload, selection=selection, proposal_ids=proposal_ids)
-    text = text.replace("\nNext: /kb queue", "")
-    if isinstance(confirmed_payload, dict) and confirmed_payload.get("ok") is False:
-        return {"title": "KB Queue", "text": text, "actions": []}
-    data, errors = _queue_summary_payload(ctx, target, limit=5)
-    next_text = _iterative_queue_next_text(data, session_id=session_id)
-    if errors:
-        next_text += "\nQueue refresh warning: " + "; ".join(errors[:2])
-    return {"title": "KB Queue", "text": text.rstrip() + "\n\n" + next_text, "actions": []}
+    text = _preview_text(decision, proposal_ids, preview_payload, selection=selection)
+    if _preview_allows_confirmation(preview_payload):
+        text += f"\nTo apply: /kb queue {decision} 1 confirm"
+    return {"title": "KB Queue", "text": text, "actions": []}
 
 
 def _queue_summary_payload(ctx: Any, target: str, *, limit: int = 5) -> tuple[Any | None, list[str]]:
@@ -2040,6 +2282,10 @@ def _render_publish_preview(
         return {"title": "KB Publish", "text": f"KB Publish Preview Failed\n{payload['error']}", "actions": []}
     if not isinstance(payload, dict):
         return {"title": "KB Publish", "text": "KB Publish Preview Failed\nPublication preview returned an unexpected response.", "actions": []}
+    packet_card = _render_supported_result_packet(payload)
+    if packet_card is not None:
+        packet_card["actions"] = actions or []
+        return packet_card
     changed_paths = _changed_paths(payload)
     status = _short(payload.get("status"))
     message = _short(payload.get("message"), "Publish KB update")
@@ -2082,6 +2328,9 @@ def _render_publish_result(preview: Any, commit: Any, push: Any) -> dict[str, An
         return {"title": "KB Publish", "text": f"KB Publish Failed\nCommit failed: {commit['error']}", "actions": []}
     if not isinstance(commit, dict):
         return {"title": "KB Publish", "text": "KB Publish Failed\nCommit returned an unexpected response.", "actions": []}
+    packet_card = _render_supported_result_packet(commit)
+    if packet_card is not None:
+        return packet_card
     commit_status = _short(commit.get("status"))
     commit_ok = bool(commit.get("ok"))
     if not commit_ok:

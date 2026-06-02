@@ -227,8 +227,8 @@ def test_kb_command_renders_live_dashboard_without_calling_todo_count_queue(monk
     assert "Publication: dirty" in text
     assert "TODOs 309" in text
     assert "Queue 309" not in text
-    assert "TODO Focus" in text
-    assert "Review prioritized TODO items" in text
+    assert "Attention Queue" in text
+    assert "Review prioritized attention items" in text
 
 
 def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
@@ -400,6 +400,201 @@ def test_dashboard_situation_descriptor_renders_readonly_action_button(monkeypat
     assert "kb.review_guidance" in guidance_card["text"]
     assert "no_mutation_authority" in guidance_card["text"]
     assert "Advisory output never confirms" in guidance_card["text"]
+
+
+def test_dashboard_validation_descriptor_renders_graph_receipt(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_dashboard_live": {
+                "result": {
+                    "surface": "dashboard.live",
+                    "summary": {
+                        "active_run_count": 0,
+                        "active_todo_count": 0,
+                        "publication_status": "clean",
+                        "readiness_status": "ready",
+                    },
+                    "sections": [
+                        {
+                            "id": "now",
+                            "title": "Now",
+                            "cards": [
+                                {
+                                    "id": "graph:validation",
+                                    "title": "Graph validation",
+                                    "action_descriptors": [
+                                        {
+                                            "packet_type": "dashboard_action_descriptor",
+                                            "schema_version": 2,
+                                            "action_id": "objects.validate_graph",
+                                            "label": "Validate graph",
+                                            "method": "objects.validate_graph",
+                                            "mutation": "read_only",
+                                            "target_kind": "object_graph",
+                                            "target_ref": "kb",
+                                            "preview_tool": "objects.validate_graph",
+                                            "params": {},
+                                            "dashboard_owned_write": False,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_objects_validate_graph": {
+                "result": {
+                    "packet_type": "durable_graph_validation",
+                    "schema_version": 1,
+                    "status": "warning",
+                    "ok": False,
+                    "warning_count": 1,
+                    "error_count": 0,
+                    "warnings": [
+                        {
+                            "code": "missing_related_object",
+                            "ref": "reports/2026-06-future-of-ai-for-synbio",
+                            "message": "Report ref is missing.",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    action = next(action for action in adapter.sent[0]["actions"] if action.label == "Validate graph")
+
+    card = action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(card):
+        card = asyncio.run(card)
+
+    assert "KB Graph Validation" in card["text"]
+    assert "Status: warning" in card["text"]
+    assert "Warnings: 1" in card["text"]
+    assert "missing_related_object" in card["text"]
+    assert "reports/2026-06-future-of-ai-for-synbio" in card["text"]
+
+
+def test_dashboard_report_descriptor_renders_preview_confirm_receipts(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    descriptor = {
+        "packet_type": "dashboard_action_descriptor",
+        "schema_version": 2,
+        "action_id": "report.admit",
+        "label": "Admit report",
+        "method": "report.admit",
+        "mutation": "workspace_write",
+        "target_kind": "report",
+        "target_ref": "reports/2026-06-future-of-ai-for-synbio",
+        "preview_tool": "report.admit_preview",
+        "confirm_tool": "report.admit_confirmed",
+        "params": {
+            "report_ref": "reports/2026-06-future-of-ai-for-synbio",
+            "event_ref": "events/2026-06-future-trends-forum",
+        },
+        "dashboard_owned_write": False,
+        "requires_canonical_tool": True,
+        "confirmation_copy": "Confirm report admission after reviewing the preview.",
+    }
+    preview_receipt = {
+        "packet_type": "report_admission_receipt",
+        "schema_version": 1,
+        "status": "preview",
+        "report_ref": "reports/2026-06-future-of-ai-for-synbio",
+        "title": "Future of AI for Synbio",
+        "event_ref": "events/2026-06-future-trends-forum",
+        "event_role": "canonical_event",
+        "situation_ref": "situations/2026-06-future-of-ai-for-synbio-prep",
+        "source_transfers": [{"source_path": "/tmp/report.md", "destination_path": "files/report.md"}],
+    }
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_dashboard_live": {
+                "result": {
+                    "surface": "dashboard.live",
+                    "summary": {
+                        "active_run_count": 0,
+                        "active_todo_count": 0,
+                        "publication_status": "dirty",
+                        "readiness_status": "ready",
+                    },
+                    "sections": [
+                        {
+                            "id": "reports",
+                            "title": "Reports",
+                            "cards": [
+                                {
+                                    "id": "report:future-ai-synbio",
+                                    "title": "Future of AI for Synbio",
+                                    "action_descriptors": [descriptor],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_report_admit_preview": {"result": preview_receipt},
+            "mcp_kb_engine_prod_report_admit_confirmed": {
+                "result": {
+                    **preview_receipt,
+                    "status": "applied",
+                    "changed_paths": [
+                        "reports/2026-06-future-of-ai-for-synbio/report.yaml",
+                        "situations/2026-06-future-of-ai-for-synbio-prep/state.md",
+                    ],
+                    "graph_validation": {
+                        "packet_type": "durable_graph_validation",
+                        "schema_version": 1,
+                        "status": "ok",
+                        "ok": True,
+                    },
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    preview_action = next(action for action in adapter.sent[0]["actions"] if action.label == "Preview Admit report")
+
+    preview_card = preview_action.handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(preview_card):
+        preview_card = asyncio.run(preview_card)
+
+    assert "Report Admission" in preview_card["text"]
+    assert "Status: preview" in preview_card["text"]
+    assert "Future of AI for Synbio" in preview_card["text"]
+    assert "No durable write has been made." in preview_card["text"]
+    assert preview_card["actions"][0].label == "Confirm Admit report"
+
+    confirm_card = preview_card["actions"][0].handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(confirm_card):
+        confirm_card = asyncio.run(confirm_card)
+
+    assert "Status: applied" in confirm_card["text"]
+    assert "Changed paths: 2" in confirm_card["text"]
+    assert "Graph validation: ok" in confirm_card["text"]
+    assert ctx.calls[-2][0] == "mcp_kb_engine_prod_report_admit_preview"
+    assert ctx.calls[-1][0] == "mcp_kb_engine_prod_report_admit_confirmed"
+    assert ctx.calls[-1][1]["user_confirmation"]["confirmed"] is True
+    assert ctx.calls[-1][1]["user_confirmation"]["preview_required"] is True
+    assert ctx.calls[-1][1]["actor"] == "telegram:user-1"
 
 
 def test_plain_non_kb_commands_are_left_for_system_handlers(monkeypatch):
@@ -864,12 +1059,11 @@ def test_kbqueue_bare_reply_uses_visible_iterative_item_state(monkeypatch, tmp_p
             "note": "Previewed from Telegram iterative queue reply for GTC Taipei 2026",
         },
     )
-    assert ctx.calls[1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
-    assert ctx.calls[1][1]["proposal_ids"] == ["act_gtc"]
+    assert len(ctx.calls) == 1
     assert "act_huang1" not in json.dumps(ctx.calls)
     assert adapter.sent
     assert "GTC Taipei 2026" in adapter.sent[0]["text"]
-    assert "WG Agents" in adapter.sent[0]["text"]
+    assert "To apply: /kb queue archive 1 confirm" in adapter.sent[0]["text"]
 
 
 def test_kbqueue_bare_reply_records_options_presented_as_pending_action(monkeypatch, tmp_path):
@@ -920,9 +1114,9 @@ def test_kbqueue_bare_reply_records_options_presented_as_pending_action(monkeypa
     assert ctx.calls[0][0] == "mcp_kb_engine_prod_queue_decision_preview"
     assert ctx.calls[0][1]["proposal_ids"] == ["act_hitachi"]
     assert ctx.calls[0][1]["decision"] == "reject"
-    assert ctx.calls[1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
-    assert ctx.calls[1][1]["proposal_ids"] == ["act_hitachi"]
+    assert len(ctx.calls) == 1
     assert "Hitachi" in adapter.sent[0]["text"]
+    assert "To apply: /kb queue reject 1 confirm" in adapter.sent[0]["text"]
 
 
 def test_kbqueue_pending_action_exposes_scoped_mcp_tools(monkeypatch, tmp_path):
@@ -943,12 +1137,7 @@ def test_kbqueue_pending_action_exposes_scoped_mcp_tools(monkeypatch, tmp_path):
     assert kb_journeys.scoped_mcp_tool_allowlist_for_message(
         session_id="session-posture",
         message="Reject",
-    ) == {
-        "mcp_kb_engine_prod_queue_batch_decide_confirmed",
-        "mcp_kb_engine_prod_queue_decide_confirmed",
-        "mcp_kb_engine_prod_queue_decisions_confirmed",
-        "mcp_kb_engine_prod_queue_decision_preview",
-    }
+    ) == {"mcp_kb_engine_prod_queue_decision_preview"}
     assert kb_journeys.scoped_mcp_tool_allowlist_for_message(
         session_id="session-posture",
         message="keep me posted",

@@ -70,7 +70,7 @@ from agent.routing_contract import (
 )
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
+from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID, parse_reasoning_effort
 from hermes_logging import set_session_context
 from tools.schema_sanitizer import strip_pattern_and_format
 from tools.skill_provenance import set_current_write_origin
@@ -3915,6 +3915,26 @@ def run_conversation(
                         })
                     continue
                 agent._route_contract_retries = 0
+
+                # Apply lane reasoning_effort for inline execution.
+                # delegate_task and kanban_create handle their own effort via
+                # child agents / task dispatch; inline routes reflect the lane
+                # effort only when the conversation loop applies it here.
+                _route_lane = _route_check.lane_route
+                if _route_lane is not None and _route_lane.get("reasoning_effort"):
+                    _lane_effort = str(_route_lane["reasoning_effort"]).strip().lower()
+                    _current_effort = active_reasoning_effort(agent)
+                    if _lane_effort and _lane_effort != _current_effort:
+                        _new_config = parse_reasoning_effort(_lane_effort)
+                        if _new_config is not None:
+                            agent.reasoning_config = _new_config
+                            logger.debug(
+                                "Applied lane reasoning_effort %r for inline route %r "
+                                "(was %r)",
+                                _lane_effort,
+                                _route_check.declared.lane_name if _route_check.declared else "?",
+                                _current_effort,
+                            )
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 

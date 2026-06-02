@@ -211,3 +211,41 @@ def test_finance_legal_compliance_accepts_xhigh_delegate_transport():
 
     assert check.violation is None
     assert check.execution_surface == "delegate_task"
+
+
+def test_non_xhigh_lane_carries_lane_route_for_effort_application():
+    """Inline non-xhigh lanes must carry lane_route so the conversation
+    loop can apply the lane's reasoning_effort to agent.reasoning_config.
+
+    Without this, inline routes like repo_publish/low or public_research/minimal
+    silently execute at the session's effort (often high/xhigh).
+    """
+    check = _check(
+        "Routing Decision: run tests -> vitatide -> inline(local) "
+        "-> verification_leaf/deepseek-v4-flash-low"
+    )
+
+    assert check.violation is None, (
+        "non-xhigh lanes are advisory by design — must not fail the route check"
+    )
+    assert check.lane_route is not None, (
+        "lane_route must be populated so the conversation loop can read "
+        "reasoning_effort"
+    )
+    assert check.lane_route.get("reasoning_effort") == "low", (
+        "lane_route must carry the correct reasoning_effort"
+    )
+
+
+def test_non_xhigh_lane_ignores_hyphenated_effort_in_label():
+    """The route label may compact effort with hyphens; the lane_route
+    from the table is the authoritative source.
+    """
+    check = _check(
+        "Routing Decision: quick research -> web -> inline(read-only) "
+        "-> verification_leaf/deepseek-v4-flash-low"
+    )
+
+    assert check.violation is None
+    assert check.lane_route is not None
+    assert check.lane_route.get("reasoning_effort") == "low"

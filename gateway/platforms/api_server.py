@@ -4204,6 +4204,9 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        # Close response store database connection to prevent FD leak
+        if hasattr(self, '_response_store') and self._response_store:
+            self._response_store.close()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

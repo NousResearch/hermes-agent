@@ -677,6 +677,20 @@ def resolve_provider_full(
         ProviderDef if found, else None.
     """
     canonical = normalize_provider(name)
+    raw = name.strip().lower()
+
+    # 0. User-defined config providers win over the built-in alias table.
+    #    A user who declares ``providers.<name>`` in config.yaml has stated
+    #    explicit intent for that name — it must not be hijacked by a legacy
+    #    vendor alias (e.g. bare "openai" → "openrouter"). Resolve the raw
+    #    name against user config FIRST so a configured ``providers.openai``
+    #    (pointing at api.openai.com) beats the alias that would otherwise
+    #    silently route to OpenRouter. Only the raw (pre-alias) name is tried
+    #    here; canonical/alias resolution still happens below.
+    if user_providers:
+        user_pdef = resolve_user_provider(raw, user_providers)
+        if user_pdef is not None:
+            return user_pdef
 
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)
@@ -690,7 +704,7 @@ def resolve_provider_full(
         if user_pdef is not None:
             return user_pdef
         # Try original name (in case alias didn't match)
-        user_pdef = resolve_user_provider(name.strip().lower(), user_providers)
+        user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
             return user_pdef
 

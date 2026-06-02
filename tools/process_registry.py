@@ -633,7 +633,8 @@ class ProcessRegistry:
             try:
                 if not _IS_WINDOWS:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS check above
+                        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:
@@ -879,6 +880,7 @@ class ProcessRegistry:
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
+                "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,

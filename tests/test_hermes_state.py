@@ -2618,6 +2618,24 @@ class TestCompressionChainProjection:
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
 
+    def test_list_projection_uses_tip_cwd(self, db):
+        """Projected lineage rows should carry cwd from the live tip row.
+
+        Without this, compressed conversations can lose workspace grouping
+        even after the continuation session persists its cwd.
+        """
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.update_session_cwd("tip1", "/tmp/workspaces/tip")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["cwd"] == "/tmp/workspaces/tip"
+
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root
         rows — useful for admin/debug UIs.
@@ -3491,3 +3509,43 @@ class TestApplyWalProbe:
         assert any("journal_mode=WAL" in sql for sql in conn.executed), (
             "set-pragma must fire when probe returns 'delete'"
         )
+
+
+class TestSessionArchive:
+    """Soft-archiving hides a session from default listings without deleting it."""
+
+    def _seed(self, db, sid, *, archived=False):
+        db.create_session(session_id=sid, source="cli")
+        db.append_message(session_id=sid, role="user", content=f"hello from {sid}")
+        if archived:
+            db.set_session_archived(sid, True)
+
+    def test_set_session_archived_roundtrip(self, db):
+        self._seed(db, "s1")
+        assert db.set_session_archived("s1", True) is True
+        assert db.get_session("s1")["archived"] == 1
+        assert db.set_session_archived("s1", False) is True
+        assert db.get_session("s1")["archived"] == 0
+
+    def test_set_session_archived_missing_row(self, db):
+        assert db.set_session_archived("nope", True) is False
+
+    def test_archived_excluded_by_default(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        ids = [s["id"] for s in db.list_sessions_rich()]
+        assert ids == ["live"]
+        assert db.session_count() == 1
+
+    def test_archived_only_and_include(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        only = [s["id"] for s in db.list_sessions_rich(archived_only=True)]
+        assert only == ["hidden"]
+        assert db.session_count(archived_only=True) == 1
+
+        both = {s["id"] for s in db.list_sessions_rich(include_archived=True)}
+        assert both == {"live", "hidden"}
+        assert db.session_count(include_archived=True) == 2

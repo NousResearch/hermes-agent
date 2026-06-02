@@ -235,13 +235,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
+        # Code Assist serves two flash slugs with different access gates
+        # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
+        # that subscription/free-tier OAuth users actually reach, while
+        # gemini-3.5-flash is GA-channel-gated. Offer both so non-GA users
+        # aren't stuck with a slug cloudcode-pa 404s for them.
         "gemini-3-flash-preview",
+        "gemini-3.5-flash",
     ],
     "zai": [
         "glm-5.1",
@@ -2106,9 +2112,32 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if api_key:
             base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
             base = base_raw or "https://api.openai.com/v1"
+            # Custom OpenAI-compatible endpoints (proxies, gateways, self-hosted)
+            # may serve a small curated catalog — use the live list verbatim so
+            # discovery works. But the canonical api.openai.com /v1/models dump
+            # is 120+ entries of embeddings, whisper, tts, dall-e, moderation and
+            # legacy chat models — none of which belong in the agent model picker.
+            # For the default endpoint, intersect the live list with our curated
+            # agentic catalog so ``/model`` matches what ``hermes model`` shows.
+            is_default_openai = base.rstrip("/") in (
+                "https://api.openai.com/v1",
+                "https://api.openai.com",
+            )
             try:
                 live = fetch_api_models(api_key, base)
                 if live:
+                    if is_default_openai:
+                        live_lower = {m.lower() for m in live}
+                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                        # Keep curated order; only surface curated models the
+                        # account actually has access to.
+                        filtered = [m for m in curated if m.lower() in live_lower]
+                        if filtered:
+                            return filtered
+                        # Account serves none of the curated models (rare —
+                        # e.g. org without GPT-5 access). Fall back to curated
+                        # so the picker still offers sane defaults.
+                        return curated or live
                     return live
             except Exception:
                 pass

@@ -51,3 +51,32 @@ def test_resolve_model_capability_uses_conservative_defaults_for_unknown_model()
     assert cap.context_tokens is None
     assert cap.supports_tools is None
     assert cap.degraded_label == "unknown"
+
+
+def test_resolve_model_capability_treats_gpt55_as_baseline_without_metadata():
+    cap = resolve_model_capability(provider="openai-codex", model="gpt-5.5", config={})
+
+    assert cap.score("general") == 0.55
+    assert cap.score("coding") == 0.55
+    assert cap.score("system_debugging") == 0.55
+    assert cap.score("long_context") == 0.55
+    assert cap.score("autonomous_ops") == 0.55
+
+
+def test_resolve_model_capability_normalizes_human_scale_scores():
+    cfg = {
+        "providers": {
+            "openai-codex": {
+                "models": {
+                    "gpt-5.5": {
+                        "scores": {"general": 55, "autonomous_ops": "55"},
+                    }
+                }
+            }
+        }
+    }
+
+    cap = resolve_model_capability(provider="openai-codex", model="gpt-5.5", config=cfg)
+
+    assert cap.score("general") == 0.55
+    assert cap.score("autonomous_ops") == 0.55

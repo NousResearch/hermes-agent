@@ -1787,7 +1787,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _task_type = infer_cron_task_type(job, prompt)
             _decision = evaluate_task_capability(
                 task_type=_task_type,
-                provider=str(runtime.get("source") or runtime.get("provider") or ""),
+                # Capability metadata is keyed by inference provider/model, not
+                # auth source (e.g. "manual:device_code").  Using source here
+                # made GPT 5.5 resolve as an unknown model for cron gating.
+                provider=str(runtime.get("provider") or ""),
                 model=model,
                 config=dict(_cfg) if isinstance(_cfg, dict) else {},
                 degraded=bool(_used_auth_fallback),

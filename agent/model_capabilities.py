@@ -19,6 +19,21 @@ _DEFAULT_SCORES = {
     "autonomous_ops": 0.25,
 }
 
+_BUILTIN_MODEL_SCORES = {
+    # Brian's baseline: GPT 5.5 is sufficient for all existing Hermes tasks.
+    # Human-facing scores may be written on a 1-100 scale (55) and are
+    # normalized internally to 0-1 (0.55).  Keep the explicit normalized values
+    # here so GPT 5.5 is not treated as an unknown/degraded model when provider
+    # metadata is absent.
+    "gpt-5.5": {
+        "general": 0.55,
+        "coding": 0.55,
+        "system_debugging": 0.55,
+        "long_context": 0.55,
+        "autonomous_ops": 0.55,
+    },
+}
+
 
 @dataclass(frozen=True)
 class ModelCapability:
@@ -46,9 +61,21 @@ def _to_float(value: Any, default: float) -> float:
         return default
     if parsed < 0:
         return 0.0
+    if parsed > 1 and parsed <= 100:
+        parsed = parsed / 100.0
     if parsed > 1:
         return 1.0
     return parsed
+
+
+def _builtin_scores_for_model(model: str) -> dict[str, float]:
+    model_norm = (model or "").strip().lower()
+    if not model_norm:
+        return {}
+    for key, scores in _BUILTIN_MODEL_SCORES.items():
+        if model_norm == key or model_norm.startswith(f"{key}-"):
+            return dict(scores)
+    return {}
 
 
 def _to_positive_int(value: Any) -> int | None:
@@ -119,6 +146,7 @@ def resolve_model_capability(
     model_cfg = _model_entry(provider_cfg, model)
 
     scores = dict(_DEFAULT_SCORES)
+    scores.update(_builtin_scores_for_model(model))
     for source in (provider_cfg.get("scores"), model_cfg.get("scores")):
         if isinstance(source, Mapping):
             for key, value in source.items():

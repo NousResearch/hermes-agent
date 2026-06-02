@@ -36,6 +36,17 @@ function indexSessionsByPinnedId(sessions: SessionInfo[]): Map<string, SessionIn
   return map
 }
 
+export function getMissingPinnedSessionIds(
+  pinnedSessionIds: string[],
+  loadedSessions: SessionInfo[],
+  fallbackSessions: SessionInfo[] = []
+): string[] {
+  const loadedByPinnedId = indexSessionsByPinnedId(loadedSessions)
+  const fallbackByPinnedId = indexSessionsByPinnedId(fallbackSessions)
+
+  return pinnedSessionIds.filter(pinId => !loadedByPinnedId.has(pinId) && !fallbackByPinnedId.has(pinId))
+}
+
 export function resolvePinnedSessions(
   pinnedSessionIds: string[],
   loadedSessions: SessionInfo[],

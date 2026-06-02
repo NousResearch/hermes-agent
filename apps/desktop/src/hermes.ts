@@ -32,6 +32,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
@@ -126,6 +127,12 @@ export async function listSessions(
     sessions: result.sessions.slice(0, limit),
     offset: 0
   }
+}
+
+export function getSession(id: string): Promise<{ object: string; session: SessionInfo }> {
+  return window.hermesDesktop.api<{ object: string; session: SessionInfo }>({
+    path: `/api/sessions/${encodeURIComponent(id)}`
+  })
 }
 
 export function setSessionArchived(id: string, archived: boolean): Promise<{ ok: boolean }> {

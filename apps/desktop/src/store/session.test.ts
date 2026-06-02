@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { resolvePinnedSessions, sessionPinId } from './session'
+import { getMissingPinnedSessionIds, resolvePinnedSessions, sessionPinId } from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -32,6 +32,23 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('getMissingPinnedSessionIds', () => {
+  it('returns pinned ids that cannot resolve from loaded sessions or fallbacks after reload', () => {
+    const loaded = session({ id: 'loaded', title: 'Loaded chat' })
+    const fallback = session({ id: 'cached-search', title: 'Cached search result' })
+
+    expect(getMissingPinnedSessionIds(['loaded', 'cached-search', 'hidden-after-reload'], [loaded], [fallback])).toEqual([
+      'hidden-after-reload'
+    ])
+  })
+
+  it('does not hydrate a lineage-root pin that already resolves from a loaded continuation tip', () => {
+    const loadedTip = session({ id: 'tip', _lineage_root_id: 'root', title: 'Loaded continuation' })
+
+    expect(getMissingPinnedSessionIds(['root'], [loadedTip])).toEqual([])
   })
 })
 

@@ -33,7 +33,7 @@ import {
   SidebarMenuItem
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
-import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { getSession, searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { cn } from '@/lib/utils'
 import {
   $pinnedSessionIds,
@@ -55,6 +55,7 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
+  getMissingPinnedSessionIds,
   resolvePinnedSessions,
   sessionPinId
 } from '@/store/session'
@@ -222,6 +223,7 @@ export function ChatSidebar({
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [pinnedSearchSessions, setPinnedSearchSessions] = useState<SessionInfo[]>([])
+  const [pinnedSessionLookupFailures, setPinnedSessionLookupFailures] = useState<string[]>([])
   const trimmedQuery = searchQuery.trim()
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
@@ -304,6 +306,53 @@ export function ChatSidebar({
 
     return [...out.values()]
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
+
+  const missingPinnedSessionIds = useMemo(
+    () =>
+      getMissingPinnedSessionIds(pinnedSessionIds, sessions, pinnedSearchSessions).filter(
+        pinId => !pinnedSessionLookupFailures.includes(pinId)
+      ),
+    [pinnedSessionIds, pinnedSearchSessions, pinnedSessionLookupFailures, sessions]
+  )
+
+  useEffect(() => {
+    if (!missingPinnedSessionIds.length) {
+      return
+    }
+
+    let cancelled = false
+
+    void Promise.allSettled(missingPinnedSessionIds.map(pinId => getSession(pinId))).then(results => {
+      if (cancelled) {
+        return
+      }
+
+      const hydrated: SessionInfo[] = []
+      const failed: string[] = []
+
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          hydrated.push(result.value.session)
+        } else {
+          failed.push(missingPinnedSessionIds[index])
+        }
+      })
+
+      if (hydrated.length) {
+        setPinnedSearchSessions(current =>
+          resolvePinnedSessions([...hydrated.map(sessionPinId), ...current.map(sessionPinId)], hydrated, current)
+        )
+      }
+
+      if (failed.length) {
+        setPinnedSessionLookupFailures(current => [...new Set([...current, ...failed])])
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [missingPinnedSessionIds])
 
   const pinnedSessions = useMemo(
     () => resolvePinnedSessions(pinnedSessionIds, sessions, pinnedSearchSessions),

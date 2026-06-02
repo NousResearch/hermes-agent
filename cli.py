@@ -2127,21 +2127,23 @@ def _prepend_note_to_message(message, note: str):
     sending a pasted image in the same turn.
 
     Returns the message with ``note`` prepended:
-      * ``str``  → ``f"{note}\\n\\n{message}"``
+      * ``str``  → ``f"{note}\\n\\n{message}"`` (just ``note`` when empty)
       * ``list`` → note folded into the first text part, or inserted as a new
         leading ``{"type": "text"}`` part when there is no text part.
     Unknown shapes are returned unchanged (fail-open).
     """
+    note = str(note or "").strip()
     if not note:
         return message
     if isinstance(message, str):
-        return f"{note}\n\n{message}"
+        return f"{note}\n\n{message}" if message else note
     if isinstance(message, list):
         parts = list(message)
         for i, part in enumerate(parts):
             if isinstance(part, dict) and part.get("type") == "text":
                 merged = dict(part)
-                merged["text"] = f"{note}\n\n{part.get('text', '')}"
+                text = merged.get("text", "")
+                merged["text"] = f"{note}\n\n{text}" if text else note
                 parts[i] = merged
                 return parts
         # No text part (image-only) — insert the note as a leading text block.

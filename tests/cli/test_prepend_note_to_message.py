@@ -14,8 +14,28 @@ def test_string_message_gets_note_prepended():
 
 def test_empty_note_returns_message_unchanged():
     assert _prepend_note_to_message("hello", "") == "hello"
+    assert _prepend_note_to_message("hello", "   ") == "hello"
     parts = [{"type": "text", "text": "hi"}]
     assert _prepend_note_to_message(parts, "") == parts
+
+
+def test_note_is_stripped():
+    assert _prepend_note_to_message("hello", "  NOTE  ") == "NOTE\n\nhello"
+
+
+def test_empty_string_message_yields_just_note():
+    # No trailing blank lines when the user message is empty.
+    assert _prepend_note_to_message("", "NOTE") == "NOTE"
+
+
+def test_empty_text_part_yields_just_note():
+    message = [
+        {"type": "text", "text": ""},
+        {"type": "image_url", "image_url": {"url": "x"}},
+    ]
+    result = _prepend_note_to_message(message, "NOTE")
+    assert result[0]["text"] == "NOTE"
+    assert result[1]["type"] == "image_url"
 
 
 def test_list_message_folds_note_into_first_text_part():

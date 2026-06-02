@@ -357,6 +357,10 @@ class TelegramAdapter(BasePlatformAdapter):
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
 
+    # Telegram renders the cron-delivery accept/dismiss buttons used by
+    # ``cron.notify_session: button`` (see send_cron_notice).
+    SUPPORTS_CRON_BUTTONS: bool = True
+
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
     # ≤320 codepoints (one short paragraph) settles in ~180ms; ≤1024
@@ -2692,6 +2696,62 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_cron_notice(
+        self,
+        chat_id: str,
+        notice_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an Add-to-context / Dismiss prompt beneath a cron delivery.
+
+        Button mode (``cron.notify_session: button``) delivers the cron message
+        normally and then this short prompt.  Accept folds the buffered delivery
+        into the chat's next interactive turn (pending_notices.mark_accepted);
+        dismiss drops it (pending_notices.dismiss).  No in-memory state is kept:
+        the on-disk notice buffer is the source of truth, keyed by ``notice_id``,
+        so the buttons keep working after a gateway restart (unlike the
+        exec-approval in-memory counter).
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            text = (
+                "📥 <b>Cron delivery above</b>\n\n"
+                "It is not in my chat memory. Add it to this conversation's context?"
+            )
+            thread_id = self._metadata_thread_id(metadata)
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📥 Add to context", callback_data=f"cron:accept:{notice_id}"),
+                    InlineKeyboardButton("✕ Dismiss", callback_data=f"cron:dismiss:{notice_id}"),
+                ],
+            ])
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_cron_notice failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     async def send_slash_confirm(

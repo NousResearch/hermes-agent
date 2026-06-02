@@ -2033,6 +2033,13 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    # Default: the platform cannot render the cron-delivery accept/dismiss
+    # buttons used by ``cron.notify_session: button``.  Adapters with inline
+    # keyboards (e.g. Telegram) override this to True and implement
+    # ``send_cron_notice``; on platforms that leave it False, the scheduler
+    # falls back to automatic injection so cron awareness is never lost.
+    SUPPORTS_CRON_BUTTONS: bool = False
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

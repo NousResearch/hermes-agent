@@ -1,9 +1,15 @@
 ---
 name: google-workspace
-description: Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses Hermes-managed OAuth2 setup, prefers the Google Workspace CLI (`gws`) when available for broader API coverage, and falls back to the Python client libraries otherwise.
-version: 1.0.0
+description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
+version: 1.1.0
 author: Nous Research
 license: MIT
+platforms: [linux, macos, windows]
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials (downloaded from Google Cloud Console)
 metadata:
   hermes:
     tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
@@ -211,8 +217,36 @@ $GAPI calendar delete EVENT_ID
 ### Drive
 
 ```bash
+# Search existing files
 $GAPI drive search "quarterly report" --max 10
 $GAPI drive search "mimeType='application/pdf'" --raw-query --max 5
+
+# Get metadata for a single file
+$GAPI drive get FILE_ID
+
+# Upload a local file (auto-detects MIME type)
+$GAPI drive upload /path/to/report.pdf
+$GAPI drive upload /path/to/image.png --name "Logo.png" --parent FOLDER_ID
+
+# Download (binary files download as-is; Google-native files export to a
+# sensible default — Docs→pdf, Sheets→csv, Slides→pdf, Drawings→png)
+$GAPI drive download FILE_ID
+$GAPI drive download DOC_ID --output ~/doc.pdf
+$GAPI drive download DOC_ID --export-mime text/plain --output ~/doc.txt
+
+# Create a folder
+$GAPI drive create-folder "Reports"
+$GAPI drive create-folder "Q4" --parent FOLDER_ID
+
+# Share
+$GAPI drive share FILE_ID --email alice@example.com --role reader
+$GAPI drive share FILE_ID --email alice@example.com --role writer --notify
+$GAPI drive share FILE_ID --type anyone --role reader        # anyone with link
+$GAPI drive share FILE_ID --type domain --domain example.com --role reader
+
+# Delete — defaults to trash (reversible). Use --permanent to skip the trash.
+$GAPI drive delete FILE_ID
+$GAPI drive delete FILE_ID --permanent
 ```
 
 ### Contacts
@@ -224,6 +258,10 @@ $GAPI contacts list --max 20
 ### Sheets
 
 ```bash
+# Create a new spreadsheet
+$GAPI sheets create --title "Q4 Budget"
+$GAPI sheets create --title "Inventory" --sheet-name "Stock"
+
 # Read
 $GAPI sheets get SHEET_ID "Sheet1!A1:D10"
 
@@ -237,7 +275,15 @@ $GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
 ### Docs
 
 ```bash
+# Read
 $GAPI docs get DOC_ID
+
+# Create a new Doc (optionally seeded with body text)
+$GAPI docs create --title "Meeting Notes"
+$GAPI docs create --title "Draft" --body "First paragraph..."
+
+# Append text to the end of an existing Doc
+$GAPI docs append DOC_ID --text "Additional content to append"
 ```
 
 ## Output Format
@@ -250,12 +296,21 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`
 - **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
+- **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
+- **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`
+- **Drive download**: `{status: "downloaded", id, name, path, mimeType}`
+- **Drive create-folder**: `{status: "created", id, name, webViewLink}`
+- **Drive share**: `{status: "shared", permissionId, fileId, role, type}`
+- **Drive delete**: `{status: "trashed" | "deleted", fileId, permanent}`
 - **Contacts list**: `[{name, emails: [...], phones: [...]}]`
 - **Sheets get**: `[[cell, cell, ...], ...]`
+- **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
+- **Docs create**: `{status: "created", documentId, title, url}`
+- **Docs append**: `{status: "appended", documentId, inserted_at, characters}`
 
 ## Rules
 
-1. **Never send email or create/delete events without confirming with the user first.** Show the draft content and ask for approval.
+1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
@@ -268,6 +323,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
 | `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
+| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |

@@ -6,6 +6,8 @@ when proxy env vars or custom endpoint URLs are malformed.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
@@ -29,6 +31,12 @@ def test_proxy_env_accepts_empty(monkeypatch):
     monkeypatch.delenv("https_proxy", raising=False)
     monkeypatch.delenv("all_proxy", raising=False)
     _validate_proxy_env_urls()  # should not raise
+
+
+def test_proxy_env_normalizes_socks_alias(monkeypatch):
+    monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080/")
+    _validate_proxy_env_urls()
+    assert os.environ["ALL_PROXY"] == "socks5://127.0.0.1:1080/"
 
 
 @pytest.mark.parametrize("key", [

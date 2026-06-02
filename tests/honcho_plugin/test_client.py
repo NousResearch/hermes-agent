@@ -6,16 +6,18 @@ import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from hermes_cli.profiles import _get_default_hermes_home
+
 import pytest
 
 from plugins.memory.honcho.client import (
     HonchoClientConfig,
     get_honcho_client,
+    profile_host_key,
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
-    GLOBAL_CONFIG_PATH,
-    HOST,
+    resolve_global_config_path,
 )
 
 
@@ -349,18 +351,25 @@ class TestResolveConfigPath:
             result = resolve_config_path()
         assert result == local_cfg
 
-    def test_falls_back_to_global_when_no_local(self, tmp_path):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        # No honcho.json in HERMES_HOME — also isolate ~/.hermes so
-        # the default-profile fallback doesn't hit the real filesystem.
+    def test_falls_back_to_default_profile_when_no_local(self, tmp_path, monkeypatch):
+        # Profile mode: HERMES_HOME points at ~/.hermes/profiles/<name>, so
+        # _get_default_hermes_home() must resolve back to ~/.hermes — that's
+        # the bug the HOME-anchored helper fixes (vs. blindly using Path.home()).
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
+        default_home = fake_home / ".hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        default_cfg = default_home / "honcho.json"
+        default_cfg.write_text('{"apiKey": "default-key"}')
 
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
-             patch.object(Path, "home", return_value=fake_home):
-            result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        result = resolve_config_path()
+
+        assert _get_default_hermes_home() == default_home
+        assert result == default_cfg
 
     def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
         fake_home = tmp_path / "fakehome"
@@ -370,7 +379,40 @@ class TestResolveConfigPath:
              patch.object(Path, "home", return_value=fake_home):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
+
+    def test_global_fallback_uses_home_at_call_time(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            assert resolve_global_config_path() == fake_home / ".honcho" / "config.json"
+            assert resolve_config_path() == fake_home / ".honcho" / "config.json"
+
+    def test_from_global_config_uses_default_profile_fallback(self, tmp_path, monkeypatch):
+        # Profile mode: from_global_config() reads the default-profile honcho.json
+        # via the HOME-anchored helper, not Path.home() / ".hermes".
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        default_home = fake_home / ".hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        default_cfg = default_home / "honcho.json"
+        default_cfg.write_text(json.dumps({
+            "apiKey": "default-key",
+            "workspace": "default-ws",
+        }))
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        config = HonchoClientConfig.from_global_config()
+
+        assert config.api_key == "default-key"
+        assert config.workspace_id == "default-ws"
 
     def test_from_global_config_uses_local_path(self, tmp_path):
         hermes_home = tmp_path / "hermes"
@@ -389,6 +431,10 @@ class TestResolveConfigPath:
 
 
 class TestResolveActiveHost:
+    def test_profile_host_key_uses_honcho_safe_separator(self):
+        assert profile_host_key("coder") == "hermes_coder"
+        assert profile_host_key("default") == "hermes"
+
     def test_default_returns_hermes(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("HERMES_HONCHO_HOST", None)
@@ -403,7 +449,7 @@ class TestResolveActiveHost:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HONCHO_HOST", None)
             with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
-                assert resolve_active_host() == "hermes.coder"
+                assert resolve_active_host() == "hermes_coder"
 
     def test_default_profile_returns_hermes(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -436,10 +482,10 @@ class TestResolveActiveHost:
 class TestProfileScopedConfig:
     def test_from_env_uses_profile_host(self):
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
-            config = HonchoClientConfig.from_env(host="hermes.coder")
-        assert config.host == "hermes.coder"
+            config = HonchoClientConfig.from_env(host="hermes_coder")
+        assert config.host == "hermes_coder"
         assert config.workspace_id == "hermes"  # shared workspace
-        assert config.ai_peer == "hermes.coder"
+        assert config.ai_peer == "hermes_coder"
 
     def test_from_env_default_workspace_preserved_for_default_host(self):
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
@@ -453,19 +499,19 @@ class TestProfileScopedConfig:
             "apiKey": "shared-key",
             "hosts": {
                 "hermes": {"aiPeer": "hermes", "peerName": "alice"},
-                "hermes.coder": {
-                    "aiPeer": "hermes.coder",
+                "hermes_coder": {
+                    "aiPeer": "hermes_coder",
                     "peerName": "alice-coder",
                     "workspace": "coder-ws",
                 },
             },
         }))
         config = HonchoClientConfig.from_global_config(
-            host="hermes.coder", config_path=config_file,
+            host="hermes_coder", config_path=config_file,
         )
-        assert config.host == "hermes.coder"
+        assert config.host == "hermes_coder"
         assert config.workspace_id == "coder-ws"
-        assert config.ai_peer == "hermes.coder"
+        assert config.ai_peer == "hermes_coder"
         assert config.peer_name == "alice-coder"
 
     def test_from_global_config_auto_resolves_host(self, tmp_path):
@@ -473,13 +519,29 @@ class TestProfileScopedConfig:
         config_file.write_text(json.dumps({
             "apiKey": "key",
             "hosts": {
+                "hermes_dreamer": {"peerName": "dreamer-user"},
+            },
+        }))
+        with patch("plugins.memory.honcho.client.resolve_active_host", return_value="hermes_dreamer"):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.host == "hermes_dreamer"
+        assert config.peer_name == "dreamer-user"
+
+    def test_from_global_config_reads_legacy_dot_profile_host_block(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "hosts": {
                 "hermes.dreamer": {"peerName": "dreamer-user"},
             },
         }))
-        with patch("plugins.memory.honcho.client.resolve_active_host", return_value="hermes.dreamer"):
-            config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.host == "hermes.dreamer"
+        config = HonchoClientConfig.from_global_config(
+            host="hermes_dreamer",
+            config_path=config_file,
+        )
+        assert config.host == "hermes_dreamer"
         assert config.peer_name == "dreamer-user"
+        assert config.workspace_id == "hermes_dreamer"
 
 
 class TestObservationModeMigration:
@@ -593,6 +655,28 @@ class TestGetHonchoClient:
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
+    def test_defaults_to_30s_when_no_timeout_configured(self):
+        from plugins.memory.honcho.client import _DEFAULT_HTTP_TIMEOUT
+
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == _DEFAULT_HTTP_TIMEOUT
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
     def test_hermes_request_timeout_alias_used(self):
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
@@ -654,6 +738,82 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
         assert ":" not in result
+
+
+class TestResolveSessionNameLengthLimit:
+    """Regression tests for Honcho's 100-char session ID limit (issue #13868).
+
+    Long gateway session keys (Matrix room+event IDs, Telegram supergroup
+    reply chains, Slack thread IDs with long workspace prefixes) can overflow
+    Honcho's 100-char session_id limit after sanitization. Before this fix,
+    every Honcho API call for those sessions 400'd with "session_id too long".
+    """
+
+    HONCHO_MAX = 100
+
+    def test_short_gateway_key_unchanged(self):
+        """Short keys must not get a hash suffix appended."""
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        # Unchanged fast-path: sanitize only, no truncation, no hash suffix.
+        assert result == "agent-main-telegram-dm-8439114563"
+        assert len(result) <= self.HONCHO_MAX
+
+    def test_key_at_exact_limit_unchanged(self):
+        """A sanitized key that is exactly 100 chars must be returned as-is."""
+        key = "a" * self.HONCHO_MAX
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result == key
+        assert len(result) == self.HONCHO_MAX
+
+    def test_long_gateway_key_truncated_to_limit(self):
+        """An over-limit sanitized key must truncate to exactly 100 chars."""
+        key = "!roomid:matrix.example.org|" + "$event_" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert len(result) == self.HONCHO_MAX
+
+    def test_truncation_is_deterministic(self):
+        """Same long key must always produce the same truncated session ID."""
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        first = config.resolve_session_name(gateway_session_key=key)
+        second = config.resolve_session_name(gateway_session_key=key)
+        assert first == second
+
+    def test_truncated_result_respects_char_allowlist(self):
+        """Truncated result must still match Honcho's [a-zA-Z0-9_-] allowlist."""
+        import re
+        key = "slack:T12345:thread-reply:" + ("x" * 300) + ":with:colons:and:slashes/here"
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", result)
+
+    def test_distinct_long_keys_do_not_collide(self):
+        """Two long keys sharing a prefix must produce different truncated IDs."""
+        prefix = "matrix:!room:example.org|" + "a" * 200
+        key_a = prefix + "-suffix-alpha"
+        key_b = prefix + "-suffix-beta"
+        config = HonchoClientConfig()
+        result_a = config.resolve_session_name(gateway_session_key=key_a)
+        result_b = config.resolve_session_name(gateway_session_key=key_b)
+        assert result_a != result_b
+        assert len(result_a) == self.HONCHO_MAX
+        assert len(result_b) == self.HONCHO_MAX
+
+    def test_truncated_result_has_hash_suffix(self):
+        """Truncated IDs must end with '-<8 hex chars>' for collision resistance."""
+        import re
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        # Last 9 chars: '-' + 8 hex chars.
+        assert re.search(r"-[0-9a-f]{8}$", result)
 
 
 class TestResetHonchoClient:
@@ -751,3 +911,176 @@ class TestDialecticDepthParsing:
         }))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.dialectic_depth_levels == ["low", "high"]
+
+
+class TestGetHonchoClientBaseUrlDoublePrefixFix:
+    """Regression tests for #20688 — Honcho SDK double-prefixing of /v3 for
+    self-hosted instances where base_url already contains a version path."""
+
+    def teardown_method(self):
+        reset_honcho_client()
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_local_base_url_with_v3_suffix_stripped(self):
+        """base_url 'http://localhost:38000/v3' must become 'http://localhost:38000'
+        before passing to the Honcho SDK to avoid double '/v3/v3' prefixing."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key=None,
+            base_url="http://localhost:38000/v3",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == "http://localhost:38000", (
+            f"Expected 'http://localhost:38000', got {passed_base_url!r}"
+        )
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_local_base_url_without_version_unchanged(self):
+        """base_url 'http://localhost:38000' (no version) must be passed unchanged."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key=None,
+            base_url="http://localhost:38000",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == "http://localhost:38000", (
+            f"Expected 'http://localhost:38000', got {passed_base_url!r}"
+        )
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_cloud_base_url_without_version_unchanged(self):
+        """A cloud base_url with no version segment must pass through untouched."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="cloud-key",
+            base_url="https://api.honcho.dev",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == "https://api.honcho.dev", (
+            f"Expected 'https://api.honcho.dev', got {passed_base_url!r}"
+        )
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_cloud_base_url_with_version_stripped(self):
+        """A version segment double-prefixes regardless of host, so a cloud
+        base_url that ends in '/v3' must also be stripped (the SDK re-adds it)."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="cloud-key",
+            base_url="https://api.honcho.dev/v3",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == "https://api.honcho.dev", (
+            f"Expected 'https://api.honcho.dev', got {passed_base_url!r}"
+        )
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    @pytest.mark.parametrize(
+        "raw_url, expected",
+        [
+            # LAN IP self-host
+            ("http://10.0.0.5:8000/v3", "http://10.0.0.5:8000"),
+            ("http://192.168.1.20:38000/v3/", "http://192.168.1.20:38000"),
+            # Tailscale / custom-domain self-host
+            ("https://honcho.my.ts.net/v3", "https://honcho.my.ts.net"),
+            ("https://honcho.lab.internal/v3", "https://honcho.lab.internal"),
+            ("https://honcho.fly.dev/v3", "https://honcho.fly.dev"),
+            # higher version segments are also stripped
+            ("https://honcho.lab.internal/v12", "https://honcho.lab.internal"),
+            # self-host without a version segment is left unchanged
+            ("https://honcho.my.ts.net", "https://honcho.my.ts.net"),
+            ("http://10.0.0.5:8000", "http://10.0.0.5:8000"),
+        ],
+    )
+    def test_self_hosted_base_url_version_stripped(self, raw_url, expected):
+        """Non-loopback self-hosted instances (LAN IPs, Tailscale, custom
+        domains) must get the same version-segment stripping as localhost.
+        Regression for #20688 recurring on any non-loopback self-host."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="self-host-key",
+            base_url=raw_url,
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == expected, (
+            f"Expected {expected!r}, got {passed_base_url!r}"
+        )
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_local_base_url_with_trailing_slash_stripped(self):
+        """base_url 'http://127.0.0.1:38000/v3/' must also be cleaned up."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key=None,
+            base_url="http://127.0.0.1:38000/v3/",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        mock_honcho.assert_called_once()
+        passed_base_url = mock_honcho.call_args.kwargs.get("base_url")
+        assert passed_base_url == "http://127.0.0.1:38000", (
+            f"Expected 'http://127.0.0.1:38000', got {passed_base_url!r}"
+        )

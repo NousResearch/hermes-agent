@@ -10,8 +10,7 @@ export const fmtCwdBranch = (cwd: string, branch: null | string, max = 40) => {
     return shortCwd(cwd, max)
   }
 
-  const b = branch.length > 16 ? `…${branch.slice(-15)}` : branch
-  const tag = ` (${b})`
+  const tag = ` (${branch.length > 16 ? `…${branch.slice(-15)}` : branch})`
 
   return `${shortCwd(cwd, Math.max(8, max - tag.length))}${tag}`
 }

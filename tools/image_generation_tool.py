@@ -26,14 +26,49 @@ import os
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from typing import Any, Dict, Optional
 
-import fal_client
+# fal_client is imported lazily — see _load_fal_client(). Pulling it
+# eagerly added ~64 ms to every CLI cold start because
+# discover_builtin_tools() imports this module unconditionally during
+# the registry walk, even when image generation is never used.
+#
+# Tests that monkeypatch this attribute (e.g.
+# ``monkeypatch.setattr(image_tool, "fal_client", fake_fal_client)``)
+# still work: _load_fal_client() short-circuits when the attribute is
+# anything truthy, so a test-installed mock is not overwritten by a
+# subsequent real import.
+fal_client: Any = None
+
+
+def _load_fal_client() -> Any:
+    """Lazily import fal_client and rebind the module global on first use.
+
+    Idempotent. Returns the (now-loaded) ``fal_client`` module reference.
+    Skips the import if the global is already truthy — this preserves the
+    test pattern of monkeypatching the module global to install a mock.
+    """
+    global fal_client
+    if fal_client is not None:
+        return fal_client
+    from tools.fal_common import import_fal_client
+    fal_client = import_fal_client()
+    return fal_client
+
 
 from tools.debug_helpers import DebugSession
+from tools.fal_common import (
+    _ManagedFalSyncClient,
+    _extract_http_status,
+    _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
+)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
+from tools.tool_backend_helpers import (
+    fal_key_is_configured,
+    managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
+    prefers_gateway,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +219,38 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    "fal-ai/gpt-image-2": {
+        "display": "GPT Image 2",
+        "speed": "~20s",
+        "strengths": "SOTA text rendering + CJK, world-aware photorealism",
+        "price": "$0.04–0.06/image",
+        # GPT Image 2 uses FAL's standard preset enum (unlike 1.5's literal
+        # dimensions). We map to the 4:3 variants — the 16:9 presets
+        # (1024x576) fall below GPT-Image-2's 655,360 min-pixel requirement
+        # and would be rejected. 4:3 keeps us above the minimum on all
+        # three aspect ratios.
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_4_3",   # 1024x768
+            "square": "square_hd",            # 1024x1024
+            "portrait": "portrait_4_3",       # 768x1024
+        },
+        "defaults": {
+            # Same quality pinning as gpt-image-1.5: medium keeps Nous
+            # Portal billing predictable. "high" is 3-4x the per-image
+            # cost at the same size; "low" is too rough for production use.
+            "quality": "medium",
+            "num_images": 1,
+            "output_format": "png",
+        },
+        "supports": {
+            "prompt", "image_size", "quality", "num_images", "output_format",
+            "sync_mode",
+            # openai_api_key (BYOK) intentionally omitted — all users go
+            # through the shared FAL billing path.
+        },
+        "upscale": False,
+    },
     "fal-ai/ideogram/v3": {
         "display": "Ideogram V3",
         "speed": "~5s",
@@ -251,6 +318,54 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    # Krea 2 — Krea's first foundation image model, day-0 partner launch on
+    # fal (2026-05-27). Same model family as our direct ``plugins/image_gen/krea``
+    # backend, exposed here for users who prefer to bill through their
+    # existing FAL key / Nous Portal subscription rather than register
+    # directly with Krea.  Both variants share the same parameter schema —
+    # only model id, price, and recommended use case differ.
+    "fal-ai/krea/v2/medium/text-to-image": {
+        "display": "Krea 2 Medium",
+        "speed": "~15-25s",
+        "strengths": "Illustration, anime, painting, expressive/artistic styles",
+        "price": "$0.030 (text) / $0.035 (style refs)",
+        "size_style": "aspect_ratio",
+        # Krea natively accepts 1:1, 4:3, 3:2, 16:9, 2.35:1, 4:5, 2:3, 9:16 —
+        # we map our 3 abstract ratios to the closest match.
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "creativity": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "creativity", "seed",
+            "image_style_references",
+        },
+        "upscale": False,
+    },
+    "fal-ai/krea/v2/large/text-to-image": {
+        "display": "Krea 2 Large",
+        "speed": "~25-60s",
+        "strengths": "Photorealism, raw textured looks (motion blur, grain, film)",
+        "price": "$0.060 (text) / $0.065 (style refs)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "creativity": "medium",
+        },
+        "supports": {
+            "prompt", "aspect_ratio", "creativity", "seed",
+            "image_style_references",
+        },
+        "upscale": False,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
@@ -286,95 +401,9 @@ _managed_fal_client_lock = threading.Lock()
 def _resolve_managed_fal_gateway():
     """Return managed fal-queue gateway config when the user prefers the gateway
     or direct FAL credentials are absent."""
-    if os.getenv("FAL_KEY") and not prefers_gateway("image_gen"):
+    if fal_key_is_configured() and not prefers_gateway("image_gen"):
         return None
     return resolve_managed_tool_gateway("fal-queue")
-
-
-def _normalize_fal_queue_url_format(queue_run_origin: str) -> str:
-    normalized_origin = str(queue_run_origin or "").strip().rstrip("/")
-    if not normalized_origin:
-        raise ValueError("Managed FAL queue origin is required")
-    return f"{normalized_origin}/"
-
-
-class _ManagedFalSyncClient:
-    """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
-
-    def __init__(self, *, key: str, queue_run_origin: str):
-        sync_client_class = getattr(fal_client, "SyncClient", None)
-        if sync_client_class is None:
-            raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
-
-        client_module = getattr(fal_client, "client", None)
-        if client_module is None:
-            raise RuntimeError("fal_client.client is required for managed FAL gateway mode")
-
-        self._queue_url_format = _normalize_fal_queue_url_format(queue_run_origin)
-        self._sync_client = sync_client_class(key=key)
-        self._http_client = getattr(self._sync_client, "_client", None)
-        self._maybe_retry_request = getattr(client_module, "_maybe_retry_request", None)
-        self._raise_for_status = getattr(client_module, "_raise_for_status", None)
-        self._request_handle_class = getattr(client_module, "SyncRequestHandle", None)
-        self._add_hint_header = getattr(client_module, "add_hint_header", None)
-        self._add_priority_header = getattr(client_module, "add_priority_header", None)
-        self._add_timeout_header = getattr(client_module, "add_timeout_header", None)
-
-        if self._http_client is None:
-            raise RuntimeError("fal_client.SyncClient._client is required for managed FAL gateway mode")
-        if self._maybe_retry_request is None or self._raise_for_status is None:
-            raise RuntimeError("fal_client.client request helpers are required for managed FAL gateway mode")
-        if self._request_handle_class is None:
-            raise RuntimeError("fal_client.client.SyncRequestHandle is required for managed FAL gateway mode")
-
-    def submit(
-        self,
-        application: str,
-        arguments: Dict[str, Any],
-        *,
-        path: str = "",
-        hint: Optional[str] = None,
-        webhook_url: Optional[str] = None,
-        priority: Any = None,
-        headers: Optional[Dict[str, str]] = None,
-        start_timeout: Optional[Union[int, float]] = None,
-    ):
-        url = self._queue_url_format + application
-        if path:
-            url += "/" + path.lstrip("/")
-        if webhook_url is not None:
-            url += "?" + urlencode({"fal_webhook": webhook_url})
-
-        request_headers = dict(headers or {})
-        if hint is not None and self._add_hint_header is not None:
-            self._add_hint_header(hint, request_headers)
-        if priority is not None:
-            if self._add_priority_header is None:
-                raise RuntimeError("fal_client.client.add_priority_header is required for priority requests")
-            self._add_priority_header(priority, request_headers)
-        if start_timeout is not None:
-            if self._add_timeout_header is None:
-                raise RuntimeError("fal_client.client.add_timeout_header is required for timeout requests")
-            self._add_timeout_header(start_timeout, request_headers)
-
-        response = self._maybe_retry_request(
-            self._http_client,
-            "POST",
-            url,
-            json=arguments,
-            timeout=getattr(self._sync_client, "default_timeout", 120.0),
-            headers=request_headers,
-        )
-        self._raise_for_status(response)
-
-        data = response.json()
-        return self._request_handle_class(
-            request_id=data["request_id"],
-            response_url=data["response_url"],
-            status_url=data["status_url"],
-            cancel_url=data["cancel_url"],
-            client=self._http_client,
-        )
 
 
 def _get_managed_fal_client(managed_gateway):
@@ -389,7 +418,11 @@ def _get_managed_fal_client(managed_gateway):
         if _managed_fal_client is not None and _managed_fal_client_config == client_config:
             return _managed_fal_client
 
+        # Resolve fal_client on the legacy module — preserves the test
+        # pattern of monkey-patching ``image_generation_tool.fal_client``.
+        _load_fal_client()
         _managed_fal_client = _ManagedFalSyncClient(
+            fal_client,
             key=managed_gateway.nous_user_token,
             queue_run_origin=managed_gateway.gateway_origin,
         )
@@ -399,6 +432,8 @@ def _get_managed_fal_client(managed_gateway):
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
+    # Trigger the lazy import on first call. Idempotent.
+    _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
@@ -418,32 +453,24 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
         # of a raw HTTP error from httpx.
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
+            gateway_message = ""
+            if status in {401, 402, 403}:
+                gateway_message = (
+                    "\n\n"
+                    + nous_tool_gateway_unavailable_message(
+                        "managed FAL image generation",
+                        force_fresh=True,
+                    )
+                )
             raise ValueError(
                 f"Nous Subscription gateway rejected model '{model}' "
                 f"(HTTP {status}). This model may not yet be enabled on "
                 f"the Nous Portal's FAL proxy. Either:\n"
                 f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                 f"  • Pick a different model via `hermes tools` → Image Generation."
+                f"{gateway_message}"
             ) from exc
         raise
-
-
-def _extract_http_status(exc: BaseException) -> Optional[int]:
-    """Return an HTTP status code from httpx/fal exceptions, else None.
-
-    Defensive across exception shapes — httpx.HTTPStatusError exposes
-    ``.response.status_code`` while fal_client wrappers may expose
-    ``.status_code`` directly.
-    """
-    response = getattr(exc, "response", None)
-    if response is not None:
-        status = getattr(response, "status_code", None)
-        if isinstance(status, int):
-            return status
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int):
-        return status
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +535,7 @@ def _build_fal_payload(
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
 
-    if size_style in ("image_size_preset", "gpt_literal"):
+    if size_style in {"image_size_preset", "gpt_literal"}:
         payload["image_size"] = sizes[aspect]
     elif size_style == "aspect_ratio":
         payload["aspect_ratio"] = sizes[aspect]
@@ -623,11 +650,8 @@ def image_generate_tool(
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
 
-        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
-            message = "FAL_KEY environment variable not set"
-            if managed_nous_tools_enabled():
-                message += " and managed FAL gateway is unavailable"
-            raise ValueError(message)
+        if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
+            raise ValueError(_build_no_backend_setup_message())
 
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
         if aspect_lc not in VALID_ASPECT_RATIOS:
@@ -734,18 +758,90 @@ def image_generate_tool(
 
 def check_fal_api_key() -> bool:
     """True if the FAL.ai API key (direct or managed gateway) is available."""
-    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
+    return bool(fal_key_is_configured() or _resolve_managed_fal_gateway())
+
+
+def _build_no_backend_setup_message() -> str:
+    """Build an actionable error string when no FAL backend is reachable.
+
+    Used by the in-tree FAL path. Mentions:
+      - FAL_KEY signup link
+      - managed-gateway status (if Nous tools are enabled)
+      - plugin alternative pointer (so users on a stale ``image_gen.provider``
+        know the registry exists and how to inspect it)
+    """
+    lines = ["Image generation is unavailable in this environment.", ""]
+    lines.append("Missing requirements:")
+    if managed_nous_tools_enabled():
+        lines.append(
+            "  - FAL_KEY is not set and the managed FAL gateway is unreachable"
+        )
+    else:
+        lines.append("  - FAL_KEY environment variable is not set")
+        gateway_message = nous_tool_gateway_unavailable_message(
+            "managed FAL image generation",
+        )
+        if gateway_message:
+            lines.append(f"  - {gateway_message}")
+    lines.append("")
+    lines.append("To enable image generation, do one of:")
+    lines.append(
+        "  1. Get a free API key at https://fal.ai and set "
+        "FAL_KEY=<your-key> (then restart the session)"
+    )
+    if managed_nous_tools_enabled():
+        lines.append(
+            "  2. Sign in to a Nous account that has the managed FAL "
+            "gateway enabled (`hermes setup`)"
+        )
+    lines.append(
+        "  3. Configure a different image_gen provider via `hermes tools` "
+        "→ Image Generation (run `hermes plugins list` to see installed "
+        "backends)"
+    )
+    return "\n".join(lines)
 
 
 def check_image_generation_requirements() -> bool:
-    """True if FAL credentials and fal_client SDK are both available."""
+    """True if any image gen backend is available.
+
+    Providers are considered in this order:
+
+    1. The in-tree FAL backend (FAL_KEY or managed gateway).
+    2. Any plugin-registered provider whose ``is_available()`` returns True.
+
+    Plugins win only when the in-tree FAL path is NOT ready, which matches
+    the historical behavior: shipping hermes with a FAL key configured
+    should still expose the tool. The active selection among ready
+    providers is resolved per-call by ``image_gen.provider``.
+    """
     try:
-        if not check_fal_api_key():
-            return False
-        import fal_client  # noqa: F401 — SDK presence check
-        return True
+        if check_fal_api_key():
+            # Trigger the lazy fal_client import here as the SDK presence
+            # check. Raises ImportError if the optional ``fal-client``
+            # package isn't installed; the caller's except ImportError
+            # below catches that and continues to plugin probing.
+            _load_fal_client()
+            return True
     except ImportError:
-        return False
+        pass
+
+    # Probe plugin providers. Discovery is idempotent and cheap.
+    try:
+        from agent.image_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        for provider in list_providers():
+            try:
+                if provider.is_available():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -791,10 +887,11 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts using FAL.ai. "
-        "The underlying model is user-configured (default: FLUX 2 Klein 9B, "
-        "sub-1s generation) and is not selectable by the agent. Returns a "
-        "single image URL. Display it using markdown: ![description](URL)"
+        "Generate high-quality images from text prompts. The underlying "
+        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
+        "selectable by the agent. Returns either a URL or an absolute file "
+        "path in the `image` field; display it with markdown "
+        "![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
@@ -815,13 +912,139 @@ IMAGE_GENERATE_SCHEMA = {
 }
 
 
+def _read_configured_image_model():
+    """Return the value of ``image_gen.model`` from config.yaml, or None."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            value = section.get("model")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except Exception as exc:
+        logger.debug("Could not read image_gen.model: %s", exc)
+    return None
+
+
+def _read_configured_image_provider():
+    """Return the value of ``image_gen.provider`` from config.yaml, or None.
+
+    We only consult the plugin registry when this is explicitly set — an
+    unset value keeps users on the in-tree FAL fallback even when other
+    providers happen to be registered (e.g. a user has OPENAI_API_KEY set
+    for other features but never asked for OpenAI image gen). ``"fal"``
+    explicitly routes through ``plugins/image_gen/fal/`` (which delegates
+    back into this module's pipeline via call-time indirection — see
+    issue #26241).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            value = section.get("provider")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except Exception as exc:
+        logger.debug("Could not read image_gen.provider: %s", exc)
+    return None
+
+
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+    """Route the call to a plugin-registered provider when one is selected.
+
+    Returns a JSON string on dispatch, or ``None`` to fall through to the
+    in-tree FAL fallback in ``image_generate_tool``.
+
+    Dispatch fires when ``image_gen.provider`` is explicitly set — including
+    ``"fal"`` itself, which now resolves to the
+    ``plugins/image_gen/fal/`` plugin (the plugin re-enters this module's
+    pipeline via ``_it`` indirection so behavior is identical to the
+    direct call, just routed through the registry).
+    """
+    configured = _read_configured_image_provider()
+    if not configured:
+        return None
+
+    # Also read configured model so we can pass it to the plugin
+    configured_model = _read_configured_image_model()
+
+    try:
+        # Import locally so plugin discovery isn't triggered just by
+        # importing this module (tests rely on that).
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        provider = get_provider(configured)
+    except Exception as exc:
+        logger.debug("image_gen plugin dispatch skipped: %s", exc)
+        return None
+
+    if provider is None:
+        try:
+            # Long-lived sessions may have discovered plugins before a bundled
+            # backend was patched in or before config changed. Retry once with
+            # a forced refresh before surfacing a missing-provider error.
+            _ensure_plugins_discovered(force=True)
+            provider = get_provider(configured)
+        except Exception as exc:
+            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+
+    if provider is None:
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                f"image_gen.provider='{configured}' is set but no plugin "
+                f"registered that name. Run `hermes plugins list` to see "
+                f"available image gen backends."
+            ),
+            "error_type": "provider_not_registered",
+        })
+
+    try:
+        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        if configured_model:
+            kwargs["model"] = configured_model
+        result = provider.generate(**kwargs)
+    except Exception as exc:
+        logger.warning(
+            "Image gen provider '%s' raised: %s",
+            getattr(provider, "name", "?"), exc,
+        )
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
+            "error_type": "provider_exception",
+        })
+    if not isinstance(result, dict):
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": "Provider returned a non-dict result",
+            "error_type": "provider_contract",
+        })
+    return json.dumps(result)
+
+
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
+    aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+
+    # Route to a plugin-registered provider if one is active (and it's
+    # not the in-tree FAL path).
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    if dispatched is not None:
+        return dispatched
+
     return image_generate_tool(
         prompt=prompt,
-        aspect_ratio=args.get("aspect_ratio", DEFAULT_ASPECT_RATIO),
+        aspect_ratio=aspect_ratio,
     )
 
 

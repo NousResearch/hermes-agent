@@ -194,6 +194,140 @@ class TestBrowserVisionAnnotate:
                 assert "--annotate" in cmd_args
 
 
+class TestBrowserVisionConfig:
+    def _setup_screenshot(self, tmp_path):
+        shots_dir = tmp_path / "browser_screenshots"
+        shots_dir.mkdir()
+        screenshot = shots_dir / "shot.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        return shots_dir, screenshot
+
+    def test_browser_vision_uses_configured_temperature_and_timeout(self, tmp_path):
+        from tools.browser_tool import browser_vision
+
+        shots_dir, screenshot = self._setup_screenshot(tmp_path)
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Annotated screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"temperature": 1, "timeout": 45}}}),
+            patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
+        ):
+            result = json.loads(browser_vision("what is on the page?", task_id="test"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Annotated screenshot analysis"
+        assert mock_llm.call_args.kwargs["temperature"] == 1.0
+        assert mock_llm.call_args.kwargs["timeout"] == 45.0
+
+    def test_browser_vision_defaults_temperature_when_config_omits_it(self, tmp_path):
+        from tools.browser_tool import browser_vision
+
+        shots_dir, screenshot = self._setup_screenshot(tmp_path)
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Default screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
+        ):
+            result = json.loads(browser_vision("what is on the page?", task_id="test"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Default screenshot analysis"
+        assert mock_llm.call_args.kwargs["temperature"] == 0.1
+        assert mock_llm.call_args.kwargs["timeout"] == 120.0
+
+    def test_browser_vision_native_fast_path_returns_multimodal(self, tmp_path):
+        """supports_vision override → screenshot attached natively, no aux call."""
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+
+        shots_dir, screenshot = self._setup_screenshot(tmp_path)
+        annotations = [{"id": 1, "label": "Search box"}]
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    return_value={
+                        "success": True,
+                        "data": {"path": str(screenshot), "annotations": annotations},
+                    },
+                ),
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={"model": {"supports_vision": True}},
+                ),
+                patch("tools.browser_tool._get_vision_model") as mock_get_vision_model,
+                patch("tools.browser_tool.call_llm") as mock_llm,
+            ):
+                result = browser_vision("what is on the page?", annotate=True, task_id="test")
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict)
+        assert result["_multimodal"] is True
+        assert result["meta"]["screenshot_path"] == str(screenshot)
+        assert result["meta"]["annotations"] == annotations
+        assert any(p.get("type") == "image_url" for p in result["content"])
+        assert f"Screenshot path: {screenshot}" in result["text_summary"]
+        mock_get_vision_model.assert_not_called()
+        mock_llm.assert_not_called()
+
+    def test_browser_vision_text_mode_blocks_native_fast_path(self, tmp_path):
+        """Explicit text routing → aux LLM used even with supports_vision."""
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+
+        shots_dir, screenshot = self._setup_screenshot(tmp_path)
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Text-mode screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        set_runtime_main("brand-new-provider", "llava-v1.6")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    return_value={"success": True, "data": {"path": str(screenshot)}},
+                ),
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={
+                        "agent": {"image_input_mode": "text"},
+                        "model": {"supports_vision": True},
+                    },
+                ),
+                patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+                patch("tools.browser_tool.call_llm", return_value=mock_response) as mock_llm,
+            ):
+                result = json.loads(browser_vision("what is on the page?", task_id="test"))
+        finally:
+            clear_runtime_main()
+
+        assert result["success"] is True
+        assert result["analysis"] == "Text-mode screenshot analysis"
+        mock_llm.assert_called_once()
+
+
 # ── auto-recording config ────────────────────────────────────────────
 
 

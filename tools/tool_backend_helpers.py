@@ -6,33 +6,66 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from utils import is_truthy_value
+
 
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
-def managed_nous_tools_enabled() -> bool:
-    """Return True when the user has an active paid Nous subscription.
+def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
+    """Return True when the user is entitled to the Nous Tool Gateway.
 
-    The Tool Gateway is available to any Nous subscriber who is NOT on
-    the free tier.  We intentionally catch all exceptions and return
-    False — never block the agent startup path.
+    Entitlement is paid Nous Portal service access OR a live free tool pool
+    (``tool_gateway_entitled``). Per-category coverage (the pool funds image but
+    not video, etc.) is narrowed by callers via ``tool_gateway_entitled_for``;
+    this coarse gate only answers "is any managed tool usable at all".
+
+    Tool Gateway availability fails closed on unknown/error entitlement.  We
+    intentionally catch all exceptions and return False — never block startup.
+    ``force_fresh=True`` is for interactive configuration flows that should
+    reflect a just-purchased subscription, credits, or pool grant immediately.
     """
     try:
-        from hermes_cli.auth import get_nous_auth_status
+        from hermes_cli.nous_account import get_nous_portal_account_info
 
-        status = get_nous_auth_status()
-        if not status.get("logged_in"):
+        if force_fresh:
+            account_info = get_nous_portal_account_info(force_fresh=True)
+        else:
+            account_info = get_nous_portal_account_info()
+        if not account_info.logged_in:
             return False
-
-        from hermes_cli.models import check_nous_free_tier
-
-        if check_nous_free_tier():
-            return False  # free-tier users don't get gateway access
-        return True
+        return account_info.tool_gateway_entitled
     except Exception:
         return False
+
+
+def nous_tool_gateway_unavailable_message(
+    capability: str = "the Nous Tool Gateway",
+    *,
+    force_fresh: bool = False,
+) -> str:
+    """Return account-aware guidance for an unavailable Nous Tool Gateway path."""
+    try:
+        from hermes_cli.nous_account import (
+            format_nous_portal_entitlement_message,
+            get_nous_portal_account_info,
+        )
+
+        account_info = get_nous_portal_account_info(force_fresh=force_fresh)
+        message = format_nous_portal_entitlement_message(
+            account_info,
+            capability=capability,
+        )
+        if message:
+            return message
+    except Exception:
+        pass
+    return (
+        f"{capability} is unavailable. Run `hermes model` to refresh your "
+        "Nous Portal login and billing status."
+    )
 
 
 def normalize_browser_cloud_provider(value: object | None) -> str:
@@ -56,9 +89,13 @@ def normalize_modal_mode(value: object | None) -> str:
 
 def has_direct_modal_credentials() -> bool:
     """Return True when direct Modal credentials/config are available."""
+    try:
+        modal_file_exists = (Path.home() / ".modal.toml").exists()
+    except (PermissionError, OSError):
+        modal_file_exists = False
     return bool(
         (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
-        or (Path.home() / ".modal.toml").exists()
+        or modal_file_exists
     )
 
 
@@ -67,6 +104,7 @@ def resolve_modal_backend_state(
     *,
     has_direct: bool,
     managed_ready: bool,
+    managed_enabled: bool | None = None,
 ) -> Dict[str, Any]:
     """Resolve direct vs managed Modal backend selection.
 
@@ -77,16 +115,18 @@ def resolve_modal_backend_state(
     """
     requested_mode = coerce_modal_mode(modal_mode)
     normalized_mode = normalize_modal_mode(modal_mode)
+    if managed_enabled is None:
+        managed_enabled = managed_nous_tools_enabled()
     managed_mode_blocked = (
-        requested_mode == "managed" and not managed_nous_tools_enabled()
+        requested_mode == "managed" and not managed_enabled
     )
 
     if normalized_mode == "managed":
-        selected_backend = "managed" if managed_nous_tools_enabled() and managed_ready else None
+        selected_backend = "managed" if managed_enabled and managed_ready else None
     elif normalized_mode == "direct":
         selected_backend = "direct" if has_direct else None
     else:
-        selected_backend = "managed" if managed_nous_tools_enabled() and managed_ready else "direct" if has_direct else None
+        selected_backend = "managed" if managed_enabled and managed_ready else "direct" if has_direct else None
 
     return {
         "requested_mode": requested_mode,
@@ -115,7 +155,28 @@ def prefers_gateway(config_section: str) -> bool:
         from hermes_cli.config import load_config
         section = (load_config() or {}).get(config_section)
         if isinstance(section, dict):
-            return bool(section.get("use_gateway"))
+            return is_truthy_value(section.get("use_gateway"), default=False)
     except Exception:
         pass
     return False
+
+
+def fal_key_is_configured() -> bool:
+    """Return True when FAL_KEY is set to a non-whitespace value.
+
+    Consults both ``os.environ`` and ``~/.hermes/.env`` (via
+    ``hermes_cli.config.get_env_value`` when available) so tool-side
+    checks and CLI setup-time checks agree.  A whitespace-only value
+    is treated as unset everywhere.
+    """
+    value = os.getenv("FAL_KEY")
+    if value is None:
+        # Fall back to the .env file for CLI paths that may run before
+        # dotenv is loaded into os.environ.
+        try:
+            from hermes_cli.config import get_env_value
+
+            value = get_env_value("FAL_KEY")
+        except Exception:
+            value = None
+    return bool(value and value.strip())

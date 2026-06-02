@@ -12,7 +12,7 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
             captured["resolved_from"] = session_id
             return "20260315_092437_c9a6ff"
 
-        def delete_session(self, session_id):
+        def delete_session(self, session_id, **kwargs):
             captured["deleted"] = session_id
             return True
 
@@ -45,7 +45,7 @@ def test_sessions_delete_reports_not_found_when_prefix_is_unknown(monkeypatch, c
         def resolve_session_id(self, session_id):
             return None
 
-        def delete_session(self, session_id):
+        def delete_session(self, session_id, **kwargs):
             raise AssertionError("delete_session should not be called when resolution fails")
 
         def close(self):
@@ -73,7 +73,7 @@ def test_sessions_delete_handles_eoferror_on_confirm(monkeypatch, capsys):
         def resolve_session_id(self, session_id):
             return "20260315_092437_c9a6ff"
 
-        def delete_session(self, session_id):
+        def delete_session(self, session_id, **kwargs):
             raise AssertionError("delete_session should not be called when cancelled")
 
         def close(self):

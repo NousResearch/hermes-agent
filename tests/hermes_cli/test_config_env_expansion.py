@@ -1,9 +1,7 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
-import os
 import pytest
 from hermes_cli.config import _expand_env_vars, load_config
-from unittest.mock import patch as mock_patch
 
 
 class TestExpandEnvVars:
@@ -72,7 +70,10 @@ class TestLoadConfigExpansion:
 
         monkeypatch.setenv("GOOGLE_API_KEY", "gsk-test-key")
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567:ABC-token")
-        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_file)
+        # Patch the imported function's own globals. Other tests may reload
+        # hermes_cli.config, making string-target monkeypatches hit a different
+        # module object than this collection-time imported load_config().
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
 
         config = load_config()
 
@@ -86,7 +87,7 @@ class TestLoadConfigExpansion:
         config_file.write_text(config_yaml)
 
         monkeypatch.delenv("NOT_SET_XYZ_123", raising=False)
-        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_file)
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
 
         config = load_config()
 

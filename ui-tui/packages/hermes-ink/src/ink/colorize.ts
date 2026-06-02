@@ -28,6 +28,39 @@ function boostChalkLevelForXtermJs(): boolean {
   return false
 }
 
+export function shouldUseRichEightBitDowngradeForLegacyAppleTerminal(
+  env: NodeJS.ProcessEnv = process.env,
+  level = chalk.level
+): boolean {
+  const termProgram = (env.TERM_PROGRAM ?? '').trim()
+  const truecolorOverride = /^(?:1|true|yes|on)$/i.test((env.HERMES_TUI_TRUECOLOR ?? '').trim())
+  const advertisesTruecolor = /^(?:truecolor|24bit)$/i.test((env.COLORTERM ?? '').trim())
+
+  return termProgram === 'Apple_Terminal' && !truecolorOverride && !advertisesTruecolor && !('FORCE_COLOR' in env) && level === 2
+}
+
+export function richEightBitColorNumber(red: number, green: number, blue: number): number {
+  const rn = red / 255
+  const gn = green / 255
+  const bn = blue / 255
+  const max = Math.max(rn, gn, bn)
+  const min = Math.min(rn, gn, bn)
+  const lightness = (max + min) / 2
+  const saturation = max === min ? 0 : lightness > 0.5 ? (max - min) / (2 - max - min) : (max - min) / (max + min)
+
+  if (saturation < 0.15) {
+    const gray = Math.round(lightness * 25)
+
+    return gray === 0 ? 16 : gray === 25 ? 231 : 231 + gray
+  }
+
+  const sixRed = red < 95 ? red / 95 : 1 + (red - 95) / 40
+  const sixGreen = green < 95 ? green / 95 : 1 + (green - 95) / 40
+  const sixBlue = blue < 95 ? blue / 95 : 1 + (blue - 95) / 40
+
+  return 16 + 36 * Math.round(sixRed) + 6 * Math.round(sixGreen) + Math.round(sixBlue)
+}
+
 /**
  * tmux parses truecolor SGR (\e[48;2;r;g;bm) into its cell buffer correctly,
  * but its client-side emitter only re-emits truecolor to the outer terminal if
@@ -58,15 +91,17 @@ function clampChalkLevelForTmux(): boolean {
 }
 
 // Computed once at module load — terminal/tmux environment doesn't change mid-session.
-// Order matters: boost first so the tmux clamp can re-clamp if tmux is running
-// inside a VS Code terminal. Exported for debugging — tree-shaken if unused.
+// Order matters: boost first; then tmux can still clamp RGB to 256.
+// Exported for debugging — tree-shaken if unused.
 export const CHALK_BOOSTED_FOR_XTERMJS = boostChalkLevelForXtermJs()
 export const CHALK_CLAMPED_FOR_TMUX = clampChalkLevelForTmux()
+export const CHALK_USES_RICH_EIGHT_BIT_DOWNGRADE = shouldUseRichEightBitDowngradeForLegacyAppleTerminal()
 
 export type ColorType = 'foreground' | 'background'
 
 const RGB_REGEX = /^rgb\(\s?(\d+),\s?(\d+),\s?(\d+)\s?\)$/
 const ANSI_REGEX = /^ansi256\(\s?(\d+)\s?\)$/
+const HEX_REGEX = /^#[0-9a-fA-F]{6}$/
 
 export const colorize = (str: string, color: string | undefined, type: ColorType): string => {
   if (!color) {
@@ -128,6 +163,16 @@ export const colorize = (str: string, color: string | undefined, type: ColorType
   }
 
   if (color.startsWith('#')) {
+    if (HEX_REGEX.test(color) && CHALK_USES_RICH_EIGHT_BIT_DOWNGRADE) {
+      const value = Number.parseInt(color.slice(1), 16)
+      const red = (value >> 16) & 0xff
+      const green = (value >> 8) & 0xff
+      const blue = value & 0xff
+      const ansi = richEightBitColorNumber(red, green, blue)
+
+      return type === 'foreground' ? chalk.ansi256(ansi)(str) : chalk.bgAnsi256(ansi)(str)
+    }
+
     return type === 'foreground' ? chalk.hex(color)(str) : chalk.bgHex(color)(str)
   }
 
@@ -153,6 +198,12 @@ export const colorize = (str: string, color: string | undefined, type: ColorType
     const firstValue = Number(matches[1])
     const secondValue = Number(matches[2])
     const thirdValue = Number(matches[3])
+
+    if (CHALK_USES_RICH_EIGHT_BIT_DOWNGRADE) {
+      const ansi = richEightBitColorNumber(firstValue, secondValue, thirdValue)
+
+      return type === 'foreground' ? chalk.ansi256(ansi)(str) : chalk.bgAnsi256(ansi)(str)
+    }
 
     return type === 'foreground'
       ? chalk.rgb(firstValue, secondValue, thirdValue)(str)

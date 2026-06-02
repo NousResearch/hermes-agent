@@ -40,7 +40,7 @@ class _FakeOpenAIClient:
 def _make_agent(monkeypatch, api_mode, provider, response_fn):
     _patch_bootstrap(monkeypatch)
     if api_mode == "anthropic_messages":
-        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", lambda k, b=None: _FakeAnthropicClient())
+        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", lambda k, b=None, **kwargs: _FakeAnthropicClient())
     if provider == "openai-codex":
         monkeypatch.setattr(
             "agent.auxiliary_client.resolve_provider_client",
@@ -52,7 +52,7 @@ def _make_agent(monkeypatch, api_mode, provider, response_fn):
             kw.update(skip_context_files=True, skip_memory=True, max_iterations=4)
             super().__init__(*a, **kw)
             self._cleanup_task_resources = self._persist_session = lambda *a, **k: None
-            self._save_trajectory = self._save_session_log = lambda *a, **k: None
+            self._save_trajectory = lambda *a, **k: None
 
         def run_conversation(self, msg, conversation_history=None, task_id=None):
             self._interruptible_api_call = lambda kw: response_fn()

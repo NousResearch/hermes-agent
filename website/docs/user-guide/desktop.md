@@ -83,6 +83,8 @@ The app also surfaces the broader Hermes management surface so you don't have to
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
+On Linux, the in-app update always refreshes the agent. An install from a prebuilt package (`.AppImage` / `.deb` / `.rpm`) can't replace the app shell itself — download the latest installer from the [releases page](https://github.com/NousResearch/hermes-agent/releases) to update the GUI. A `hermes desktop` build picks up the new shell on its next launch.
+
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
 ## CLI reference: `hermes desktop`

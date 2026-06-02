@@ -28,6 +28,7 @@ const STAGE_LABELS: Record<DesktopUpdateStage, string> = {
   pydeps: 'Finishing up…',
   restart: 'Restarting Hermes…',
   manual: 'Update from your terminal',
+  done: 'Update complete',
   error: 'Update paused'
 }
 
@@ -49,14 +50,16 @@ export function UpdatesOverlay() {
 
   const behind = status?.behind ?? 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'error' =
+  const phase: 'idle' | 'applying' | 'manual' | 'done' | 'error' =
     apply.stage === 'manual'
       ? 'manual'
-      : apply.applying || apply.stage === 'restart'
-        ? 'applying'
-        : apply.stage === 'error'
-          ? 'error'
-          : 'idle'
+      : apply.stage === 'done'
+        ? 'done'
+        : apply.applying || apply.stage === 'restart'
+          ? 'applying'
+          : apply.stage === 'error'
+            ? 'error'
+            : 'idle'
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -65,7 +68,10 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (!next && (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual')) {
+    if (
+      !next &&
+      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'done')
+    ) {
       resetUpdateApplyState()
     }
   }
@@ -84,6 +90,19 @@ export function UpdatesOverlay() {
 
         {phase === 'manual' && (
           <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
+        )}
+
+        {phase === 'done' && (
+          <CenteredStatus
+            action={
+              <Button onClick={() => handleClose(false)} size="sm" variant="outline">
+                Close
+              </Button>
+            }
+            body={apply.message || 'Restart Hermes to load the new version.'}
+            icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
+            title="Update complete"
+          />
         )}
 
         {phase === 'error' && (

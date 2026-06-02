@@ -52,6 +52,8 @@ The app checks for updates in the background and offers a one-click update when 
 hermes update
 ```
 
+> **Linux installers:** in-app update always refreshes the agent in place. A prebuilt-package install (`.AppImage` / `.deb` / `.rpm`) can't replace its own app shell — grab the latest installer from the [releases page](https://github.com/NousResearch/hermes-agent/releases) to update the GUI itself. A `hermes desktop` (CLI) build picks up the new shell on its next launch.
+
 ---
 
 ## Requirements

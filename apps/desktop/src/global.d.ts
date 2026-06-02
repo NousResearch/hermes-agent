@@ -119,9 +119,24 @@ export interface DesktopUpdateApplyResult {
   manual?: boolean
   command?: string
   hermesRoot?: string
+  /** POSIX in-app update outcomes (the app stays open instead of relaunching). */
+  backendUpdated?: boolean
+  guiUpdated?: boolean
+  /** True on a packaged Linux install whose app shell can't self-update; the
+   *  agent was refreshed but the GUI needs a manual reinstall. */
+  manualGui?: boolean
 }
 
-export type DesktopUpdateStage = 'idle' | 'prepare' | 'fetch' | 'pull' | 'pydeps' | 'restart' | 'manual' | 'error'
+export type DesktopUpdateStage =
+  | 'idle'
+  | 'prepare'
+  | 'fetch'
+  | 'pull'
+  | 'pydeps'
+  | 'restart'
+  | 'manual'
+  | 'done'
+  | 'error'
 
 export interface DesktopUpdateProgress {
   stage: DesktopUpdateStage

@@ -26,6 +26,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { resolvePosixGuiDeploy } = require('./update-deploy.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -1387,22 +1388,50 @@ async function applyUpdatesPosixInApp(opts = {}) {
     return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
   }
 
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
-  const targetApp = runningAppBundle()
+  const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
+  const macBundleSrc = IS_MAC
+    ? [path.join(releaseDir, 'mac-arm64', 'Hermes.app'), path.join(releaseDir, 'mac', 'Hermes.app')].find(
+        directoryExists
+      ) || null
+    : null
+  const deploy = resolvePosixGuiDeploy({
+    platform: process.platform,
+    execPath: app.getPath('exe'),
+    releaseDir,
+    macBundleSrc,
+    macBundleDst: runningAppBundle()
+  })
 
-  // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
-  // backend is updated; the next launch picks up the rebuilt GUI.
-  if (!rebuiltApp || !targetApp) {
+  // Packaged Linux install (AppImage/deb/rpm): the rebuilt GUI lands in the
+  // checkout's release/ tree, NOT the system binary the user actually launches,
+  // so a restart would just rerun the same stale shell. Don't advertise a GUI
+  // update we can't deliver -- report the backend update honestly and point the
+  // user at a reinstall for the app shell itself.
+  if (deploy.kind === 'manual-gui') {
+    emitUpdateProgress({
+      stage: 'done',
+      message: 'Backend updated. Reinstall the Hermes desktop app from the releases page to update the app itself.',
+      percent: 100
+    })
+    rememberLog(
+      `[updates] packaged GUI at ${app.getPath('exe')} cannot self-replace; rebuilt app staged under ${releaseDir}`
+    )
+    return { ok: true, backendUpdated: true, guiUpdated: false, manualGui: true, hermesRoot: updateRoot }
+  }
+
+  // Dev/source run, or a CLI `hermes desktop` install whose running binary lives
+  // in release/: the rebuild is in place, so a restart loads the new version.
+  if (deploy.kind === 'restart') {
     emitUpdateProgress({
       stage: 'done',
       message: 'Backend updated. Restart Hermes to load the new version.',
       percent: 100
     })
-    return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
+    return { ok: true, backendUpdated: true, guiUpdated: true, rebuiltApp: macBundleSrc }
   }
+
+  const rebuiltApp = deploy.src
+  const targetApp = deploy.dst
 
   emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
 

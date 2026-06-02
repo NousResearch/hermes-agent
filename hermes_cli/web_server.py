@@ -2813,6 +2813,279 @@ async def toggle_skill(body: SkillToggle):
     return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
+# ---------------------------------------------------------------------------
+# Skill authoring write endpoints (hermes-202606-010)
+#
+# Thin HTTP wrappers around the existing ``skill_manage`` LLM tool action
+# so the desktop UI can author skills directly (POST /api/skills) and
+# promote a chat session into a reusable skill
+# (POST /api/sessions/{id}/promote-skill). Mirrors the cron HTTP surface
+# shape: no new abstraction, just an additional caller path into existing
+# primitives. See ``tools/skill_manager_tool.py`` and
+# ``agent/background_review.py``.
+# ---------------------------------------------------------------------------
+
+_PROMOTE_SKILL_MAX_TRANSCRIPT_CHARS = 6000
+_PROMOTE_SKILL_MAX_CONTEXT_MESSAGES = 200
+_PROMOTE_SKILL_DEFAULT_CONTEXT_MESSAGES = 40
+
+
+class SkillCreateBody(BaseModel):
+    """Request body for ``POST /api/skills``.
+
+    Mirrors the ``skill_manage(action="create")`` tool input shape: a
+    ``name`` slug, the full SKILL.md ``content`` (frontmatter + body),
+    and an optional ``category`` subdirectory under ``skills/``.
+    """
+    name: str
+    content: str
+    category: Optional[str] = None
+
+
+class PromoteSkillBody(BaseModel):
+    """Request body for ``POST /api/sessions/{id}/promote-skill``.
+
+    Operator-supplied identity for the new skill plus an optional cap on
+    how many of the trailing session messages get folded into the draft.
+    ``context_messages`` null/0 means use the default window; values are
+    capped at ``_PROMOTE_SKILL_MAX_CONTEXT_MESSAGES``.
+    """
+    skill_slug: str
+    skill_name: Optional[str] = None
+    description: Optional[str] = None
+    context_messages: Optional[int] = None
+
+
+def _skill_create_response(payload: Dict[str, Any], slug: str) -> Dict[str, Any]:
+    """Common shape for both write endpoints."""
+    response: Dict[str, Any] = {
+        "ok": True,
+        "name": slug,
+        "message": payload.get("message"),
+    }
+    if payload.get("path"):
+        response["path"] = payload["path"]
+    if payload.get("skill_md"):
+        response["skill_md"] = payload["skill_md"]
+    return response
+
+
+def _distill_transcript_to_skill_md(
+    *,
+    slug: str,
+    display_name: str,
+    description: str,
+    messages: List[Dict[str, Any]],
+) -> str:
+    """Produce a minimal but valid SKILL.md scaffold from a transcript.
+
+    The synchronous promote endpoint does NOT spawn a forked AIAgent
+    (that path costs an LLM round trip and an extra credential/runtime
+    inheritance dance — see ``agent.background_review._run_review_in_thread``).
+    Instead it builds an honest scaffold: operator-supplied identity
+    plus a compact ``Triggering operator intent`` block listing the user
+    turns that prompted the promotion. The background curator + future
+    ``skill_view`` patches refine the body. The result satisfies
+    ``_validate_frontmatter`` and is well-formed enough that the slash
+    command ``/<slug>`` registers on first reload.
+
+    Sensitive evidence policy: per the intake, the promotion endpoint
+    must NOT serialise raw transcript content into the SKILL.md. We
+    keep only short clips of the trailing user-message turns (the
+    operator's own words), never assistant tool outputs or customer
+    payloads.
+    """
+    user_turns: List[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            content = "\n".join(p for p in text_parts if p)
+        if not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        user_turns.append(content[:240])
+
+    references_block = ""
+    if user_turns:
+        bullets = "\n".join(f"- {turn}" for turn in user_turns[-10:])
+        references_block = f"\n\n## Triggering operator intent\n\n{bullets}\n"
+
+    body = (
+        f"# {display_name}\n\n"
+        f"{description}\n\n"
+        "## When to invoke\n\n"
+        f"Run this skill when the operator asks for the workflow named "
+        f"'{display_name}' or invokes the slash command `/{slug}`.\n"
+        "\n## Steps\n\n"
+        "1. Confirm the operator's current goal matches the workflow above.\n"
+        "2. Follow the procedure the operator demonstrated in the promoting session.\n"
+        "3. Surface intermediate results so the operator can intervene before any external side effect.\n"
+        f"{references_block}"
+    )
+    frontmatter = (
+        "---\n"
+        f"name: {slug}\n"
+        f"description: {description}\n"
+        "---\n\n"
+    )
+    return frontmatter + body
+
+
+@app.post("/api/skills")
+async def create_skill(body: SkillCreateBody):
+    """Operator-explicit skill creation.
+
+    Thin wrapper around ``skill_manage(action='create')``: same
+    validation (frontmatter, size limits, name rules), same write path
+    (``~/.hermes/skills/[<category>/]<name>/SKILL.md``). Origin stays
+    ``foreground`` so the curator does not treat the result as
+    agent-created (per the existing rule in
+    ``tools/skill_manager_tool.py`` — only background-review fork
+    creates get the ``agent_created`` tag).
+    """
+    from tools.skill_manager_tool import skill_manage
+
+    try:
+        raw = skill_manage(
+            action="create",
+            name=body.name,
+            content=body.content,
+            category=body.category,
+        )
+    except Exception:
+        _log.exception("POST /api/skills: skill_manage raised")
+        raise HTTPException(status_code=500, detail="Failed to create skill.")
+
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        _log.error("POST /api/skills: skill_manage returned non-JSON payload")
+        raise HTTPException(status_code=500, detail="Failed to create skill.")
+
+    if not payload.get("success"):
+        # ``skill_manage`` returns user-friendly errors (bad frontmatter,
+        # name conflict, size cap). Forward as 400 — these are caller
+        # input problems, not server bugs.
+        detail = payload.get("error") or "Failed to create skill."
+        raise HTTPException(status_code=400, detail=detail)
+
+    return _skill_create_response(payload, body.name)
+
+
+@app.post("/api/sessions/{session_id}/promote-skill")
+async def promote_session_to_skill(session_id: str, body: PromoteSkillBody):
+    """Promote a session transcript to a new SKILL.md.
+
+    Reads the session messages via ``SessionDB.get_messages`` (the same
+    helper ``GET /api/sessions/{id}/messages`` already uses), distils a
+    scaffold SKILL.md per ``_distill_transcript_to_skill_md`` (which
+    omits raw transcript content per the sensitive-evidence policy),
+    then calls ``skill_manage(action='create')`` under the
+    ``background_review`` write origin so the resulting skill is tagged
+    ``agent_created`` and the curator can manage its lifecycle.
+    """
+    slug = (body.skill_slug or "").strip()
+    if not slug:
+        raise HTTPException(status_code=400, detail="skill_slug is required.")
+
+    display_name = (body.skill_name or "").strip() or slug.replace("-", " ").title()
+    description = (
+        (body.description or "").strip()
+        or f"Operator-promoted workflow distilled from session {session_id[:8]}."
+    )
+
+    context_n = body.context_messages
+    if context_n is None or context_n <= 0:
+        context_n = _PROMOTE_SKILL_DEFAULT_CONTEXT_MESSAGES
+    context_n = min(int(context_n), _PROMOTE_SKILL_MAX_CONTEXT_MESSAGES)
+
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        try:
+            all_messages = db.get_messages(sid)
+        except Exception:
+            _log.exception(
+                "POST /api/sessions/%s/promote-skill: get_messages failed",
+                session_id,
+            )
+            raise HTTPException(status_code=500, detail="Failed to read session.")
+    finally:
+        db.close()
+
+    tail_messages = all_messages[-context_n:] if all_messages else []
+
+    skill_md = _distill_transcript_to_skill_md(
+        slug=slug,
+        display_name=display_name,
+        description=description,
+        messages=tail_messages,
+    )
+    if len(skill_md) > _PROMOTE_SKILL_MAX_TRANSCRIPT_CHARS:
+        skill_md = skill_md[:_PROMOTE_SKILL_MAX_TRANSCRIPT_CHARS]
+
+    # Tag the create as background_review so the existing skill_manage
+    # success path runs ``mark_agent_created(slug)`` and the skill
+    # becomes discoverable in ``GET /api/skills`` with
+    # ``agent_created: true``.
+    from tools.skill_manager_tool import skill_manage
+    from tools.skill_provenance import (
+        set_current_write_origin,
+        reset_current_write_origin,
+        BACKGROUND_REVIEW,
+    )
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        try:
+            raw = skill_manage(action="create", name=slug, content=skill_md)
+        except Exception:
+            _log.exception(
+                "POST /api/sessions/%s/promote-skill: skill_manage raised",
+                session_id,
+            )
+            raise HTTPException(status_code=500, detail="Failed to promote skill.")
+    finally:
+        reset_current_write_origin(token)
+
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        _log.error(
+            "POST /api/sessions/%s/promote-skill: skill_manage returned non-JSON",
+            session_id,
+        )
+        raise HTTPException(status_code=500, detail="Failed to promote skill.")
+
+    if not payload.get("success"):
+        # Bubble up the validator error (name collision, frontmatter,
+        # size cap). Static strings only — no transcript content can
+        # leak through this branch.
+        detail = payload.get("error") or "Failed to promote skill."
+        raise HTTPException(status_code=400, detail=detail)
+
+    response = _skill_create_response(payload, slug)
+    response["session_id"] = sid
+    response["skill_slug"] = slug
+    response["skill_name"] = display_name
+    return response
+
+
 @app.get("/api/tools/toolsets")
 async def get_toolsets():
     from hermes_cli.tools_config import (

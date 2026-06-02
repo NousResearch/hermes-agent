@@ -207,9 +207,9 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
     which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits with code 75.  Both systemd (``Restart=always``
-    + ``RestartForceExitStatus=75``) and launchd (``KeepAlive.SuccessfulExit
-    = false``) relaunch the process after the graceful exit.
+    seconds), then exits with code 75.  Both systemd (``Restart=always``)
+    and launchd (``KeepAlive: true``) relaunch the process regardless of
+    exit code.
 
     This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
     which SIGKILL in-flight agents after a short timeout.
@@ -2874,10 +2874,7 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -2994,8 +2991,8 @@ def launchd_stop():
         pass
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
-    # immediately restarts it because KeepAlive.SuccessfulExit = false.
-    # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
+    # immediately restarts it because KeepAlive: true.  `hermes gateway start`
+    # re-bootstraps when it detects the job is unloaded.
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:

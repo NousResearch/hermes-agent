@@ -116,6 +116,21 @@ except Exception:
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
+
+
+def _refresh_mcp_status_for_all_sessions() -> None:
+   """Re-emit session.info for all active sessions after MCP discovery.
+
+   Called after discover_mcp_tools() completes so the TUI branding shows
+   accurate MCP server status instead of stale "failed" (issue #37159).
+   """
+   for sid, sess in list(_sessions.items()):
+       agent = sess.get("agent")
+       if agent is not None:
+           try:
+               _emit("session.info", sid, _session_info(agent))
+           except Exception:
+               pass
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}

@@ -213,6 +213,13 @@ def main():
         try:
             from tools.mcp_tool import discover_mcp_tools
             discover_mcp_tools()
+            # Re-emit session.info after MCP discovery so TUI branding
+            # shows accurate status instead of stale 'failed' (issue #37159).
+            try:
+                from tui_gateway.server import _refresh_mcp_status_for_all_sessions
+                _refresh_mcp_status_for_all_sessions()
+            except Exception:
+                pass
         except Exception:
             pass
 

@@ -33,6 +33,7 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "show_reasoning": False,
+    "reasoning_to_thread": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter controls. These default on for
@@ -59,6 +60,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 _TIER_HIGH = {
     "tool_progress": "all",
     "show_reasoning": False,
+    "reasoning_to_thread": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
     "interim_assistant_messages": True,
@@ -69,6 +71,7 @@ _TIER_HIGH = {
 _TIER_MEDIUM = {
     "tool_progress": "new",
     "show_reasoning": False,
+    "reasoning_to_thread": False,
     "tool_preview_length": 40,
     "streaming": None,
     "interim_assistant_messages": True,
@@ -79,6 +82,7 @@ _TIER_MEDIUM = {
 _TIER_LOW = {
     "tool_progress": "off",
     "show_reasoning": False,
+    "reasoning_to_thread": False,
     "tool_preview_length": 40,
     "streaming": False,
     "interim_assistant_messages": False,
@@ -89,6 +93,7 @@ _TIER_LOW = {
 _TIER_MINIMAL = {
     "tool_progress": "off",
     "show_reasoning": False,
+    "reasoning_to_thread": False,
     "tool_preview_length": 0,
     "streaming": False,
     "interim_assistant_messages": False,
@@ -105,36 +110,33 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # turn start and final answer. Otherwise it looks like "typing..." for
     # 30 minutes with nothing happening. Opt in to verbose iteration detail
     # via display.platforms.telegram.busy_ack_detail / tool_progress.
-    "telegram":    {
+    "telegram": {
         **_TIER_HIGH,
         "tool_progress": "off",
         "busy_ack_detail": False,
     },
-    "discord":     _TIER_HIGH,
-
+    "discord": _TIER_HIGH,
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
-    "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
-    "mattermost":      _TIER_MEDIUM,
-    "matrix":          _TIER_MEDIUM,
-    "feishu":          _TIER_MEDIUM,
-
+    "slack": {**_TIER_MEDIUM, "tool_progress": "off"},
+    "mattermost": _TIER_MEDIUM,
+    "matrix": _TIER_MEDIUM,
+    "feishu": _TIER_MEDIUM,
     # Tier 3 — no edit support, progress messages are permanent
-    "signal":          _TIER_LOW,
-    "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
-    "bluebubbles":     _TIER_LOW,
-    "weixin":          _TIER_LOW,
-    "wecom":           _TIER_LOW,
-    "wecom_callback":  _TIER_LOW,
-    "dingtalk":        _TIER_LOW,
-
+    "signal": _TIER_LOW,
+    "whatsapp": _TIER_MEDIUM,  # Baileys bridge supports /edit
+    "bluebubbles": _TIER_LOW,
+    "weixin": _TIER_LOW,
+    "wecom": _TIER_LOW,
+    "wecom_callback": _TIER_LOW,
+    "dingtalk": _TIER_LOW,
     # Tier 4 — batch or non-interactive delivery
-    "email":           _TIER_MINIMAL,
-    "sms":             _TIER_MINIMAL,
-    "webhook":         _TIER_MINIMAL,
-    "homeassistant":   _TIER_MINIMAL,
-    "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
+    "email": _TIER_MINIMAL,
+    "sms": _TIER_MINIMAL,
+    "webhook": _TIER_MINIMAL,
+    "homeassistant": _TIER_MINIMAL,
+    "api_server": {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
 # Canonical set of per-platform overrideable keys (for validation).
@@ -210,6 +212,7 @@ def resolve_display_setting(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _normalise(setting: str, value: Any) -> Any:
     """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
     if setting == "tool_progress":
@@ -220,6 +223,7 @@ def _normalise(setting: str, value: Any) -> Any:
         return str(value).lower()
     if setting in {
         "show_reasoning",
+        "reasoning_to_thread",
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",

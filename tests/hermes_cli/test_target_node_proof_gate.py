@@ -62,7 +62,7 @@ def test_target_node_matching_proof_allows_completion(db):
         target_node="conductor",
     )
     kb.claim_task(db, tid, claimer="conductor:99")
-    
+
     metadata = {
         "verified_on_node": "conductor",
         "hostname_proof": socket.gethostname(),
@@ -81,7 +81,7 @@ def test_target_node_mismatched_proof_blocks_completion(db):
         target_node="conductor",
     )
     kb.claim_task(db, tid, claimer="conductor:99")
-    
+
     # Worker claims they verified on cfo-vm but target was conductor
     metadata = {
         "verified_on_node": "cfo-vm",
@@ -89,7 +89,7 @@ def test_target_node_mismatched_proof_blocks_completion(db):
     }
     ok = kb.complete_task(db, tid, summary="done on wrong node", metadata=metadata)
     assert not ok, "mismatched target_node should reject completion"
-    
+
     # Task should still be running, not done
     row = db.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
     assert row["status"] == "running", "task should remain running after rejected completion"
@@ -105,12 +105,12 @@ def test_target_node_missing_proof_blocks_completion(db):
         target_node="conductor",
     )
     kb.claim_task(db, tid, claimer="conductor:99")
-    
+
     # Metadata has no verified_on_node at all
     metadata = {"some_other_key": "value"}
     ok = kb.complete_task(db, tid, summary="done without proof", metadata=metadata)
     assert not ok, "target_node set but no verified_on_node should reject completion"
-    
+
     row = db.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
     assert row["status"] == "running"
 
@@ -125,10 +125,10 @@ def test_target_node_empty_metadata_blocks_completion(db):
         target_node="conductor",
     )
     kb.claim_task(db, tid, claimer="conductor:99")
-    
+
     ok = kb.complete_task(db, tid, summary="done without metadata")
     assert not ok, "target_node set but metadata=None should reject completion"
-    
+
     row = db.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
     assert row["status"] == "running"
 
@@ -143,7 +143,7 @@ def test_target_node_all_valid_nodes(db):
             assignee="operator",
             target_node=node,
         )
-        
+
         # target_node=any doesn't require proof
         if node == "any":
             kb.claim_task(db, tid, claimer="conductor:99")
@@ -178,11 +178,11 @@ def test_completion_blocked_event_emitted_on_mismatch(db):
         target_node="conductor",
     )
     kb.claim_task(db, tid, claimer="conductor:99")
-    
+
     metadata = {"verified_on_node": "cfo-vm"}
     ok = kb.complete_task(db, tid, summary="wrong node", metadata=metadata)
     assert not ok
-    
+
     # Check that the event was logged
     events = db.execute(
         "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
@@ -205,7 +205,7 @@ def test_target_node_persisted_and_readable(db):
         assignee="operator",
         target_node="conductor",
     )
-    
+
     rows = kb.list_tasks(db)
     task = next((t for t in rows if t.id == tid), None)
     assert task is not None
@@ -220,14 +220,14 @@ def test_legacy_task_has_null_target_node(db):
         body="no target_node",
         assignee="builder",
     )
-    
+
     row = db.execute("SELECT target_node FROM tasks WHERE id = ?", (tid,)).fetchone()
     assert row["target_node"] is None
 
 
 def test_target_node_proof_regression_t_e06f0001_class(db):
     """Regression: t_e06f0001-class false-DONE must be rejected.
-    
+
     Context: t_e06f0001 was an infra card that claimed DONE with proof
     collected on cfo-vm when the artifact was actually on Conductor.
     This test simulates that scenario and verifies rejection.
@@ -240,7 +240,7 @@ def test_target_node_proof_regression_t_e06f0001_class(db):
         target_node="conductor",
     )
     kb.claim_task(db, tid, claimer="cfo-vm:99")
-    
+
     # Worker on cfo-vm tries to complete with cfo-vm proof
     metadata = {
         "verified_on_node": "cfo-vm",
@@ -249,6 +249,6 @@ def test_target_node_proof_regression_t_e06f0001_class(db):
     }
     ok = kb.complete_task(db, tid, summary="artifact deployed", metadata=metadata)
     assert not ok, "t_e06f0001-class false-DONE should be rejected"
-    
+
     row = db.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
     assert row["status"] == "running", "task should remain running after rejection"

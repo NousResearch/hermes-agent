@@ -66,6 +66,10 @@ _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_
 # Session-scoped terminal working directory. Runtime per-session overrides use
 # this ContextVar-backed helper so concurrent gateway/cron sessions cannot
 # clobber each other.
+# Session-scoped TERMINAL_CWD — historically read from os.environ but the
+# CLI / cron / gateway may need to override per-session without leaking into
+# concurrent tasks. Keep the env-var name so existing callers using
+# ``os.getenv("TERMINAL_CWD")`` still see process-global values.
 _TERMINAL_CWD: ContextVar = ContextVar("TERMINAL_CWD", default=_UNSET)
 
 _VAR_MAP = {

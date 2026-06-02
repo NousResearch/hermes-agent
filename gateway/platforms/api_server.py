@@ -63,6 +63,19 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
+def _constant_time_equal(left: Optional[str], right: Optional[str]) -> bool:
+    """Compare text secrets without rejecting non-ASCII values.
+
+    ``hmac.compare_digest`` raises ``TypeError`` when either side contains
+    non-ASCII characters; encode both as UTF-8 first so unicode API keys
+    are compared safely in constant time. A ``None`` on either side returns
+    ``False`` so callers that pass an unconfigured key don't crash.
+    """
+    if left is None or right is None:
+        return False
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
     try:
@@ -219,7 +232,13 @@ def _normalize_multimodal_content(content: Any) -> Any:
                         "unsupported_content_type:Only image data URLs are supported. "
                         "Non-image data payloads are not supported."
                     )
-            elif not (lowered.startswith("http://") or lowered.startswith("https://")):
+            elif lowered.startswith("http://") or lowered.startswith("https://"):
+                from tools.url_safety import is_safe_url
+                if not is_safe_url(url_value):
+                    raise ValueError(
+                        "invalid_image_url:Image URLs must not target private or internal network addresses."
+                    )
+            else:
                 raise ValueError(
                     "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
                 )
@@ -720,7 +739,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
+            if _constant_time_equal(token, self._api_key):
                 return None  # Auth OK
 
         return web.json_response(
@@ -1081,12 +1100,29 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = body.get("stream", False)
 
-        proxy_scope = body.get("hermes_proxy_scope")
         origin_platform = None
         enabled_toolsets_override = None
-        if proxy_scope is not None:
+        if "hermes_proxy_scope" in body:
+            from gateway.proxy_scope_auth import (
+                PROXY_SCOPE_SIGNATURE_HEADER,
+                PROXY_SCOPE_TIMESTAMP_HEADER,
+                get_proxy_scope_key,
+                verify_proxy_scope_signature,
+            )
+
+            proxy_scope = body["hermes_proxy_scope"]
             if not isinstance(proxy_scope, dict):
                 return web.json_response(_openai_error("Invalid hermes_proxy_scope"), status=400)
+            if not verify_proxy_scope_signature(
+                proxy_scope,
+                get_proxy_scope_key(),
+                request.headers.get(PROXY_SCOPE_TIMESTAMP_HEADER),
+                request.headers.get(PROXY_SCOPE_SIGNATURE_HEADER),
+            ):
+                return web.json_response(
+                    _openai_error("hermes_proxy_scope requires trusted gateway proxy authentication"),
+                    status=403,
+                )
             raw_platform = proxy_scope.get("origin_platform")
             if raw_platform is not None:
                 origin_platform = str(raw_platform).strip()
@@ -1863,18 +1899,27 @@ class APIServerAdapter(BasePlatformAdapter):
             _batch_buf: List[str] = []
             _batch_timer: Optional[asyncio.Task] = None
             _batch_lock = asyncio.Lock()
+            _batch_error: Optional[BaseException] = None
+            _batch_error_sentinel = object()
 
             async def _batch_flush_after(delay: float) -> None:
                 """Wait delay seconds, then flush accumulated text deltas."""
+                nonlocal _batch_error, _batch_timer
                 try:
                     await asyncio.sleep(delay)
+                    # Clear timer reference BEFORE flush so new deltas
+                    # can start a fresh timer while we emit
+                    _batch_timer = None
+                    await _flush_batch()
                 except asyncio.CancelledError:
                     return
-                # Clear timer reference BEFORE flush so new deltas
-                # can start a fresh timer while we emit
-                nonlocal _batch_buf, _batch_timer
-                _batch_timer = None
-                await _flush_batch()
+                except Exception as exc:
+                    # Surface a flush failure (typically a client disconnect)
+                    # to the main loop so it can interrupt the agent instead
+                    # of waiting forever on the queue.
+                    _batch_timer = None
+                    _batch_error = exc
+                    stream_q.put(_batch_error_sentinel)
 
             async def _flush_batch() -> None:
                 """Emit a single SSE delta for all accumulated text."""
@@ -1895,6 +1940,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         while True:
                             try:
                                 item = stream_q.get_nowait()
+                                if item is _batch_error_sentinel:
+                                    if _batch_error is not None:
+                                        raise _batch_error
+                                    break
                                 if item is None:
                                     break
                                 await _dispatch(item)
@@ -1906,6 +1955,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         await response.write(b": keepalive\n\n")
                         last_activity = time.monotonic()
                     continue
+
+                if item is _batch_error_sentinel:
+                    if _batch_error is not None:
+                        raise _batch_error
+                    break
 
                 if item is None:  # EOS sentinel
                     # Cancel pending timer and flush remaining batched text

@@ -2067,11 +2067,17 @@ class MCPServerTask:
 
         Detection is allow-list based: a 2xx response is rejected only when it
         carries a definite content type that is NOT one an MCP endpoint uses
-        (``application/json`` / ``text/event-stream``). A missing or empty
-        content type, non-2xx status, or any network/transport error passes
-        through silently — the probe is strictly best-effort, and the real
-        handshake remains the source of truth for everything except the
-        unambiguous "this is a web page, not MCP" case.
+        (``application/json`` / ``text/event-stream``).  When HEAD/GET returns
+        a non-MCP content type (e.g. ``text/html``), a lightweight JSON-RPC
+        ``initialize`` POST is attempted before giving up — some servers
+        (e.g. DocuSeal) serve a web UI on GET but speak Streamable HTTP only
+        via POST.
+
+        A missing or empty content type, non-2xx status, or any
+        network/transport error passes through silently — the probe is
+        strictly best-effort, and the real handshake remains the source of
+        truth for everything except the unambiguous "this is a web page,
+        not MCP" case.
 
         Runs on its own httpx client OUTSIDE the SDK's anyio task group, so the
         raised error propagates as itself rather than being wrapped in an
@@ -2099,6 +2105,47 @@ class MCPServerTask:
                 resp = await client.head(url, headers=probe_headers)
                 if resp.status_code in (405, 501):
                     resp = await client.get(url, headers=probe_headers)
+
+                # Some MCP servers (e.g. DocuSeal) serve their web UI on
+                # HEAD/GET but speak Streamable HTTP only via POST.  Before
+                # rejecting the endpoint, try a lightweight JSON-RPC POST
+                # probe so we don't false-positive on POST-only servers.
+                ct = (
+                    resp.headers.get("content-type", "")
+                    .split(";")[0]
+                    .strip()
+                    .lower()
+                )
+                if (
+                    ct
+                    and ct not in self._MCP_CONTENT_TYPES
+                    and 200 <= resp.status_code < 300
+                ):
+                    post_resp = await client.post(
+                        url,
+                        headers={
+                            **probe_headers,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json, text/event-stream",
+                        },
+                        content=(
+                            '{"jsonrpc":"2.0","id":"_probe",'
+                            '"method":"initialize",'
+                            '"params":{"protocolVersion":"2025-03-26",'
+                            '"capabilities":{},'
+                            '"clientInfo":{"name":"hermes-probe",'
+                            '"version":"0.1"}}}'
+                        ),
+                    )
+                    if 200 <= post_resp.status_code < 300:
+                        post_ct = (
+                            post_resp.headers.get("content-type", "")
+                            .split(";")[0]
+                            .strip()
+                            .lower()
+                        )
+                        if post_ct in self._MCP_CONTENT_TYPES:
+                            resp = post_resp
         except _httpx.HTTPError:
             return  # DNS/connect/timeout/transport error — let the SDK try.
 

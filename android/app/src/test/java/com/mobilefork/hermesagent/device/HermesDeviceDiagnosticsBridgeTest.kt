@@ -1486,7 +1486,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         }
 
         assertTrue(names.contains("android_device_diagnostics_tool"))
-        assertTrue(names.contains("hindsight_memory_tool"))
+        assertTrue(names.contains("hy_memory_tool"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("top_apps"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_channel_rating"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("wifi_channel_utilization"))

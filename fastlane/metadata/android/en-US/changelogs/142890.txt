@@ -1,0 +1,7 @@
+Hermes Agent Fork 0.13.128
+
+- Adds Hy Memory as the default Hermes memory stack with a bundled provider plugin, lazy dependency registration, default config, and tests.
+- Adds Android packaged-app Hy Memory diagnostics so emulator validation can prove the embedded Python provider is available on device.
+- Hardens the Shizuku privileged shell bridge with independently tagged user services, cleanup, longer connection tolerance, and clearer command result metadata.
+- Improves native Android Linux fallback reporting so the agent exposes real package, ABI, shell, and manifest details without Termux.
+- Routes native diagnostics/self-test chat prompts through the Kotlin bridge so conversation replies reflect actual device state.

@@ -209,6 +209,9 @@ object HermesLinuxSubsystemBridge {
         assetManifestSha256: String,
         fallbackReason: String,
     ): JSONObject {
+        val manifest = runCatching {
+            JSONObject(readAssetText(context.assets, "$ASSET_ROOT/$androidAbi/manifest.json"))
+        }.getOrNull()
         val nativeRoot = File(context.filesDir, "hermes-home/native-shell")
         val homeDir = File(nativeRoot, "home").apply { mkdirs() }
         val tmpDir = File(nativeRoot, "tmp").apply { mkdirs() }
@@ -219,11 +222,11 @@ object HermesLinuxSubsystemBridge {
             put("asset_manifest_sha256", assetManifestSha256)
             put("execution_mode", SYSTEM_SHELL_MODE)
             put("android_abi", androidAbi)
-            put("termux_arch", "")
+            put("termux_arch", manifest?.optString("termux_arch").orEmpty().ifBlank { androidAbi })
             put("uses_termux", false)
             put("prefix_path", nativeRoot.absolutePath)
             put("shell_path", SYSTEM_SHELL_PATH)
-            put("bash_path", "")
+            put("bash_path", SYSTEM_SHELL_PATH)
             put("native_library_dir", context.applicationInfo.nativeLibraryDir.orEmpty())
             put("native_bash_path", nativeExecutablePath(context, "libhermes_android_bash.so"))
             put("native_llama_server_path", nativeExecutablePath(context, "libhermes_android_llama_server.so"))
@@ -232,8 +235,8 @@ object HermesLinuxSubsystemBridge {
             put("lib_path", "")
             put("home_path", homeDir.absolutePath)
             put("tmp_path", tmpDir.absolutePath)
-            put("root_packages", JSONArray())
-            put("packages", JSONArray())
+            put("root_packages", manifest?.optJSONArray("root_packages") ?: JSONArray())
+            put("packages", manifest?.optJSONArray("packages") ?: JSONArray())
             put("fallback_reason", fallbackReason.take(1200))
         }
     }

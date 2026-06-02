@@ -14,7 +14,7 @@ import com.mobilefork.hermesagent.device.HermesAccessibilityUiBridge
 import com.mobilefork.hermesagent.device.HermesAppControlBridge
 import com.mobilefork.hermesagent.device.HermesAutomationBridge
 import com.mobilefork.hermesagent.device.HermesDeviceDiagnosticsBridge
-import com.mobilefork.hermesagent.device.HermesHindsightMemoryBridge
+import com.mobilefork.hermesagent.device.HermesHyMemoryBridge
 import com.mobilefork.hermesagent.device.HermesPrivilegedAccessBridge
 import com.mobilefork.hermesagent.device.HermesSystemControlBridge
 import com.mobilefork.hermesagent.device.HermesWorkspaceFileBridge
@@ -101,9 +101,11 @@ class NativeToolCallingChatClient(
 
         repeat(MAX_NATIVE_TOOL_ROUNDS) {
             if (assistant.toolCalls.isEmpty()) {
-                val content = assistant.content.ifBlank {
-                    latestToolResult.ifBlank { "Done." }
-                }
+                val content = nativeVisibleReplyContent(
+                    assistantContent = assistant.content,
+                    latestToolResult = latestToolResult,
+                    emptyFallback = "Done.",
+                )
                 return Result(content = content, executedToolCalls = executedToolCalls)
             }
 
@@ -152,8 +154,9 @@ class NativeToolCallingChatClient(
                 throw error
             }
             if (followUp.toolCalls.isEmpty()) {
+                val rawContent = followUp.content.ifBlank { toolCompletionReply(latestToolResult) }
                 return Result(
-                    content = followUp.content.ifBlank { toolCompletionReply(latestToolResult) },
+                    content = nativeVisibleReplyContent(rawContent, latestToolResult),
                     executedToolCalls = executedToolCalls,
                 )
             }
@@ -163,6 +166,37 @@ class NativeToolCallingChatClient(
             content = toolCompletionReply(latestToolResult),
             executedToolCalls = executedToolCalls,
         )
+    }
+
+    private fun nativeVisibleReplyContent(
+        assistantContent: String,
+        latestToolResult: String,
+        emptyFallback: String = "Tool call completed.",
+    ): String {
+        val content = assistantContent.trim()
+        if (content.isBlank()) {
+            return latestToolResult
+                .takeIf { it.isNotBlank() }
+                ?.let { toolCompletionReply(it) }
+                ?: emptyFallback
+        }
+        return if (latestToolResult.isNotBlank() && isCompressionOnlyToolEcho(content)) {
+            toolCompletionReply(latestToolResult)
+        } else {
+            content
+        }
+    }
+
+    private fun isCompressionOnlyToolEcho(content: String): Boolean {
+        val normalized = content.trim().lowercase()
+        if ("compressed_from=" !in normalized) {
+            return false
+        }
+        val stripped = normalized
+            .removePrefix("tool call completed:")
+            .trim()
+            .trimEnd('.')
+        return stripped.startsWith("compressed_from=") && stripped.endsWith("chars")
     }
 
     private fun executeExplicitDirectToolRequest(userText: String): Result? {
@@ -486,11 +520,96 @@ class NativeToolCallingChatClient(
         if (message.isNotBlank()) {
             return message
         }
+        androidSystemStatusReply(parsed)?.let { return it }
         val summary = NativeToolContextCompressor.visibleToolResultSummary(toolResult).trim()
-        return if (summary.isNotBlank()) {
+        return if (summary.isNotBlank() && !isCompressionOnlyToolEcho(summary)) {
             "Tool call completed: $summary"
         } else {
             "Tool call completed."
+        }
+    }
+
+    private fun androidSystemStatusReply(parsed: JSONObject): String? {
+        if (!parsed.has("available_system_actions")) {
+            return null
+        }
+        val parts = mutableListOf<String>()
+        parts += "available_system_actions=${jsonFieldSample(parsed.opt("available_system_actions")).ifBlank { "present" }}"
+        parsed.optJSONObject("privileged_access")?.let { privileged ->
+            val shizuku = listOf(
+                "shizuku_binder_alive",
+                "shizuku_permission_granted",
+                "shizuku_privilege_label",
+            ).mapNotNull { key ->
+                if (privileged.has(key) && !privileged.isNull(key)) {
+                    "$key=${privileged.optString(key)}"
+                } else {
+                    null
+                }
+            }
+            if (shizuku.isNotEmpty()) {
+                parts += "Shizuku=${shizuku.joinToString(", ")}"
+            }
+        }
+        return parts.joinToString("; ")
+    }
+
+    private fun jsonFieldSample(value: Any?, maxItems: Int = 8): String {
+        return when (value) {
+            null, JSONObject.NULL -> ""
+            is JSONArray -> jsonArraySample(value, maxItems)
+            is JSONObject -> {
+                value.optJSONArray("items")?.let { items ->
+                    val sample = jsonArraySample(items, maxItems)
+                    val originalCount = value.optInt("original_count", items.length())
+                    return if (originalCount > items.length() && sample.isNotBlank()) {
+                        "$sample (+${originalCount - items.length()} more)"
+                    } else {
+                        sample
+                    }
+                }
+                value.optString("summary").takeIf { it.isNotBlank() }
+                    ?: value.optString("_summary").takeIf { it.isNotBlank() }
+                    ?: shortSingleLine(value.toString(), 260)
+            }
+            else -> shortSingleLine(value.toString(), 260)
+        }
+    }
+
+    private fun jsonArraySample(array: JSONArray, maxItems: Int): String {
+        val values = buildList {
+            val count = minOf(array.length(), maxItems)
+            for (index in 0 until count) {
+                val value = array.opt(index)
+                when (value) {
+                    null, JSONObject.NULL -> Unit
+                    is JSONObject -> {
+                        listOf("action", "name", "title", "id")
+                            .firstNotNullOfOrNull { key -> value.optString(key).takeIf { it.isNotBlank() } }
+                            ?.let(::add)
+                            ?: add(shortSingleLine(value.toString(), 120))
+                    }
+                    else -> add(shortSingleLine(value.toString(), 120))
+                }
+            }
+        }
+        if (values.isEmpty()) {
+            return ""
+        }
+        val omitted = array.length() - values.size
+        return if (omitted > 0) {
+            "${values.joinToString(", ")} (+$omitted more)"
+        } else {
+            values.joinToString(", ")
+        }
+    }
+
+    private fun shortSingleLine(value: String, limit: Int): String {
+        val compacted = value.replace(Regex("""\s+"""), " ").trim()
+        return if (compacted.length <= limit) {
+            compacted
+        } else {
+            compacted.take((limit - 3).coerceAtLeast(1)) + "..."
         }
     }
 
@@ -610,7 +729,7 @@ class NativeToolCallingChatClient(
                 executeAndroidSystemTool(toolCall)
             "android_device_diagnostics_tool", "device_diagnostics_tool", "diagnostics_tool", "resource_tool", "wifi_analyzer_tool", "bluetooth_scanner_tool", "bluetooth_analyzer_tool", "sensor_tool", "sensor_analyzer_tool", "camera_tool", "radio_signal_tool", "rf_coexistence_tool", "soc_backend_tool", "runtime_stability_tool", "device_performance_tool", "mcp_tool_server_tool", "mcp_registry_tool" ->
                 executeAndroidDeviceDiagnosticsTool(toolCall)
-            "hindsight_memory_tool", "memory_tool", "recall_tool", "retain_tool" -> executeHindsightMemoryTool(toolCall)
+            "hy_memory_tool", "hymemory_tool", "hindsight_memory_tool", "memory_tool", "recall_tool", "retain_tool" -> executeHyMemoryTool(toolCall)
             "android_automation_tool", "automation_tool", "tasker_tool", "kai_task_tool" -> executeAndroidAutomationTool(toolCall)
             "schedule_task" -> executeAndroidAutomationAliasTool(toolCall, "schedule_task")
             "list_tasks" -> executeAndroidAutomationAliasTool(toolCall, "list_tasks")
@@ -711,12 +830,12 @@ class NativeToolCallingChatClient(
         return HermesDeviceDiagnosticsBridge.performActionJson(appContext, action, toolCall.arguments)
     }
 
-    private fun executeHindsightMemoryTool(toolCall: ToolCall): String {
+    private fun executeHyMemoryTool(toolCall: ToolCall): String {
         val action = listOf("action", "operation", "name")
             .firstNotNullOfOrNull { key -> toolCall.arguments.optString(key).takeIf { it.isNotBlank() } }
             ?.trim()
             .orEmpty()
-        return HermesHindsightMemoryBridge.performActionJson(appContext, action, toolCall.arguments)
+        return HermesHyMemoryBridge.performActionJson(appContext, action, toolCall.arguments)
     }
 
     private fun executeAndroidAutomationTool(toolCall: ToolCall): String {
@@ -1298,7 +1417,7 @@ class NativeToolCallingChatClient(
     private fun systemMessage(toolsEnabled: Boolean, relevantMemoryContext: String = ""): JSONObject {
         val customSystemPrompt = AppSettingsStore(appContext).load().customSystemPrompt
         val promotedMemoryContext = if (toolsEnabled) {
-            HermesHindsightMemoryBridge.promotedContextJson(appContext)
+            JSONObject(HermesHyMemoryBridge.performActionJson(appContext, "promoted_context"))
                 .optString("system_prompt_context")
                 .takeIf { it.isNotBlank() }
         } else {
@@ -1419,8 +1538,8 @@ class NativeToolCallingChatClient(
             )
             .put(
                 functionSpec(
-                    name = "hindsight_memory_tool",
-                    description = "Retain, recall, reflect, build relevant prompt context, inspect promoted context, or clear lightweight local memories using Hindsight-style keyword, entity, recency, salience, reinforcement, and Kai-style promotion signals.",
+                    name = "hy_memory_tool",
+                    description = "Retain, recall, reflect, build relevant prompt context, inspect promoted context, or clear lightweight local memories using the HY Memory stack with keyword, entity, recency, salience, reinforcement, and Kai-style promotion signals.",
                     properties = JSONObject()
                         .put("action", stringProp("status, retain, recall, reflect, relevant_context, promoted_context, or clear."))
                         .put("content", stringProp("Fact or memory content for retain."))
@@ -1812,6 +1931,8 @@ class NativeToolCallingChatClient(
             }
             if (
                 listOf(
+                    "hy memory",
+                    "hy-memory",
                     "hindsight",
                     "remember this",
                     "retain memory",
@@ -1824,7 +1945,7 @@ class NativeToolCallingChatClient(
                     "what do you remember",
                 ).any { it in lower }
             ) {
-                add("hindsight_memory_tool")
+                add("hy_memory_tool")
             }
             if (
                 listOf(
@@ -1929,12 +2050,14 @@ class NativeToolCallingChatClient(
                 add("android_device_diagnostics_tool")
             }
             if (
+                "hy_memory_tool" in lower ||
+                "hymemory_tool" in lower ||
                 "hindsight_memory_tool" in lower ||
                 "memory_tool" in lower ||
                 "recall_tool" in lower ||
                 "retain_tool" in lower
             ) {
-                add("hindsight_memory_tool")
+                add("hy_memory_tool")
             }
             if ("android_ui_tool" in lower || "screen_tool" in lower || "accessibility_tool" in lower) {
                 add("android_ui_tool")
@@ -3311,7 +3434,7 @@ class NativeToolCallingChatClient(
                     "For portable signal replay/export requests, call android_device_diagnostics_tool action=agent_signal_replay_export_report so source_action, graph_type, claim_scope, proof_status, and refresh policy stay visible together. " +
                     "Before treating replay/export rows as current, call android_device_diagnostics_tool action=agent_signal_replay_freshness_audit_report so freshness_status, staleness_risk, active_refresh_action, passive_fallback_action, permission_gate, hardware_gate, and proof_status stay attached. " +
                     "Use schedule_task/list_tasks/cancel_task for Kai-style scheduled reminders; these create, list, and cancel native Android automation notification records, not unrestricted background AI prompt execution. " +
-                    "Use hindsight_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
+                    "Use hy_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
                     "Report missing Android permissions honestly. Keep replies brief."
             } else {
                 "You are Hermes running inside the native Android app. Keep replies brief and direct."
@@ -5112,6 +5235,8 @@ internal object NativeToolContextCompressor {
 
     private val PRESERVED_ARRAY_KEYS = setOf(
         "cards",
+        "available_system_actions",
+        "available_privileged_actions",
         "top_memory_apps",
         "top_storage_apps",
         "wifi_networks",

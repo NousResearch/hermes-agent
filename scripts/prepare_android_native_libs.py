@@ -20,6 +20,7 @@ RUNTIME_LIBRARIES = {
     "libggml-cpu.so": "libggml-cpu.so",
     "libggml.so": "libggml.so",
     "libllama-common.so": "libllama-common.so",
+    "libllama-server-impl.so": "libllama-server-impl.so",
     "libllama.so": "libllama.so",
     "libmtmd.so": "libmtmd.so",
     "libssl.so.3": "libssl.so",
@@ -59,6 +60,8 @@ def copy_abi(linux_assets_dir: Path, output_dir: Path, abi: str) -> None:
             destination.chmod(0o755)
     patch_needed(abi_output / "libllama-common.so", "libssl.so.3", "libssl.so")
     patch_needed(abi_output / "libllama-common.so", "libcrypto.so.3", "libcrypto.so")
+    patch_needed(abi_output / "libllama-server-impl.so", "libssl.so.3", "libssl.so")
+    patch_needed(abi_output / "libllama-server-impl.so", "libcrypto.so.3", "libcrypto.so")
     patch_needed(abi_output / "libssl.so", "libssl.so.3", "libssl.so")
     patch_needed(abi_output / "libssl.so", "libcrypto.so.3", "libcrypto.so")
     patch_needed(abi_output / "libcrypto.so", "libcrypto.so.3", "libcrypto.so")

@@ -142,7 +142,10 @@ fun DeviceScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                 DeviceGuideCard(workspacePath = uiState.workspacePath)
-                LinuxSuiteCard(uiState = uiState)
+                LinuxSuiteCard(
+                    uiState = uiState,
+                    onInstallSuite = viewModel::installLinuxSuite,
+                )
                 OperatorStandbyCard(uiState = uiState)
                 ConnectivityCard(
                     uiState = uiState,
@@ -325,7 +328,10 @@ private fun DeviceGuideCard(workspacePath: String) {
 }
 
 @Composable
-private fun LinuxSuiteCard(uiState: DeviceUiState) {
+private fun LinuxSuiteCard(
+    uiState: DeviceUiState,
+    onInstallSuite: () -> Unit,
+) {
     val strings = LocalHermesStrings.current
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -368,6 +374,9 @@ private fun LinuxSuiteCard(uiState: DeviceUiState) {
                 strings.deviceLinuxTerminalGuidance(),
                 style = MaterialTheme.typography.bodySmall,
             )
+            Button(onClick = onInstallSuite) {
+                Text(strings.deviceLinuxInstallSuiteLabel())
+            }
         }
     }
 }
@@ -961,6 +970,15 @@ private fun HermesStrings.deviceLinuxTerminalGuidance(): String = when (language
     AppLanguage.PORTUGUESE -> "Peça ao Hermes para usar terminal em comandos como git status, ls, curl, grep ou pipelines de shell maiores diretamente nesta suíte."
     AppLanguage.FRENCH -> "Demandez à Hermes d’utiliser terminal pour git status, ls, curl, grep ou des pipelines shell plus longs directement dans cette suite."
     AppLanguage.ENGLISH -> "Ask Hermes to use terminal for commands like 'git status', 'ls', 'curl', 'grep', or longer shell pipelines directly in this suite."
+}
+
+private fun HermesStrings.deviceLinuxInstallSuiteLabel(): String = when (language) {
+    AppLanguage.CHINESE -> "安装 / 刷新 Linux 终端"
+    AppLanguage.SPANISH -> "Instalar / actualizar terminal Linux"
+    AppLanguage.GERMAN -> "Linux-Terminal installieren / aktualisieren"
+    AppLanguage.PORTUGUESE -> "Instalar / atualizar terminal Linux"
+    AppLanguage.FRENCH -> "Installer / actualiser le terminal Linux"
+    AppLanguage.ENGLISH -> "Install / refresh Linux terminal"
 }
 
 private fun HermesStrings.deviceConnectivityTitle(): String = when (language) {

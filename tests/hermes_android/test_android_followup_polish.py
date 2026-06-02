@@ -233,7 +233,7 @@ def test_screenshot_reported_native_tool_self_test_is_real_bridge_diagnostic():
     assert 'NativeAndroidShellTool.run(appContext, "printf hermes-native-shell", 5)' in diagnostics_bridge
     assert 'JSONObject(HermesSystemControlBridge.statusJson())' in diagnostics_bridge
     assert 'JSONObject(HermesAccessibilityUiBridge.snapshotJson(1))' in diagnostics_bridge
-    assert 'HermesHindsightMemoryBridge.statusJson(appContext)' in diagnostics_bridge
+    assert 'HermesHyMemoryBridge.statusJson(appContext)' in diagnostics_bridge
     assert 'HermesWorkspaceFileBridge.writeTextJson(appContext, path, "hermes-native-file", false)' in diagnostics_bridge
     assert '"verified_by_direct_native_calls"' in diagnostics_bridge
     assert '"not_used_by_native_android_tool_bridges"' in diagnostics_bridge
@@ -494,7 +494,7 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
     assert 'background_ai_prompt_execution' in diagnostics_bridge
     assert 'Route Kai-style tool orchestration' in diagnostics_bridge
     assert 'Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions' in diagnostics_bridge
-    assert 'Use hindsight_memory_tool and operator heartbeat/status rows' in diagnostics_bridge
+    assert 'Use hy_memory_tool and operator heartbeat/status rows' in diagnostics_bridge
     assert 'agent_environment_report' in chat_client
     assert 'mcp_tool_server_registry_report' in chat_client
     assert 'agent_objective_coverage_report' in chat_client
@@ -1752,6 +1752,10 @@ def test_device_backend_exposes_deeper_radio_control_actions_and_status():
     assert 'isActiveNetworkMetered' in bridge
     assert 'Cellular + radio controls' in device
     assert 'airplane_mode_enabled' in state_writer
+    assert 'privileged_access' in state_writer
+    assert 'shizuku_binder_alive' in state_writer
+    assert 'shizuku_permission_granted' in state_writer
+    assert 'available_privileged_actions' in state_writer
     assert 'android_device_performance_profile' in state_writer
 
 

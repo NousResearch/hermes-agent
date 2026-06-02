@@ -125,6 +125,9 @@ fun ChatScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
     val scrollScope = rememberCoroutineScope()
+    val latestMessageFingerprint = uiState.messages.lastOrNull()?.let { message ->
+        "${message.id}:${message.role}:${message.content.length}:${uiState.messages.size}"
+    }.orEmpty()
     val showScrollToBottom by remember {
         derivedStateOf {
             val totalItems = listState.layoutInfo.totalItemsCount
@@ -282,14 +285,18 @@ fun ChatScreen(
         onContextActionsChanged(shellActions)
     }
 
-    LaunchedEffect(uiState.messages.size, uiState.isShowingHistory, chatDisplayMode) {
+    LaunchedEffect(latestMessageFingerprint, uiState.isSending, uiState.isShowingHistory, chatDisplayMode) {
         if (!uiState.isShowingHistory && uiState.messages.isNotEmpty()) {
             val targetIndex = if (chatDisplayMode == "compact") {
-                buildChatTurns(uiState.messages).lastIndex
+                buildChatTurns(uiState.messages).size
             } else {
-                uiState.messages.lastIndex
+                uiState.messages.size
+            }.coerceAtLeast(0)
+            if (uiState.isSending) {
+                listState.scrollToItem(targetIndex)
+            } else {
+                listState.animateScrollToItem(targetIndex)
             }
-            listState.animateScrollToItem(targetIndex.coerceAtLeast(0))
         }
     }
 
@@ -430,6 +437,13 @@ fun ChatScreen(
                                         onSpeak = { message -> speak(message.content) },
                                     )
                                 }
+                            }
+                            item(key = "HermesChatBottomAnchor") {
+                                Spacer(
+                                    modifier = Modifier
+                                        .height(1.dp)
+                                        .testTag("HermesChatBottomAnchor"),
+                                )
                             }
                         }
                         if (showScrollToBottom) {

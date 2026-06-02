@@ -32,9 +32,9 @@ _ACCESSIBILITY_TOOLS = [
 _SYSTEM_ACTION_TOOLS = [
     "android_system_action",
 ]
-_SHARED_FOLDER_BRIDGE_CLASS = "com.nousresearch.hermesagent.device.HermesSharedFolderBridge"
-_ACCESSIBILITY_BRIDGE_CLASS = "com.nousresearch.hermesagent.device.HermesAccessibilityUiBridge"
-_SYSTEM_CONTROL_BRIDGE_CLASS = "com.nousresearch.hermesagent.device.HermesSystemControlBridge"
+_SHARED_FOLDER_BRIDGE_CLASS = "com.mobilefork.hermesagent.device.HermesSharedFolderBridge"
+_ACCESSIBILITY_BRIDGE_CLASS = "com.mobilefork.hermesagent.device.HermesAccessibilityUiBridge"
+_SYSTEM_CONTROL_BRIDGE_CLASS = "com.mobilefork.hermesagent.device.HermesSystemControlBridge"
 
 
 def _hermes_home() -> Path:

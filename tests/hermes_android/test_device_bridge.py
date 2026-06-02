@@ -164,3 +164,9 @@ def test_system_action_wrapper_decodes_json(monkeypatch):
     assert result["success"] is True
     assert result["action"] == "open_wifi_panel"
     assert calls == [("performActionJson", ("open_wifi_panel",))]
+
+
+def test_android_bridge_class_names_match_mobilefork_namespace():
+    assert device_bridge._SHARED_FOLDER_BRIDGE_CLASS == "com.mobilefork.hermesagent.device.HermesSharedFolderBridge"
+    assert device_bridge._ACCESSIBILITY_BRIDGE_CLASS == "com.mobilefork.hermesagent.device.HermesAccessibilityUiBridge"
+    assert device_bridge._SYSTEM_CONTROL_BRIDGE_CLASS == "com.mobilefork.hermesagent.device.HermesSystemControlBridge"

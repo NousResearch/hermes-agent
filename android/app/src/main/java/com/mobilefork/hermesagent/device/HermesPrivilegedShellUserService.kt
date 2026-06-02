@@ -12,25 +12,31 @@ class HermesPrivilegedShellUserService : IHermesPrivilegedShellService.Stub {
     constructor() : super()
     constructor(@Suppress("UNUSED_PARAMETER") context: Context) : super()
 
+    init {
+        scheduleProcessExit(IDLE_PROCESS_EXIT_DELAY_MS, "hermes-shizuku-service-idle-exit")
+    }
+
     override fun runCommand(command: String, timeoutSeconds: Int): String {
         val normalizedCommand = command.trim()
         if (normalizedCommand.isBlank()) {
-            return JSONObject()
+            return finish(
+                JSONObject()
                 .put("success", false)
                 .put("exit_code", 2)
-                .put("error", "run_privileged_shell requires a non-empty command")
-                .toString()
+                .put("error", "run_privileged_shell requires a non-empty command"),
+            )
         }
         if (normalizedCommand.indexOf('\u0000') >= 0) {
-            return JSONObject()
+            return finish(
+                JSONObject()
                 .put("success", false)
                 .put("exit_code", 2)
-                .put("error", "run_privileged_shell command must not contain NUL bytes")
-                .toString()
+                .put("error", "run_privileged_shell command must not contain NUL bytes"),
+            )
         }
 
         val timeout = timeoutSeconds.coerceIn(1, MAX_TIMEOUT_SECONDS)
-        return runCatching {
+        return finish(runCatching {
             val process = ProcessBuilder("/system/bin/sh", "-c", normalizedCommand).start()
             val stdout = AtomicReference("")
             val stderr = AtomicReference("")
@@ -72,14 +78,31 @@ class HermesPrivilegedShellUserService : IHermesPrivilegedShellService.Stub {
                 .put("timed_out", !finished)
                 .put("uid", android.os.Process.myUid())
                 .put("privilege_context", "shizuku_user_service")
-                .toString()
         }.getOrElse { error ->
             JSONObject()
                 .put("success", false)
                 .put("exit_code", -1)
                 .put("error", error.message ?: error.javaClass.simpleName)
                 .put("privilege_context", "shizuku_user_service")
-                .toString()
+        })
+    }
+
+    private fun finish(payload: JSONObject): String {
+        scheduleProcessExit(PROCESS_EXIT_DELAY_MS, "hermes-shizuku-service-exit")
+        return payload.toString()
+    }
+
+    private fun scheduleProcessExit(delayMs: Long, threadName: String) {
+        Thread {
+            try {
+                Thread.sleep(delayMs)
+            } finally {
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }
+        }.apply {
+            name = threadName
+            isDaemon = true
+            start()
         }
     }
 
@@ -114,5 +137,7 @@ class HermesPrivilegedShellUserService : IHermesPrivilegedShellService.Stub {
     private companion object {
         private const val MAX_CAPTURE_BYTES = 16_384
         private const val MAX_TIMEOUT_SECONDS = 120
+        private const val PROCESS_EXIT_DELAY_MS = 750L
+        private const val IDLE_PROCESS_EXIT_DELAY_MS = 180_000L
     }
 }

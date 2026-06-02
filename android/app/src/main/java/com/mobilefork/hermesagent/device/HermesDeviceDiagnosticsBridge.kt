@@ -4236,7 +4236,7 @@ object HermesDeviceDiagnosticsBridge {
         val signalStatus = signalCapabilityStatusJson(appContext)
         val radioStatus = radioSignalStatusJson(appContext)
         val preferredModel = preferredLocalModelJson(appContext)
-        val hindsightStatus = HermesHindsightMemoryBridge.statusJson(appContext)
+        val hindsightStatus = HermesHyMemoryBridge.statusJson(appContext)
         val automationStatus = runCatching {
             JSONObject(HermesAutomationBridge.performActionJson(appContext, "operator_standby_status"))
         }.getOrDefault(JSONObject())
@@ -4304,7 +4304,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put("Use sensor_snapshot or sensor watchers for motion, orientation, ambient, and workflow-trigger context.")
                     .put("Use radio_signal_status/signal_capability_status to explain AM/FM/RF limits honestly and route broad RF work to external SDR/vendor hardware.")
                     .put("Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions and keep MediaTek/Mali/PowerVR devices on GPU-first with CPU fallback when available.")
-                    .put("Use hindsight_memory_tool and operator heartbeat/status rows to retain durable context and expose autonomous task readiness.")
+                    .put("Use hy_memory_tool and operator heartbeat/status rows to retain durable context and expose autonomous task readiness.")
                     .put("Use Settings Agent persona plus secret-free app settings export/import for Kai-style customizable soul/system prompt behavior.")
                     .put("Use kai_operations_matrix to route Kai-style provider fallback, tool bridge, configurable persona, encrypted storage, secret-free settings backup, automation backup, TTS, image, and shell-boundary work through native Hermes surfaces.")
                     .put("Use agent_tool_sandbox_matrix before executing tools so Gemma can see which surfaces are app-sandboxed, permission-gated, privileged, remote-dispatch capable, or MCP-equivalent.")
@@ -4867,10 +4867,10 @@ object HermesDeviceDiagnosticsBridge {
                     ready = true,
                     valueLabel = if (personaStatus.optBoolean("custom_system_prompt_enabled", false)) "custom persona + memory" else "default persona + memory",
                     detail = "Hindsight memory has ${hindsightStatus.optInt("memory_count", 0)} memory row(s); provider credentials stay in encrypted stores and persona/settings export remains secret-free.",
-                    recommendation = "Use hindsight_memory_tool plus Settings Agent persona for durable behavior changes without exposing provider secrets.",
+                    recommendation = "Use hy_memory_tool plus Settings Agent persona for durable behavior changes without exposing provider secrets.",
                     fraction = 0.9f,
                     extra = JSONObject()
-                        .put("tool_action", "hindsight_memory_tool:recall")
+                        .put("tool_action", "hy_memory_tool:recall")
                         .put("source_surface", "hindsight_memory_and_persona")
                         .put("sandbox_scope", "local encrypted preferences and app-local memory records")
                         .put("permission_gate", "user settings and provider-auth stores")
@@ -5142,7 +5142,7 @@ object HermesDeviceDiagnosticsBridge {
                     ready = true,
                     valueLabel = "${hindsightStatus.optInt("memory_count", 0)} memories",
                     detail = "${hindsightStatus.optInt("reinforced_memory_count", 0)} reinforced, ${hindsightStatus.optInt("promoted_memory_count", 0)} promoted for prompt context.",
-                    recommendation = "Use hindsight_memory_tool retain/recall/relevant_context/reflect/promoted_context around complex work.",
+                    recommendation = "Use hy_memory_tool retain/recall/relevant_context/reflect/promoted_context around complex work.",
                     fraction = ((hindsightStatus.optInt("promoted_memory_count", 0) + 1) / 5f).coerceIn(0.25f, 1f),
                 ),
             )
@@ -23017,8 +23017,8 @@ object HermesDeviceDiagnosticsBridge {
                 },
             )
             .put(
-                nativeSelfTestRow("hindsight_memory_tool", "Hindsight memory", "HermesHindsightMemoryBridge") {
-                    val status = HermesHindsightMemoryBridge.statusJson(appContext)
+                nativeSelfTestRow("hy_memory_tool", "HY Memory", "HermesHyMemoryBridge") {
+                    val status = HermesHyMemoryBridge.statusJson(appContext)
                     NativeSelfTestResult(
                         ready = status.optBoolean("success", false),
                         status = if (status.optBoolean("success", false)) "ready" else "error",
@@ -23128,7 +23128,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("cancel_task", "Kai-compatible alias for deleting a saved Hermes Android automation by task_id.", "task_id"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, Tasker-style triggers, Kai-compatible scheduled task aliases, and secret-free app settings export/import.", "action, trigger, task_id, data_uri, bundle_json, settings_json"))
                     .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, redacted last-crash logs, diagnostics log export, Wi-Fi signals/channel graph envelopes/channel ratings/AP detail and export rows/vendor OUI/filter facets plus active Wi-Fi band/security/signal/SSID/RSSI filters, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history/filter facets, camera, sensors, SOC compatibility, overlay, Gemma-visible signal evidence bundles and agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, scan_mode, refresh, filter_band, filter_security, filter_signal, filter_ssid, min_rssi_dbm, max_rssi_dbm, filter_device_name, filter_bluetooth_service, filter_bluetooth_manufacturer, filter_bluetooth_category, filter_bluetooth_proximity, sensor_types, timeout_ms"))
-                    .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
+                    .put(toolJson("hy_memory_tool", "Retain, recall, reflect, and promote local HY Memory rows with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
             .put(

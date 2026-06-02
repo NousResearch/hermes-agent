@@ -53,10 +53,16 @@ class PrivilegedAccessStatusInstrumentedTest {
 
     @Test
     fun privilegedShellReportsPermissionStateWithoutCrash() {
-        val result = JSONObject(HermesPrivilegedAccessBridge.runShellCommandJson(app, "id", 1))
+        val status = HermesPrivilegedAccessBridge.readStatus(app)
+        val result = JSONObject(HermesPrivilegedAccessBridge.runShellCommandJson(app, "id", 30))
         assertTrue(result.toString(), result.has("success"))
         assertTrue(result.toString(), result.has("exit_code"))
-        if (!result.getBoolean("success")) {
+        if (status.shizukuBinderAlive && status.shizukuPermissionGranted) {
+            assertTrue(result.toString(), result.getBoolean("success"))
+            assertEquals(result.toString(), 0, result.getInt("exit_code"))
+            assertTrue(result.toString(), result.getString("output").contains("uid="))
+            assertEquals("shizuku_user_service", result.getString("privilege_context"))
+        } else if (!result.getBoolean("success")) {
             assertTrue(result.toString(), result.has("error"))
             assertTrue(result.toString(), result.has("shizuku_privilege_label"))
         }
@@ -119,7 +125,7 @@ class PrivilegedAccessStatusInstrumentedTest {
                 JSONObject()
                     .put("package_name", app.packageName)
                     .put("permission", "android.permission.POST_NOTIFICATIONS")
-                    .put("timeout_seconds", 1),
+                    .put("timeout_seconds", 30),
             )
         )
         assertTrue(result.toString(), result.has("success"))

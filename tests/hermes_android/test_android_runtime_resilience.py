@@ -47,6 +47,12 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
     assert "recoverMessagesAfterContextOverflow(messages)" in native_tool_client
     assert "recoverToolSpecsAfterContextOverflow(toolSpecs)" in native_tool_client
     assert "followUp.content.ifBlank { toolCompletionReply(latestToolResult) }" in native_tool_client
+    assert "nativeVisibleReplyContent(rawContent, latestToolResult)" in native_tool_client
+    assert "isCompressionOnlyToolEcho(content: String)" in native_tool_client
+    assert 'removePrefix("tool call completed:")' in native_tool_client
+    assert '"available_system_actions"' in native_tool_client
+    assert "androidSystemStatusReply(parsed)?.let { return it }" in native_tool_client
+    assert '"available_privileged_actions"' in native_tool_client
 
     assert 'internal fun parseStream(' in sse_client
     assert 'parseStream(source, onDelta, onComplete, onError, onStatus)' in sse_client
@@ -99,3 +105,15 @@ def test_android_chat_ui_and_native_tool_prompt_stay_compact_on_large_font_phone
     assert 'formatNativeChatError' in native_tool_client
     assert 'The local model ran out of context' in native_tool_client
     assert 'Native chat request failed: ${response.code} $body' not in native_tool_client
+
+
+def test_chat_streaming_stays_pinned_to_latest_message_bottom_anchor():
+    chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+
+    assert "latestMessageFingerprint" in chat_screen
+    assert "${message.id}:${message.role}:${message.content.length}:${uiState.messages.size}" in chat_screen
+    assert "LaunchedEffect(latestMessageFingerprint, uiState.isSending, uiState.isShowingHistory, chatDisplayMode)" in chat_screen
+    assert "listState.scrollToItem(targetIndex)" in chat_screen
+    assert "listState.animateScrollToItem(targetIndex)" in chat_screen
+    assert 'item(key = "HermesChatBottomAnchor")' in chat_screen
+    assert 'testTag("HermesChatBottomAnchor")' in chat_screen

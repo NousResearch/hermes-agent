@@ -116,6 +116,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "image.fal": ("fal-client==0.13.1",),
 
     # ─── Memory providers ──────────────────────────────────────────────────
+    "memory.hy_memory": ("hy-memory==1.2.16",),
     "memory.honcho": ("honcho-ai==2.0.1",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
 

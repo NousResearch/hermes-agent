@@ -35,6 +35,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="moe.shizuku.manager.permission.API" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />

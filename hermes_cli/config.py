@@ -1195,9 +1195,13 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
+        # "hy_memory", "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
-        "provider": "",
+        "provider": "hy_memory",
+        "hy_memory": {
+            "mode": "lite",
+            "limit": 8,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

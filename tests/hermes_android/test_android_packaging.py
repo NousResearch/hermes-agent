@@ -123,6 +123,28 @@ def test_android_runtime_requirements_pin_pre_jiter_openai_sdk():
     assert "\npydantic_core" not in requirements
 
 
+def test_hy_memory_dependency_is_registered_as_lazy_optional_provider():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    lazy_deps = (REPO_ROOT / "tools/lazy_deps.py").read_text(encoding="utf-8")
+    config = (REPO_ROOT / "hermes_cli/config.py").read_text(encoding="utf-8")
+    provider = (REPO_ROOT / "plugins/memory/hy_memory/__init__.py").read_text(encoding="utf-8")
+
+    assert pyproject["project"]["optional-dependencies"]["hy-memory"] == ["hy-memory==1.2.16"]
+    assert '"memory.hy_memory": ("hy-memory==1.2.16",)' in lazy_deps
+    assert '"provider": "hy_memory"' in config
+    assert '_lazy_ensure("memory.hy_memory", prompt=False)' in provider
+    assert 'from hy_memory import HyMemoryClient' in provider
+
+
+def test_android_llama_server_native_dependencies_are_packaged():
+    script = (REPO_ROOT / "scripts/prepare_android_native_libs.py").read_text(encoding="utf-8")
+
+    assert '"bin/llama-server": "libhermes_android_llama_server.so"' in script
+    assert '"libllama-server-impl.so": "libllama-server-impl.so"' in script
+    assert 'patch_needed(abi_output / "libllama-server-impl.so", "libssl.so.3", "libssl.so")' in script
+    assert 'patch_needed(abi_output / "libllama-server-impl.so", "libcrypto.so.3", "libcrypto.so")' in script
+
+
 def test_runtime_service_enters_foreground_before_runtime_startup():
     service = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/backend/HermesRuntimeService.kt").read_text(encoding="utf-8")
     start_body = service.split("private fun startOrRefreshForeground()", 1)[1].split("private fun buildNotification", 1)[0]
@@ -247,11 +269,13 @@ def test_android_declares_shizuku_privileged_access_support():
     assert 'implementation("dev.rikka.shizuku:api:13.1.5")' in gradle
     assert 'implementation("dev.rikka.shizuku:provider:13.1.5")' in gradle
     assert 'moe.shizuku.manager.permission.API' in manifest
+    assert 'moe.shizuku.manager.permission.API_V23' in manifest
     assert 'rikka.shizuku.ShizukuProvider' in manifest
     assert 'android:authorities="${applicationId}.shizuku"' in manifest
     assert "Shizuku.pingBinder()" in bridge
     assert "Shizuku.checkSelfPermission()" in bridge
     assert "Shizuku.requestPermission" in bridge
+    assert "libshizuku.so" in bridge
     assert "open_wireless_debugging_settings" in bridge
     assert "open_shizuku_app" in bridge
     assert "privileged_access" in system_bridge

@@ -16,6 +16,7 @@ import com.mobilefork.hermesagent.device.HermesCrashLogStore
 import com.mobilefork.hermesagent.device.HermesGlobalAction
 import com.mobilefork.hermesagent.device.HermesLinuxSubsystemBridge
 import com.mobilefork.hermesagent.device.HermesSystemControlBridge
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -100,12 +101,39 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         DeviceStateWriter.write(application)
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = runCatching {
+                HermesLinuxSubsystemBridge.ensureInstalled(application)
+                "Linux command suite ready for terminal/process"
+            }.getOrElse { error ->
+                "Linux command suite provisioning failed: ${error.message ?: error.javaClass.simpleName}"
+            }
+            DeviceStateWriter.write(application)
+            _uiState.value = buildState(status)
+        }
     }
 
     fun refresh(status: String = _uiState.value.status) {
         val context = getApplication<Application>()
         DeviceStateWriter.write(context)
         _uiState.value = buildState(status)
+    }
+
+    fun installLinuxSuite() {
+        val context = getApplication<Application>()
+        _uiState.value = _uiState.value.copy(status = "Installing Linux command suite…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = runCatching {
+                val state = HermesLinuxSubsystemBridge.ensureInstalled(context)
+                val packageCount = state.optJSONArray("packages")?.length() ?: 0
+                val arch = state.optString("termux_arch").ifBlank { state.optString("android_abi") }
+                "Linux command suite ready ($arch, $packageCount packages)"
+            }.getOrElse { error ->
+                "Linux command suite install failed: ${error.message ?: error.javaClass.simpleName}"
+            }
+            DeviceStateWriter.write(context)
+            _uiState.value = buildState(status)
+        }
     }
 
     fun importDocument(uri: Uri) {
@@ -260,7 +288,7 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             linuxAndroidAbi = linuxState?.optString("android_abi").orEmpty(),
             linuxTermuxArch = linuxState?.optString("termux_arch").orEmpty(),
             linuxPrefixPath = linuxState?.optString("prefix_path").orEmpty(),
-            linuxBashPath = linuxState?.optString("bash_path").orEmpty(),
+            linuxBashPath = linuxState?.optString("bash_path").orEmpty().ifBlank { linuxState?.optString("shell_path").orEmpty() },
             linuxHomePath = linuxState?.optString("home_path").orEmpty(),
             linuxTmpPath = linuxState?.optString("tmp_path").orEmpty(),
             linuxPackageCount = linuxState?.optJSONArray("packages")?.length() ?: 0,

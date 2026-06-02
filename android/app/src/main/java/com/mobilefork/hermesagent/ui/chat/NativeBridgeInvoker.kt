@@ -2,7 +2,7 @@ package com.mobilefork.hermesagent.ui.chat
 
 import android.content.Context
 import com.mobilefork.hermesagent.device.HermesDeviceDiagnosticsBridge
-import com.mobilefork.hermesagent.device.HermesHindsightMemoryBridge
+import com.mobilefork.hermesagent.device.HermesHyMemoryBridge
 import org.json.JSONObject
 
 internal object NativeBridgeInvoker {
@@ -15,7 +15,7 @@ internal object NativeBridgeInvoker {
     }
 
     fun performMemoryAction(context: Context, action: String, arguments: JSONObject): String {
-        return HermesHindsightMemoryBridge.performActionJson(
+        return HermesHyMemoryBridge.performActionJson(
             context = context.applicationContext,
             rawAction = action,
             arguments = arguments,

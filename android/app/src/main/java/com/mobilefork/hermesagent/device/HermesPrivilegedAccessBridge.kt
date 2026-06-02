@@ -20,7 +20,7 @@ private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
 private const val SUI_PACKAGE = "rikka.sui"
 private const val SHIZUKU_DOWNLOAD_URL = "https://shizuku.rikka.app/download/"
 private const val SHIZUKU_ADB_START_COMMAND =
-    "adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh"
+    "adb shell 'base=\$(pm path moe.shizuku.privileged.api | sed s/package:// | head -n1); dir=\${base%/*}; abi=\$(getprop ro.product.cpu.abi); \"\$dir/lib/\$abi/libshizuku.so\"'"
 private const val SHIZUKU_PERMISSION_REQUEST_CODE = 2401
 
 data class HermesPrivilegedAccessStatus(
@@ -334,8 +334,9 @@ object HermesPrivilegedAccessBridge {
 
         val appContext = context.applicationContext
         val componentName = ComponentName(appContext, HermesPrivilegedShellUserService::class.java)
+        val serviceTag = "hermes_privileged_shell_${System.nanoTime()}"
         val args = Shizuku.UserServiceArgs(componentName)
-            .tag("hermes_privileged_shell")
+            .tag(serviceTag)
             .processNameSuffix("privileged_shell")
             .version(1)
             .debuggable((appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
@@ -361,16 +362,21 @@ object HermesPrivilegedAccessBridge {
                     .put("success", false)
                     .put("exit_code", 124)
                     .put("error", "Timed out while connecting to Hermes Shizuku user service")
+                    .put("user_service_tag", serviceTag)
                     .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
                     .toString()
             }
             val service = serviceRef.get()
-                ?: return JSONObject()
-                    .put("success", false)
-                    .put("exit_code", -1)
-                    .put("error", "Hermes Shizuku user service disconnected before command execution")
-                    .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
-                    .toString()
+                ?: run {
+                    runCatching { Shizuku.unbindUserService(args, connection, true) }
+                    return JSONObject()
+                        .put("success", false)
+                        .put("exit_code", -1)
+                        .put("error", "Hermes Shizuku user service disconnected before command execution")
+                        .put("user_service_tag", serviceTag)
+                        .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
+                        .toString()
+                }
             val result = JSONObject(service.runCommand(command, timeoutSeconds))
                 .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
             runCatching { Shizuku.unbindUserService(args, connection, true) }
@@ -381,6 +387,7 @@ object HermesPrivilegedAccessBridge {
                 .put("success", false)
                 .put("exit_code", -1)
                 .put("error", error.message ?: error.javaClass.simpleName)
+                .put("user_service_tag", serviceTag)
                 .put("shizuku_privilege_label", status.shizukuPrivilegeLabel)
                 .toString()
         }
@@ -801,4 +808,4 @@ object HermesPrivilegedAccessBridge {
 }
 
 private const val DEFAULT_SHELL_TIMEOUT_SECONDS = 30
-private const val SERVICE_CONNECT_TIMEOUT_SECONDS = 10
+private const val SERVICE_CONNECT_TIMEOUT_SECONDS = 30

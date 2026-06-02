@@ -4,6 +4,23 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
+class _FakeMemoryProvider:
+    name = "hy_memory"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        self.session_id = session_id
+        self.kwargs = kwargs
+
+    def get_tool_schemas(self):
+        return []
+
+    def system_prompt_block(self):
+        return "HY Memory active"
+
+
 def test_blank_memory_provider_does_not_auto_enable_honcho():
     """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
     cfg = {"memory": {"provider": ""}, "agent": {}}
@@ -37,3 +54,32 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
     load_memory_provider.assert_not_called()
     save_config.assert_not_called()
 
+
+def test_hy_memory_provider_is_loaded_when_configured_by_default():
+    cfg = {"memory": {"provider": "hy_memory"}, "agent": {}}
+    fake_provider = _FakeMemoryProvider()
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.save_config") as save_config,
+        patch("plugins.memory.load_memory_provider", return_value=fake_provider) as load_memory_provider,
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+        )
+
+    load_memory_provider.assert_called_once_with("hy_memory")
+    assert agent._memory_manager is not None
+    assert [provider.name for provider in agent._memory_manager.providers] == ["hy_memory"]
+    assert fake_provider.kwargs["agent_context"] == "primary"
+    save_config.assert_not_called()

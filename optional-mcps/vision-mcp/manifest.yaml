@@ -1,0 +1,64 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: vision-mcp
+description: Reuse desktop GUI workflows through Vision-MCP maps.
+source: https://github.com/Haruhiyuki/vision-mcp
+
+# Vision-MCP is an npm-published stdio MCP server. The apps root is kept
+# outside the Hermes install so learned maps and patches survive package
+# updates and can be shared with other MCP clients.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - -y
+    - "@vision-mcp/cli@latest"
+    - serve
+    - --apps-root
+    - "${HOME}/.vision-mcp/apps"
+
+auth:
+  type: none
+
+# Default to higher-level workflow, state, repair, and capsule tools. Raw
+# coordinate/input tools and map mutation tools are available from the server
+# but require an explicit user opt-in through `hermes mcp configure vision-mcp`.
+tools:
+  default_enabled:
+    - capsule.ensure_display
+    - capsule.attach_window
+    - capsule.migrate_window
+    - capsule.restore_window
+    - capsule.capture
+    - capsule.validate_geometry
+    - capsule.raise
+    - vision_map.snapshot
+    - vision_map.list_apps
+    - vision_map.list_workflows
+    - vision_map.describe_workflow
+    - vision_map.describe
+    - vision_map.detect_state
+    - vision_map.list_actions
+    - vision_map.describe_action
+    - vision_map.perform_action
+    - vision_map.run_workflow
+    - vision_map.verify
+    - vision_map.repair_minimal
+    - vision_map.export_trace
+
+post_install: |
+  Vision-MCP controls visible desktop applications through screenshots,
+  accessibility trees, OCR, and input events. Before running real GUI
+  workflows, install the native helper and grant platform permissions:
+    npx -y @vision-mcp/cli@latest doctor
+    npx -y @vision-mcp/cli@latest install-helper
+
+  Copy starter app maps into the default apps root with:
+    npx -y @vision-mcp/cli@latest init-apps
+
+  Install the companion Hermes skill for operating guidance:
+    hermes skills install official/mcp/vision-mcp
+
+  Start a new Hermes session after setup so the Vision-MCP tools are loaded.

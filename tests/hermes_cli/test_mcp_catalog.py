@@ -536,6 +536,43 @@ class TestToolSelection:
         assert list_catalog() == []
 
 
+class TestShippedVisionMcpManifest:
+    def test_manifest_uses_stdio_npx_and_safe_default_tools(self, monkeypatch):
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("vision-mcp")
+        assert entry is not None
+        assert entry.auth.type == "none"
+        assert entry.transport.type == "stdio"
+        assert entry.transport.command == "npx"
+        assert entry.transport.args == [
+            "-y",
+            "@vision-mcp/cli@latest",
+            "serve",
+            "--apps-root",
+            "${HOME}/.vision-mcp/apps",
+        ]
+
+        defaults = set(entry.tools.default_enabled or [])
+        assert "vision_map.run_workflow" in defaults
+        assert "vision_map.perform_action" in defaults
+        assert "vision_map.repair_minimal" in defaults
+        assert "capsule.attach_window" in defaults
+
+        for raw_or_mutating_tool in {
+            "vision_map.click_at",
+            "vision_map.type_text",
+            "vision_map.press_key",
+            "vision_map.scroll",
+            "vision_map.init",
+            "vision_map.apply_patch",
+            "vision_map.add_control",
+            "vision_map.commit_state",
+            "vision_map.commit_workflow",
+            "vision_map.harvest_session",
+        }:
+            assert raw_or_mutating_tool not in defaults
 
 
 # ---------------------------------------------------------------------------

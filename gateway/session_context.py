@@ -111,11 +111,11 @@ def set_session_vars(
 ) -> list:
     """Set all session context variables and return reset tokens.
 
-    Call ``clear_session_vars(tokens)`` in a ``finally`` block to restore
-    the previous values when the handler exits.
-
-    Returns a list of ``Token`` objects (one per variable) that can be
-    passed to ``clear_session_vars``.
+    Call ``clear_session_vars(tokens)`` in a ``finally`` block when the handler
+    exits. Note ``clear_session_vars`` resets every var to ``""`` (to suppress
+    the ``os.environ`` fallback) rather than restoring prior values — these
+    helpers are not nestable/stack-safe, and the returned tokens are accepted
+    only for API compatibility.
 
     ``cwd`` pins the logical working directory for this context.
     """

@@ -38,6 +38,27 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
+    """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
+    parent workspace is passed explicitly; it must pin instead of clearing back
+    to the gateway launch dir."""
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "apps" / "desktop"
+    launcher.mkdir(parents=True)
+
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(launcher)
+
+    tokens = server._set_session_context("bg_deadbe", cwd=str(project))
+    try:
+        assert resolve_agent_cwd() == project
+    finally:
+        server._clear_session_context(tokens)
+
+
 class _ChunkyStdout:
     def __init__(self):
         self.parts: list[str] = []

@@ -2701,6 +2701,28 @@ def list_authenticated_providers(
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 
+    # Apply final ``providers.<name>.enabled: false`` post-filter — covers
+    # built-in PROVIDER_REGISTRY rows (sections 1-2) which would otherwise
+    # bypass the per-section gate. Indexed by lowercase slug AND by
+    # ``provider_id`` so PROVIDER_REGISTRY entries that match user-config
+    # blocks are filtered consistently.
+    try:
+        from hermes_cli.config import is_provider_enabled
+        if isinstance(user_providers, dict):
+            _disabled_slugs = {
+                str(name).strip().lower()
+                for name, cfg in user_providers.items()
+                if isinstance(cfg, dict) and not is_provider_enabled(cfg)
+            }
+            if _disabled_slugs:
+                results = [
+                    r for r in results
+                    if str(r.get("provider_id", "")).strip().lower() not in _disabled_slugs
+                    and str(r.get("slug", "")).strip().lower() not in _disabled_slugs
+                ]
+    except Exception:
+        pass
+
     # Surface a custom / uncurated model the user selected via the CLI.
     # Each row's model list is its curated/live catalog, so a model the user set
     # with `/model <provider>/<uncurated-name>` would otherwise be invisible in

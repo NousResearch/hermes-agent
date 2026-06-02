@@ -319,15 +319,6 @@ async function startSocket() {
           } catch {}
           continue;
         }
-
-        // Mark accepted inbound messages as read as soon as Hermes sees them.
-        // This triggers WhatsApp read receipts (blue ticks / "seen") for the
-        // sender when read receipts are enabled on the paired account.
-        try {
-          await sock.readMessages([msg.key]);
-        } catch (err) {
-          console.error('[bridge] Failed to mark message read:', err.message);
-        }
       }
 
       const messageContent = getMessageContent(msg);
@@ -455,6 +446,19 @@ async function startSocket() {
         botIds,
         timestamp: msg.messageTimestamp,
       };
+
+      // Mark accepted inbound messages as read only once we know they will
+      // actually be queued for Hermes (i.e. they cleared the empty-body /
+      // unsupported-content gating above). This triggers WhatsApp read
+      // receipts (blue ticks / "seen") for the sender — but not for messages
+      // we skip — when read receipts are enabled on the paired account.
+      if (!msg.key.fromMe) {
+        try {
+          await sock.readMessages([msg.key]);
+        } catch (err) {
+          console.error('[bridge] Failed to mark message read:', err.message);
+        }
+      }
 
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {

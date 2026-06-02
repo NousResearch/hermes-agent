@@ -67,6 +67,17 @@ def test_meet_transcripts_use_active_call_mode_not_stale_react_state():
     assert "mode === \"meet\"\n              ? { mode" not in source
 
 
+def test_start_call_owns_mic_permission_and_live_mic_switching():
+    source = (WEB_DIR / "src/pages/VoiceCallPage.tsx").read_text(encoding="utf-8")
+
+    assert "Enable mic list" not in source
+    assert "onClick={enableMicList}" not in source
+    assert "navigator.mediaDevices.getUserMedia({ audio })" in source
+    assert "if (live) void switchMicrophone(next)" in source
+    assert "disabled={busy}" in source
+    assert "replaceTrack(nextTrack)" in source
+
+
 @pytest.fixture()
 def voice_client(monkeypatch, _isolate_hermes_home):
     try:

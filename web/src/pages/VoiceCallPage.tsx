@@ -377,47 +377,33 @@ export default function VoiceCallPage() {
     tick();
   }, [addLog, stopMicMonitor]);
 
-  const enableMicList = useCallback(async () => {
-    setError(null);
-    try {
-      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-        throw new Error(
-          "Microphone access requires HTTPS. Open https://denizs-mac-mini.taildfdcc0.ts.net:9119/voice instead of the raw http:// Tailscale IP.",
-        );
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      await refreshInputDevices();
-      addLog("system", "Microphone permission granted; input list refreshed.");
-    } catch (exc) {
-      const message = exc instanceof Error ? exc.message : String(exc);
-      setError(message);
-      addLog("error", message);
-    }
-  }, [addLog, refreshInputDevices]);
-
   const switchMicrophone = useCallback(
     async (deviceId: string) => {
       if (status !== "live" || !peerRef.current) return;
       setError(null);
+      let nextStream: MediaStream | null = null;
       try {
         const audio: MediaTrackConstraints = deviceId ? { deviceId: { exact: deviceId } } : {};
-        const nextStream = await navigator.mediaDevices.getUserMedia({ audio });
+        nextStream = await navigator.mediaDevices.getUserMedia({ audio });
         const nextTrack = nextStream.getAudioTracks()[0];
         if (!nextTrack) throw new Error("Selected microphone produced no audio track.");
         const sender = peerRef.current.getSenders().find((item) => item.track?.kind === "audio");
         if (!sender) throw new Error("Active call has no microphone sender to replace.");
         await sender.replaceTrack(nextTrack);
         streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = nextStream;
+        const acceptedStream = nextStream;
+        if (!acceptedStream) throw new Error("Selected microphone stream was unavailable.");
+        streamRef.current = acceptedStream;
+        nextStream = null;
         nextTrack.enabled = !muted;
-        startMicMonitor(nextStream);
+        startMicMonitor(acceptedStream);
         await refreshInputDevices();
         addLog("system", `Switched microphone to ${nextTrack.label || "selected input"}.`);
         persistTranscript("system", `Switched microphone to ${nextTrack.label || "selected input"}.`, "mic_switched", {
           selected_input_id: deviceId || "browser-default",
         });
       } catch (exc) {
+        nextStream?.getTracks().forEach((track) => track.stop());
         const message = exc instanceof Error ? exc.message : String(exc);
         setError(`Microphone switch failed: ${message}`);
         addLog("error", `Microphone switch failed: ${message}`);
@@ -1007,7 +993,6 @@ export default function VoiceCallPage() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {!live && !busy ? <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={enableMicList}>Enable mic list</Button> : null}
             {!live && !busy ? <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={startMeetingInvite} disabled={!speaker}>Start meeting / invite</Button> : null}
             {!live && !busy ? <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={() => void startCall()} disabled={!speaker}>Start call</Button> : null}
             {live ? <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</Button> : null}

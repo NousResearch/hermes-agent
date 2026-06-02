@@ -5404,6 +5404,34 @@ class GatewayRunner:
                                         "kanban notifier: artifact delivery for %s failed: %s",
                                         sub["task_id"], art_exc,
                                     )
+                                # Emit kanban:task_completed hook so downstream
+                                # automation (e.g. auto-PR creation) can react.
+                                try:
+                                    payload = ev.payload or {}
+                                    hook_ctx = {
+                                        "task_id": sub["task_id"],
+                                        "title": (task.title if task else ""),
+                                        "assignee": (task.assignee if task else None),
+                                        "summary": (
+                                            payload.get("summary") if isinstance(payload, dict) else None
+                                        ),
+                                        "metadata": (
+                                            payload.get("metadata") if isinstance(payload, dict) else None
+                                        ),
+                                        "result": task.result if task else None,
+                                        "workspace_kind": task.workspace_kind if task else None,
+                                        "workspace_path": task.workspace_path if task else None,
+                                        "board": board_slug,
+                                        "created_cards": (
+                                            payload.get("created_cards") if isinstance(payload, dict) else None
+                                        ),
+                                    }
+                                    await self.hooks.emit("kanban:task_completed", hook_ctx)
+                                except Exception as hook_exc:
+                                    logger.debug(
+                                        "kanban notifier: hook kanban:task_completed for %s failed: %s",
+                                        sub["task_id"], hook_exc,
+                                    )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:

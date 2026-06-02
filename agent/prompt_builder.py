@@ -245,7 +245,19 @@ KANBAN_GUIDANCE = (
     "specialist profile.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
     "for short reasoning subtasks inside your own run; board tasks are for "
-    "cross-agent handoffs that outlive one API loop."
+    "cross-agent handoffs that outlive one API loop.\n"
+    "\n"
+    "## MANDATORY COMPLETION — READ CAREFULLY\n"
+    "\n"
+    "You MUST end EVERY task by calling exactly one of:\n"
+    "- `kanban_complete(summary=..., metadata=...)` — when the work is done\n"
+    "- `kanban_block(reason=\"...\")` — when you need human input\n"
+    "\n"
+    "This call MUST be the LAST tool call before your final text response. "
+    "Do NOT deliver a text summary and forget to call these tools — the "
+    "dispatcher has no other way to know the task is finished. A task that "
+    "exits without calling kanban_complete or kanban_block will be treated as "
+    "a protocol violation and auto-blocked."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (

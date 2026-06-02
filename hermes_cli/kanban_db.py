@@ -4790,6 +4790,14 @@ _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
+# Live Popen handles for workers spawned by this dispatcher. Stored here
+# so the reap loop can poll them before Python's GC reaps the zombie via
+# Popen.__del__ (which would lose the exit code). Keyed by PID; cleaned
+# in reap_worker_zombies as workers exit.
+# Capped to prevent unbounded growth; oldest entries dropped on overflow.
+_LIVE_WORKER_MAX = 2048
+_live_worker_procs: "dict[int, subprocess.Popen]" = {}
+
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status for later classification.
@@ -4854,9 +4862,27 @@ def reap_worker_zombies() -> "list[int]":
 
     Returns the list of reaped PIDs. Safe to call when there are no
     children (returns []). No-op on Windows.
+
+    Two-phase reap:
+    1. Poll live Popen handles stored in ``_live_worker_procs``. These
+       were spawned by ``_default_spawn`` and would otherwise be reaped
+       by Python's GC via ``Popen.__del__``, losing the exit code.
+    2. Call ``os.waitpid(-1, WNOHANG)`` for any remaining zombies
+       (workers from other callers, or race conditions).
     """
     reaped: "list[int]" = []
     if os.name != "nt":
+        # Phase 1: poll stored Popen handles before GC reaps them.
+        for pid, proc in list(_live_worker_procs.items()):
+            try:
+                ret = proc.poll()
+            except Exception:
+                ret = None
+            if ret is not None:
+                _record_worker_exit(pid, ret)
+                reaped.append(pid)
+                _live_worker_procs.pop(pid, None)
+        # Phase 2: reaps any remaining zombies.
         try:
             while True:
                 try:
@@ -4867,6 +4893,7 @@ def reap_worker_zombies() -> "list[int]":
                     break
                 _record_worker_exit(pid, status)
                 reaped.append(pid)
+                _live_worker_procs.pop(pid, None)
         except Exception:
             pass
     return reaped
@@ -6596,6 +6623,18 @@ def _default_spawn(
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    #
+    # Store the Popen handle in _live_worker_procs so reap_worker_zombies
+    # can poll it before Python's GC reaps the zombie via Popen.__del__.
+    # Without this, _classify_worker_exit sees "unknown" for every worker
+    # and the protocol-violation auto-block never triggers.
+    _live_worker_procs[proc.pid] = proc
+    if len(_live_worker_procs) > _LIVE_WORKER_MAX:
+        # Drop oldest half.
+        ordered = sorted(_live_worker_procs.items(),
+                         key=lambda kv: getattr(kv[1], '_start_time', 0))
+        for _pid, _ in ordered[: len(ordered) // 2]:
+            _live_worker_procs.pop(_pid, None)
     return proc.pid
 
 

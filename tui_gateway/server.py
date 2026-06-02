@@ -810,10 +810,15 @@ def _save_cfg(cfg: dict):
 
 
 def _cwd_for_session_key(session_key: str) -> str:
-    """Reverse-map session_key to the session's logical cwd."""
+    """Reverse-map session_key to the session's logical cwd.
+
+    Snapshots ``_sessions`` first: concurrent RPC handlers mutate it from the
+    thread pool, so iterating the live view risks ``RuntimeError: dictionary
+    changed size during iteration``.
+    """
     if not session_key:
         return ""
-    for sess in _sessions.values():
+    for sess in list(_sessions.values()):
         if sess.get("session_key") == session_key:
             return str(sess.get("cwd") or "")
     return ""

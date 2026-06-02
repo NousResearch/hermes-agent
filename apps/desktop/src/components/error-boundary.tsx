@@ -80,7 +80,7 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
             <Button onClick={() => window.location.reload()} variant="outline">
               Reload window
             </Button>
-            <Button onClick={() => void window.hermesDesktop?.revealLogs().catch(() => undefined)} variant="ghost">
+            <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} variant="ghost">
               Open logs
             </Button>
           </div>

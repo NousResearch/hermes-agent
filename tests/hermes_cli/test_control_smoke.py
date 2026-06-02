@@ -219,6 +219,13 @@ def test_statutepm_cli_child_timeout_defaults_match_agent_worker_default():
     assert wave.child_soft_timeout_s == worker.soft_timeout_s
     assert wave.child_hard_timeout_s == worker.hard_timeout_s
 
+    alias = parser.parse_args(["control", "worker", "run", "disp_child", "--profile-id", "statute-worker", "--instance-id", "statute-worker:test", "--handler", "agent", "--timeout-s", "1200"])
+    explicit = parser.parse_args(["control", "worker", "run", "disp_child", "--profile-id", "statute-worker", "--instance-id", "statute-worker:test", "--handler", "agent", "--hard-timeout-s", "1200"])
+    assert alias.timeout_s == 1200.0
+    assert alias.hard_timeout_s_explicit is False
+    assert explicit.hard_timeout_s == 1200.0
+    assert explicit.hard_timeout_s_explicit is True
+
 
 def test_statutepm_parent_deadline_and_lease_include_child_hard_timeout_and_graces(tmp_path):
     flow = StatutePMFlow(root=tmp_path / ".hermes", pm_instance_id="statutepm:test", poll_interval_s=2.0, child_soft_timeout_s=1.0, child_hard_timeout_s=10.0)

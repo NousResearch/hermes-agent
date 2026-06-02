@@ -1755,7 +1755,7 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
-async def _dispose_unused_adapter(adapter: "BasePlatformAdapter") -> None:
+async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
     """Best-effort dispose for an adapter that never made it onto ``self.adapters``.
 
     The reconnect watcher in ``GatewayRunner._platform_reconnect_watcher``
@@ -1778,6 +1778,11 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter") -> None:
     failure paths in the reconnect watcher can all call it without
     each one having to know that ``disconnect()`` may itself raise
     on a half-constructed adapter.
+
+    ``adapter`` may be ``None``: the reconnect watcher initialises
+    ``adapter = None`` before the ``try`` so the ``except Exception``
+    arm can dispose a half-constructed object, and also early-returns
+    here when ``_create_adapter()`` returned ``None``.
     """
     if adapter is None:
         return
@@ -1788,6 +1793,15 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter") -> None:
         # crashed during aiohttp app setup) can raise from
         # disconnect() on objects that never finished initializing.
         # We must not let that escape and abort the watcher loop.
+        #
+        # On Python 3.8+, ``asyncio.CancelledError`` inherits from
+        # ``BaseException`` (not ``Exception``), so this ``except
+        # Exception`` does not swallow task cancellation. We don't
+        # re-raise explicitly because the watcher loop intentionally
+        # treats dispose failures as best-effort: a failed ``disconnect``
+        # call should not take down the reconnect watcher that
+        # itself is what's keeping the gateway alive during a partial
+        # outage.
         logger.debug(
             "Adapter dispose raised on unowned adapter %r",
             getattr(adapter, "name", type(adapter).__name__),

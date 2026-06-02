@@ -165,11 +165,18 @@ class TestReconnectFDLeakRegression:
                           new=AsyncMock(return_value=False)):
             await _run_watcher_one_iteration(runner)
 
-        assert adapter._disconnect_calls >= 1, (
+        # The intent of this test is "the watcher calls disconnect()
+        # exactly once on the unowned adapter" — not "at least once".
+        # An accidental double-dispose would be a new bug to catch
+        # (e.g. the watcher's two failure paths both calling dispose
+        # for the same adapter instance). Tighten to == 1.
+        assert adapter._disconnect_calls == 1, (
             f"non-retryable reconnect failure must call adapter.disconnect() "
-            f"at least once; got {adapter._disconnect_calls} calls. "
+            f"exactly once; got {adapter._disconnect_calls} calls. "
             "Without it, 2 fds leak per retry at the 300s backoff cap "
-            "(#37011)."
+            "(#37011). More than one call would also be a bug — the "
+            "adapter has already been disposed once, a second call is "
+            "wasted work and may itself raise."
         )
         assert adapter._open_fds == 0, (
             f"adapter fds not released after disconnect(); "
@@ -303,15 +310,21 @@ class TestAPIServerDisconnectClosesResponseStore:
         to ``~/.hermes/response_store.db`` (or :memory: as a fallback),
         which is exactly the resource that was leaking pre-fix.
         """
+        import sqlite3
+
         store = ResponseStore(max_size=10, db_path=str(tmp_path / "rs.db"))
         adapter = self._build_adapter_with_store(store)
 
         await adapter.disconnect()
 
         # Post-disconnect, the underlying sqlite3 conn should be closed.
-        # Any further query raises ``ProgrammingError: Cannot operate
-        # on a closed database``.
-        with pytest.raises(Exception):
+        # sqlite3 raises ``ProgrammingError: Cannot operate on a closed
+        # database`` for any further operation. We assert on the
+        # specific exception type (not bare ``Exception``) so the test
+        # only passes when the close actually took effect — a generic
+        # ``Exception`` catcher would mask unrelated failures (env
+        # issues, AttributeError, etc.).
+        with pytest.raises(sqlite3.ProgrammingError):
             store._conn.execute("SELECT 1").fetchone()
 
     @pytest.mark.asyncio

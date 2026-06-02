@@ -120,6 +120,48 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+_AUTO_KANBAN_QUESTION_START_RE = re.compile(
+    r"^\s*(как|что|почему|зачем|расскажи|объясни)\b",
+    re.IGNORECASE,
+)
+_AUTO_KANBAN_WORK_VERB_RE = re.compile(
+    r"\b("
+    r"разбери|проанализируй|внедри|реализуй|разработай|скрапи|"
+    r"implement|analyze|scrape|создай|напиши|сделай"
+    r")\b\s+\S+",
+    re.IGNORECASE,
+)
+_AUTO_KANBAN_NUMBERED_ITEM_RE = re.compile(r"(?m)^\s*\d+[.)]\s+(.+?)\s*$")
+_AUTO_KANBAN_BULLET_ITEM_RE = re.compile(r"(?m)^\s*[-*•]\s+(.+?)\s*$")
+
+
+def _auto_kanban_should_track(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped or stripped.startswith("/"):
+        return False
+    if len(stripped) < 120:
+        return False
+    if _AUTO_KANBAN_QUESTION_START_RE.search(stripped):
+        return False
+    if len(stripped) > 300:
+        return True
+    return bool(_AUTO_KANBAN_WORK_VERB_RE.search(stripped))
+
+
+def _auto_kanban_extract_list_items(text: str) -> Optional[List[str]]:
+    numbered = [m.group(1).strip() for m in _AUTO_KANBAN_NUMBERED_ITEM_RE.finditer(text or "")]
+    bullets = [m.group(1).strip() for m in _AUTO_KANBAN_BULLET_ITEM_RE.finditer(text or "")]
+    items = numbered if len(numbered) >= len(bullets) else bullets
+    items = [item for item in items if item]
+    return items if len(items) >= 2 else None
+
+
+def _auto_kanban_title(text: str) -> str:
+    title = " ".join((text or "").strip().split())
+    if len(title) > 72:
+        title = title[:69].rstrip() + "..."
+    return title or "Auto-tracked request"
+
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
     re.IGNORECASE,
@@ -7180,6 +7222,121 @@ class GatewayRunner:
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    async def _auto_kanban_begin(self, event: MessageEvent, source: SessionSource) -> List[str]:
+        text = event.text or ""
+        if not _auto_kanban_should_track(text):
+            return []
+
+        items = _auto_kanban_extract_list_items(text)
+        titles = items if items else [_auto_kanban_title(text)]
+        body = (
+            "Auto-created from an incoming gateway message.\n\n"
+            "Original message:\n"
+            f"{text.strip()}"
+        )
+
+        def _create_and_claim() -> List[str]:
+            from hermes_cli import kanban_db as _kb
+
+            conn = _kb.connect()
+            task_ids: List[str] = []
+            try:
+                for raw_title in titles:
+                    task_id = _kb.create_task(
+                        conn,
+                        title=_auto_kanban_title(raw_title),
+                        body=body,
+                        created_by="gateway-auto-kanban",
+                        initial_status="running",
+                    )
+                    claimed = _kb.claim_task(
+                        conn,
+                        task_id,
+                        ttl_seconds=24 * 60 * 60,
+                        claimer="gateway-auto-kanban",
+                    )
+                    if claimed is None:
+                        logger.warning("auto-kanban could not claim task %s", task_id)
+                    try:
+                        _kb.add_comment(
+                            conn,
+                            task_id,
+                            "gateway-auto-kanban",
+                            "Auto-created for this incoming user request.",
+                        )
+                    except Exception as exc:
+                        logger.debug("auto-kanban comment failed for %s: %s", task_id, exc)
+                    task_ids.append(task_id)
+                return task_ids
+            finally:
+                conn.close()
+
+        try:
+            task_ids = await asyncio.to_thread(_create_and_claim)
+            if task_ids:
+                platform = source.platform.value if source.platform else "unknown"
+                logger.info(
+                    "auto-kanban created %d task(s) for %s chat=%s",
+                    len(task_ids),
+                    platform,
+                    source.chat_id or "unknown",
+                )
+            return task_ids
+        except Exception as exc:
+            logger.warning("auto-kanban create failed: %s", exc)
+            return []
+
+    async def _auto_kanban_finish(
+        self,
+        task_ids: List[str],
+        *,
+        success: bool,
+        result_text: Optional[str] = None,
+        error: Optional[BaseException] = None,
+    ) -> None:
+        if not task_ids:
+            return
+
+        reason = ""
+        if error is not None:
+            reason = str(error) or error.__class__.__name__
+        reason = reason[:1000]
+        summary = "Completed after assistant response." if success else f"Blocked after error: {reason}"
+        result = (result_text or "").strip()
+        if len(result) > 1200:
+            result = result[:1200].rstrip() + "..."
+
+        def _finish() -> None:
+            from hermes_cli import kanban_db as _kb
+
+            conn = _kb.connect()
+            try:
+                for task_id in task_ids:
+                    try:
+                        if success:
+                            _kb.complete_task(
+                                conn,
+                                task_id,
+                                result=result or "Completed by gateway auto-kanban.",
+                                summary=summary,
+                                metadata={"auto_kanban": True},
+                            )
+                        else:
+                            _kb.block_task(conn, task_id, reason=reason or "assistant error")
+                            if reason:
+                                _kb.add_comment(
+                                    conn,
+                                    task_id,
+                                    "gateway-auto-kanban",
+                                    reason,
+                                )
+                    except Exception as exc:
+                        logger.warning("auto-kanban finish failed for %s: %s", task_id, exc)
+            finally:
+                conn.close()
+
+        await asyncio.to_thread(_finish)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -8081,6 +8238,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "recall":
+            return await self._handle_recall_command(event)
+
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
@@ -8299,9 +8459,22 @@ class GatewayRunner:
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        _auto_kanban_task_ids: List[str] = []
 
         try:
+            if not is_internal:
+                _auto_kanban_task_ids = await self._auto_kanban_begin(event, source)
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _auto_kanban_result_text = ""
+            if isinstance(_agent_result, dict):
+                _auto_kanban_result_text = str(_agent_result.get("final_response") or "")
+            elif isinstance(_agent_result, str):
+                _auto_kanban_result_text = _agent_result
+            await self._auto_kanban_finish(
+                _auto_kanban_task_ids,
+                success=True,
+                result_text=_auto_kanban_result_text,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -8331,6 +8504,13 @@ class GatewayRunner:
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
+        except Exception as _agent_exc:
+            await self._auto_kanban_finish(
+                _auto_kanban_task_ids,
+                success=False,
+                error=_agent_exc,
+            )
+            raise
         finally:
             # If _run_agent replaced the sentinel with a real agent and
             # then cleaned it up, this is a no-op.  If we exited early
@@ -10038,6 +10218,24 @@ class GatewayRunner:
                 "or to set user_allowed_commands."
             )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
+
+
+    async def _handle_recall_command(self, event: MessageEvent) -> str:
+        """Handle /recall — FTS-backed past-session lookup with no LLM summary."""
+        query = (event.get_command_args() or "").strip()
+        current_session_id = None
+        try:
+            if getattr(event, "source", None) is not None and getattr(self, "session_store", None) is not None:
+                entry = self.session_store.get_or_create_session(event.source)
+                current_session_id = getattr(entry, "session_id", None)
+        except Exception:
+            current_session_id = None
+        try:
+            from tools.session_recall_command import recall_text
+            return recall_text(query, current_session_id=current_session_id, limit=3)
+        except Exception as exc:
+            logger.debug("/recall command failed: %s", exc, exc_info=True)
+            return f"Не смогла выполнить /recall: {exc}"
 
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:

@@ -266,6 +266,11 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Optional site-packages directory for entry-point plugins discovered from
+    # HERMES_PLUGIN_PYTHONPATH. The path is added to sys.path only after the
+    # plugin passes the plugins.enabled allow-list, avoiding Python startup-time
+    # execution from untrusted plugin packages.
+    entrypoint_search_path: Optional[str] = None
 
 
 @dataclass
@@ -1066,28 +1071,60 @@ class PluginManager:
     def _scan_entry_points(self) -> List[PluginManifest]:
         """Check ``importlib.metadata`` for pip-installed plugins."""
         manifests: List[PluginManifest] = []
+        seen: Set[tuple[str, str]] = set()
         try:
-            eps = importlib.metadata.entry_points()
-            # Python 3.12+ returns a SelectableGroups; earlier returns dict
-            if hasattr(eps, "select"):
-                group_eps = eps.select(group=ENTRY_POINTS_GROUP)
-            elif isinstance(eps, dict):
-                group_eps = eps.get(ENTRY_POINTS_GROUP, [])
-            else:
-                group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
-
-            for ep in group_eps:
+            for ep, search_path in self._iter_entry_points():
+                dedupe_key = (ep.name, ep.value)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
                 manifest = PluginManifest(
                     name=ep.name,
                     source="entrypoint",
                     path=ep.value,
                     key=ep.name,
+                    entrypoint_search_path=search_path,
                 )
                 manifests.append(manifest)
         except Exception as exc:
             logger.debug("Entry-point scan failed: %s", exc)
 
         return manifests
+
+    def _iter_entry_points(
+        self,
+    ) -> List[tuple[importlib.metadata.EntryPoint, Optional[str]]]:
+        """Return Hermes entry points from default metadata plus plugin paths."""
+        group_eps: List[tuple[importlib.metadata.EntryPoint, Optional[str]]] = []
+
+        eps = importlib.metadata.entry_points()
+        # Python 3.12+ returns a SelectableGroups; earlier returns dict
+        if hasattr(eps, "select"):
+            selected = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            selected = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            selected = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+        group_eps.extend((ep, None) for ep in selected)
+
+        for search_path in self._plugin_entrypoint_paths():
+            for dist in importlib.metadata.distributions(path=[search_path]):
+                for ep in dist.entry_points:
+                    if ep.group == ENTRY_POINTS_GROUP:
+                        group_eps.append((ep, search_path))
+
+        return group_eps
+
+    @staticmethod
+    def _plugin_entrypoint_paths() -> List[str]:
+        """Read Nix-provided plugin package paths without using PYTHONPATH."""
+        raw = os.getenv("HERMES_PLUGIN_PYTHONPATH", "")
+        paths: List[str] = []
+        for item in raw.split(os.pathsep):
+            item = item.strip()
+            if item and item not in paths:
+                paths.append(item)
+        return paths
 
     # -----------------------------------------------------------------------
     # Loading
@@ -1202,21 +1239,22 @@ class PluginManager:
 
     def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType:
         """Load a pip-installed plugin via its entry-point reference."""
-        eps = importlib.metadata.entry_points()
-        if hasattr(eps, "select"):
-            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
-        elif isinstance(eps, dict):
-            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
-        else:
-            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
-
-        for ep in group_eps:
-            if ep.name == manifest.name:
+        for ep, search_path in self._iter_entry_points():
+            if ep.name == manifest.name and ep.value == manifest.path:
+                if search_path:
+                    for plugin_path in self._plugin_entrypoint_paths():
+                        self._ensure_sys_path(plugin_path)
                 return ep.load()
 
         raise ImportError(
             f"Entry point '{manifest.name}' not found in group '{ENTRY_POINTS_GROUP}'"
         )
+
+    @staticmethod
+    def _ensure_sys_path(path: str) -> None:
+        """Make an enabled entry-point plugin importable for this process."""
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
     # -----------------------------------------------------------------------
     # Hook invocation

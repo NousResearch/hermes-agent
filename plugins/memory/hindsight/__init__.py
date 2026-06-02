@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import hashlib
 import importlib
 import json
 import logging
@@ -47,19 +48,19 @@ from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
+from plugins.memory.hindsight.session_summary import (
+    SessionSummaryRecord,
+    SessionSummaryStore,
+    SessionSummaryWrite,
+)
 from plugins.memory.hindsight.session_summary_generator import (
     FakeSessionSummaryGenerator,
     SessionSummaryBudget,
-    SessionSummaryBudgetedText,
     SessionSummaryGenerator,
     SessionSummaryRequest,
-    SessionSummaryResult,
     build_session_summary_budgeted_text,
-    build_session_summary_prompt,
-    render_session_summary,
     sanitize_session_summary_text,
     should_update_session_summary,
-    trim_session_summary_inputs,
 )
 from plugins.memory.hindsight.session_summary_assembly import (
     SessionSummaryAssemblyConfig,
@@ -764,6 +765,11 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_summary_min_update_every_n_turns = 2
         self._session_summary_timeout_seconds = 20
         self._session_summary_budget = SessionSummaryBudget()
+        self._session_summary_store: SessionSummaryStore | None = None
+        self._session_summary_generator: SessionSummaryGenerator = FakeSessionSummaryGenerator()
+        self._session_summary_lock = threading.Lock()
+        self._session_summary_messages: list[dict[str, str]] = []
+        self._session_summary_last_error = ""
 
         # Bank
         self._bank_mission = ""
@@ -1061,13 +1067,13 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
-            {"key": "session_summary_enabled", "description": "Enable the session summary generator surface (lifecycle wiring is staged separately)", "default": False},
-            {"key": "session_summary_enrich_recall_query", "description": "Enable future summary recall-query enrichment (not lifecycle-wired in this stage)", "default": False},
-            {"key": "session_summary_enrich_retain_context", "description": "Enable future summary retain-context enrichment (not lifecycle-wired in this stage)", "default": False},
-            {"key": "session_summary_inject_prompt", "description": "Enable future prompt summary injection (not lifecycle-wired in this stage)", "default": False},
-            {"key": "session_summary_generator_provider", "description": "LLM provider for future real summary generation", "default": ""},
-            {"key": "session_summary_generator_model", "description": "LLM model for future real summary generation", "default": ""},
-            {"key": "session_summary_generator_base_url", "description": "Optional OpenAI-compatible base URL for future real summary generation", "default": ""},
+            {"key": "session_summary_enabled", "description": "Enable rolling session summary lifecycle integration", "default": False},
+            {"key": "session_summary_enrich_recall_query", "description": "Add rolling summary context after the latest auto-recall query", "default": False},
+            {"key": "session_summary_enrich_retain_context", "description": "Add rolling summary text to retain extraction context only", "default": False},
+            {"key": "session_summary_inject_prompt", "description": "Inject a separate prompt block with rolling summary context", "default": False},
+            {"key": "session_summary_generator_provider", "description": "LLM provider reserved for real summary generation", "default": ""},
+            {"key": "session_summary_generator_model", "description": "LLM model reserved for real summary generation", "default": ""},
+            {"key": "session_summary_generator_base_url", "description": "Optional OpenAI-compatible endpoint reserved for real summary generation", "default": ""},
             {"key": "session_summary_generator_api_key_env", "description": "Environment variable name for the summary generator API key", "default": "HINDSIGHT_LLM_API_KEY"},
             {"key": "session_summary_reuse_hindsight_llm_config", "description": "Reuse local embedded Hindsight LLM config when summary-specific fields are unset", "default": True},
             {"key": "session_summary_update_every_n_turns", "description": "Optional summary refresh cadence independent from retain_every_n_turns", "default": None},
@@ -1630,6 +1636,256 @@ class HindsightMemoryProvider(MemoryProvider):
             f"hindsight_retain to store facts."
         )
 
+    def _session_summary_work_enabled(self) -> bool:
+        """Return whether any lifecycle path needs rolling-summary work."""
+        return bool(
+            getattr(self, "_session_summary_enabled", False)
+            and (
+                getattr(self, "_session_summary_enrich_recall_query", False)
+                or getattr(self, "_session_summary_enrich_retain_context", False)
+                or getattr(self, "_session_summary_inject_prompt", False)
+                or getattr(self, "_session_summary_update_every_n_turns", None) is not None
+            )
+        )
+
+    def _session_summary_store_path(self):
+        return get_hermes_home() / "hindsight" / "session_summaries.sqlite"
+
+    def _get_session_summary_store(self) -> SessionSummaryStore:
+        if self._session_summary_store is None:
+            self._session_summary_store = SessionSummaryStore(self._session_summary_store_path())
+        return self._session_summary_store
+
+    def _session_summary_key(self, session_id: str | None = None) -> str:
+        active_session = str(session_id if session_id is not None else self._session_id).strip()
+        parts = [
+            self._bank_id,
+            active_session,
+            self._platform,
+            self._user_id,
+            self._chat_id,
+            self._thread_id,
+            self._agent_identity,
+        ]
+        return "/".join(_sanitize_bank_segment(str(part)) or "_" for part in parts)
+
+    def _session_summary_identity_scope(self) -> str:
+        values = {
+            "bank": self._bank_id,
+            "platform": self._platform,
+            "user": self._user_id,
+            "chat": self._chat_id,
+            "thread": self._thread_id,
+            "agent": self._agent_identity,
+        }
+        return json.dumps(values, ensure_ascii=False, sort_keys=True)
+
+    def _get_session_summary_record(self, session_id: str | None = None) -> SessionSummaryRecord | None:
+        if not self._session_summary_work_enabled():
+            return None
+        try:
+            return self._get_session_summary_store().get(self._session_summary_key(session_id))
+        except Exception as exc:
+            self._session_summary_last_error = str(exc)
+            logger.debug("Hindsight session summary read failed: %s", exc, exc_info=True)
+            return None
+
+    def _current_session_summary_text(self, variant: str) -> str:
+        record = self._get_session_summary_record()
+        if record is None:
+            return ""
+        summary_json = record.summary_json if isinstance(record.summary_json, dict) else None
+        if summary_json:
+            budgeted = build_session_summary_budgeted_text(summary_json, self._session_summary_budget)
+            if variant == "recall":
+                return budgeted.recall_query_text
+            if variant == "prompt":
+                return budgeted.prompt_inject_text
+            if variant == "retain":
+                return budgeted.retain_context_text
+        return sanitize_session_summary_text(record.summary_text)
+
+    def _summary_enriched_recall_query(self, query: str) -> str:
+        if not (
+            self._session_summary_work_enabled()
+            and self._session_summary_enrich_recall_query
+        ):
+            if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+                return query[:self._recall_max_input_chars]
+            return query
+        return compose_summary_recall_query(
+            query,
+            self._current_session_summary_text("recall"),
+            max_chars=self._recall_max_input_chars,
+            budget=self._session_summary_budget,
+        )
+
+    def _summary_prompt_block(self) -> str:
+        if not (
+            self._session_summary_work_enabled()
+            and self._session_summary_inject_prompt
+        ):
+            return ""
+        return render_summary_prompt_block(
+            self._current_session_summary_text("prompt"),
+            max_chars=self._session_summary_budget.max_prompt_inject_chars,
+        )
+
+    def _summary_retain_context(self, base_context: str) -> str:
+        if not (
+            self._session_summary_work_enabled()
+            and self._session_summary_enrich_retain_context
+        ):
+            return base_context
+        return build_summary_retain_context(
+            base_context,
+            self._current_session_summary_text("retain"),
+            max_chars=self._session_summary_budget.max_retain_context_chars,
+        )
+
+    def _sanitize_summary_messages(
+        self,
+        messages: list[dict[str, Any]] | None,
+        *,
+        fallback_user: str = "",
+        fallback_assistant: str = "",
+    ) -> list[dict[str, str]]:
+        source = messages if messages is not None else [
+            {"role": "user", "content": fallback_user},
+            {"role": "assistant", "content": fallback_assistant},
+        ]
+        sanitized: list[dict[str, str]] = []
+        for msg in source:
+            if not isinstance(msg, dict):
+                continue
+            role = str(msg.get("role", "")).lower()
+            if role not in {"user", "assistant"}:
+                continue
+            text = self._message_content_text(msg.get("content"))
+            text = sanitize_session_summary_text(text)
+            if not text:
+                continue
+            sanitized.append({"role": role, "content": text})
+        return sanitized
+
+    @staticmethod
+    def _message_content_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") in {"text", "input_text", "output_text"}:
+                        parts.append(str(item.get("text", "")))
+                    continue
+                if isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(part for part in parts if part)
+        return str(content)
+
+    def _latest_summary_query(self, messages: list[dict[str, str]], fallback: str = "") -> str:
+        for msg in reversed(messages):
+            if msg.get("role") == "user" and msg.get("content"):
+                return msg["content"]
+        return sanitize_session_summary_text(fallback)
+
+    def _summary_input_hash(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        latest_query: str,
+    ) -> str:
+        payload = {
+            "messages": messages,
+            "latest_query": latest_query,
+            "budget": self._session_summary_budget.__dict__,
+            "generator": "fake",
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _update_session_summary(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        latest_query: str = "",
+        force: bool = False,
+    ) -> str:
+        if not self._session_summary_work_enabled():
+            return ""
+        if not messages:
+            return self._current_session_summary_text("prompt")
+        if not force and not should_update_session_summary(
+            self._turn_index,
+            self._retain_every_n_turns,
+            update_every_n_turns=self._session_summary_update_every_n_turns,
+            min_update_every_n_turns=self._session_summary_min_update_every_n_turns,
+        ):
+            return self._current_session_summary_text("prompt")
+
+        with self._session_summary_lock:
+            try:
+                store = self._get_session_summary_store()
+                summary_key = self._session_summary_key()
+                previous = store.get(summary_key)
+                previous_json = previous.summary_json if previous and isinstance(previous.summary_json, dict) else None
+                latest = latest_query or self._latest_summary_query(messages)
+                input_hash = self._summary_input_hash(
+                    messages,
+                    latest_query=latest,
+                )
+                if previous and previous.last_input_hash == input_hash:
+                    return previous.summary_text
+                request = SessionSummaryRequest(
+                    session_id=self._session_id,
+                    identity_scope=self._session_summary_identity_scope(),
+                    messages=messages,
+                    previous_summary=previous_json,
+                    latest_query=latest,
+                    turn_index=self._turn_index,
+                    metadata={
+                        "bank_id": self._bank_id,
+                        "platform": self._platform,
+                        "user_id": self._user_id,
+                        "chat_id": self._chat_id,
+                        "thread_id": self._thread_id,
+                        "agent_identity": self._agent_identity,
+                    },
+                    budget=self._session_summary_budget,
+                )
+                result = self._session_summary_generator.generate(request)
+                turn_hash = hashlib.sha256(
+                    json.dumps(messages, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                write = SessionSummaryWrite(
+                    summary_key=summary_key,
+                    identity_scope=self._session_summary_identity_scope(),
+                    summary_json=result.summary_json,
+                    summary_text=result.summary_text,
+                    schema_version=result.schema_version,
+                    turn=self._turn_index,
+                    turn_hash=turn_hash,
+                    last_input_hash=input_hash,
+                    parent_summary_key=(
+                        self._session_summary_key(self._parent_session_id)
+                        if self._parent_session_id
+                        else None
+                    ),
+                    status=result.status,
+                    last_error=result.error,
+                    expected_version=previous.version if previous else None,
+                )
+                write_result = store.upsert(write)
+                record = write_result.record
+                return record.summary_text if record else ""
+            except Exception as exc:
+                self._session_summary_last_error = str(exc)
+                logger.debug("Hindsight session summary update failed: %s", exc, exc_info=True)
+                return ""
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
@@ -1637,16 +1893,22 @@ class HindsightMemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
-        if not result:
+        summary_block = self._summary_prompt_block()
+        if not result and not summary_block:
             logger.debug("Prefetch: no results available")
             return ""
-        logger.debug("Prefetch: returning %d chars of context", len(result))
-        header = self._recall_prompt_preamble or (
-            "# Hindsight Memory (persistent cross-session context)\n"
-            "Use this to answer questions about the user and prior sessions. "
-            "Do not call tools to look up information that is already present here."
-        )
-        return f"{header}\n\n{result}"
+        parts = []
+        if result:
+            logger.debug("Prefetch: returning %d chars of context", len(result))
+            header = self._recall_prompt_preamble or (
+                "# Hindsight Memory (persistent cross-session context)\n"
+                "Use this to answer questions about the user and prior sessions. "
+                "Do not call tools to look up information that is already present here."
+            )
+            parts.append(f"{header}\n\n{result}")
+        if summary_block:
+            parts.append(summary_block)
+        return "\n\n".join(parts)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":
@@ -1658,9 +1920,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._shutting_down.is_set():
             logger.debug("Prefetch: skipped (shutting down)")
             return
-        # Truncate query to max chars
-        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
-            query = query[:self._recall_max_input_chars]
+        query = self._summary_enriched_recall_query(query)
 
         def _run():
             try:
@@ -1767,7 +2027,14 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["observation_scopes"] = self._observation_scopes
         return kwargs
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
         The actual aretain_batch runs on a single long-lived writer thread
@@ -1784,6 +2051,14 @@ class HindsightMemoryProvider(MemoryProvider):
 
         if session_id:
             self._session_id = str(session_id).strip()
+
+        summary_messages = self._sanitize_summary_messages(
+            messages,
+            fallback_user=user_content,
+            fallback_assistant=assistant_content,
+        )
+        if self._session_summary_work_enabled() and summary_messages:
+            self._session_summary_messages.extend(summary_messages)
 
         turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
         self._session_turns.append(turn)
@@ -1829,7 +2104,11 @@ class HindsightMemoryProvider(MemoryProvider):
         num_turns = len(turns_to_retain)
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
-        retain_context = self._retain_context
+        retain_context = self._summary_retain_context(self._retain_context)
+        self._update_session_summary(
+            list(self._session_summary_messages),
+            latest_query=self._latest_summary_query(summary_messages, fallback=user_content),
+        )
 
         def _do_retain() -> None:
             item = self._build_retain_kwargs(
@@ -2047,6 +2326,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._register_atexit()
                 self._retain_queue.put(_flush)
 
+        summary_messages = list(getattr(self, "_session_summary_messages", []))
+        self._update_session_summary(
+            summary_messages,
+            latest_query=self._latest_summary_query(summary_messages),
+            force=True,
+        )
+
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.
         if self._prefetch_thread and self._prefetch_thread.is_alive():
@@ -2061,6 +2347,7 @@ class HindsightMemoryProvider(MemoryProvider):
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
         self._session_turns = []
+        self._session_summary_messages = []
         self._turn_counter = 0
         self._turn_index = 0
         self._last_retained_turn_count = 0
@@ -2069,8 +2356,34 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_id, self._parent_session_id, reset, self._document_id,
         )
 
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """Refresh and return bounded session summary context before compression."""
+        if not self._session_summary_work_enabled():
+            return ""
+        sanitized = self._sanitize_summary_messages(messages)
+        if not sanitized:
+            return self._summary_prompt_block()
+        prior_turn = self._turn_index
+        if prior_turn <= 0:
+            self._turn_index = max(1, len(sanitized) // 2)
+        try:
+            self._update_session_summary(
+                sanitized,
+                latest_query=self._latest_summary_query(sanitized),
+                force=True,
+            )
+        finally:
+            self._turn_index = prior_turn
+        return self._summary_prompt_block()
+
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        summary_messages = list(getattr(self, "_session_summary_messages", []))
+        self._update_session_summary(
+            summary_messages,
+            latest_query=self._latest_summary_query(summary_messages),
+            force=True,
+        )
         # Stop accepting new retain jobs first so anyone still calling
         # sync_turn() during teardown is dropped, not enqueued.
         self._shutting_down.set()
@@ -2117,6 +2430,12 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
             self._client = None
+        if getattr(self, "_session_summary_store", None) is not None:
+            try:
+                self._session_summary_store.close()
+            except Exception:
+                pass
+            self._session_summary_store = None
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

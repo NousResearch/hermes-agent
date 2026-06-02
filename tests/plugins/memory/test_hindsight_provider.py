@@ -28,6 +28,7 @@ from plugins.memory.hindsight import (
     _resolve_bank_id_template,
     _sanitize_bank_segment,
 )
+from plugins.memory.hindsight.session_summary import SessionSummaryWrite
 
 
 # ---------------------------------------------------------------------------
@@ -1489,6 +1490,169 @@ class TestUpdateModeAppendCapability:
         # Flush goes to the OLD session's stable doc, not new-sid's.
         assert kw["document_id"] == "test-session"
         assert kw["items"][0]["update_mode"] == "append"
+
+
+# ---------------------------------------------------------------------------
+# Rolling session summary lifecycle integration
+# ---------------------------------------------------------------------------
+
+
+class TestSessionSummaryIntegration:
+    def _seed_summary(self, provider, *, project="active-project"):
+        store = provider._get_session_summary_store()
+        store.upsert(
+            SessionSummaryWrite(
+                summary_key=provider._session_summary_key(),
+                identity_scope=provider._session_summary_identity_scope(),
+                summary_json={
+                    "schema_version": 1,
+                    "active_projects": [project],
+                    "semantic_anchors": [f"Continue {project} rollout."],
+                    "exact_identifiers": [project],
+                },
+                summary_text=f"Active projects: {project}",
+                turn=2,
+                turn_hash="turn-hash",
+                last_input_hash=f"input-{project}",
+            )
+        )
+
+    def test_queue_prefetch_enriches_query_with_summary_after_latest_query(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            session_summary_enabled=True,
+            session_summary_enrich_recall_query=True,
+            session_summary_max_recall_query_chars=90,
+            recall_max_input_chars=120,
+        )
+        self._seed_summary(p, project="active-project")
+
+        p.queue_prefetch("What is next?")
+        p._prefetch_thread.join(timeout=3.0)
+
+        query = p._client.arecall.call_args.kwargs["query"]
+        assert query.startswith("What is next?")
+        assert "Rolling session summary:" in query
+        assert "active-project" in query
+        assert len(query) <= p._recall_max_input_chars
+
+    def test_prefetch_injects_summary_as_separate_prompt_block(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            session_summary_enabled=True,
+            session_summary_inject_prompt=True,
+        )
+        self._seed_summary(p, project="prompt-project")
+        p._prefetch_result = "- recalled memory"
+
+        block = p.prefetch("next")
+
+        assert "# Hindsight Memory" in block
+        assert "- recalled memory" in block
+        assert "<hindsight_session_summary>" in block
+        assert "prompt-project" in block
+        assert block.index("- recalled memory") < block.index("<hindsight_session_summary>")
+
+    def test_prefetch_can_return_summary_block_without_recall_results(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            session_summary_enabled=True,
+            session_summary_inject_prompt=True,
+        )
+        self._seed_summary(p, project="summary-only-project")
+
+        block = p.prefetch("next")
+
+        assert block.startswith("<hindsight_session_summary>")
+        assert "summary-only-project" in block
+
+    def test_sync_turn_enriches_retain_context_and_sanitizes_summary_messages(
+        self, provider_with_config, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: False,
+        )
+        p = provider_with_config(
+            session_summary_enabled=True,
+            session_summary_enrich_retain_context=True,
+            session_summary_update_every_n_turns=2,
+            retain_async=False,
+        )
+        self._seed_summary(p, project="retain-project")
+        raw_tool_log = "RAW_TOOL_OUTPUT_SHOULD_NOT_BE_SUMMARIZED"
+        messages = [
+            {"role": "user", "content": "Continue project retain-project."},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call-1"}]},
+            {"role": "tool", "content": raw_tool_log, "tool_call_id": "call-1"},
+            {"role": "assistant", "content": "Done for retain-project."},
+        ]
+
+        p.sync_turn("continue", "ok", messages=messages)
+        p._retain_queue.join()
+        p.sync_turn("next", "done", messages=messages)
+        p._retain_queue.join()
+
+        first_item = p._client.aretain_batch.call_args_list[0].kwargs["items"][0]
+        assert "Rolling session summary for extraction context:" in first_item["context"]
+        assert "retain-project" in first_item["context"]
+        assert raw_tool_log not in first_item["content"]
+
+        record = p._get_session_summary_store().get(p._session_summary_key())
+        assert record is not None
+        assert "retain-project" in record.summary_text
+        assert raw_tool_log not in record.summary_text
+
+    def test_on_pre_compress_updates_and_returns_sanitized_summary_block(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            session_summary_enabled=True,
+            session_summary_inject_prompt=True,
+        )
+        raw_tool_log = "RAW_TOOL_OUTPUT_SHOULD_NOT_BE_SUMMARIZED"
+
+        block = p.on_pre_compress(
+            [
+                {"role": "user", "content": "Continue project compress-project."},
+                {"role": "tool", "content": raw_tool_log},
+                {"role": "assistant", "content": "Decision: use compress-project plan."},
+            ]
+        )
+
+        assert block.startswith("<hindsight_session_summary>")
+        assert "compress-project" in block
+        assert raw_tool_log not in block
+        record = p._get_session_summary_store().get(p._session_summary_key())
+        assert record is not None
+        assert raw_tool_log not in record.summary_text
+
+    def test_session_switch_flushes_old_summary_state(self, provider_with_config, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: False,
+        )
+        p = provider_with_config(
+            session_summary_enabled=True,
+            session_summary_inject_prompt=True,
+            retain_every_n_turns=3,
+            retain_async=False,
+        )
+        old_key = p._session_summary_key()
+        p.sync_turn("Continue project switch-project.", "ok")
+        p.sync_turn("Next switch-project step.", "done")
+
+        p.on_session_switch("new-session", parent_session_id="test-session")
+        p._retain_queue.join()
+
+        old_record = p._get_session_summary_store().get(old_key)
+        assert old_record is not None
+        assert "switch-project" in old_record.summary_text
+        assert p._session_summary_messages == []
+        assert p._session_summary_key() != old_key
 
 
 # ---------------------------------------------------------------------------

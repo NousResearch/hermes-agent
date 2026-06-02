@@ -128,27 +128,6 @@ export default function WebhooksPage() {
     }
   };
 
-  const [togglingName, setTogglingName] = useState<string | null>(null);
-
-  const handleToggleEnabled = useCallback(
-    async (subName: string, nextEnabled: boolean) => {
-      setTogglingName(subName);
-      try {
-        await api.setWebhookEnabled(subName, nextEnabled);
-        showToast(
-          nextEnabled ? `Enabled: "${subName}"` : `Disabled: "${subName}"`,
-          "success",
-        );
-        loadWebhooks();
-      } catch (e) {
-        showToast(`Error: ${e}`, "error");
-      } finally {
-        setTogglingName(null);
-      }
-    },
-    [loadWebhooks, showToast],
-  );
-
   const webhookDelete = useConfirmDelete({
     onDelete: useCallback(
       async (name: string) => {
@@ -399,11 +378,6 @@ export default function WebhooksPage() {
           Subscriptions ({subscriptions.length})
         </H2>
 
-        <p className="text-xs text-muted-foreground -mt-1">
-          Disabled webhooks reject incoming events; the gateway hot-reloads
-          changes (no restart needed).
-        </p>
-
         {subscriptions.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -415,7 +389,7 @@ export default function WebhooksPage() {
         {subscriptions.map((sub: WebhookRoute) => (
           <Card key={sub.name}>
             <CardContent className="flex items-start gap-4 py-4">
-              <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
+              <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <span className="font-medium text-sm truncate">
                     {sub.name}
@@ -424,7 +398,6 @@ export default function WebhooksPage() {
                   {sub.deliver_only && (
                     <Badge tone="secondary">deliver only</Badge>
                   )}
-                  {!sub.enabled && <Badge tone="warning">disabled</Badge>}
                 </div>
 
                 {sub.description && (
@@ -454,15 +427,6 @@ export default function WebhooksPage() {
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
-                <Button
-                  ghost
-                  size="sm"
-                  className="uppercase"
-                  disabled={togglingName === sub.name}
-                  onClick={() => handleToggleEnabled(sub.name, !sub.enabled)}
-                >
-                  {sub.enabled ? "Disable" : "Enable"}
-                </Button>
                 <Button
                   ghost
                   destructive

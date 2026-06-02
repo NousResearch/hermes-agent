@@ -47,6 +47,18 @@ from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
+from plugins.memory.hindsight.session_summary_generator import (
+    FakeSessionSummaryGenerator,
+    SessionSummaryBudget,
+    SessionSummaryGenerator,
+    SessionSummaryRequest,
+    SessionSummaryResult,
+    build_session_summary_prompt,
+    render_session_summary,
+    sanitize_session_summary_text,
+    should_update_session_summary,
+    trim_session_summary_inputs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +134,27 @@ def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
         return
     # setdefault: an explicit env var the operator set wins over config.
     os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
+
+
+def _parse_optional_int_setting(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid optional integer Hindsight setting %r; ignoring", value)
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _parse_float_setting(value: Any, default: float) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid float Hindsight setting %r; using default %s", value, default)
+        return default
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -708,6 +741,19 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
 
+        # Session summary generator controls. These are parsed and documented in
+        # S2, but not wired into recall/retain/prompt lifecycle hooks yet.
+        self._session_summary_enabled = False
+        self._session_summary_generator_provider = ""
+        self._session_summary_generator_model = ""
+        self._session_summary_generator_base_url = ""
+        self._session_summary_generator_api_key_env = "HINDSIGHT_LLM_API_KEY"
+        self._session_summary_reuse_hindsight_llm_config = True
+        self._session_summary_update_every_n_turns: int | None = None
+        self._session_summary_min_update_every_n_turns = 2
+        self._session_summary_timeout_seconds = 20
+        self._session_summary_budget = SessionSummaryBudget()
+
         # Bank
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
@@ -1004,6 +1050,23 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
+            {"key": "session_summary_enabled", "description": "Enable the session summary generator surface (lifecycle wiring is staged separately)", "default": False},
+            {"key": "session_summary_generator_provider", "description": "LLM provider for future real summary generation", "default": ""},
+            {"key": "session_summary_generator_model", "description": "LLM model for future real summary generation", "default": ""},
+            {"key": "session_summary_generator_base_url", "description": "Optional OpenAI-compatible base URL for future real summary generation", "default": ""},
+            {"key": "session_summary_generator_api_key_env", "description": "Environment variable name for the summary generator API key", "default": "HINDSIGHT_LLM_API_KEY"},
+            {"key": "session_summary_reuse_hindsight_llm_config", "description": "Reuse local embedded Hindsight LLM config when summary-specific fields are unset", "default": True},
+            {"key": "session_summary_update_every_n_turns", "description": "Optional summary refresh cadence independent from retain_every_n_turns", "default": None},
+            {"key": "session_summary_min_update_every_n_turns", "description": "Minimum summary refresh cadence; prevents per-turn summary LLM calls by default", "default": 2},
+            {"key": "session_summary_timeout_seconds", "description": "Timeout for future background summary generation", "default": 20},
+            {"key": "session_summary_max_input_chars", "description": "Maximum input characters for summary generation", "default": 16000},
+            {"key": "session_summary_max_output_chars", "description": "Maximum rendered summary characters", "default": 2000},
+            {"key": "session_summary_max_recall_query_chars", "description": "Budget for future summary-derived recall query text", "default": 800},
+            {"key": "session_summary_recall_query_budget_ratio", "description": "Maximum fraction of summary input budget usable for future recall query text", "default": 0.25},
+            {"key": "session_summary_max_prompt_inject_chars", "description": "Budget for future prompt-injected summary context", "default": 1200},
+            {"key": "session_summary_max_retain_context_chars", "description": "Budget for future retain context summary text", "default": 1200},
+            {"key": "session_summary_min_latest_query_reserve_chars", "description": "Minimum latest-query reserve when trimming summary inputs", "default": 400},
+            {"key": "session_summary_drop_completed_todos_after_turns", "description": "Age after which completed todos may be dropped from summaries", "default": 20},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
@@ -1352,6 +1415,89 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+
+        # Session summary controls are parsed here for config/schema stability.
+        # Runtime lifecycle wiring lands in later stages, so these assignments
+        # must not change retain/recall payloads or prompt consumption.
+        self._session_summary_enabled = self._config.get("session_summary_enabled", False) is True
+        self._session_summary_reuse_hindsight_llm_config = (
+            self._config.get("session_summary_reuse_hindsight_llm_config", True) is not False
+        )
+        self._session_summary_generator_provider = str(
+            self._config.get("session_summary_generator_provider")
+            or (self._config.get("llm_provider", "") if self._session_summary_reuse_hindsight_llm_config else "")
+            or ""
+        )
+        self._session_summary_generator_model = str(
+            self._config.get("session_summary_generator_model")
+            or (self._config.get("llm_model", "") if self._session_summary_reuse_hindsight_llm_config else "")
+            or ""
+        )
+        self._session_summary_generator_base_url = str(
+            self._config.get("session_summary_generator_base_url")
+            or (self._config.get("llm_base_url", "") if self._session_summary_reuse_hindsight_llm_config else "")
+            or ""
+        )
+        self._session_summary_generator_api_key_env = str(
+            self._config.get("session_summary_generator_api_key_env") or "HINDSIGHT_LLM_API_KEY"
+        )
+        self._session_summary_update_every_n_turns = _parse_optional_int_setting(
+            self._config.get("session_summary_update_every_n_turns")
+        )
+        self._session_summary_min_update_every_n_turns = max(
+            2,
+            _parse_int_setting(self._config.get("session_summary_min_update_every_n_turns"), 2),
+        )
+        self._session_summary_timeout_seconds = max(
+            1,
+            _parse_int_setting(self._config.get("session_summary_timeout_seconds"), 20),
+        )
+        self._session_summary_budget = SessionSummaryBudget(
+            max_input_chars=max(
+                1,
+                _parse_int_setting(self._config.get("session_summary_max_input_chars"), 16_000),
+            ),
+            max_output_chars=max(
+                1,
+                _parse_int_setting(self._config.get("session_summary_max_output_chars"), 2_000),
+            ),
+            max_recall_query_chars=max(
+                1,
+                _parse_int_setting(self._config.get("session_summary_max_recall_query_chars"), 800),
+            ),
+            recall_query_budget_ratio=max(
+                0.0,
+                min(
+                    1.0,
+                    _parse_float_setting(
+                        self._config.get("session_summary_recall_query_budget_ratio"),
+                        0.25,
+                    ),
+                ),
+            ),
+            max_prompt_inject_chars=max(
+                1,
+                _parse_int_setting(self._config.get("session_summary_max_prompt_inject_chars"), 1_200),
+            ),
+            max_retain_context_chars=max(
+                1,
+                _parse_int_setting(self._config.get("session_summary_max_retain_context_chars"), 1_200),
+            ),
+            min_latest_query_reserve_chars=max(
+                0,
+                _parse_int_setting(
+                    self._config.get("session_summary_min_latest_query_reserve_chars"),
+                    400,
+                ),
+            ),
+            drop_completed_todos_after_turns=max(
+                0,
+                _parse_int_setting(
+                    self._config.get("session_summary_drop_completed_todos_after_turns"),
+                    20,
+                ),
+            ),
+        )
 
         _client_version = "unknown"
         try:

@@ -306,6 +306,13 @@ class TestConfig:
         assert provider._retain_every_n_turns == 1
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
+        assert provider._session_summary_enabled is False
+        assert provider._session_summary_update_every_n_turns is None
+        assert provider._session_summary_min_update_every_n_turns == 2
+        assert provider._session_summary_timeout_seconds == 20
+        assert provider._session_summary_budget.max_input_chars == 16000
+        assert provider._session_summary_budget.max_output_chars == 2000
+        assert provider._session_summary_budget.min_latest_query_reserve_chars == 400
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None
@@ -363,6 +370,23 @@ class TestConfig:
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
             bank_mission="Test agent mission",
+            session_summary_enabled=True,
+            session_summary_generator_provider="openai_compatible",
+            session_summary_generator_model="summary-model",
+            session_summary_generator_base_url="http://localhost:11434/v1",
+            session_summary_generator_api_key_env="SUMMARY_API_KEY",
+            session_summary_reuse_hindsight_llm_config=False,
+            session_summary_update_every_n_turns=7,
+            session_summary_min_update_every_n_turns=3,
+            session_summary_timeout_seconds=9,
+            session_summary_max_input_chars=1234,
+            session_summary_max_output_chars=432,
+            session_summary_max_recall_query_chars=321,
+            session_summary_recall_query_budget_ratio=0.2,
+            session_summary_max_prompt_inject_chars=222,
+            session_summary_max_retain_context_chars=333,
+            session_summary_min_latest_query_reserve_chars=111,
+            session_summary_drop_completed_todos_after_turns=5,
         )
         assert p._tags == ["tag1", "tag2"]
         assert p._retain_tags == ["tag1", "tag2"]
@@ -381,6 +405,23 @@ class TestConfig:
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
+        assert p._session_summary_enabled is True
+        assert p._session_summary_generator_provider == "openai_compatible"
+        assert p._session_summary_generator_model == "summary-model"
+        assert p._session_summary_generator_base_url == "http://localhost:11434/v1"
+        assert p._session_summary_generator_api_key_env == "SUMMARY_API_KEY"
+        assert p._session_summary_reuse_hindsight_llm_config is False
+        assert p._session_summary_update_every_n_turns == 7
+        assert p._session_summary_min_update_every_n_turns == 3
+        assert p._session_summary_timeout_seconds == 9
+        assert p._session_summary_budget.max_input_chars == 1234
+        assert p._session_summary_budget.max_output_chars == 432
+        assert p._session_summary_budget.max_recall_query_chars == 321
+        assert p._session_summary_budget.recall_query_budget_ratio == 0.2
+        assert p._session_summary_budget.max_prompt_inject_chars == 222
+        assert p._session_summary_budget.max_retain_context_chars == 333
+        assert p._session_summary_budget.min_latest_query_reserve_chars == 111
+        assert p._session_summary_budget.drop_completed_todos_after_turns == 5
 
     def test_config_from_env_fallback(self, tmp_path, monkeypatch):
         """When no config file exists, falls back to env vars."""

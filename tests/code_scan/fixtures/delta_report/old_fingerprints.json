@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/fake/project",
+  "captured_at": "2026-06-01T00:00:00Z",
+  "files": {
+    "src/main.py": {
+      "content_hash": "sha256:aaa",
+      "line_count": 40,
+      "size_bytes": 1200,
+      "functions": ["main", "setup"],
+      "classes": ["App"],
+      "imports": ["os", "sys"]
+    },
+    "src/utils.py": {
+      "content_hash": "sha256:bbb",
+      "line_count": 30,
+      "size_bytes": 900,
+      "functions": ["util_fn"],
+      "classes": [],
+      "imports": ["json"]
+    },
+    "src/config.js": {
+      "content_hash": "sha256:ccc",
+      "line_count": 20,
+      "size_bytes": 600,
+      "functions": ["getConfig"],
+      "classes": [],
+      "imports": ["lodash"]
+    }
+  }
+}

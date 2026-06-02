@@ -872,17 +872,6 @@ _cleanup_done = False
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 _deferred_agent_startup_done = False
-# Set True once the TUI's prompt_toolkit app starts (which enables focus
-# reporting + mouse tracking). Gates the on-exit terminal reset so non-TUI
-# one-shot CLI runs — which also register _run_cleanup via atexit — don't emit
-# escape codes for modes they never enabled (#36823).
-_tui_input_modes_active = False
-
-
-def _mark_tui_input_modes_active() -> None:
-    """Record that the TUI app started, so _run_cleanup resets input modes."""
-    global _tui_input_modes_active
-    _tui_input_modes_active = True
 
 
 def _prepare_deferred_agent_startup() -> None:
@@ -938,12 +927,6 @@ def _run_cleanup():
         return
     _cleanup_done = True
 
-    # Reset terminal input modes first, before the slower resource teardown
-    # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
-    # user's terminal becomes usable immediately, and a later step raising
-    # can't skip the reset (#36823). No-op unless the TUI actually ran.
-    _reset_terminal_input_modes_on_exit()
-
     try:
         _cleanup_all_terminals()
     except Exception:
@@ -985,50 +968,6 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
-    except Exception:
-        pass
-
-
-def _reset_terminal_input_modes_on_exit() -> None:
-    """Best-effort: disable focus reporting + mouse tracking on TUI exit so they
-    don't leak into the next shell session sharing the tab.
-
-    prompt_toolkit restores these on a clean teardown, but Ctrl+C, SIGTERM /
-    SIGHUP and crashes can bypass its unwind, leaving the modes enabled. The
-    terminal then emits raw ``ESC[I`` / ``ESC[O`` focus events and fragmented
-    SGR mouse reports as visible text in whatever runs next in the same tab
-    (#36823). Called from ``_run_cleanup`` (atexit-registered + invoked on the
-    normal / EOF / interrupt exit paths) this covers normal quit, Ctrl+C and
-    SIGTERM/SIGHUP. ``kill -9`` is uncatchable, and the kanban worker's
-    ``os._exit(0)`` path bypasses ``atexit``; neither runs this — but both are
-    non-TTY / non-TUI, so there is nothing to reset there.
-
-    Gated on ``_tui_input_modes_active`` so one-shot non-TUI CLI runs (which
-    share ``_run_cleanup`` via ``atexit``) never emit these codes. Writes to the
-    controlling terminal directly: by exit, prompt_toolkit's own output is torn
-    down, so ``sys.stdout`` is the real fd; falls back to ``/dev/tty`` when
-    stdout is redirected away from the terminal.
-    """
-    global _tui_input_modes_active
-    if not _tui_input_modes_active:
-        return
-    # About to disable the modes — clear the flag so a re-armed _run_cleanup (or
-    # a long-lived process that reuses it) doesn't re-emit them.
-    _tui_input_modes_active = False
-    # Prefer stdout when it's the terminal; otherwise the TUI may have driven
-    # /dev/tty while stdout was redirected — reset there instead of nowhere.
-    try:
-        stream = sys.stdout
-        if stream is not None and stream.isatty():
-            stream.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
-            stream.flush()
-            return
-    except Exception:
-        pass
-    try:
-        with open("/dev/tty", "w", encoding="ascii") as tty:
-            tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
-            tty.flush()
     except Exception:
         pass
 
@@ -8533,6 +8472,198 @@ class HermesCLI:
         if output:
             print(output)
 
+    def _handle_council_command(self, cmd: str):
+        """Handle /council command — multi-model deliberation for planning.
+
+        Usage:
+            /council plan <task>    — run council deliberation (default)
+            /council status         — show council configuration
+            /council resume         — resume failed council from saved state
+        """
+        import asyncio
+        import traceback
+        from cli import _cprint
+
+        parts = cmd.strip().split(None, 2)
+        subcmd = parts[1].lower() if len(parts) > 1 else ""
+        task_arg = parts[2] if len(parts) > 2 else ""
+
+        # 'plan' is the default; also accept bare /council <task>
+        if subcmd in ("plan", "plan "):
+            task = task_arg
+        elif subcmd == "status":
+            self._show_council_status()
+            return
+        elif subcmd == "resume":
+            self._handle_council_resume(task_arg)
+            return
+        else:
+            # Treat the first arg as the task (bare /council <task>)
+            task = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        if not task:
+            _cprint("  Usage: /council <task-description>")
+            _cprint("         /council plan <task>")
+            _cprint("         /council status")
+            _cprint("         /council resume")
+            return
+
+        _cprint("\n  ⚖️  Council convening...")
+        _cprint(f"  Task: {task[:120]}{'...' if len(task) > 120 else ''}")
+        _cprint("")
+
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+
+            council_config = config.get("council", {})
+            from agent.council import CouncilOrchestrator
+
+            # ── Log task details before starting ──────────────────────
+            proposer_models = [p.get("model", "?") for p in council_config.get("proposers", [])]
+            critic_model = council_config.get("critic", {}).get("model", "?")
+            chairman_model = council_config.get("chairman", {}).get("model", "?")
+            mode_label = "subagent" if council_config.get("subagent_delegation", False) else "flat"
+            _cprint(f"  Models:")
+            _cprint(f"    Proposers ({len(proposer_models)}): {', '.join(proposer_models)}")
+            _cprint(f"    Critic: {critic_model}")
+            _cprint(f"    Chairman: {chairman_model}")
+            _cprint(f"    Mode: {mode_label}")
+            _cprint(f"    Pipeline timeout: {council_config.get('pipeline_timeout_seconds', 1800)}s")
+            _cprint("")
+
+            # Progress callback for live stage logging
+            def _progress(stage: str, msg: str):
+                icons = {"preflight": "🔍", "propose": "💡", "critique": "🔎", "chairman": "📋"}
+                _cprint(f"  {icons.get(stage, '➡')} {stage.capitalize()}: {msg}")
+
+            orc = CouncilOrchestrator(
+                council_config,
+                parent_agent=getattr(self, 'agent', None),
+                delegation_config=config.get("delegation", {}),
+            )
+
+            # Run council async — detect if we're inside prompt_toolkit's
+            # event loop (TUI mode).  asyncio.run() raises RuntimeError when
+            # a loop is already running (Python 3.12+), so offload to a
+            # background thread in that case.
+            try:
+                _running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _running_loop = None
+
+            if _running_loop is not None:
+                import concurrent.futures as _futures
+                with _futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                    _fut = _pool.submit(
+                        asyncio.run,
+                        orc.run_plan(task, progress_callback=_progress),
+                    )
+                    result = _fut.result()
+            else:
+                result = asyncio.run(orc.run_plan(task, progress_callback=_progress))
+
+            if result.get("success"):
+                _cprint(f"  ✅ Council complete — {result.get('processing_time', 0):.1f}s")
+                _cprint(f"  Models: {', '.join(result.get('models_used', {}).get('proposers', []))}")
+                _cprint("")
+                _cprint(result.get("output", ""))
+            else:
+                _cprint(f"  ❌ Council failed: {result.get('error', 'Unknown error')}")
+
+        except Exception as e:
+            _cprint(f"  ❌ Council error: {e}")
+            traceback.print_exc()
+
+    def _handle_council_resume(self, _state_path: str = ""):
+        """Resume a failed council from saved state."""
+        import asyncio
+        import traceback
+        import os
+        from cli import _cprint
+
+        from agent.council import CouncilOrchestrator
+        from hermes_cli.config import load_config
+
+        state_path = _state_path.strip() or ""
+        if state_path and not os.path.exists(state_path):
+            _cprint(f"  ❌ State file not found: {state_path}")
+            return
+
+        state = CouncilOrchestrator.load_state(state_path or None)
+        if not state:
+            _cprint("  ❌ No saved council state found. Run /council plan <task> first.")
+            _cprint(f"     Looked for: {CouncilOrchestrator.COUNCIL_STATE_PATH}")
+            return
+
+        config = load_config()
+        council_config = config.get("council", {})
+        orc = CouncilOrchestrator(
+            council_config,
+            parent_agent=getattr(self, 'agent', None),
+            delegation_config=config.get("delegation", {}),
+        )
+
+        _cprint(f"\n  🔄 Resuming council...")
+        _cprint(f"  Task: {state.get('task', '?')[:100]}")
+        stage_info = state.get("stages", {})
+        s1 = stage_info.get("1_propose", {})
+        s2 = stage_info.get("2_critique", {})
+        if s1.get("count"):
+            _cprint(f"  Propose: {s1['count']} plans ({s1['time_seconds']:.0f}s)")
+        if s2.get("count"):
+            _cprint(f"  Critique: {s2['count']} reviews ({s2['time_seconds']:.0f}s)")
+        _cprint("")
+
+        try:
+            try:
+                _running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _running_loop = None
+
+            if _running_loop is not None:
+                import concurrent.futures as _futures
+                with _futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                    _fut = _pool.submit(asyncio.run, orc.run_resume(state_path))
+                    result = _fut.result()
+            else:
+                result = asyncio.run(orc.run_resume(state_path))
+
+            if result.get("success"):
+                _cprint(f"  ✅ Council resume complete")
+                _cprint("")
+                _cprint(result.get("output", ""))
+            else:
+                _cprint(f"  ❌ Council resume failed: {result.get('error', 'Unknown error')}")
+
+        except Exception as e:
+            _cprint(f"  ❌ Council resume error: {e}")
+            traceback.print_exc()
+
+    def _show_council_status(self):
+        """Display current council configuration."""
+        from agent.council import CouncilOrchestrator
+        from hermes_cli.config import load_config
+        config = load_config()
+        council_config = config.get("council", {})
+        orc = CouncilOrchestrator(council_config)
+        status = orc.get_status()
+        print()
+        print("  ⚖️  Council Configuration")
+        print(f"  Enabled: {status['enabled']}")
+        print(f"  Mode: {status['mode']}")
+        print(f"  Proposers ({status['proposers']}): {', '.join(status['proposer_models'])}")
+        print(f"  Critic: {status['critic_model']}")
+        print(f"  Chairman: {status['chairman_model']}")
+        print(f"  Peer review: {status['peer_review']}")
+        print(f"  Anonymize: {status['anonymize']}")
+        pf = status.get("preflight", {})
+        print(f"  Preflight: {'ON' if pf.get('enabled') else 'OFF'}")
+        if pf.get("enabled"):
+            print(f"    Timeout: {pf.get('timeout_seconds', 10)}s")
+            print(f"    Min proposers: {pf.get('min_proposers', 2)}")
+        print()
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -15196,9 +15327,6 @@ class HermesCLI:
                     pass  # No running loop -- nothing to patch
                 except Exception:
                     pass
-                # The app enables focus reporting + mouse tracking; record that
-                # so _run_cleanup resets them on exit (#36823).
-                _mark_tui_input_modes_active()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass

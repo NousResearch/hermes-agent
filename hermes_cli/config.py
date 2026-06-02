@@ -1594,6 +1594,36 @@ DEFAULT_CONFIG = {
         "subagent_auto_approve": False,
     },
 
+    # Council — multi-model deliberation orchestrator (agent/council.py)
+    "council": {
+        "enabled": True,
+        "default_mode": "plan",
+        "subagent_delegation": True,
+        "max_concurrent_calls": 2,
+        "pipeline_timeout_seconds": 2400,
+        "proposers": [
+            {"provider": "ollama-cloud", "model": "glm-5.1:cloud"},
+            {"provider": "ollama-cloud", "model": "kimi-k2.6:cloud"},
+            {"provider": "ollama-cloud", "model": "minimax-m2.5:cloud"},
+        ],
+        "subagents": {
+            "fast": {"provider": "ollama-cloud", "model": "deepseek-v4-flash:cloud"},
+            "lightweight": {"provider": "ollama-cloud", "model": "gemma4:31b:cloud"},
+        },
+        "critic": {"provider": "ollama-cloud", "model": "minimax-m3:cloud"},
+        "chairman": {"provider": "ollama-cloud", "model": "minimax-m3:cloud"},
+        "peer_review": True,
+        "anonymize_reviews": True,
+        "preflight": {
+            "enabled": True,
+            "timeout_seconds": 30,
+            "min_proposers": 2,
+            "check_interval_hours": 24,
+        },
+        "min_plan_lines": 15,
+        "min_plan_chars": 500,
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.

@@ -14876,6 +14876,214 @@ class GatewayRunner:
         except RuntimeError:
             logger.debug("Skipping update notification watcher: no running event loop")
 
+
+async def _handle_council_command(self, event: MessageEvent) -> str:
+        """Handle /council command via gateway."""
+        import asyncio
+
+        args = event.get_command_args().strip()
+        if not args:
+            return "Usage: /council <task-description>\n       /council status"
+
+        # /council status subcommand
+        if args.lower() == "status":
+            from agent.council import CouncilOrchestrator
+            from hermes_cli.config import load_config
+            config = load_config()
+            council_config = config.get("council", {})
+            orc = CouncilOrchestrator(council_config)
+            s = orc.get_status()
+            lines = [
+                f"**Council Configuration**",
+                f"Enabled: {s['enabled']}",
+                f"Mode: {s['mode']}",
+                f"Proposers: {', '.join(s['proposer_models'])}",
+                f"Critic: {s['critic_model']}",
+                f"Chairman: {s['chairman_model']}",
+                f"Peer review: {s['peer_review']}",
+                f"Anonymize: {s['anonymize']}",
+            ]
+            return "\n".join(lines)
+
+        # /council resume subcommand
+        if args.lower() == "resume" or args.lower().startswith("resume "):
+            return await self._handle_council_resume(event)
+
+        # Full council run
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            council_config = config.get("council", {})
+
+            # Resolve agent — check _running_agents (mid-turn) first,
+            # then _agent_cache (between turns) so subagent delegation
+            # works even when the user sends /council between turns.
+            session_key = self._session_key_for_source(event.source)
+            agent = None
+            if hasattr(self, '_running_agents'):
+                agent = self._running_agents.get(session_key)
+            if agent is None or agent is _AGENT_PENDING_SENTINEL:
+                _cache_lock = getattr(self, '_agent_cache_lock', None)
+                _cache = getattr(self, '_agent_cache', None)
+                if _cache_lock and _cache is not None:
+                    with _cache_lock:
+                        cached = _cache.get(session_key)
+                        if cached:
+                            agent = cached[0]
+
+            from agent.council import CouncilOrchestrator
+            orc = CouncilOrchestrator(
+                council_config,
+                parent_agent=agent,
+                delegation_config=config.get("delegation", {}),
+            )
+
+            # Resolve the message adapter for interim progress messages
+            adapter = self.adapters.get(event.source.platform) if hasattr(self, 'adapters') else None
+            _chat_id = event.source.chat_id
+            _thread_id = getattr(event.source, "thread_id", None)
+
+            # ── Emit task details before starting ─────────────────────
+            proposer_models = [p.get("model", "?") for p in council_config.get("proposers", [])]
+            critic_model = council_config.get("critic", {}).get("model", "?")
+            chairman_model = council_config.get("chairman", {}).get("model", "?")
+            mode_label = "subagent" if council_config.get("subagent_delegation", False) else "flat"
+            pipe_timeout = council_config.get("pipeline_timeout_seconds", 1800)
+            task_preview = args[:200] + ("…" if len(args) > 200 else "")
+            greeting = (
+                f"⚖️ **Council convening...**\n"
+                f"**Task:** {task_preview}\n\n"
+                f"**Models**\n"
+                f"• Proposers ({len(proposer_models)}): {', '.join(proposer_models)}\n"
+                f"• Critic: {critic_model}\n"
+                f"• Chairman: {chairman_model}\n"
+                f"• Mode: {mode_label}\n"
+                f"• Pipeline timeout: {pipe_timeout}s"
+            )
+            if adapter:
+                try:
+                    _metadata = {}
+                    if _thread_id:
+                        _metadata["thread_id"] = _thread_id
+                    import asyncio as _asyncio
+                    _asyncio.create_task(
+                        adapter.send(
+                            chat_id=_chat_id,
+                            content=greeting,
+                            metadata=_metadata or None,
+                        )
+                    )
+                except Exception:
+                    pass
+
+            # Build progress messages for the final gateway response.
+            # Also fire interim messages to the platform chat so users see
+            # progress during the 2-3 minute council run instead of nothing.
+            _progress_log = []
+
+            def _progress(stage: str, msg: str):
+                _progress_log.append(f"• {stage.capitalize()}: {msg}")
+                # Fire-and-forget interim message. We're on the running event
+                # loop (inside an async handler), so asyncio.create_task works.
+                if adapter:
+                    try:
+                        import asyncio as _asyncio
+                        # Build thread-aware metadata so Discord/matrix/etc.
+                        # route to the correct thread, not channel root.
+                        _metadata = {}
+                        if _thread_id:
+                            _metadata["thread_id"] = _thread_id
+                        _asyncio.create_task(
+                            adapter.send(
+                                chat_id=_chat_id,
+                                content=f"⚖️ **{stage.capitalize()}**: {msg}",
+                                metadata=_metadata or None,
+                            )
+                        )
+                    except Exception:
+                        pass
+
+            result = await orc.run_plan(args, progress_callback=_progress)
+
+            if result.get("success"):
+                prop_models = ", ".join(result.get("models_used", {}).get("proposers", []))
+                progress_block = "\n".join(_progress_log)
+                return (
+                    f"**Council Complete** — {result['processing_time']}s\n"
+                    f"Models: {prop_models}\n\n"
+                    f"{progress_block}\n\n"
+                    f"{result['output']}"
+                )
+            else:
+                return f"**Council Failed**: {result.get('error', 'Unknown error')}"
+
+        except Exception as e:
+            import traceback
+            return f"**Council Error**: {e}\n```\n{traceback.format_exc()[:1000]}\n```"
+
+    async def _handle_council_resume(self, event: MessageEvent) -> str:
+        """Handle /council resume via gateway."""
+        import asyncio
+        import os
+
+        from agent.council import CouncilOrchestrator
+        from hermes_cli.config import load_config
+
+        args = event.get_command_args().strip()
+        parts = args.split(None, 1)
+        subcmd = parts[0].lower() if parts else ""
+        state_path_arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcmd != "resume" and args.lower() != "resume":
+            return "Usage: /council resume [state_path]"
+
+        state_path = state_path_arg or ""
+        if state_path and not os.path.exists(state_path):
+            return f"**State file not found**: {state_path}"
+
+        state = CouncilOrchestrator.load_state(state_path or None)
+        if not state:
+            return (
+                "**No saved council state found.** "
+                "Run `/council plan <task>` first.\n"
+                f"(Looked for: `{CouncilOrchestrator.COUNCIL_STATE_PATH}`)"
+            )
+
+        config = load_config()
+        council_config = config.get("council", {})
+        session_key = self._session_key_for_source(event.source)
+        agent = None
+        if hasattr(self, '_running_agents'):
+            agent = self._running_agents.get(session_key)
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, '_agent_cache_lock', None)
+            _cache = getattr(self, '_agent_cache', None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+
+        orc = CouncilOrchestrator(
+            council_config,
+            parent_agent=agent,
+            delegation_config=config.get("delegation", {}),
+        )
+
+        result = await orc.run_resume(state_path)
+
+        if result.get("success"):
+            models = result.get("models_used", {})
+            prop_models = ", ".join(models.get("proposers", [])) if models else ""
+            models_line = f"Models: {prop_models}\n\n" if prop_models else ""
+            return (
+                f"**Council Resume Complete**\n\n"
+                f"{models_line}"
+                f"{result['output']}"
+            )
+        else:
+            return f"**Council Resume Failed**: {result.get('error', 'Unknown error')}"
+
     async def _watch_update_progress(
         self,
         poll_interval: float = 2.0,

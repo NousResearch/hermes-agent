@@ -116,6 +116,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("council", "Run multi-model council deliberation for complex task planning",
+               "Session",
+               args_hint="<task-description> | plan <task> | status | resume",
+               subcommands=("plan", "status", "resume")),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),

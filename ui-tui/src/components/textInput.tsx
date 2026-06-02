@@ -1110,7 +1110,16 @@ export function TextInput({
         }
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
-        const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        let text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+        // When the kitty keyboard protocol is active, Shift+A sends
+        // `\x1b[97;2u` which hermes-ink reduces to input='a' + key.shift=true.
+        // Without this guard the composer inserts a lowercase 'a' instead of
+        // 'A'.  Only adjust single ASCII letters — multi-char paste/bracketed
+        // sequences and non-ASCII (e.g. CJK) must pass through unchanged.
+        if (k.shift && text.length === 1 && text >= 'a' && text <= 'z') {
+          text = text.toUpperCase()
+        }
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
           return

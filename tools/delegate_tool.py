@@ -566,6 +566,40 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+def _build_child_task_packet(
+    goal: str,
+    context: Optional[str] = None,
+    *,
+    workspace_path: Optional[str] = None,
+) -> str:
+    """Build the self-contained user-visible task packet for a child agent.
+
+    Keep delegated goal/context in the user message, not only in the ephemeral
+    system prompt. Ephemeral prompts are deliberately omitted from persisted
+    trajectories/session traces, so putting the task packet here makes child
+    runs auditable and prevents downstream reviewers from seeing only a bare
+    goal with the grounding context missing.
+    """
+    parts = [
+        "# Delegated task packet",
+        "",
+        "## Goal",
+        (goal or "").strip(),
+    ]
+    if context and context.strip():
+        parts.extend(["", "## Task context", context.strip()])
+    if workspace_path and str(workspace_path).strip():
+        parts.extend(
+            [
+                "",
+                "## Workspace path",
+                str(workspace_path).strip(),
+                "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise.",
+            ]
+        )
+    return "\n".join(parts)
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
@@ -575,7 +609,7 @@ def _build_child_system_prompt(
     max_spawn_depth: int = 2,
     child_depth: int = 1,
 ) -> str:
-    """Build a focused system prompt for a child agent.
+    """Build focused system prompt for child agent.
 
     When role='orchestrator', appends a delegation-capability block
     modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
@@ -585,17 +619,8 @@ def _build_child_system_prompt(
     """
     parts = [
         "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
+        "The full delegated goal, task context, and workspace hint (if any) are supplied in the user message as a self-contained task packet. Treat that packet as authoritative.",
     ]
-    if context and context.strip():
-        parts.append(f"\nCONTEXT:\n{context}")
-    if workspace_path and str(workspace_path).strip():
-        parts.append(
-            "\nWORKSPACE PATH:\n"
-            f"{workspace_path}\n"
-            "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
-        )
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -603,22 +628,26 @@ def _build_child_system_prompt(
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
         "- Any issues encountered\n\n"
-        "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
+        "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task packet explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
+
     if role == "orchestrator":
-        child_note = (
-            "Your own children MUST be leaves (cannot delegate further) "
-            "because they would be at the depth floor — you cannot pass "
-            "role='orchestrator' to your own delegate_task calls."
-            if child_depth + 1 >= max_spawn_depth
-            else "Your own children can themselves be orchestrators or leaves, "
-            "depending on the `role` you pass to delegate_task. Default is "
-            "'leaf'; pass role='orchestrator' explicitly when a child "
-            "needs to further decompose its work."
-        )
+        if child_depth + 1 >= max_spawn_depth:
+            child_note = (
+                "Your own children MUST be leaves (cannot delegate further) "
+                "because they would be at the depth floor; you cannot pass "
+                "role='orchestrator' to your own delegate_task calls."
+            )
+        else:
+            child_note = (
+                "Your own children can themselves be orchestrators or leaves, "
+                "depending on the `role` you pass to delegate_task. Default is "
+                "'leaf'; pass role='orchestrator' explicitly when a child "
+                "needs to further decompose its work."
+            )
         parts.append(
             "\n## Subagent Spawning (Orchestrator Role)\n"
             "You have access to the `delegate_task` tool and CAN spawn "
@@ -629,7 +658,7 @@ def _build_child_system_prompt(
             "- A subtask is reasoning-heavy and would flood your context "
             "with intermediate data.\n\n"
             "WHEN NOT to delegate:\n"
-            "- Single-step mechanical work — do it directly.\n"
+            "- Single-step mechanical work; do it directly.\n"
             "- Trivial tasks you can execute in one or two tool calls.\n"
             "- Re-delegating your entire assigned goal to one worker "
             "(that's just pass-through with no value added).\n\n"
@@ -968,6 +997,11 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    child_task_packet = _build_child_task_packet(
+        goal,
+        context,
+        workspace_path=workspace_hint,
+    )
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -1146,6 +1180,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    setattr(child, "_subagent_task_packet", child_task_packet)
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1505,7 +1540,7 @@ def _run_single_child(
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             return child.run_conversation(
-                user_message=goal,
+                user_message=getattr(child, "_subagent_task_packet", goal),
                 task_id=child_task_id,
             )
 
@@ -1924,6 +1959,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[Any] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1987,15 +2023,9 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    # Resolve delegation credentials (provider:model pair) per child after
+    # task normalisation, because top-level and per-task model overrides can
+    # intentionally route different children to different providers/models.
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2017,7 +2047,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "model": model}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2033,6 +2063,17 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Pre-resolve per-task routing before constructing any children so invalid
+    # requested providers/models fail fast with a clear parent-visible error.
+    task_creds: List[dict] = []
+    for i, task in enumerate(task_list):
+        task_model_override = task.get("model") if "model" in task else model
+        task_cfg = _apply_delegation_model_override(cfg, task_model_override)
+        try:
+            task_creds.append(_resolve_delegation_credentials(task_cfg, parent_agent))
+        except ValueError as exc:
+            return tool_error(f"Task {i} routing error: {exc}")
 
     overall_start = time.monotonic()
     results = []
@@ -2058,6 +2099,7 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            creds = task_creds[i]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2340,6 +2382,42 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
             exc,
         )
     return None
+
+
+def _apply_delegation_model_override(cfg: dict, model_override: Optional[Any]) -> dict:
+    """Return delegation cfg with a per-call/per-task model override applied.
+
+    ``delegate_task`` routing is config-driven by default, but callers sometimes
+    need to select a stronger model for a specific delegated task. The override
+    shape intentionally mirrors cronjob.model: {provider?: str, model: str}.
+    A bare string is accepted for internal/back-compat callers and means
+    "model only, inherit the configured/parent provider". Empty fields are
+    ignored so the persistent delegation config remains the fallback.
+    """
+    merged = dict(cfg or {})
+    if not model_override:
+        return merged
+
+    if isinstance(model_override, str):
+        requested_model = model_override.strip()
+        requested_provider = None
+    elif isinstance(model_override, dict):
+        requested_model = str(model_override.get("model") or "").strip()
+        requested_provider = str(model_override.get("provider") or "").strip() or None
+    else:
+        return merged
+
+    if requested_model:
+        merged["model"] = requested_model
+    if requested_provider:
+        merged["provider"] = requested_provider
+        # A provider override must not accidentally reuse a configured direct
+        # endpoint from delegation.base_url. Provider selection should resolve
+        # its own base_url/api_key/api_mode via runtime_provider.
+        merged["base_url"] = ""
+        merged["api_key"] = ""
+        merged["api_mode"] = ""
+    return merged
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -2736,6 +2814,15 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "provider": {"type": "string"},
+                                "model": {"type": "string"},
+                            },
+                            "required": ["model"],
+                            "description": "Per-task model/provider override. Use when this child needs a specific model (e.g. Opus/GPT) rather than the delegation config default.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2748,6 +2835,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string"},
+                    "model": {"type": "string"},
+                },
+                "required": ["model"],
+                "description": "Optional model/provider override for all children in this delegate_task call. Per-task model overrides win. Omit to use delegation config or inherit the parent route.",
             },
             "acp_command": {
                 "type": "string",
@@ -2793,6 +2889,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

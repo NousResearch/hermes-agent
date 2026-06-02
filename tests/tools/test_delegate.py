@@ -28,6 +28,8 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _build_child_task_packet,
+    _apply_delegation_model_override,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -127,19 +129,42 @@ class TestDelegateRequirements(unittest.TestCase):
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
         prompt = _build_child_system_prompt("Fix the tests")
-        self.assertIn("Fix the tests", prompt)
-        self.assertIn("YOUR TASK", prompt)
+        self.assertIn("self-contained task packet", prompt)
+        self.assertNotIn("Fix the tests", prompt)
+        self.assertNotIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
     def test_goal_with_context(self):
         prompt = _build_child_system_prompt("Fix the tests", "Error: assertion failed in test_foo.py line 42")
-        self.assertIn("Fix the tests", prompt)
-        self.assertIn("CONTEXT", prompt)
-        self.assertIn("assertion failed", prompt)
+        self.assertIn("self-contained task packet", prompt)
+        self.assertNotIn("Fix the tests", prompt)
+        self.assertNotIn("CONTEXT", prompt)
+        self.assertNotIn("assertion failed", prompt)
 
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+
+class TestChildTaskPacket(unittest.TestCase):
+    def test_goal_context_and_workspace_are_user_visible(self):
+        packet = _build_child_task_packet(
+            "Review the patch",
+            "Evidence: failing test_delegate.py::test_packet",
+            workspace_path="/tmp/hermes-agent",
+        )
+        self.assertIn("# Delegated task packet", packet)
+        self.assertIn("## Goal", packet)
+        self.assertIn("Review the patch", packet)
+        self.assertIn("## Task context", packet)
+        self.assertIn("failing test_delegate.py::test_packet", packet)
+        self.assertIn("## Workspace path", packet)
+        self.assertIn("/tmp/hermes-agent", packet)
+
+    def test_empty_context_is_omitted(self):
+        packet = _build_child_task_packet("Review the patch", "  ")
+        self.assertIn("Review the patch", packet)
+        self.assertNotIn("## Task context", packet)
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -367,6 +392,35 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_child_run_receives_self_contained_task_packet(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Review the deployment change",
+                context="Grounding evidence: inspect /tmp/deploy.log before judging.",
+                parent_agent=parent,
+            )
+
+            _, kwargs = mock_child.run_conversation.call_args
+            user_message = kwargs["user_message"]
+            self.assertIn("# Delegated task packet", user_message)
+            self.assertIn("Review the deployment change", user_message)
+            self.assertIn("Grounding evidence", user_message)
+
+            _, agent_kwargs = MockAgent.call_args
+            system_prompt = agent_kwargs["ephemeral_system_prompt"]
+            self.assertIn("self-contained task packet", system_prompt)
+            self.assertNotIn("Grounding evidence", system_prompt)
 
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
@@ -1095,6 +1149,170 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         cfg = {"model": "some-model", "provider": "crof.ai"}
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["provider"])
+
+
+class TestDelegationModelOverride(unittest.TestCase):
+    """Tests for explicit per-call and per-task delegation routing."""
+
+    def test_model_override_string_sets_model_only(self):
+        cfg = {
+            "max_iterations": 45,
+            "model": "qwen2.5:14b",
+            "provider": "",
+        }
+        merged = _apply_delegation_model_override(cfg, "gpt-5.5")
+        self.assertEqual(merged["model"], "gpt-5.5")
+        self.assertEqual(merged["provider"], "")
+
+    def test_model_override_provider_clears_direct_endpoint_fields(self):
+        cfg = {
+            "max_iterations": 45,
+            "model": "qwen2.5:14b",
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "local-key",
+            "api_mode": "chat_completions",
+        }
+        merged = _apply_delegation_model_override(
+            cfg,
+            {"provider": "openai-codex", "model": "gpt-5.5"},
+        )
+        self.assertEqual(merged["model"], "gpt-5.5")
+        self.assertEqual(merged["provider"], "openai-codex")
+        self.assertEqual(merged["base_url"], "")
+        self.assertEqual(merged["api_key"], "")
+        self.assertEqual(merged["api_mode"], "")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_single_task_model_override_reaches_child_builder(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "qwen2.5:14b",
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:11434/v1",
+        }
+        mock_creds.return_value = {
+            "model": "gpt-5.5",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-key",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(
+                goal="Use Codex for review",
+                model={"provider": "openai-codex", "model": "gpt-5.5"},
+                parent_agent=parent,
+            )
+
+            mock_creds.assert_called_once()
+            routed_cfg = mock_creds.call_args.args[0]
+            self.assertEqual(routed_cfg["model"], "gpt-5.5")
+            self.assertEqual(routed_cfg["provider"], "openai-codex")
+            self.assertEqual(routed_cfg["base_url"], "")
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs.get("model"), "gpt-5.5")
+            self.assertEqual(kwargs.get("override_provider"), "openai-codex")
+            self.assertEqual(kwargs.get("override_api_mode"), "codex_responses")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_mixed_batch_per_task_model_overrides_resolve_per_child(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "qwen2.5:14b",
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:11434/v1",
+        }
+        mock_creds.side_effect = [
+            {
+                "model": "claude-opus-4-8",
+                "provider": "custom",
+                "base_url": "http://127.0.0.1:8317/v1",
+                "api_key": "opus-key",
+                "api_mode": "chat_completions",
+            },
+            {
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "codex-key",
+                "api_mode": "codex_responses",
+            },
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(
+                tasks=[
+                    {
+                        "goal": "Use Opus for architecture review",
+                        "model": {"provider": "custom", "model": "claude-opus-4-8"},
+                    },
+                    {
+                        "goal": "Use GPT for code review",
+                        "model": {"provider": "openai-codex", "model": "gpt-5.5"},
+                    },
+                ],
+                parent_agent=parent,
+            )
+
+            self.assertEqual(mock_creds.call_count, 2)
+            routed_cfgs = [call.args[0] for call in mock_creds.call_args_list]
+            self.assertEqual(routed_cfgs[0]["model"], "claude-opus-4-8")
+            self.assertEqual(routed_cfgs[0]["provider"], "custom")
+            self.assertEqual(routed_cfgs[0]["base_url"], "")
+            self.assertEqual(routed_cfgs[1]["model"], "gpt-5.5")
+            self.assertEqual(routed_cfgs[1]["provider"], "openai-codex")
+
+            build_calls = mock_build.call_args_list
+            self.assertEqual(build_calls[0].kwargs.get("model"), "claude-opus-4-8")
+            self.assertEqual(build_calls[0].kwargs.get("override_provider"), "custom")
+            self.assertEqual(build_calls[1].kwargs.get("model"), "gpt-5.5")
+            self.assertEqual(build_calls[1].kwargs.get("override_provider"), "openai-codex")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_invalid_model_override_returns_task_routing_error(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.side_effect = ValueError("Cannot resolve delegation provider 'missing'")
+        parent = _make_mock_parent(depth=0)
+
+        result = json.loads(
+            delegate_task(
+                goal="Use missing provider",
+                model={"provider": "missing", "model": "model-x"},
+                parent_agent=parent,
+            )
+        )
+        self.assertIn("error", result)
+        self.assertIn("Task 0 routing error", result["error"])
+        self.assertIn("missing", result["error"])
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):

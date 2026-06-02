@@ -219,6 +219,8 @@ export const api = {
     fetchJSON<MissionBriefDetailResponse>(`/api/mission-control/mission-briefs/${encodeURIComponent(briefId)}`, { cache: "no-store" }),
   getMissionControlActiveEnvelope: () =>
     fetchJSON<MissionControlActiveEnvelopeResponse>("/api/mission-control/active-envelope", { cache: "no-store" }),
+  listApprovalSlices: () =>
+    fetchJSON<ApprovalSlicesResponse>("/api/mission-control/approval-slices?include_inactive=true", { cache: "no-store" }),
   createMissionBrief: (body: MissionBriefCreate) =>
     fetchJSON<MissionBriefCreateResponse>("/api/mission-control/mission-briefs", {
       method: "POST",
@@ -1000,6 +1002,34 @@ export interface MissionControlActiveEnvelopeResponse {
   };
   trusted_for_execution: false;
   inert_context_only: true;
+}
+
+export type ApprovalSliceStatus = "active" | "revoked" | "expired" | "completed";
+
+export interface ApprovalSliceSummary {
+  id: string;
+  status: ApprovalSliceStatus;
+  title: string;
+  repo_path?: string | null;
+  allowed_actions: string[];
+  forbidden_actions: string[];
+  stop_condition?: string | null;
+  checkpoint?: string | null;
+  linked_goal_contract_id?: string | null;
+  created_by?: string | null;
+  created_from?: string | null;
+  created_at: string;
+  updated_at: string;
+  revoked_at?: string | null;
+  expired_at?: string | null;
+  completed_at?: string | null;
+  trusted_for_execution: false;
+  inert_context_only: true;
+}
+
+export interface ApprovalSlicesResponse {
+  items: ApprovalSliceSummary[];
+  warnings: string[];
 }
 
 export interface MissionControlCodexPromptPacketCreate {

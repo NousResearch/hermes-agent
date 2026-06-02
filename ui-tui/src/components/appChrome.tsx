@@ -154,10 +154,18 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
-export function statusRuleWidths(cols: number, cwdLabel: string) {
+// `minLeftContent` is the display width of the high-priority left segments
+// (status indicator + model + context). Reserving it makes the cwd/branch
+// segment on the right yield FIRST on narrow terminals, instead of squeezing
+// the loading indicator and model down to nothing.
+export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent = 0) {
   const width = Math.max(1, Math.floor(cols || 1))
   const desiredSeparatorWidth = width >= 24 ? 3 : 1
-  const minLeftWidth = width >= 24 ? 8 : 1
+  const baseMinLeft = width >= 24 ? 8 : 1
+  // Never reserve more than the terminal width; never less than the historical
+  // floor. With the default `minLeftContent = 0` this is identical to the old
+  // behaviour, so callers that don't pass content are unaffected.
+  const minLeftWidth = Math.min(width, Math.max(baseMinLeft, Math.floor(minLeftContent)))
   const maxRightWidth = Math.max(0, width - desiredSeparatorWidth - minLeftWidth)
 
   if (!cwdLabel || maxRightWidth <= 0) {
@@ -169,6 +177,35 @@ export function statusRuleWidths(cols: number, cwdLabel: string) {
   const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
 
   return { leftWidth, rightWidth, separatorWidth }
+}
+
+// Progressive disclosure for the status rule's lower-priority tail segments.
+// As the terminal narrows we shed the least important pieces first (cost →
+// bg → voice → compressions → duration → context bar), and below the bar
+// breakpoint the context read-out collapses to a bare token count. Status and
+// model are never gated here — they're guaranteed room by `statusRuleWidths`.
+export interface StatusBarSegments {
+  bar: boolean
+  bg: boolean
+  compactCtx: boolean
+  compressions: boolean
+  cost: boolean
+  duration: boolean
+  voice: boolean
+}
+
+export function statusBarSegments(cols: number): StatusBarSegments {
+  const w = Math.max(1, Math.floor(cols || 1))
+
+  return {
+    compactCtx: w < 72,
+    bar: w >= 72,
+    duration: w >= 76,
+    compressions: w >= 80,
+    voice: w >= 84,
+    bg: w >= 88,
+    cost: w >= 96
+  }
 }
 
 function SpawnHud({ t }: { t: Theme }) {
@@ -312,15 +349,34 @@ export function StatusRule({
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
+  const segs = statusBarSegments(cols)
 
+  // On narrow terminals the context read-out collapses to a bare token count
+  // (`12k tok`) and the visual fill bar is dropped entirely.
   const ctxLabel = usage.context_max
-    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+    ? segs.compactCtx
+      ? `${fmtK(usage.context_used ?? 0)} tok`
+      : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
     : usage.total > 0
       ? `${fmtK(usage.total)} tok`
       : ''
 
-  const bar = usage.context_max ? ctxBar(pct) : ''
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
+  const bar = segs.bar && usage.context_max ? ctxBar(pct) : ''
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+
+  // Reserve room for the must-keep left segments (indicator + model + context)
+  // so the cwd/branch on the right truncates before they do. The busy face can
+  // grow with its verb/duration tail, but only the glyph itself is essential.
+  const minLeftContent =
+    stringWidth('─ ') +
+    // The busy face carries a verb + elapsed-time tail; reserve enough that it
+    // can't shove the model off-screen, but not the whole (growing) duration.
+    (busy ? 10 : stringWidth(status)) +
+    stringWidth(' │ ') +
+    stringWidth(modelText) +
+    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, minLeftContent)
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
@@ -352,7 +408,7 @@ export function StatusRule({
         )}
         <Text color={t.color.muted} wrap="truncate-end">
           {' │ '}
-          {modelLabel(model, modelReasoningEffort, modelFast)}
+          {modelText}
         </Text>
         {ctxLabel ? (
           <Text color={t.color.muted} wrap="truncate-end">
@@ -366,13 +422,13 @@ export function StatusRule({
             <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
           </Text>
         ) : null}
-        {sessionStartedAt ? (
+        {segs.duration && sessionStartedAt ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <SessionDuration startedAt={sessionStartedAt} />
           </Text>
         ) : null}
-        {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
+        {segs.compressions && typeof usage.compressions === 'number' && usage.compressions > 0 ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text
@@ -383,7 +439,7 @@ export function StatusRule({
           </Text>
         ) : null}
         <SpawnHud t={t} />
-        {voiceLabel ? (
+        {segs.voice && voiceLabel ? (
           <Text
             color={
               voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
@@ -395,13 +451,13 @@ export function StatusRule({
           </Text>
         ) : null}
         {sessionCountNode}
-        {bgCount > 0 ? (
+        {segs.bg && bgCount > 0 ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {bgCount} bg
           </Text>
         ) : null}
-        {showCost && typeof usage.cost_usd === 'number' ? (
+        {segs.cost && showCost && typeof usage.cost_usd === 'number' ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ $'}
             {usage.cost_usd.toFixed(4)}

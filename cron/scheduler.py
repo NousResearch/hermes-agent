@@ -1182,14 +1182,22 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
       markdown — often security docs / runbooks that *describe* attack
       commands in prose. The LOOSER ``_scan_cron_skill_assembled``
       pattern set is used: only unambiguous prompt-injection directives
-      and invisible unicode block, command-shape patterns are dropped
-      to avoid false-positives. Skill bodies are vetted at install time
-      by ``skills_guard.py``.
+      block; command-shape patterns are dropped and invisible unicode is
+      sanitized (stripped + logged) rather than blocked, to avoid
+      false-positives that permanently kill a job. Skill bodies are
+      vetted at install time by ``skills_guard.py``.
     """
     from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
 
-    scanner = _scan_cron_skill_assembled if has_skills else _scan_cron_prompt
-    scan_error = scanner(assembled)
+    if has_skills:
+        # Skill content is install-time vetted by skills_guard.py. Invisible
+        # unicode is sanitized (not blocked) so a stray zero-width space in a
+        # skill code example can't permanently kill the job; the cleaned
+        # prompt is what actually runs.
+        cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+        assembled = cleaned
+    else:
+        scan_error = _scan_cron_prompt(assembled)
     if scan_error:
         job_label = job.get("name") or job.get("id") or "<unknown>"
         logger.warning(

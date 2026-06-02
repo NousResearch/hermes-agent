@@ -217,6 +217,8 @@ export const api = {
     fetchJSON<MissionBriefListResponse>("/api/mission-control/mission-briefs", { cache: "no-store" }),
   getMissionBrief: (briefId: string) =>
     fetchJSON<MissionBriefDetailResponse>(`/api/mission-control/mission-briefs/${encodeURIComponent(briefId)}`, { cache: "no-store" }),
+  getMissionControlActiveEnvelope: () =>
+    fetchJSON<MissionControlActiveEnvelopeResponse>("/api/mission-control/active-envelope", { cache: "no-store" }),
   createMissionBrief: (body: MissionBriefCreate) =>
     fetchJSON<MissionBriefCreateResponse>("/api/mission-control/mission-briefs", {
       method: "POST",
@@ -957,6 +959,47 @@ export interface MissionControlArtifactListResponse {
   source: string;
   items: MissionControlArtifact[];
   warnings: string[];
+}
+
+export interface MissionControlActiveEnvelopeMetadata {
+  id?: string | null;
+  schema?: string | null;
+  status?: string | null;
+  title?: string | null;
+  mode?: string | null;
+  mode_label?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  trusted_for_execution: false;
+  inert_context_only: true;
+  vocabulary_version?: string | null;
+}
+
+export interface MissionControlActiveEnvelopeResponse {
+  exists: boolean;
+  active_lane?: string | null;
+  active_mode?: string | null;
+  execution_boundary: string;
+  allowed_actions: string[];
+  forbidden_actions: string[];
+  checkpoint?: string | null;
+  repo_state: {
+    status?: string | null;
+    source?: string | null;
+  };
+  evidence: {
+    count: number;
+    links: string[];
+  };
+  data_source: string;
+  task_control_envelope?: MissionControlActiveEnvelopeMetadata;
+  selection?: {
+    selected_from_count: number;
+    ambiguous: boolean;
+    selection_reason: string;
+  };
+  trusted_for_execution: false;
+  inert_context_only: true;
 }
 
 export interface MissionControlCodexPromptPacketCreate {

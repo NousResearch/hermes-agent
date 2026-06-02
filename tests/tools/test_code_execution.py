@@ -137,6 +137,32 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
 
+    def test_search_files_truncation_hint_contract_is_json_safe(self):
+        """Regression: appended non-JSON hints broke execute_code chained calls.
+
+        execute_code parses each RPC response with json.loads(raw). search_files
+        must therefore expose truncation guidance as a JSON field rather than
+        appending a human hint after the JSON document.
+        """
+        from tools.file_tools import search_tool
+
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_count": 100,
+            "matches": [{"path": "a.py", "line": 1, "content": "x"}],
+            "truncated": True,
+        }
+        mock_ops.search.return_value = result_obj
+
+        with patch("tools.file_tools._get_file_ops", return_value=mock_ops):
+            raw = search_tool(pattern="foo", offset=0, limit=50)
+
+        result = json.loads(raw)
+        self.assertTrue(result["truncated"])
+        self.assertIn("offset=50", result["_hint"])
+        self.assertNotIn("\n\n[Hint:", raw)
+
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
     def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):

@@ -15,6 +15,7 @@ from tools.skills_tool import (
     _get_category_from_path,
     _find_all_skills,
     skill_matches_platform,
+    skill_search,
     skills_list,
     skill_view,
     MAX_DESCRIPTION_LENGTH,
@@ -1370,3 +1371,96 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+
+class TestSkillSearch:
+    def test_search_installed_skills_returns_compact_matches(self, tmp_path):
+        _make_skill(
+            tmp_path,
+            "flutter-ui-development",
+            category="software-development",
+            body="FULL BODY SHOULD NOT LEAK INTO SEARCH RESULTS",
+        )
+        _make_skill(tmp_path, "spotify", category="media")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            raw = skill_search("flutter", source="installed", limit=10)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["query"] == "flutter"
+        assert result["count"] == 1
+        assert result["results"] == [
+            {
+                "name": "flutter-ui-development",
+                "identifier": "software-development/flutter-ui-development",
+                "source": "installed",
+                "description": "Description for flutter-ui-development.",
+                "installed": True,
+                "category": "software-development",
+                "tags": [],
+            }
+        ]
+        assert "FULL BODY SHOULD NOT LEAK" not in raw
+
+    def test_search_validates_empty_query(self):
+        result = json.loads(skill_search("   "))
+
+        assert result["success"] is False
+        assert "query" in result["error"]
+
+    def test_search_installed_nested_skill_identifier_loads_with_skill_view(self, tmp_path):
+        _make_skill(
+            tmp_path,
+            "deep-skill",
+            category="foundations/runtime",
+            body="Nested skill body.",
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            search_result = json.loads(skill_search("deep", source="installed"))
+            identifier = search_result["results"][0]["identifier"]
+            view_result = json.loads(skill_view(identifier))
+
+        assert identifier == "foundations/runtime/deep-skill"
+        assert view_result["success"] is True
+        assert "Nested skill body." in view_result["content"]
+
+    def test_search_caps_limit_and_preserves_installed_first(self, tmp_path):
+        _make_skill(tmp_path, "alpha-local", body="No body in search")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+             patch("tools.skills_tool.unified_search") as unified, \
+             patch("tools.skills_tool.create_source_router", return_value=[]):
+            from tools.skills_hub import SkillMeta
+
+            unified.return_value = [
+                SkillMeta(
+                    name="alpha-remote",
+                    description="Remote alpha skill.",
+                    source="hermes-index",
+                    identifier="owner/repo/alpha-remote",
+                    trust_level="community",
+                    tags=["alpha"],
+                )
+            ]
+            raw = skill_search("alpha", source="all", limit=99)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["limit"] == 50
+        assert [item["source"] for item in result["results"]] == [
+            "installed",
+            "hermes-index",
+        ]
+        assert result["results"][0]["identifier"] == "alpha-local"
+        assert result["results"][1]["installed"] is False
+        assert "trust_level" in result["results"][1]
+
+    def test_tool_is_registered_under_skills_toolset(self):
+        entry = skills_tool_module.registry.get_entry("skill_search")
+
+        assert entry is not None
+        assert entry.toolset == "skills"
+        assert entry.schema["name"] == "skill_search"
+        assert "query" in entry.schema["parameters"]["required"]

@@ -348,7 +348,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           </h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
             {failed
-              ? 'One of the install steps failed. Check the details below or the desktop log for the full transcript.'
+              ? 'One of the install steps failed. On Windows, this can happen if another Hermes CLI or desktop instance is running. Stop any running Hermes instances, then retry. Check the details below or the desktop log for the full transcript.'
               : 'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. ' +
                 'Subsequent launches will skip this step.'}
           </p>

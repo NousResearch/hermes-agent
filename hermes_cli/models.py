@@ -1226,6 +1226,7 @@ _PROVIDER_ALIASES = {
     "minimax-portal": "minimax-oauth",
     "minimax-global": "minimax-oauth",
     "minimax_oauth": "minimax-oauth",
+    "openai": "openai-api",
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",

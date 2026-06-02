@@ -1293,6 +1293,8 @@ export interface CronJob {
   name?: string | null;
   prompt?: string | null;
   script?: string | null;
+  model?: string | null;
+  provider?: string | null;
   schedule?: { kind?: string; expr?: string; display?: string };
   schedule_display?: string | null;
   enabled: boolean;

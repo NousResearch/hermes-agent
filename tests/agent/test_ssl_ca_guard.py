@@ -52,13 +52,31 @@ def test_skip_env_var_disables_guard(monkeypatch, tmp_path):
 
 
 def test_macos_fallback_allows_startup(monkeypatch, tmp_path):
-    """On Darwin, an unloadable certifi bundle must fall back to system trust."""
+    """On Darwin, an unloadable certifi bundle must fall back to system trust.
+
+    Only the fallback call (no cafile) is mocked — the certifi call must
+    fail naturally with SSLError from the broken PEM. The mock returns a
+    context with system CAs loaded, so the fallback succeeds.
+    """
     fake = tmp_path / "broken.pem"
-    fake.write_bytes(b"not a real bundle")
+    # > 1024 bytes so the size guard doesn't short-circuit before ssl runs.
+    fake.write_bytes(b"not a real bundle" + b" " * 2000)
     monkeypatch.setattr(certifi, "where", lambda: str(fake))
     monkeypatch.setattr("platform.system", lambda: "Darwin")
 
-    fake_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    with patch("ssl.create_default_context", return_value=fake_ctx):
-        # Should NOT raise — macOS fallback lets startup proceed.
+    _real_create = ssl.create_default_context
+
+    def _mock_create(purpose=ssl.Purpose.SERVER_AUTH, **kwargs):
+        if kwargs.get("cafile"):
+            # Let the certifi call hit the real SSL stack → raises SSLError
+            # on the broken PEM, which verify_ca_bundle() wraps as
+            # SSLConfigurationError. This is the path the fallback rescues.
+            return _real_create(purpose, **kwargs)
+        # Fallback call: simulate a healthy system trust store.
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_default_certs()
+        return ctx
+
+    with patch("ssl.create_default_context", side_effect=_mock_create):
+        # Should NOT raise — macOS system trust store covers the broken bundle.
         verify_ca_bundle_with_fallback()

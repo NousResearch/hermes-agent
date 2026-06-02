@@ -1965,7 +1965,7 @@ def run_doctor(args):
     if _runtime_secrets_path().exists():
         check_ok("Infisical runtime secrets file", f"({_DHH}/runtime-secrets.env)")
     else:
-        check_info("Infisical runtime secrets file", f"(not present — optional {_DHH}/runtime-secrets.env)")
+        check_info(f"Infisical runtime secrets file (not present — optional {_DHH}/runtime-secrets.env)")
     
     _section("Skills Hub")
     hub_dir = HERMES_HOME / "skills" / ".hub"

@@ -15506,6 +15506,16 @@ class GatewayRunner:
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"].strip()
+                    placeholder = (user_text or "").strip().lower()
+                    if placeholder in {
+                        "[audio received]",
+                        "(the user sent a message with no text content)",
+                    } or not placeholder:
+                        enriched_parts.append(
+                            f'[The user sent a voice message~ '
+                            f'Here\'s what they said: "{transcript}"]'
+                        )
+                        continue
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'

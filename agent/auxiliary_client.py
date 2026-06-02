@@ -4756,10 +4756,14 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
 
 
 def _convert_openai_images_to_anthropic(messages: list) -> list:
-    """Convert OpenAI ``image_url`` content blocks to Anthropic ``image`` blocks.
+    """Convert OpenAI ``image_url`` and ``video_url`` content blocks to Anthropic format.
 
-    Only touches messages that have list-type content with ``image_url`` blocks;
-    plain text messages pass through unchanged.
+    Converts:
+    - ``image_url`` blocks → Anthropic ``image`` blocks
+    - ``video_url`` blocks → Anthropic ``input_video`` blocks
+
+    Only touches messages that have list-type content with ``image_url`` or
+    ``video_url`` blocks; plain text messages pass through unchanged.
     """
     converted = []
     for msg in messages:
@@ -4795,6 +4799,28 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
                             "url": image_url_val,
                         },
                     })
+                changed = True
+            elif block.get("type") == "video_url":
+                video_url_val = (block.get("video_url") or {}).get("url", "")
+                if video_url_val.startswith("data:"):
+                    # Parse data URI: data:<media_type>;base64,<data>
+                    header, _, b64data = video_url_val.partition(",")
+                    media_type = "video/mp4"
+                    if ":" in header and ";" in header:
+                        media_type = header.split(":", 1)[1].split(";", 1)[0]
+                    new_content.append({
+                        "type": "input_video",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64data,
+                        },
+                    })
+                else:
+                    # URL-based video — Anthropic protocol doesn't have a
+                    # native URL-based video block; pass through as-is and
+                    # let the provider handle (or reject) it.
+                    new_content.append(block)
                 changed = True
             else:
                 new_content.append(block)

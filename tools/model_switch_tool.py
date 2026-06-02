@@ -287,7 +287,7 @@ registry.register(
     name="model_switch",
     toolset="model_switch",
     schema=MODEL_SWITCH_SCHEMA,
-    handler=lambda args, **kw: tool_error(
+    handler=lambda *_args, **_kw: tool_error(
         "model_switch must be handled by the agent loop"
     ),
     check_fn=check_model_switch_requirements,

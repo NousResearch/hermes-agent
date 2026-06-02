@@ -298,8 +298,17 @@ class _ProviderCollector:
     def register_tool(self, *args, **kwargs):
         pass
 
-    def register_hook(self, *args, **kwargs):
-        pass
+    def register_hook(self, hook_name: str, callback, **kwargs):
+        """转发到全局 PluginManager._hooks，实现真实的 hook 注册。
+        
+        PluginManager._hooks 是 dict: hook_name → [callbacks]。
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            pm = get_plugin_manager()
+            pm._hooks.setdefault(hook_name, []).append(callback)
+        except Exception:
+            pass
 
     def register_cli_command(self, *args, **kwargs):
         pass  # CLI registration happens via discover_plugin_cli_commands()

@@ -187,6 +187,70 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Custom extension: context.md convention
+# --------------------------------------------------------------------------
+# Resolving ~/ with expanduser() is safe here — os.path.expanduser works
+# on Linux/macOS and Path.home() / Path.expanduser() use os.path.expanduser.
+_AGENT_SHARED = Path(os.path.expanduser("~/agent-shared/hermes-tasks"))
+
+# Custom kanban boards directory (avoids conflict with official kanban/)
+_KANBAN_BOARDS_CUSTOM = Path(os.path.expanduser("~/.hermes/kanban-boards.custom"))
+
+# Pattern to detect a context.md shorthand in task body.
+# Accepts both "@ <path>" and "[label](file://<path>)" forms.
+_AT_CONTEXT_RE = re.compile(
+    r"@\s*((?:~|[A-Za-z]:)?(?:[/\\][^)\s]*)*/hermes-tasks/[-\w]+/context\.md)",
+    re.IGNORECASE,
+)
+_FILE_CONTEXT_RE = re.compile(
+    r"file://((?:/[^\s)]+)*/hermes-tasks/[-\w]+/context\.md)",
+    re.IGNORECASE,
+)
+
+
+def resolve_context_path(task_id: str, body: Optional[str] = None) -> Optional[Path]:
+    """Return the context.md Path for ``task_id`` using the body shorthand.
+
+    Resolution order (highest precedence first):
+
+    1. ``body`` shorthand — parses ``@ <path>`` or ``file://<path>``
+       in the card body and returns the resolved Path.
+    2. Default convention — ``_AGENT_SHARED / task_id / context.md``.
+
+    Returns ``None`` when neither convention yields an existing file.
+    Does **not** raise if the file is absent — callers decide how to
+    handle a missing context.
+    """
+    if body:
+        m = _AT_CONTEXT_RE.search(body)
+        if m:
+            raw = m.group(1).strip().replace("\\", "/")
+            resolved = Path(os.path.expanduser(raw))
+            if resolved.exists():
+                return resolved
+        m = _FILE_CONTEXT_RE.search(body)
+        if m:
+            raw = m.group(1).strip().replace("\\", "/")
+            resolved = Path(raw)
+            if resolved.exists():
+                return resolved
+
+    default = _AGENT_SHARED / task_id / "context.md"
+    return default if default.exists() else None
+
+
+def get_custom_boards_root() -> Path:
+    """Return the custom boards root (``~/.hermes/kanban-boards.custom``).
+
+    Mirrors the official ``boards_root()`` but for custom boards that
+    coexist with (and are independent of) the official ``kanban/boards/``.
+    The dispatcher checks this directory first when resolving board slugs.
+    """
+    _KANBAN_BOARDS_CUSTOM.mkdir(parents=True, exist_ok=True)
+    return _KANBAN_BOARDS_CUSTOM
+
+
 
 DEFAULT_BOARD = "default"
 

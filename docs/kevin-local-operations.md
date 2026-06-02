@@ -55,15 +55,32 @@ zsh -n scripts/hermes-dashboard-watchdog.sh
 plutil -lint scripts/com.kevin.hermes.dashboard.watchdog.plist
 ```
 
-Runtime proof:
+## One-Shot Health Check
+
+Use this for a manual local runtime check. It reports status only; it does not
+start, restart, stop, or mutate the Docker service.
 
 ```bash
-docker compose -f compose.hermes.local.yml ps
-curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9119/
+scripts/check-kevin-local-hermes-health.sh
 ```
 
-Expected dashboard response is `200`. The API server on `127.0.0.1:8642` may be
-off by design.
+The script checks:
+
+- `docker info`
+- `docker compose -f compose.hermes.local.yml ps`
+- dashboard HTTP `200` at `http://127.0.0.1:9119/chat`
+- dashboard WebSocket `/api/pty` when local Python has the `websockets` package
+- `scripts/check-git-remote-safety.sh`
+
+Expected dashboard response is `200`. WebSocket can be reported as skipped when
+the optional Python package is missing or the dashboard does not expose a local
+session token. The API server on `127.0.0.1:8642` may be off by design.
+
+If you only need the runtime check and do not want the Git remote safety gate:
+
+```bash
+CHECK_GIT_SAFETY=0 scripts/check-kevin-local-hermes-health.sh
+```
 
 ## Secrets And Runtime Files
 
@@ -88,6 +105,12 @@ For docs/scripts in Git:
 git status --short
 git restore --staged <file>
 git restore <file>
+```
+
+For the one-shot health check addition only:
+
+```bash
+git restore docs/kevin-local-operations.md scripts/check-kevin-local-hermes-health.sh
 ```
 
 For local runtime only, prefer stopping the compose service rather than deleting

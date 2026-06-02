@@ -19,7 +19,7 @@ import os
 import random
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from agent.display import (
     KawaiiSpinner,
@@ -28,6 +28,7 @@ from agent.display import (
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
 )
+from utils import safe_json_loads
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -105,6 +106,118 @@ def _tool_search_scoped_names(agent) -> frozenset:
     except Exception:
         pass
     return names
+
+
+_LOG_PREVIEW_DROP_KEYS = {
+    "_COGNITIVE_SHOCK_WARNING",
+    "file_preview",
+    "current_entries",
+    "content",
+    "output",
+    "raw_output",
+    "stdout",
+    "stderr",
+}
+
+
+def _tool_log_one_line(value: Any) -> str:
+    """Return a whitespace-collapsed text representation for log previews."""
+    return " ".join(str(value).split())
+
+
+def _tool_log_truncate(value: str, limit: int) -> str:
+    """Bound a log preview without reintroducing multi-line content."""
+    if limit <= 0 or len(value) <= limit:
+        return value
+    if limit == 1:
+        return "…"
+    return value[: limit - 1] + "…"
+
+
+def _critical_guard_reason(text: str) -> str | None:
+    """Extract the useful reason from a cognitive-shock failure banner."""
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("REASON:"):
+            return stripped.partition(":")[2].strip() or None
+    return None
+
+
+def _tool_result_log_preview(result: Any, *, limit: int = 200) -> str:
+    """Build a bounded single-line preview suitable for persistent logs."""
+    return _tool_log_truncate(_tool_log_one_line(_multimodal_text_summary(result)), limit)
+
+
+def _structured_tool_log_preview(tool_name: str, data: dict[str, Any], *, limit: int) -> str:
+    """Summarize structured tool failures while dropping heavy/private fields."""
+    parts: list[str] = ["structured_error"]
+
+    guard_reason = None
+    for key in ("output", "error", "message"):
+        val = data.get(key)
+        if isinstance(val, str):
+            guard_reason = _critical_guard_reason(val)
+            if guard_reason:
+                break
+    if guard_reason:
+        parts.append("tool_failure_guard=critical")
+
+    preferred_keys = ("success", "error", "message", "exit_code")
+    for key in preferred_keys:
+        if key not in data or data.get(key) in (None, ""):
+            continue
+        value = data.get(key)
+        if isinstance(value, str) and _critical_guard_reason(value):
+            continue
+        text = _tool_log_one_line(value)
+        if isinstance(value, bool):
+            text = text.lower()
+        parts.append(f"{key}={text}")
+
+    if guard_reason:
+        parts.append(f"reason={_tool_log_one_line(guard_reason)}")
+
+    results = data.get("results")
+    if isinstance(results, list):
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            err = item.get("error")
+            if not err:
+                continue
+            url = item.get("url")
+            prefix = f"{url}: " if url else ""
+            parts.append(f"results_error={_tool_log_one_line(prefix + str(err))}")
+            break
+
+    for key, value in data.items():
+        if key in _LOG_PREVIEW_DROP_KEYS or key in preferred_keys or key == "results":
+            continue
+        if value in (None, ""):
+            continue
+        parts.append(f"{key}={_tool_log_one_line(value)}")
+
+    return _tool_log_truncate(_tool_log_one_line(" ".join(parts)), limit)
+
+
+def _tool_error_log_preview(tool_name: str, result: Any, *, limit: int = 200) -> str:
+    """Build a concise error preview without duplicating heavy failure banners."""
+    data = result if isinstance(result, dict) else None
+    if data is None and isinstance(result, str):
+        parsed = safe_json_loads(result)
+        if isinstance(parsed, dict):
+            data = parsed
+    if isinstance(data, dict):
+        return _structured_tool_log_preview(tool_name, data, limit=limit)
+
+    text = _multimodal_text_summary(result)
+    guard_reason = _critical_guard_reason(text)
+    if guard_reason:
+        return _tool_log_truncate(
+            f"tool_failure_guard=critical reason={_tool_log_one_line(guard_reason)}",
+            limit,
+        )
+    return _tool_result_log_preview(text, limit=limit)
 
 
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -441,8 +554,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
 
             if is_error:
-                _err_text = _multimodal_text_summary(function_result)
-                result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
+                result_preview = _tool_error_log_preview(function_name, function_result)
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
             # Track file-mutation outcome for the turn-end verifier.
@@ -882,15 +994,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
-        if isinstance(function_result, str):
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
-            _result_len = len(function_result)
-        else:
-            # Multimodal dict result (_multimodal=True) — not sliceable as string
-            result_preview = function_result
-            _result_len = len(str(function_result))
+        result_preview = _tool_result_log_preview(function_result)
+        _result_len = len(_multimodal_text_summary(function_result))
 
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
@@ -902,10 +1007,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result,
                 failed=_is_error_result,
             )
-            result_preview = function_result if agent.verbose_logging else (
-                function_result[:200] if len(function_result) > 200 else function_result
-            )
+            result_preview = _tool_result_log_preview(function_result)
         if _is_error_result:
+            result_preview = _tool_error_log_preview(function_name, function_result)
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
@@ -1013,4 +1117,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 __all__ = [
     "execute_tool_calls_concurrent",
     "execute_tool_calls_sequential",
+    "_tool_error_log_preview",
+    "_tool_result_log_preview",
 ]

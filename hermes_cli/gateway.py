@@ -26,6 +26,7 @@ from gateway.restart import (
 from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
+    is_config_managed,
     is_managed,
     managed_error,
     read_raw_config,
@@ -5433,7 +5434,7 @@ def _configure_platform(platform: dict) -> None:
 
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
-    if is_managed():
+    if is_config_managed():
         managed_error("run gateway setup")
         return
 
@@ -5891,6 +5892,24 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
 def _gateway_command_inner(args):
     subcmd = getattr(args, "gateway_command", None)
 
+    from hermes_cli.config import get_managed_system
+
+    if get_managed_system() == "Snap" and subcmd in {"install", "uninstall", "start", "stop", "restart"}:
+        if subcmd == "install":
+            print("The gateway service is declared by the Hermes Snap package.")
+            print("Use: snap start hermes-agent.gateway")
+            print("Use: snap services hermes-agent.gateway")
+            return
+        if subcmd == "uninstall":
+            print("The gateway service is declared by the Hermes Snap package.")
+            print("Use: snap stop hermes-agent.gateway")
+            print("To remove Hermes entirely, use: snap remove hermes-agent")
+            return
+        action = {"start": "start", "stop": "stop", "restart": "restart"}[subcmd]
+        print(f"This Hermes installation is managed by Snap.")
+        print(f"Use: snap {action} hermes-agent.gateway")
+        return
+
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
         if _maybe_redirect_run_to_s6_supervision(args):
@@ -5908,7 +5927,7 @@ def _gateway_command_inner(args):
     # Service management commands
     if subcmd == "install":
         if is_managed():
-            managed_error("install gateway service (managed by NixOS)")
+            managed_error("install gateway service")
             return
         force = getattr(args, "force", False)
         system = getattr(args, "system", False)
@@ -6002,7 +6021,7 @@ def _gateway_command_inner(args):
 
     elif subcmd == "uninstall":
         if is_managed():
-            managed_error("uninstall gateway service (managed by NixOS)")
+            managed_error("uninstall gateway service")
             return
         system = getattr(args, "system", False)
         if is_termux():
@@ -6360,6 +6379,11 @@ def _gateway_command_inner(args):
             run_gateway(verbose=0)
 
     elif subcmd == "status":
+        if get_managed_system() == "Snap":
+            print("This Hermes installation is managed by Snap.")
+            print("Use: snap services hermes-agent.gateway")
+            return
+
         deep = getattr(args, "deep", False)
         full = getattr(args, "full", False)
         system = getattr(args, "system", False)

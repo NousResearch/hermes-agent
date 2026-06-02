@@ -2166,8 +2166,15 @@ def cmd_setup(args):
 
 def cmd_postinstall(args):
     """One-shot bootstrap for pip users: install non-Python deps + run setup."""
-    from hermes_cli.config import stamp_install_method
+    from hermes_cli.config import get_managed_system, stamp_install_method
     from hermes_cli.dep_ensure import ensure_dependency
+
+    managed_system = get_managed_system()
+    if managed_system == "Snap":
+        print("Hermes is installed as a Snap; postinstall is not needed.")
+        print("Use `hermes setup` to configure providers and tools.")
+        print("Use `snap refresh hermes-agent` to update the package.")
+        return
 
     stamp_install_method("pip")
 
@@ -6418,6 +6425,14 @@ def cmd_version(args):
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
     _require_tty("uninstall")
+    from hermes_cli.config import get_managed_system
+
+    if get_managed_system() == "Snap":
+        print("Hermes is installed as a Snap.")
+        print("Use: snap remove hermes-agent")
+        print("To remove saved user data too, use: snap remove --purge hermes-agent")
+        return
+
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)

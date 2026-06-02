@@ -2844,8 +2844,8 @@ def run_setup_wizard(args):
       hermes setup tools     — just tool configuration
       hermes setup agent     — just agent settings
     """
-    from hermes_cli.config import is_managed, managed_error
-    if is_managed():
+    from hermes_cli.config import is_config_managed, managed_error
+    if is_config_managed():
         managed_error("run setup wizard")
         return
     ensure_hermes_home()

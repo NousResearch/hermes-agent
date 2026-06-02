@@ -72,6 +72,23 @@ def test_env_override_rejects_garbage(monkeypatch):
     assert limits.max_keepalive_connections > 0
 
 
+def test_sse_limits_disable_keepalive_pooling():
+    """The long-lived Signal SSE stream uses a dedicated client that must NOT
+    pool/reuse connections — reusing a daemon-closed keepalive socket is what
+    produced the recurring "Server disconnected" reconnect churn."""
+    import httpx
+    from gateway.platforms._http_client_limits import sse_httpx_limits
+    limits = sse_httpx_limits()
+    assert isinstance(limits, httpx.Limits)
+    assert limits.max_keepalive_connections == 0
+
+
+def test_sse_limits_none_when_httpx_unavailable(monkeypatch):
+    import gateway.platforms._http_client_limits as mod
+    monkeypatch.setattr(mod, "httpx", None)
+    assert mod.sse_httpx_limits() is None
+
+
 def test_helper_is_importable_from_every_platform_that_uses_it():
     """Every persistent-httpx-client platform adapter imports this helper.
     If any of those modules fails to import, this test surfaces it before

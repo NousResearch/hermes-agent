@@ -65,6 +65,17 @@ HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
 
 
+def _sse_reconnect_log_level(backoff: float) -> int:
+    """Log level for an SSE reconnect, given the current backoff.
+
+    A reconnect while backoff is still at its initial value is the benign,
+    self-healing pooled-socket churn — log it at DEBUG so it doesn't spam
+    WARNINGs. Once the backoff has grown the daemon is persistently
+    unreachable, which is a real problem worth a WARNING.
+    """
+    return logging.DEBUG if backoff <= SSE_RETRY_DELAY_INITIAL else logging.WARNING
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -218,6 +229,9 @@ class SignalAdapter(BasePlatformAdapter):
 
         # HTTP client
         self.client: Optional[httpx.AsyncClient] = None
+        # Dedicated client for the long-lived SSE stream — no keepalive pooling,
+        # so it never reuses a daemon-closed socket (the reconnect-churn fix).
+        self.sse_client: Optional[httpx.AsyncClient] = None
 
         # Background tasks
         self._sse_task: Optional[asyncio.Task] = None
@@ -280,8 +294,17 @@ class SignalAdapter(BasePlatformAdapter):
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from gateway.platforms._http_client_limits import (
+            platform_httpx_limits,
+            sse_httpx_limits,
+        )
         self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
+        # Separate client for the SSE stream: no keepalive pool, read timeout
+        # disabled (the stream stays open indefinitely).
+        self.sse_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=None),
+            limits=sse_httpx_limits(),
+        )
         try:
             # Health check — verify signal-cli daemon is reachable
             try:
@@ -312,6 +335,9 @@ class SignalAdapter(BasePlatformAdapter):
                 if self.client:
                     await self.client.aclose()
                     self.client = None
+                if self.sse_client:
+                    await self.sse_client.aclose()
+                    self.sse_client = None
                 if lock_acquired:
                     self._release_platform_lock()
 
@@ -342,6 +368,10 @@ class SignalAdapter(BasePlatformAdapter):
             await self.client.aclose()
             self.client = None
 
+        if self.sse_client:
+            await self.sse_client.aclose()
+            self.sse_client = None
+
         self._release_platform_lock()
 
         logger.info("Signal: disconnected")
@@ -358,7 +388,7 @@ class SignalAdapter(BasePlatformAdapter):
         while self._running:
             try:
                 logger.debug("Signal SSE: connecting to %s", url)
-                async with self.client.stream(
+                async with self.sse_client.stream(
                     "GET", url,
                     headers={"Accept": "text/event-stream"},
                     timeout=None,
@@ -402,10 +432,12 @@ class SignalAdapter(BasePlatformAdapter):
                 break
             except httpx.HTTPError as e:
                 if self._running:
-                    logger.warning("Signal SSE: HTTP error: %s (reconnecting in %.0fs)", e, backoff)
+                    logger.log(_sse_reconnect_log_level(backoff),
+                               "Signal SSE: HTTP error: %s (reconnecting in %.0fs)", e, backoff)
             except Exception as e:
                 if self._running:
-                    logger.warning("Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
+                    logger.log(_sse_reconnect_log_level(backoff),
+                               "Signal SSE: error: %s (reconnecting in %.0fs)", e, backoff)
 
             if self._running:
                 # Add 20% jitter to prevent thundering herd on reconnection

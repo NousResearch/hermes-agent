@@ -82,3 +82,19 @@ def platform_httpx_limits() -> "httpx.Limits | None":
         # Leave max_connections at httpx default (100) — plenty of headroom.
         keepalive_expiry=keepalive_expiry,
     )
+
+
+def sse_httpx_limits() -> "httpx.Limits | None":
+    """Return ``httpx.Limits`` for a dedicated long-lived SSE stream client.
+
+    An SSE stream is a single long-lived GET, not a pool of short calls.
+    Sharing the regular pool (``keepalive_expiry=2s``) meant the stream could
+    reuse a socket the daemon had already closed, raising "Server disconnected"
+    and forcing a reconnect every few minutes. Disabling keepalive pooling
+    (``max_keepalive_connections=0``) gives the stream a fresh connection and
+    nothing to reuse, eliminating that churn. Returns ``None`` when httpx isn't
+    importable so callers fall back to the httpx default.
+    """
+    if httpx is None:
+        return None
+    return httpx.Limits(max_keepalive_connections=0)

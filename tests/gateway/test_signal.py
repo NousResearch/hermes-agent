@@ -119,9 +119,12 @@ class TestSignalConnectCleanup:
             result = await adapter.connect()
 
         assert result is False
-        mock_client.aclose.assert_awaited_once()
+        # Both the API client and the dedicated SSE client are created from the
+        # same patched AsyncClient and must both be closed on failed connect.
+        assert mock_client.aclose.await_count == 2
         mock_release.assert_called_once_with("signal-phone", "+15551234567")
         assert adapter.client is None
+        assert adapter.sse_client is None
         assert adapter._platform_lock_identity is None
 
 

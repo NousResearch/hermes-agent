@@ -406,11 +406,27 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
     if current_key is None:
+        key_env = str(config.get("llmApiKeyEnv") or config.get("llm_api_key_env") or "")
         current_key = (
-            config.get("llmApiKey")
+            (os.environ.get(key_env, "") if key_env else "")
+            or config.get("llmApiKey")
             or config.get("llm_api_key")
             or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+            or os.environ.get("HINDSIGHT_API_LLM_API_KEY", "")
         )
+        # Fallback: if key_env references a variable not in the process
+        # environment (e.g. DEEPSEEK_API_KEY only exists in ~/.hermes/.env),
+        # read it from the .env file so hermes update doesn't nuke the key.
+        if not current_key and key_env:
+            dotenv_path = get_hermes_home() / ".env"
+            if dotenv_path.exists():
+                dotenv_values = _load_simple_env(dotenv_path)
+                current_key = dotenv_values.get(key_env, "")
+                if current_key:
+                    logger.debug(
+                        "Resolved %s from %s (not in process env)",
+                        key_env, dotenv_path,
+                    )
 
     current_provider = config.get("llm_provider", "")
     current_model = config.get("llm_model", "")
@@ -427,6 +443,18 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     }
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
+
+    is_macos_arm = platform.system() == "Darwin" and platform.machine() == "arm64"
+    force_cpu_embeddings = config.get("embeddings_local_force_cpu")
+    force_cpu_reranker = config.get("reranker_local_force_cpu")
+    if force_cpu_embeddings is not None or is_macos_arm:
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] = (
+            "false" if force_cpu_embeddings is False else "true"
+        )
+    if force_cpu_reranker is not None or is_macos_arm:
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] = (
+            "false" if force_cpu_reranker is False else "true"
+        )
 
     idle_timeout = (
         config.get("idle_timeout")

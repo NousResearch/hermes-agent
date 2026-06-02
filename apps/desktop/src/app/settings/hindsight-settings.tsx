@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { getHindsightConfig, saveHindsightConfig } from '@/hermes'
-import { Brain, Check, Loader2, Save } from '@/lib/icons'
+import { Check, Loader2, Save } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { HindsightConfig, HindsightMode, HindsightRecallBudget } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
-import { LoadingState, Pill, SectionHeading } from './primitives'
+import { LoadingState, Pill } from './primitives'
 
 const DEFAULT_HINDSIGHT_CONFIG: HindsightConfig = {
   mode: 'cloud',
@@ -19,10 +20,9 @@ const DEFAULT_HINDSIGHT_CONFIG: HindsightConfig = {
   api_key_set: false
 }
 
-const HINDSIGHT_MODES: readonly { label: string; value: HindsightMode }[] = [
-  { label: 'Cloud', value: 'cloud' },
-  { label: 'Local external', value: 'local_external' },
-  { label: 'Local embedded', value: 'local_embedded' }
+const HINDSIGHT_MODES: readonly { description: string; label: string; value: HindsightMode }[] = [
+  { value: 'cloud', label: 'Cloud', description: 'Hindsight Cloud API (lightweight, just needs an API key)' },
+  { value: 'local_external', label: 'Local External', description: 'Connect to an existing Hindsight instance' }
 ]
 
 const RECALL_BUDGETS: readonly HindsightRecallBudget[] = ['low', 'mid', 'high']
@@ -30,6 +30,7 @@ const RECALL_BUDGETS: readonly HindsightRecallBudget[] = ['low', 'mid', 'high']
 export function HindsightSettings() {
   const [config, setConfig] = useState<HindsightConfig | null>(null)
   const [apiKey, setApiKey] = useState('')
+  const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -76,14 +77,24 @@ export function HindsightSettings() {
   }
 
   return (
-    <section className="rounded-xl bg-background/60 p-4">
-      <SectionHeading
-        icon={Brain}
-        meta={config.api_key_set ? 'API key set' : 'API key not set'}
-        title="Configure Hindsight"
-      />
+    <section className="py-3">
+      <button
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-3 rounded-lg bg-background/60 px-3 py-2 text-left hover:bg-accent/50"
+        onClick={() => setExpanded(open => !open)}
+        type="button"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <DisclosureCaret open={expanded} />
+          <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            Hindsight settings
+          </span>
+          <Pill>{config.api_key_set ? 'API key set' : 'API key not set'}</Pill>
+        </span>
+      </button>
 
-      <div className="mt-4 grid gap-4">
+      {expanded && (
+        <div className="mt-3 grid gap-4 rounded-xl bg-background/60 p-4">
         <label className="grid gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Mode</span>
           <Select
@@ -96,11 +107,17 @@ export function HindsightSettings() {
             <SelectContent>
               {HINDSIGHT_MODES.map(mode => (
                 <SelectItem key={mode.value} value={mode.value}>
-                  {mode.label}
+                  <span className="grid gap-0.5">
+                    <span>{mode.label}</span>
+                    <span className="text-xs text-muted-foreground">{mode.description}</span>
+                  </span>
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          <span className="text-xs text-muted-foreground">
+            {HINDSIGHT_MODES.find(mode => mode.value === config.mode)?.description}
+          </span>
         </label>
 
         <label className="grid gap-1.5">
@@ -167,7 +184,8 @@ export function HindsightSettings() {
             Save
           </Button>
         </div>
-      </div>
+        </div>
+      )}
     </section>
   )
 }

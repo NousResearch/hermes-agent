@@ -43,7 +43,18 @@ describe('HindsightSettings', () => {
     expect(await screen.findByDisplayValue('https://api.hindsight.vectorize.io')).toBeTruthy()
     expect(screen.getByDisplayValue('hermes')).toBeTruthy()
     expect(screen.getByText('Cloud')).toBeTruthy()
+    expect(screen.getAllByText('Hindsight Cloud API (lightweight, just needs an API key)').length).toBeGreaterThan(0)
     expect(screen.getByText('mid')).toBeTruthy()
+  })
+
+  it('collapses and expands the Hindsight fields', async () => {
+    await renderHindsightSettings()
+
+    expect(await screen.findByLabelText('API URL')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
+    expect(screen.queryByLabelText('API URL')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
+    expect(await screen.findByLabelText('API URL')).toBeTruthy()
   })
 
   it('saves the configured Hindsight values without requiring an API key replacement', async () => {

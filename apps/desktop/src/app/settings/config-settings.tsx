@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -331,11 +332,6 @@ export function ConfigSettings({
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
       )}
-      {activeSectionId === 'memory' && !query.trim() && getNested(config, 'memory.provider') === 'hindsight' && (
-        <div className="mb-6">
-          <HindsightSettings />
-        </div>
-      )}
       {query.trim() && (
         <div className="mb-4 text-xs text-muted-foreground">
           {fields.length} result{fields.length === 1 ? '' : 's'}
@@ -346,19 +342,21 @@ export function ConfigSettings({
       ) : (
         <div className="divide-y divide-border/40">
           {fields.map(([key, field]) => (
-            <ConfigField
-              enumOptions={
-                key === 'tts.elevenlabs.voice_id'
-                  ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                  : enumOptionsFor(key, getNested(config, key), config)
-              }
-              key={key}
-              onChange={value => updateConfig(setNested(config, key, value))}
-              optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
-              schema={field}
-              schemaKey={key}
-              value={getNested(config, key)}
-            />
+            <Fragment key={key}>
+              <ConfigField
+                enumOptions={
+                  key === 'tts.elevenlabs.voice_id'
+                    ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
+                    : enumOptionsFor(key, getNested(config, key), config)
+                }
+                onChange={value => updateConfig(setNested(config, key, value))}
+                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                schema={field}
+                schemaKey={key}
+                value={getNested(config, key)}
+              />
+              {key === 'memory.provider' && getNested(config, key) === 'hindsight' && !query.trim() && <HindsightSettings />}
+            </Fragment>
           ))}
         </div>
       )}

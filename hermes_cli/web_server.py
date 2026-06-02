@@ -1496,7 +1496,7 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _HINDSIGHT_DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
-_HINDSIGHT_VALID_MODES = {"cloud", "local_external", "local_embedded"}
+_HINDSIGHT_VALID_MODES = {"cloud", "local_external"}
 _HINDSIGHT_VALID_BUDGETS = {"low", "mid", "high"}
 
 

@@ -98,7 +98,7 @@ export interface EnvVarInfo {
   url: null | string
 }
 
-export type HindsightMode = 'cloud' | 'local_embedded' | 'local_external'
+export type HindsightMode = 'cloud' | 'local_external'
 export type HindsightRecallBudget = 'high' | 'low' | 'mid'
 
 export interface HindsightConfig {

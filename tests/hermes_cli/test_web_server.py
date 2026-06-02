@@ -285,6 +285,19 @@ class TestWebServerEndpoints:
             "recall_budget": "high",
         }
 
+    def test_put_hindsight_config_rejects_unsupported_modes(self):
+        resp = self.client.put(
+            "/api/memory/hindsight/config",
+            json={
+                "mode": "local_embedded",
+                "api_url": "http://localhost:8888",
+                "bank_id": "hermes",
+                "recall_budget": "mid",
+            },
+        )
+
+        assert resp.status_code == 400
+
     def test_get_hindsight_config_does_not_return_api_key(self):
         self.client.put(
             "/api/memory/hindsight/config",

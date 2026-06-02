@@ -216,7 +216,14 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert d["count"] == 2
     assert d["tasks"][0]["title"] == "alpha"
     assert d["tasks"][0]["parent_count"] == 0
+    assert "workspace_path" not in d["tasks"][0]
     assert b not in ids
+
+    detail_out = kt._handle_list({"assignee": "factory", "status": "ready", "limit": 10, "detail": True})
+    detail = json.loads(detail_out)
+    assert detail["detail"] is True
+    assert "workspace_path" in detail["tasks"][0]
+    assert "parents" in detail["tasks"][0]
 
     tenant_out = kt._handle_list({
         "assignee": "factory",
@@ -239,6 +246,32 @@ def test_list_rejects_bad_limit(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_list({"limit": "nope"})).get("error")
     assert json.loads(kt._handle_list({"limit": 0})).get("error")
+    assert "<= 100" in json.loads(kt._handle_list({"limit": 101})).get("error", "")
+
+
+def test_list_default_limit_is_small_and_reports_truncation(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        for i in range(25):
+            kb.create_task(conn, title=f"bulk {i}", assignee="factory")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_list({"assignee": "factory", "status": "ready"}))
+    assert d["limit"] == 20
+    assert d["count"] == 20
+    assert d["truncated"] is True
+    assert d["next_limit"] == 40
+
+
+def test_list_rejects_bad_detail(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = kt._handle_list({"detail": "sometimes"})
+    assert "detail must be" in json.loads(out).get("error", "")
 
 
 def test_list_parses_include_archived_string_false(monkeypatch, worker_env):

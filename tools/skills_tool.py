@@ -94,6 +94,13 @@ SKILLS_DIR = HERMES_HOME / "skills"
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
+# Model-facing safety cap for skill_view.  A value of 0 means unbounded.
+# The storage layer can still hold larger hand-placed or hub-installed skills;
+# this only prevents accidental context blow-ups when a model loads a very large
+# skill during an active session.
+DEFAULT_SKILL_VIEW_CONTENT_MAX_CHARS = 24_000
+MAX_SKILL_VIEW_CONTENT_MAX_CHARS = 200_000
+
 # Platform identifiers for the 'platforms' frontmatter field.
 # Maps user-friendly names to sys.platform prefixes.
 _PLATFORM_MAP = {
@@ -106,6 +113,70 @@ _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
+
+
+def _coerce_skill_view_content_max(value: Any) -> int:
+    """Return the requested skill_view content budget.
+
+    A value of 0 means "unbounded". Invalid or negative values fall back to
+    the conservative default so a bad config cannot accidentally dump very
+    large skills into the active conversation.
+    """
+    if value is None:
+        return DEFAULT_SKILL_VIEW_CONTENT_MAX_CHARS
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SKILL_VIEW_CONTENT_MAX_CHARS
+    if limit < 0:
+        return DEFAULT_SKILL_VIEW_CONTENT_MAX_CHARS
+    if limit == 0:
+        return 0
+    return min(limit, MAX_SKILL_VIEW_CONTENT_MAX_CHARS)
+
+
+def _configured_skill_view_content_max() -> int:
+    """Read the optional ``skills.view_content_max_chars`` config value."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return _coerce_skill_view_content_max(
+            cfg_get(cfg, "skills", "view_content_max_chars", default=None)
+        )
+    except Exception:
+        return DEFAULT_SKILL_VIEW_CONTENT_MAX_CHARS
+
+
+def _bounded_skill_content(content: str, *, max_chars: int, label: str) -> tuple[str, dict[str, Any]]:
+    """Apply a model-facing content cap while preserving explicit escape hatches."""
+    original_chars = len(content)
+    if max_chars <= 0 or original_chars <= max_chars:
+        return content, {
+            "content_truncated": False,
+            "content_chars": original_chars,
+            "content_max_chars": max_chars,
+        }
+
+    omission = original_chars - max_chars
+    marker = (
+        "\n\n[skill_view truncated this content to keep the active session small: "
+        f"showing {max_chars:,} of {original_chars:,} chars; omitted {omission:,} chars from {label}. "
+        "Call skill_view with max_content_chars=0 for the full file, or load a linked file via file_path when you need a specific reference.]\n"
+    )
+    head_budget = max(0, max_chars - len(marker))
+    rendered = content[:head_budget].rstrip() + marker
+    return rendered, {
+        "content_truncated": True,
+        "content_chars": original_chars,
+        "content_returned_chars": len(rendered),
+        "content_max_chars": max_chars,
+        "truncation_note": (
+            f"Returned a bounded excerpt of {label}; call skill_view with "
+            "max_content_chars=0 for the full content, or use file_path for "
+            "specific linked files."
+        ),
+    }
 
 
 def load_env() -> Dict[str, str]:
@@ -707,6 +778,7 @@ def _serve_plugin_skill(
     *,
     preprocess: bool = True,
     session_id: str | None = None,
+    max_content_chars: int | None = None,
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
@@ -791,17 +863,24 @@ def _serve_plugin_skill(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
-    return json.dumps(
-        {
-            "success": True,
-            "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
-            "description": description,
-            "linked_files": None,
-            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        },
-        ensure_ascii=False,
+    final_content = f"{banner}{rendered_content}" if banner else rendered_content
+    final_content, content_meta = _bounded_skill_content(
+        final_content,
+        max_chars=_coerce_skill_view_content_max(max_content_chars)
+        if max_content_chars is not None
+        else _configured_skill_view_content_max(),
+        label=f"plugin skill {namespace}:{bare}",
     )
+    result = {
+        "success": True,
+        "name": f"{namespace}:{bare}",
+        "content": final_content,
+        "description": description,
+        "linked_files": None,
+        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+    }
+    result.update(content_meta)
+    return json.dumps(result, ensure_ascii=False)
 
 
 def skill_view(
@@ -809,6 +888,7 @@ def skill_view(
     file_path: str = None,
     task_id: str = None,
     preprocess: bool = True,
+    max_content_chars: int | None = None,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -821,6 +901,9 @@ def skill_view(
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        max_content_chars: Optional model-facing content budget. ``0`` returns
+            the full content. Omitted uses ``skills.view_content_max_chars`` or
+            the built-in default.
 
     Returns:
         JSON string with skill content or error message
@@ -873,6 +956,7 @@ def skill_view(
                     bare,
                     preprocess=preprocess,
                     session_id=task_id,
+                    max_content_chars=max_content_chars,
                 )
 
             # Plugin exists but this specific skill is missing?
@@ -1165,16 +1249,22 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-            return json.dumps(
-                {
-                    "success": True,
-                    "name": name,
-                    "file": file_path,
-                    "content": content,
-                    "file_type": target_file.suffix,
-                },
-                ensure_ascii=False,
+            bounded_content, content_meta = _bounded_skill_content(
+                content,
+                max_chars=_coerce_skill_view_content_max(max_content_chars)
+                if max_content_chars is not None
+                else _configured_skill_view_content_max(),
+                label=f"skill file {name}/{file_path}",
             )
+            result = {
+                "success": True,
+                "name": name,
+                "file": file_path,
+                "content": bounded_content,
+                "file_type": target_file.suffix,
+            }
+            result.update(content_meta)
+            return json.dumps(result, ensure_ascii=False)
 
         # Reuse the parse from the platform check above
         frontmatter = parsed_frontmatter
@@ -1336,6 +1426,14 @@ def skill_view(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
 
+        rendered_content, content_meta = _bounded_skill_content(
+            rendered_content,
+            max_chars=_coerce_skill_view_content_max(max_content_chars)
+            if max_content_chars is not None
+            else _configured_skill_view_content_max(),
+            label=f"skill {skill_name}",
+        )
+
         result = {
             "success": True,
             "name": skill_name,
@@ -1362,6 +1460,8 @@ def skill_view(
         }
 
         setup_help = next((e["help"] for e in required_env_vars if e.get("help")), None)
+        result.update(content_meta)
+
         if setup_help:
             result["setup_help"] = setup_help
 
@@ -1474,6 +1574,10 @@ SKILL_VIEW_SCHEMA = {
                 "type": "string",
                 "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
             },
+            "max_content_chars": {
+                "type": "integer",
+                "description": "Optional content budget for the returned content field. Omit for the configured/default bounded view; pass 0 only when you truly need the full skill/file content.",
+            },
         },
         "required": ["name"],
     },
@@ -1494,7 +1598,10 @@ def _skill_view_with_bump(args, **kw):
     telemetry failure never breaks the tool call."""
     name = args.get("name", "")
     result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+        name,
+        file_path=args.get("file_path"),
+        task_id=kw.get("task_id"),
+        max_content_chars=args.get("max_content_chars"),
     )
     try:
         parsed = json.loads(result)

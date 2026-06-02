@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 # Gating
 # ---------------------------------------------------------------------------
 
-KANBAN_LIST_DEFAULT_LIMIT = 50
-KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_LIST_DEFAULT_LIMIT = 20
+KANBAN_LIST_MAX_LIMIT = 100
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -306,30 +306,34 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     return None
 
 
-def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
+def _task_summary_dict(kb, conn, task, *, detail: bool = False) -> dict[str, Any]:
     """Compact task shape for board-listing tools."""
     parents = kb.parent_ids(conn, task.id)
     children = kb.child_ids(conn, task.id)
-    return {
+    summary = {
         "id": task.id,
         "title": task.title,
         "assignee": task.assignee,
         "status": task.status,
         "priority": task.priority,
         "tenant": task.tenant,
-        "workspace_kind": task.workspace_kind,
-        "workspace_path": task.workspace_path,
-        "created_by": task.created_by,
-        "created_at": task.created_at,
-        "started_at": task.started_at,
-        "completed_at": task.completed_at,
-        "current_run_id": task.current_run_id,
-        "model_override": task.model_override,
-        "parents": parents,
-        "children": children,
         "parent_count": len(parents),
         "child_count": len(children),
     }
+    if detail:
+        summary.update({
+            "workspace_kind": task.workspace_kind,
+            "workspace_path": task.workspace_path,
+            "created_by": task.created_by,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+            "current_run_id": task.current_run_id,
+            "model_override": task.model_override,
+            "parents": parents,
+            "children": children,
+        })
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +427,9 @@ def _handle_list(args: dict, **kw) -> str:
     include_archived, bool_error = _parse_bool_arg(args, "include_archived")
     if bool_error:
         return tool_error(bool_error)
+    detail, bool_error = _parse_bool_arg(args, "detail")
+    if bool_error:
+        return tool_error(bool_error)
     limit = args.get("limit")
     if limit is None:
         limit = KANBAN_LIST_DEFAULT_LIMIT
@@ -454,7 +461,7 @@ def _handle_list(args: dict, **kw) -> str:
             truncated = len(rows) > limit
             tasks = rows[:limit]
             return json.dumps({
-                "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
+                "tasks": [_task_summary_dict(kb, conn, t, detail=detail) for t in tasks],
                 "count": len(tasks),
                 "limit": limit,
                 "truncated": truncated,
@@ -462,6 +469,7 @@ def _handle_list(args: dict, **kw) -> str:
                     min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                     if truncated and limit < KANBAN_LIST_MAX_LIMIT else None
                 ),
+                "detail": detail,
                 "promoted": promoted,
             })
         finally:
@@ -936,9 +944,10 @@ KANBAN_LIST_SCHEMA = {
     "description": (
         "List Kanban task summaries so an orchestrator profile can discover "
         "work to route. Supports the same core filters as the CLI: assignee, "
-        "status, tenant, include_archived, and limit. Returns compact rows "
-        "with ids, title, status, assignee, priority, parent/child ids, and "
-        "counts. Bounded to 50 rows by default, 200 max, with truncation "
+        "status, tenant, include_archived, detail, and limit. Returns compact "
+        "rows with ids, title, status, assignee, priority, and dependency "
+        "counts; pass detail=true only when you need workspace paths, timestamps, "
+        "or parent/child id arrays. Bounded to 20 rows by default, 100 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
         "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
         "this tool."
@@ -966,9 +975,13 @@ KANBAN_LIST_SCHEMA = {
                 "type": "boolean",
                 "description": "Include archived tasks. Defaults to false.",
             },
+            "detail": {
+                "type": "boolean",
+                "description": "Return verbose per-task metadata such as workspace paths, timestamps, and parent/child id arrays. Defaults to false to keep active context small.",
+            },
             "limit": {
                 "type": "integer",
-                "description": "Optional maximum rows to return (default 50, max 200).",
+                "description": "Optional maximum rows to return (default 20, max 100).",
             },
             "board": _board_schema_prop(),
         },

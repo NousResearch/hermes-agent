@@ -193,10 +193,9 @@ class TestWriteFileSizeLimit:
 
 
 class TestHandPlacedSkillsNoLimit:
-    """Skills dropped directly on disk are not constrained."""
+    """Skills dropped directly on disk are storage-unbounded but view-bounded by default."""
 
-    def test_oversized_handplaced_skill_loads(self, isolate_skills, tmp_path):
-        """A hand-placed 200k skill can still be read via skill_view."""
+    def test_oversized_handplaced_skill_view_is_bounded_by_default(self, isolate_skills, tmp_path):
         from tools.skills_tool import skill_view
 
         skill_dir = tmp_path / "skills" / "manual-giant"
@@ -206,6 +205,20 @@ class TestHandPlacedSkillsNoLimit:
         (skill_dir / "SKILL.md").write_text(huge, encoding="utf-8")
 
         result = json.loads(skill_view("manual-giant"))
-        assert "content" in result
-        # The full content is returned — no truncation at the storage layer
+        assert result["content_truncated"] is True
+        assert result["content_chars"] > MAX_SKILL_CONTENT_CHARS
+        assert len(result["content"]) < MAX_SKILL_CONTENT_CHARS
+        assert "max_content_chars=0" in result["content"]
+
+    def test_oversized_handplaced_skill_can_be_loaded_unbounded_when_requested(self, isolate_skills, tmp_path):
+        from tools.skills_tool import skill_view
+
+        skill_dir = tmp_path / "skills" / "manual-giant"
+        skill_dir.mkdir(parents=True)
+        huge = _make_skill_content(200_000)
+        huge = huge.replace("name: test-skill", "name: manual-giant")
+        (skill_dir / "SKILL.md").write_text(huge, encoding="utf-8")
+
+        result = json.loads(skill_view("manual-giant", max_content_chars=0))
+        assert result["content_truncated"] is False
         assert len(result["content"]) > MAX_SKILL_CONTENT_CHARS

@@ -95,19 +95,27 @@ pub fn run() {
         .manage(Arc::new(AppState::new(mode)))
         .setup(move |app| {
             use tauri::Manager;
-            // Launcher fast path: a bare ("Install") launch when Hermes is
-            // already installed should NOT show the installer or rebuild — it
-            // should just open the app. This lets the /Applications "Hermes"
-            // act as a normal launcher (pin-to-Dock friendly): first run
-            // installs, every later run launches instantly. Fresh/repair
-            // installs and Update mode still show the window (kept hidden until
-            // here via `"visible": false` so the fast path never flashes a
-            // window).
-            if mode == AppMode::Install {
+            // Launcher fast path (macOS only): a bare ("Install") launch when
+            // Hermes is already installed should NOT show the installer or
+            // rebuild — it should just open the app, so the /Applications
+            // "Hermes" doubles as a normal launcher (first run installs, every
+            // later run launches instantly). The window is kept hidden until
+            // here via `"visible": false` so this path never flashes a window.
+            //
+            // Gated to macOS deliberately: on Windows/Linux the installer keeps
+            // its existing behavior (Windows users relaunch via the Start
+            // Menu/Desktop "Hermes" shortcuts that install.ps1 creates, and a
+            // reliable detached relaunch there needs the DETACHED_PROCESS +
+            // startup-grace handling used by launch_hermes_desktop — out of
+            // scope here). So this is a pure no-op on non-macOS.
+            if cfg!(target_os = "macos") && mode == AppMode::Install {
                 let install_root = paths::hermes_home().join("hermes-agent");
                 if bootstrap::hermes_is_installed(&install_root) {
                     match bootstrap::spawn_installed_desktop(&install_root) {
                         Ok(()) => {
+                            // Brief grace so the spawned app is registered
+                            // before we exit (mirrors launch_hermes_desktop).
+                            std::thread::sleep(std::time::Duration::from_millis(200));
                             tracing::info!(
                                 "hermes already installed — relaunched desktop; exiting installer"
                             );
@@ -124,8 +132,15 @@ pub fn run() {
                 }
             }
             // First run / repair install, or Update mode: reveal the UI.
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
+            match app.get_webview_window("main") {
+                Some(win) => {
+                    if let Err(err) = win.show() {
+                        tracing::error!(?err, "failed to show main installer window");
+                    }
+                }
+                None => {
+                    tracing::error!("main installer window not found; installer UI will not appear");
+                }
             }
             Ok(())
         })

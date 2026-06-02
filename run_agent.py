@@ -477,13 +477,34 @@ class AIAgent:
         if self._session_db_created or not self._session_db:
             return
         try:
+            user_id = getattr(self, "_user_id", None)
+            parent_source = None
+            if self._parent_session_id:
+                try:
+                    parent_session = self._session_db.get_session(self._parent_session_id)
+                    if parent_session:
+                        parent_source = parent_session.get("source")
+                        if not user_id:
+                            user_id = parent_session.get("user_id")
+                except Exception:
+                    logger.debug(
+                        "Failed to inherit metadata from parent session %s",
+                        self._parent_session_id,
+                        exc_info=True,
+                    )
+
+            source = (
+                self.platform
+                or parent_source
+                or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+            )
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=source,
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
-                user_id=None,
+                user_id=user_id,
                 parent_session_id=self._parent_session_id,
             )
             self._session_db_created = True

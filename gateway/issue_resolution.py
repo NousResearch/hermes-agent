@@ -1716,10 +1716,22 @@ def can_merge_pr(tag: ReviewRoutingTag | None, pr: PullRequestMetadata) -> bool:
 async def _load_pr_review_suggestion_stats(
     repo: str, pr: PullRequestMetadata
 ) -> ReviewSuggestionStats:
-    """Load current-head PR review/comment metadata for suggestion routing."""
+    """Load actionable PR review/comment metadata for suggestion routing."""
     try:
         reviews = await _load_pr_review_records(repo, pr, "reviews")
-        comments = await _load_pr_review_records(repo, pr, "comments")
+        comments = await _load_pr_review_records(
+            repo,
+            pr,
+            "comments",
+            current_head_only=False,
+        )
+        commit_shas = await _load_pr_commit_shas(repo, pr)
+        comments = await _filter_unresolved_inline_comments(
+            repo,
+            pr,
+            comments,
+            commit_shas,
+        )
     except Exception as exc:  # pragma: no cover - defensive telemetry fallback.
         logger.warning(
             "Could not load PR review metadata for %s#%s: %s",
@@ -1732,7 +1744,11 @@ async def _load_pr_review_suggestion_stats(
 
 
 async def _load_pr_review_records(
-    repo: str, pr: PullRequestMetadata, record_type: str
+    repo: str,
+    pr: PullRequestMetadata,
+    record_type: str,
+    *,
+    current_head_only: bool = True,
 ) -> list[dict[str, Any]]:
     """Return current-head GitHub PR review records or an empty list on API failure."""
     result = await _run(
@@ -1762,8 +1778,187 @@ async def _load_pr_review_records(
         record
         for record in records
         if isinstance(record, dict)
-        and _review_record_matches_head(record, pr.head_ref_oid)
+        and (
+            not current_head_only
+            or _review_record_matches_head(record, pr.head_ref_oid)
+        )
     ]
+
+
+async def _load_pr_commit_shas(repo: str, pr: PullRequestMetadata) -> list[str]:
+    """Return the ordered PR commit SHA list or an empty list on API failure."""
+    result = await _run(
+        ["gh", "api", f"repos/{repo}/pulls/{pr.number}/commits"],
+        check=False,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "GitHub PR %s commit list failed: %s",
+            pr.number,
+            result.stderr.strip(),
+        )
+        return []
+    try:
+        records = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        logger.warning(
+            "GitHub PR %s commit list returned invalid JSON",
+            pr.number,
+        )
+        return []
+    if not isinstance(records, list):
+        return []
+    return [
+        str(record.get("sha") or "").strip()
+        for record in records
+        if isinstance(record, dict) and str(record.get("sha") or "").strip()
+    ]
+
+
+async def _filter_unresolved_inline_comments(
+    repo: str,
+    pr: PullRequestMetadata,
+    comments: list[dict[str, Any]],
+    commit_shas: list[str],
+) -> list[dict[str, Any]]:
+    """Keep inline comments that still block this PR head.
+
+    A comment stops blocking only when a later commit in the same PR changes the
+    exact file/line that the comment targeted.
+    """
+    unresolved: list[dict[str, Any]] = []
+    changed_lines_cache: dict[str, dict[str, set[int]]] = {}
+
+    for comment in comments:
+        if not _review_record_is_inline(comment):
+            if _review_record_matches_head(comment, pr.head_ref_oid):
+                unresolved.append(comment)
+            continue
+        if await _inline_comment_cleared_by_later_commit(
+            repo,
+            pr,
+            comment,
+            commit_shas,
+            changed_lines_cache,
+        ):
+            continue
+        unresolved.append(comment)
+
+    return unresolved
+
+
+async def _load_commit_changed_lines(
+    repo: str,
+    commit_sha: str,
+    changed_lines_cache: dict[str, dict[str, set[int]]],
+) -> dict[str, set[int]]:
+    cached = changed_lines_cache.get(commit_sha)
+    if cached is not None:
+        return cached
+
+    result = await _run(["gh", "api", f"repos/{repo}/commits/{commit_sha}"], check=False)
+    if result.returncode != 0:
+        logger.warning(
+            "GitHub commit %s metadata failed: %s",
+            commit_sha,
+            result.stderr.strip(),
+        )
+        changed_lines_cache[commit_sha] = {}
+        return changed_lines_cache[commit_sha]
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        logger.warning("GitHub commit %s metadata returned invalid JSON", commit_sha)
+        changed_lines_cache[commit_sha] = {}
+        return changed_lines_cache[commit_sha]
+
+    changed_by_path: dict[str, set[int]] = {}
+    files = payload.get("files") if isinstance(payload, dict) else []
+    if isinstance(files, list):
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("filename") or "").strip()
+            patch = str(item.get("patch") or "")
+            if not path:
+                continue
+            changed_by_path[path] = _parse_changed_lines_from_patch(patch)
+
+    changed_lines_cache[commit_sha] = changed_by_path
+    return changed_by_path
+
+
+def _parse_changed_lines_from_patch(patch: str) -> set[int]:
+    changed: set[int] = set()
+    current_new_line = 0
+    for raw in patch.splitlines():
+        line = raw.rstrip("\n")
+        if line.startswith("@@"):
+            match = re.search(r"\+([0-9]+)(?:,([0-9]+))?", line)
+            if not match:
+                current_new_line = 0
+                continue
+            current_new_line = int(match.group(1))
+            continue
+        if current_new_line <= 0:
+            continue
+        if line.startswith("+++"):
+            continue
+        if line.startswith("+"):
+            changed.add(current_new_line)
+            current_new_line += 1
+            continue
+        if line.startswith("-"):
+            continue
+        current_new_line += 1
+    return changed
+
+
+def _review_record_line(record: dict[str, Any]) -> int:
+    for key in ("original_line", "line", "originalLine", "start_line"):
+        value = record.get(key)
+        try:
+            line = int(value or 0)
+        except (TypeError, ValueError):
+            line = 0
+        if line > 0:
+            return line
+    return 0
+
+
+def _review_record_is_inline(record: dict[str, Any]) -> bool:
+    return bool(str(record.get("path") or "").strip()) and _review_record_line(record) > 0
+
+
+async def _inline_comment_cleared_by_later_commit(
+    repo: str,
+    pr: PullRequestMetadata,
+    comment: dict[str, Any],
+    commit_shas: list[str],
+    changed_lines_cache: dict[str, dict[str, set[int]]],
+) -> bool:
+    comment_commit = str(
+        comment.get("original_commit_id") or comment.get("commit_id") or ""
+    ).strip()
+    if not comment_commit or comment_commit == pr.head_ref_oid:
+        return False
+
+    try:
+        start_index = commit_shas.index(comment_commit)
+    except ValueError:
+        return False
+
+    path = str(comment.get("path") or "").strip()
+    line = _review_record_line(comment)
+    if not path or line <= 0:
+        return False
+
+    for sha in commit_shas[start_index + 1 :]:
+        changed_by_path = await _load_commit_changed_lines(repo, sha, changed_lines_cache)
+        if line in changed_by_path.get(path, set()):
+            return True
+    return False
 
 
 def _review_record_matches_head(record: dict[str, Any], head_ref_oid: str) -> bool:
@@ -1824,7 +2019,7 @@ def summarize_review_suggestions(
     reviews: list[dict[str, Any]],
     comments: list[dict[str, Any]],
 ) -> ReviewSuggestionStats:
-    """Count actionable internal and Copilot suggestions from PR review metadata."""
+    """Count actionable internal, human, and Copilot suggestions from PR review metadata."""
     internal_count = 0
     copilot_count = 0
     copilot_detected = False
@@ -1843,7 +2038,7 @@ def summarize_review_suggestions(
         if is_copilot:
             copilot_detected = True
             copilot_count += suggestion_count
-        elif is_internal:
+        elif is_internal or _review_record_is_inline(record):
             internal_count += suggestion_count
         if _looks_like_complex_finding(body):
             complex_detected = True

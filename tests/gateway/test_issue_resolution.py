@@ -457,6 +457,31 @@ def test_copilot_review_suggestions_route_to_coder_tier1():
     assert decision.coder_tier == CODER_TIERS[0]
 
 
+def test_human_inline_review_suggestions_route_to_coder_tier1():
+    """Inline human review comments should block merge readiness like bot comments."""
+    stats = summarize_review_suggestions(
+        reviews=[],
+        comments=[
+            {
+                "user": {"login": "reviewer-human"},
+                "path": "api/routes/execution.py",
+                "line": 108,
+                "body": "This empty env string can crash systemd startup.",
+            }
+        ],
+    )
+
+    decision = plan_pr_manager_next_action(
+        current_reviewer_tier="tier1",
+        suggestion_stats=stats,
+        findings_cycles=0,
+    )
+
+    assert stats.total_suggestions_count == 1
+    assert decision.next_action == "coding_subagent"
+    assert decision.coder_tier == CODER_TIERS[0]
+
+
 def test_complex_review_findings_escalate_to_coder_tier2():
     """Hard findings should skip the cheap coder after repeated or complex signals."""
     stats = ReviewSuggestionStats(
@@ -1876,6 +1901,32 @@ async def test_pr_review_metadata_loader_counts_current_head_copilot_comments(mo
                 ),
                 stderr="",
             )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/325/commits"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps([
+                    {"sha": "oldsha"},
+                    {"sha": "abc123"},
+                ]),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/commits/abc123"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "files": [
+                            {
+                                "filename": "api/routes/execution.py",
+                                "patch": "@@ -41,2 +41,2 @@\n-old-a\n-old-b\n+new-a\n+new-b\n",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+            )
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
@@ -1885,3 +1936,71 @@ async def test_pr_review_metadata_loader_counts_current_head_copilot_comments(mo
     assert stats.copilot_review_detected is True
     assert stats.copilot_suggestions_count == 1
     assert stats.total_suggestions_count == 1
+
+
+@pytest.mark.asyncio
+async def test_pr_review_metadata_loader_ignores_inline_comment_cleared_by_later_commit(monkeypatch):
+    """Older inline comments stop blocking only after a later commit changes that file/line."""
+    pr = PullRequestMetadata(
+        number=326,
+        url="https://github.com/m0nklabs/cryptotrader/pull/326",
+        head_ref_name="hermes/fix-inline-feedback",
+        head_ref_oid="newsha",
+    )
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/326/reviews"]:
+            return CompletedProcess(command, 0, stdout="[]", stderr="")
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/326/comments"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "user": {"login": "github-code-quality[bot]"},
+                            "commit_id": "oldsha",
+                            "original_commit_id": "oldsha",
+                            "path": "api/routes/execution.py",
+                            "line": 42,
+                            "original_line": 42,
+                            "body": "This empty string edge-case still breaks startup.",
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/326/commits"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps([
+                    {"sha": "oldsha"},
+                    {"sha": "newsha"},
+                ]),
+                stderr="",
+            )
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/commits/newsha"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "files": [
+                            {
+                                "filename": "api/routes/execution.py",
+                                "patch": "@@ -42,1 +42,1 @@\n-old\n+new\n",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    stats = await _load_pr_review_suggestion_stats("m0nklabs/cryptotrader", pr)
+
+    assert stats.copilot_review_detected is False
+    assert stats.total_suggestions_count == 0

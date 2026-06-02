@@ -268,6 +268,11 @@ def test_reliability_doctor_reports_quality_gate_status(tmp_path):
         "Subagent unavailable/not invoked; checklist fallback used.\n",
         encoding="utf-8",
     )
+    (gateway / "delegate_evidence.py").write_text(
+        "def record_delegate_evidence(): return {}\n"
+        "def get_recent_delegate_evidence(): return []\n",
+        encoding="utf-8",
+    )
     (tools / "delegate_tool.py").write_text("def delegate_task(): pass\n", encoding="utf-8")
     (repo / "toolsets.py").write_text("_HERMES_CORE_TOOLS = ['delegate_task']\n", encoding="utf-8")
     hermes_home = tmp_path / ".hermes"
@@ -277,8 +282,117 @@ def test_reliability_doctor_reports_quality_gate_status(tmp_path):
 
     assert result["quality_lane_gate_available"] is True
     assert result["real_subagent_capability_detected"] == "yes"
+    assert result["delegate_capability_detected"] == "yes"
+    assert result["delegate_evidence_tracking_available"] is True
     assert result["checklist_fallback_available"] is True
     assert result["high_risk_final_report_template_available"] is True
+
+
+def test_delegate_capability_detection_matches_actual_tool(tmp_path):
+    repo = tmp_path / "repo"
+    gateway = repo / "gateway"
+    tools = repo / "tools"
+    gateway.mkdir(parents=True)
+    tools.mkdir()
+    (gateway / "session.py").write_text(
+        "QUALITY_LANE_POLICY_MARKERS = ('implementation lane', 'verification lane')\n"
+        "def render_quality_lane_policy_for_prompt(): return ''\n"
+        "def build_session_context_prompt():\n"
+        "    return render_quality_lane_policy_for_prompt()\n",
+        encoding="utf-8",
+    )
+    (gateway / "quality_lanes.py").write_text(
+        "QUALITY_LANE_REQUIRED_FIELDS = ('Task classification',)\n"
+        "def require_quality_lane_section(): return ''\n"
+        "def validate_quality_lane_section(): return {'valid': True}\n"
+        "def detect_delegate_task_capability(): return {'available': True}\n"
+        "def ensure_quality_lane_section(): return ''\n"
+        "Subagent unavailable/not invoked; checklist fallback used.\n",
+        encoding="utf-8",
+    )
+    (gateway / "delegate_evidence.py").write_text(
+        "def record_delegate_evidence(): return {}\n"
+        "def get_recent_delegate_evidence(): return []\n",
+        encoding="utf-8",
+    )
+    (tools / "delegate_tool.py").write_text("# no delegate function\n", encoding="utf-8")
+    (repo / "toolsets.py").write_text("_HERMES_CORE_TOOLS = ['delegate_task']\n", encoding="utf-8")
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home / "memories").mkdir(parents=True)
+
+    result = doctor.check_quality_policy_presence(repo, hermes_home)
+
+    assert result["delegate_capability_detected"] == "no"
+    assert result["real_subagent_capability_detected"] == "no"
+
+
+def test_reliability_doctor_reports_delegate_tracking(tmp_path):
+    repo = tmp_path / "repo"
+    gateway = repo / "gateway"
+    tools = repo / "tools"
+    gateway.mkdir(parents=True)
+    tools.mkdir()
+    (gateway / "session.py").write_text(
+        "QUALITY_LANE_POLICY_MARKERS = ('implementation lane', 'verification lane')\n"
+        "def render_quality_lane_policy_for_prompt(): return ''\n"
+        "def build_session_context_prompt():\n"
+        "    return render_quality_lane_policy_for_prompt()\n",
+        encoding="utf-8",
+    )
+    (gateway / "quality_lanes.py").write_text(
+        "QUALITY_LANE_REQUIRED_FIELDS = ('Task classification',)\n"
+        "def require_quality_lane_section(): return ''\n"
+        "def validate_quality_lane_section(): return {'valid': True}\n"
+        "def detect_delegate_task_capability(): return {'available': True}\n"
+        "def ensure_quality_lane_section(): return ''\n"
+        "Subagent unavailable/not invoked; checklist fallback used.\n",
+        encoding="utf-8",
+    )
+    (gateway / "delegate_evidence.py").write_text(
+        "def record_delegate_evidence(): return {}\n"
+        "def get_recent_delegate_evidence(): return []\n",
+        encoding="utf-8",
+    )
+    (tools / "delegate_tool.py").write_text("def delegate_task(): pass\n", encoding="utf-8")
+    (repo / "toolsets.py").write_text("_HERMES_CORE_TOOLS = ['delegate_task']\n", encoding="utf-8")
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home / "memories").mkdir(parents=True)
+
+    report = {
+        "runtime": {
+            "service": {"working_directory": "/clean", "main_pid": "1"},
+            "proc_cwd": "/clean",
+            "module_paths": {},
+            "cli": {"binary": "hermes", "project": "/clean"},
+            "topology": {"split_brain_risk": False},
+        },
+        "stores": {
+            "active_tasks": {
+                "record_count": 0,
+                "foreground_count": 0,
+                "foreground_missing_task_count": 0,
+                "stale_active_foreground_count": 0,
+                "final_report_counts": {},
+            },
+            "goals": {
+                "goal_count": 0,
+                "active_count": 0,
+                "status_counts": {},
+                "field_presence": {},
+            },
+        },
+        "quality_policy": doctor.check_quality_policy_presence(repo, hermes_home),
+        "storage": {
+            "policy": {"all_required_markers_present": True},
+            "rclone_config": {"exists": False, "remotes": []},
+            "mounts": {"cloud_like_mount_count": 0},
+        },
+    }
+
+    rendered = doctor.format_report(report)
+
+    assert "delegate capability detected: yes" in rendered
+    assert "delegate evidence tracking available: True" in rendered
 
 
 def test_evaluate_runtime_topology_flags_cli_split_brain():

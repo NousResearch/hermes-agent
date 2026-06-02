@@ -104,6 +104,7 @@ def require_quality_lane_section(
     remaining_risks: str = "Report any unverified paths or residual risk.",
     subagent_available: bool | None = None,
     subagent_invoked: bool = False,
+    delegate_evidence: list[dict[str, Any]] | None = None,
 ) -> str:
     classification = classify_task(task_text)
     is_high = classification["classification"] == "high-rigor"
@@ -111,13 +112,23 @@ def require_quality_lane_section(
     if classification["deployment_applicable"]:
         required_lanes.append("deployment/runtime")
 
-    real_subagent = bool(subagent_invoked)
+    evidence = [item for item in (delegate_evidence or []) if isinstance(item, dict)]
+    real_subagent = bool(evidence)
     if real_subagent:
-        review = "real subagent used: yes; independent review evidence must be summarized."
+        try:
+            from gateway.delegate_evidence import summarize_delegate_evidence
+
+            evidence_summary = summarize_delegate_evidence(evidence)
+        except Exception:
+            evidence_summary = ""
+        review = (
+            "real subagent used: yes; delegate used: yes; "
+            f"{evidence_summary or 'delegate evidence recorded; summary unavailable.'}"
+        )
     else:
         if subagent_available is False:
             reason = "subagent unavailable"
-        elif subagent_available is True:
+        elif subagent_available is True or subagent_invoked:
             reason = "subagent not invoked"
         else:
             reason = "subagent availability unknown"
@@ -153,6 +164,7 @@ def ensure_quality_lane_section(
     safety_summary: str = "No forbidden operations should be claimed without evidence.",
     subagent_available: bool | None = None,
     subagent_invoked: bool = False,
+    delegate_evidence: list[dict[str, Any]] | None = None,
 ) -> str:
     if validate_quality_lane_section(report).get("valid"):
         return report
@@ -164,5 +176,6 @@ def ensure_quality_lane_section(
         safety_summary=safety_summary,
         subagent_available=subagent_available,
         subagent_invoked=subagent_invoked,
+        delegate_evidence=delegate_evidence,
     )
     return f"{report.rstrip()}\n\n{section}" if report.strip() else section

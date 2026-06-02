@@ -3616,6 +3616,7 @@ class GatewayRunner:
 
         try:
             from gateway.quality_lanes import require_quality_lane_section
+            from gateway.delegate_evidence import get_recent_delegate_evidence
 
             task_text = getattr(record, "task_summary", None) or getattr(record, "command", None)
             lines.extend(
@@ -3627,6 +3628,9 @@ class GatewayRunner:
                         safety_summary="Recovery report constructed read-only; no restart performed by this report.",
                         subagent_available=None,
                         subagent_invoked=False,
+                        delegate_evidence=get_recent_delegate_evidence(
+                            session_id=getattr(record, "session_id", None),
+                        ),
                     ),
                 ]
             )

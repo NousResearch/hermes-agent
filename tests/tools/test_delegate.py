@@ -186,17 +186,61 @@ class TestDelegateTask(unittest.TestCase):
 
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
+        from gateway.delegate_evidence import clear_delegate_evidence_records, get_recent_delegate_evidence
+
+        clear_delegate_evidence_records()
         mock_run.return_value = {
             "task_index": 0, "status": "completed",
             "summary": "Done!", "api_calls": 3, "duration_seconds": 5.0
         }
         parent = _make_mock_parent()
-        result = json.loads(delegate_task(goal="Fix tests", context="error log...", parent_agent=parent))
+        result = json.loads(
+            delegate_task(
+                goal="Fix tests",
+                context="error log...",
+                lane="implementation",
+                parent_agent=parent,
+            )
+        )
         self.assertIn("results", result)
         self.assertEqual(len(result["results"]), 1)
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+        evidence = get_recent_delegate_evidence()
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["lane"], "implementation")
+        self.assertEqual(evidence[0]["status"], "succeeded")
+        self.assertEqual(evidence[0]["delegate_name"], "delegate_task")
+        self.assertIn("Done!", evidence[0]["safe_result_summary"])
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_delegate_execution_records_lane_evidence(self, mock_run):
+        from gateway.delegate_evidence import clear_delegate_evidence_records, get_recent_delegate_evidence
+
+        clear_delegate_evidence_records()
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Review complete. Confidential prompt body was present.",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        parent.session_id = "platform:sample:session:id"
+
+        delegate_task(
+            goal="Review implementation",
+            lane="review",
+            parent_agent=parent,
+        )
+
+        evidence = get_recent_delegate_evidence()
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["lane"], "review")
+        self.assertEqual(evidence[0]["status"], "succeeded")
+        self.assertNotIn("Confidential prompt body", json.dumps(evidence))
+        self.assertNotIn("platform:sample:session:id", json.dumps(evidence))
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):

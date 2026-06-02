@@ -408,6 +408,7 @@ def check_quality_policy_presence(
     root = Path(repo_root)
     session_py = root / "gateway" / "session.py"
     quality_lanes_py = root / "gateway" / "quality_lanes.py"
+    delegate_evidence_py = root / "gateway" / "delegate_evidence.py"
     delegate_tool_py = root / "tools" / "delegate_tool.py"
     toolsets_py = root / "toolsets.py"
     source = ""
@@ -423,6 +424,11 @@ def check_quality_policy_presence(
     delegate_source = ""
     try:
         delegate_source = delegate_tool_py.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    delegate_evidence_source = ""
+    try:
+        delegate_evidence_source = delegate_evidence_py.read_text(encoding="utf-8", errors="replace")
     except OSError:
         pass
     toolsets_source = ""
@@ -446,13 +452,36 @@ def check_quality_policy_presence(
         "Subagent unavailable/not invoked; checklist fallback used." in quality_source
         and "checklist fallback" in quality_source.lower()
     )
-    real_subagent_capability = "unknown"
+    delegate_capability = "unknown"
     if delegate_source or toolsets_source:
-        real_subagent_capability = (
+        delegate_capability = (
             "yes"
             if "def delegate_task" in delegate_source and "delegate_task" in toolsets_source
             else "no"
         )
+    delegate_tracking_available = (
+        "def record_delegate_evidence" in delegate_evidence_source
+        and "def get_recent_delegate_evidence" in delegate_evidence_source
+    )
+    delegate_records: dict[str, Any] = {
+        "count": 0,
+        "status_counts": {},
+    }
+    if delegate_tracking_available:
+        try:
+            root_text = str(root.resolve())
+            if root_text not in sys.path:
+                sys.path.insert(0, root_text)
+            from gateway.delegate_evidence import get_recent_delegate_evidence
+
+            recent = get_recent_delegate_evidence()
+            status_counts: dict[str, int] = {}
+            for item in recent:
+                status = str(item.get("status") or "unknown")
+                status_counts[status] = status_counts.get(status, 0) + 1
+            delegate_records = {"count": len(recent), "status_counts": status_counts}
+        except Exception:
+            delegate_records = {"count": 0, "status_counts": {}, "read_error": True}
     memory_text = ""
     home = Path(hermes_home)
     for path in (home / "memories" / "MEMORY.md", home / "memories" / "USER.md"):
@@ -472,7 +501,10 @@ def check_quality_policy_presence(
         "source_markers": source_markers,
         "quality_lane_gate_available": all(gate_markers.values()),
         "quality_gate_markers": gate_markers,
-        "real_subagent_capability_detected": real_subagent_capability,
+        "delegate_capability_detected": delegate_capability,
+        "real_subagent_capability_detected": delegate_capability,
+        "delegate_evidence_tracking_available": delegate_tracking_available,
+        "recent_delegate_records": delegate_records,
         "checklist_fallback_available": fallback_available,
         "high_risk_final_report_template_available": (
             gate_markers["quality_lane_required_fields"]
@@ -571,6 +603,9 @@ def format_report(report: dict[str, Any]) -> str:
             "Quality policy:",
             f"  injection enabled: {quality_policy.get('injection_path_enabled')}",
             f"  quality lane gate available: {quality_policy.get('quality_lane_gate_available')}",
+            f"  delegate capability detected: {quality_policy.get('delegate_capability_detected')}",
+            f"  delegate evidence tracking available: {quality_policy.get('delegate_evidence_tracking_available')}",
+            f"  recent delegate records: {quality_policy.get('recent_delegate_records')}",
             f"  real subagent capability detected: {quality_policy.get('real_subagent_capability_detected')}",
             f"  checklist fallback available: {quality_policy.get('checklist_fallback_available')}",
             f"  high-risk final report template available: {quality_policy.get('high_risk_final_report_template_available')}",

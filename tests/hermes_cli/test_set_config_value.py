@@ -247,3 +247,54 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# Bracket-delimited list values — regression tests for #37455
+# ---------------------------------------------------------------------------
+
+class TestBracketListValues:
+    """hermes config set should parse '[item]' syntax as a YAML list."""
+
+    def test_single_element_list(self, _isolated_hermes_home):
+        """hermes config set enabled '[icarus]' → list with one item."""
+        import yaml
+        set_config_value("enabled", "[icarus]")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["enabled"] == ["icarus"]
+
+    def test_multi_element_list(self, _isolated_hermes_home):
+        """hermes config set enabled '[icarus, zeus]' → list with two items."""
+        import yaml
+        set_config_value("enabled", "[icarus, zeus]")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["enabled"] == ["icarus", "zeus"]
+
+    def test_quoted_items_in_list(self, _isolated_hermes_home):
+        """Quoted strings inside brackets should parse correctly."""
+        import yaml
+        set_config_value("enabled", "['icarus', 'zeus']")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["enabled"] == ["icarus", "zeus"]
+
+    def test_non_list_bracket_string_kept_as_string(self, _isolated_hermes_home):
+        """Invalid YAML inside brackets should fall back to string."""
+        import yaml
+        set_config_value("model", "[not: valid: yaml")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        # Invalid YAML → kept as original string
+        assert reloaded["model"] == "[not: valid: yaml"
+
+    def test_empty_list(self, _isolated_hermes_home):
+        """hermes config set enabled '[]' → empty list."""
+        import yaml
+        set_config_value("enabled", "[]")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["enabled"] == []
+
+    def test_nested_key_list_value(self, _isolated_hermes_home):
+        """hermes config set plugins.enabled '[icarus]' → proper list."""
+        import yaml
+        set_config_value("plugins.enabled", "[icarus]")
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["plugins"]["enabled"] == ["icarus"]

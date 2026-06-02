@@ -136,13 +136,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
-        self.require_mention = self._bool_setting(
-            extra.get("require_mention"),
-            os.getenv("BLUEBUBBLES_REQUIRE_MENTION"),
-            default=False,
-        )
+        _require_mention = extra.get("require_mention")
+        if _require_mention is None:
+            _require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
+        self.require_mention = str(_require_mention).strip().lower() in {"true", "1", "yes", "on"}
         self._mention_patterns = self._compile_mention_patterns(
-            extra.get("mention_patterns")
+            extra["mention_patterns"]
             if "mention_patterns" in extra
             else os.getenv("BLUEBUBBLES_MENTION_PATTERNS")
         )
@@ -161,54 +160,39 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return f"{self.server_url}{path}{sep}password={quote(self.password, safe='')}"
 
     @staticmethod
-    def _bool_setting(*values: Any, default: bool = False) -> bool:
-        for value in values:
-            if value is None:
-                continue
-            if isinstance(value, bool):
-                return value
-            text = str(value).strip().lower()
-            if not text:
-                continue
-            return text in {"true", "1", "yes", "on"}
-        return default
+    def _compile_mention_patterns(raw: Any) -> List[re.Pattern]:
+        """Compile group-mention wake words from config/env.
 
-    @staticmethod
-    def _coerce_mention_patterns(raw: Any) -> List[str]:
+        ``raw`` is a list (from config or env JSON), a string (raw env var:
+        JSON list, or comma/newline-separated), or None (use Hermes defaults).
+        """
         if raw is None:
-            return list(DEFAULT_MENTION_PATTERNS)
-        if isinstance(raw, list):
-            values = raw
+            patterns = list(DEFAULT_MENTION_PATTERNS)
         elif isinstance(raw, str):
             text = raw.strip()
-            if not text:
-                return []
             try:
-                parsed = json.loads(text)
+                loaded = json.loads(text) if text else []
             except Exception:
-                parsed = None
-            if isinstance(parsed, list):
-                values = parsed
-            else:
-                values = [
-                    part.strip()
-                    for line in text.splitlines()
-                    for part in line.split(",")
-                    if part.strip()
-                ]
+                loaded = None
+            patterns = loaded if isinstance(loaded, list) else [
+                part.strip()
+                for line in text.splitlines()
+                for part in line.split(",")
+            ]
+        elif isinstance(raw, list):
+            patterns = raw
         else:
-            values = [raw]
-        return [str(value).strip() for value in values if str(value).strip()]
+            patterns = [raw]
 
-    def _compile_mention_patterns(self, raw: Any) -> List[re.Pattern]:
-        compiled: List[re.Pattern] = []
-        for pattern in self._coerce_mention_patterns(raw):
+        compiled: List["re.Pattern"] = []
+        for pattern in patterns:
+            text = str(pattern).strip()
+            if not text:
+                continue
             try:
-                compiled.append(re.compile(pattern, re.IGNORECASE))
+                compiled.append(re.compile(text, re.IGNORECASE))
             except re.error as exc:
-                logger.warning("[%s] Invalid BlueBubbles mention pattern %r: %s", self.name, pattern, exc)
-        if compiled:
-            logger.info("[%s] Loaded %d BlueBubbles mention pattern(s)", self.name, len(compiled))
+                logger.warning("[bluebubbles] Invalid mention pattern %r: %s", text, exc)
         return compiled
 
     def _message_matches_mention_patterns(self, text: str) -> bool:

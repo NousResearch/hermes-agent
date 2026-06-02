@@ -1976,9 +1976,9 @@ DEFAULT_CONFIG = {
         # per platform:
         #   - Telegram has native animated draft streaming (sendMessageDraft),
         #     which is smooth, so streaming is on by default there.
-        #   - Discord/Slack/etc. only have edit-based streaming (repeated
+        #   - Discord and Slack only have edit-based streaming (repeated
         #     editMessage), which flickers and is noticeably jankier, so
-        #     streaming is off by default there.
+        #     streaming is off by default for both.
         # These are gap-fillers: a user who explicitly sets, e.g.,
         # display.platforms.discord.streaming: true keeps their value
         # (config deep-merge has user values win over defaults). The global
@@ -1987,6 +1987,7 @@ DEFAULT_CONFIG = {
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
+            "slack": {"streaming": False},
         },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders

@@ -53,7 +53,7 @@ hermes model
 hermes
 ```
 
-After the first login, credentials are stored under `~/.hermes/auth.json` and refreshed automatically before they expire.
+After the first login, credentials are refreshed automatically before they expire. Classic single-home installs store them under `~/.hermes/auth.json`; named profiles under `~/.hermes/profiles/<name>/` use a shared `~/.hermes/shared/xai_oauth.json` token store so all profiles see the same rotated refresh token.
 
 ## Logging In Manually
 
@@ -100,7 +100,7 @@ If the consent page renders the authorization code directly on the page (xAI's c
 
 1. Hermes opens your browser to `accounts.x.ai`.
 2. You sign in (or confirm your existing session) and approve access.
-3. xAI redirects back to Hermes and the tokens are saved to `~/.hermes/auth.json`.
+3. xAI redirects back to Hermes and the tokens are saved. In classic mode they live in the current Hermes `auth.json`; in named profile mode the refreshable token state lives in the cross-profile `shared/xai_oauth.json` store and the profile keeps only a non-secret marker.
 4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth remove xai-oauth` or revoke access from your xAI account settings.
 
 ## Checking Login Status

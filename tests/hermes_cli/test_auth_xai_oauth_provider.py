@@ -38,6 +38,18 @@ from hermes_cli.auth import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolate_shared_xai_auth_dir(monkeypatch):
+    """Most tests in this module exercise classic per-home auth.json state.
+
+    The live Hermes process may export HERMES_SHARED_AUTH_DIR; without clearing
+    it, temp HERMES_HOME fixtures can accidentally read Rick's real shared xAI
+    OAuth store and turn missing/invalid-token tests into false positives.
+    Tests that need shared-store mode set this variable explicitly.
+    """
+    monkeypatch.delenv("HERMES_SHARED_AUTH_DIR", raising=False)
+
+
 def _setup_hermes_auth(
     hermes_home: Path,
     *,
@@ -1886,6 +1898,140 @@ def test_pool_manual_entry_does_not_sync_back_to_singleton(tmp_path, monkeypatch
     # Singleton must be untouched — manual refresh shouldn't leak across.
     assert tokens["access_token"] == singleton_at
     assert tokens["refresh_token"] == "rt-singleton"
+
+
+# ---------------------------------------------------------------------------
+# Shared xAI OAuth store across named profiles
+# ---------------------------------------------------------------------------
+
+
+def test_save_xai_oauth_tokens_writes_shared_store_not_profile_token_copy(tmp_path, monkeypatch):
+    """xAI OAuth refresh tokens rotate, so named profiles must not each keep
+    their own long-lived copy.  Saving a login/refresh should update the
+    cross-profile shared store and leave only non-secret profile metadata in
+    auth.json."""
+    from hermes_cli.auth import _save_xai_oauth_tokens
+
+    hermes_home = tmp_path / "hermes" / "profiles" / "lark-a"
+    shared_dir = tmp_path / "hermes" / "shared"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+
+    tokens = {
+        "access_token": "AT-shared",
+        "refresh_token": "RT-shared",
+        "id_token": "ID-shared",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+    }
+    discovery = {"token_endpoint": "https://auth.x.ai/oauth2/token"}
+    _save_xai_oauth_tokens(
+        tokens,
+        discovery=discovery,
+        redirect_uri="http://127.0.0.1:56121/callback",
+        last_refresh="2026-06-02T00:00:00Z",
+    )
+
+    shared = json.loads((shared_dir / "xai_oauth.json").read_text())
+    assert shared["tokens"] == tokens
+    assert shared["discovery"] == discovery
+    assert shared["redirect_uri"] == "http://127.0.0.1:56121/callback"
+    assert shared["last_refresh"] == "2026-06-02T00:00:00Z"
+
+    profile_auth = json.loads((hermes_home / "auth.json").read_text())
+    profile_state = profile_auth["providers"]["xai-oauth"]
+    assert profile_auth["active_provider"] == "xai-oauth"
+    assert profile_state["auth_mode"] == "oauth_pkce"
+    assert profile_state.get("shared_store") == "xai_oauth.json"
+    assert "tokens" not in profile_state
+
+
+def test_read_xai_oauth_tokens_uses_shared_store_when_profile_has_no_copy(tmp_path, monkeypatch):
+    """A newly spawned profile with no local xAI token copy should still be
+    usable when the shared xAI OAuth store exists."""
+    from hermes_cli.auth import _read_xai_oauth_tokens
+
+    hermes_home = tmp_path / "hermes" / "profiles" / "lark-b"
+    shared_dir = tmp_path / "hermes" / "shared"
+    hermes_home.mkdir(parents=True)
+    shared_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+
+    shared_payload = {
+        "_schema": 1,
+        "tokens": {
+            "access_token": "AT-from-shared",
+            "refresh_token": "RT-from-shared",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        },
+        "discovery": {"token_endpoint": "https://auth.x.ai/oauth2/token"},
+        "redirect_uri": "http://127.0.0.1:56121/callback",
+        "last_refresh": "2026-06-02T01:00:00Z",
+    }
+    (shared_dir / "xai_oauth.json").write_text(json.dumps(shared_payload))
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+
+    data = _read_xai_oauth_tokens()
+    assert data["tokens"]["access_token"] == "AT-from-shared"
+    assert data["tokens"]["refresh_token"] == "RT-from-shared"
+    assert data["discovery"]["token_endpoint"] == "https://auth.x.ai/oauth2/token"
+    assert data["redirect_uri"] == "http://127.0.0.1:56121/callback"
+
+
+def test_xai_oauth_runtime_refresh_rotates_shared_store_not_profile_copy(tmp_path, monkeypatch):
+    """When one profile refreshes xAI OAuth, the rotated refresh_token must be
+    written to the same shared file all profiles read.  Otherwise sibling
+    profiles keep replaying a revoked refresh token."""
+    from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+    hermes_home = tmp_path / "hermes" / "profiles" / "lark-c"
+    shared_dir = tmp_path / "hermes" / "shared"
+    hermes_home.mkdir(parents=True)
+    shared_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+
+    old_access = _jwt_with_exp(int(time.time()) - 60)
+    new_access = _jwt_with_exp(int(time.time()) + 3600)
+    (shared_dir / "xai_oauth.json").write_text(json.dumps({
+        "_schema": 1,
+        "tokens": {
+            "access_token": old_access,
+            "refresh_token": "RT-old",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        },
+        "discovery": {"token_endpoint": "https://auth.x.ai/oauth2/token"},
+        "last_refresh": "2026-06-02T01:00:00Z",
+    }))
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+
+    def _fake_refresh(access_token, refresh_token, **kwargs):
+        assert access_token == old_access
+        assert refresh_token == "RT-old"
+        return {
+            "access_token": new_access,
+            "refresh_token": "RT-rotated",
+            "id_token": "",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "last_refresh": "2026-06-02T02:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_refresh)
+
+    creds = resolve_xai_oauth_runtime_credentials(force_refresh=True)
+    assert creds["api_key"] == new_access
+
+    shared_after = json.loads((shared_dir / "xai_oauth.json").read_text())
+    assert shared_after["tokens"]["access_token"] == new_access
+    assert shared_after["tokens"]["refresh_token"] == "RT-rotated"
+    assert shared_after["last_refresh"] == "2026-06-02T02:00:00Z"
+
+    profile_auth = json.loads((hermes_home / "auth.json").read_text())
+    assert "xai-oauth" not in profile_auth.get("providers", {}) or "tokens" not in profile_auth["providers"]["xai-oauth"]
 
 
 # ---------------------------------------------------------------------------

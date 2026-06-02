@@ -656,11 +656,7 @@ class CredentialPool:
         if self.provider != "xai-oauth" or entry.source != "loopback_pkce":
             return entry
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "xai-oauth")
-            if not isinstance(state, dict):
-                return entry
+            state = auth_mod._read_xai_oauth_tokens()
             tokens = state.get("tokens")
             if not isinstance(tokens, dict):
                 return entry
@@ -837,6 +833,22 @@ class CredentialPool:
                     _store_provider_state(auth_store, "openai-codex", state, set_active=False)
 
                 elif self.provider == "xai-oauth":
+                    if auth_mod._xai_shared_store_enabled():
+                        try:
+                            current_state = auth_mod._read_xai_oauth_tokens(_lock=False)
+                        except Exception:
+                            current_state = {}
+                        auth_mod._write_shared_xai_oauth_state(
+                            {
+                                "access_token": entry.access_token,
+                                "refresh_token": entry.refresh_token,
+                                "token_type": "Bearer",
+                            },
+                            discovery=current_state.get("discovery") if isinstance(current_state, dict) else None,
+                            redirect_uri=str((current_state or {}).get("redirect_uri") or "") if isinstance(current_state, dict) else "",
+                            last_refresh=entry.last_refresh or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        )
+                        return
                     state = _load_provider_state(auth_store, "xai-oauth")
                     if not isinstance(state, dict):
                         return
@@ -1917,7 +1929,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         if _is_suppressed(provider, "loopback_pkce"):
             return changed, active_sources
 
-        state = _load_provider_state(auth_store, "xai-oauth")
+        try:
+            state = auth_mod._read_xai_oauth_tokens()
+        except Exception:
+            state = _load_provider_state(auth_store, "xai-oauth")
         tokens = state.get("tokens") if isinstance(state, dict) else None
         if isinstance(tokens, dict) and tokens.get("access_token"):
             active_sources.add("loopback_pkce")

@@ -12,6 +12,7 @@ interface SessionRowCommonProps {
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
+  onArchive: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
@@ -20,6 +21,7 @@ interface SessionRowCommonProps {
 interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
+  onArchiveSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
@@ -35,6 +37,7 @@ const OVERSCAN_ROWS = 12
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
   className,
+  onArchiveSession,
   onDeleteSession,
   onResumeSession,
   onTogglePin,
@@ -72,6 +75,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
+      onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(session.id),
       onResume: () => onResumeSession(session.id)

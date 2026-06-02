@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import tools.model_switch_tool as mst
 from tools.model_switch_tool import (
     TURN_REVERT_ATTR,
     check_model_switch_requirements,
@@ -80,7 +79,7 @@ def _err_result(message="Invalid model"):
 
 
 @pytest.fixture(autouse=True)
-def _no_config(monkeypatch):
+def _no_config(monkeypatch):  # pyright: ignore[reportUnusedFunction]
     """Default: empty config so providers/allowlist/gate read as unset."""
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
 
@@ -89,7 +88,7 @@ def test_session_scope_switch_returns_dict(monkeypatch):
     """Basic session switch applies the swap and returns the contract dict."""
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
-        lambda **kw: _ok_result("deepseek/deepseek-r1"),
+        lambda **_kw: _ok_result("deepseek/deepseek-r1"),
     )
     agent = _StubAgent()
 
@@ -113,7 +112,7 @@ def test_turn_scope_reverts_after_one_turn(monkeypatch):
     """Turn-scope switch snapshots the old model and reverts on next turn."""
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
-        lambda **kw: _ok_result("deepseek/deepseek-r1"),
+        lambda **_kw: _ok_result("deepseek/deepseek-r1"),
     )
     agent = _StubAgent()
 
@@ -139,7 +138,7 @@ def test_unknown_model_slug_handled_gracefully(monkeypatch):
     """A resolver failure returns an error string, never raises."""
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
-        lambda **kw: _err_result("Unknown model 'totally-fake'"),
+        lambda **_kw: _err_result("Unknown model 'totally-fake'"),
     )
     agent = _StubAgent()
 
@@ -170,7 +169,7 @@ def test_allowlist_blocks_disallowed_model(monkeypatch):
     # switch_model must never be reached for a blocked slug.
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
-        lambda **kw: pytest.fail("switch_model should not run for blocked slug"),
+        lambda **_kw: pytest.fail("switch_model should not run for blocked slug"),
     )
     agent = _StubAgent()
 
@@ -189,7 +188,7 @@ def test_allowlist_allows_listed_model(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
-        lambda **kw: _ok_result("gpt-4o"),
+        lambda **_kw: _ok_result("gpt-4o"),
     )
     agent = _StubAgent()
 
@@ -220,7 +219,7 @@ def test_apply_failure_clears_turn_snapshot(monkeypatch):
     """If switch_model raises, a turn snapshot must not be left stranded."""
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
-        lambda **kw: _ok_result("deepseek/deepseek-r1"),
+        lambda **_kw: _ok_result("deepseek/deepseek-r1"),
     )
 
     class _BoomAgent(_StubAgent):

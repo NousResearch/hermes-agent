@@ -1869,9 +1869,43 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
             return c
 
     # Fuzzy match as last resort.
+    #
+    # Guard against repairing across distinct operations that merely share a
+    # long common namespace prefix.  For namespaced MCP tools the shared
+    # ``mcp_<server>_`` prefix can push two semantically-opposite operations
+    # (e.g. ``mcp_knowledge_kb_search`` vs ``mcp_knowledge_kb_add``) over the
+    # 0.7 cutoff, so a missing read tool would be silently repaired into a
+    # write tool — a dangerous and incorrect remap (BUG-8).  We strip the
+    # shared prefix and re-score on the *operation suffix* (the part that
+    # actually distinguishes the tools); only accept the fuzzy candidate when
+    # the operations themselves are similar (legitimate typo) rather than just
+    # the namespace.
+    from difflib import SequenceMatcher
+
+    def _op_suffix(name: str, other: str) -> str:
+        """Return ``name`` with the longest shared leading ``_``-segment run
+        (the common namespace prefix) removed, so only the operation remains."""
+        a, b = name.split("_"), other.split("_")
+        i = 0
+        while i < len(a) and i < len(b) and a[i] == b[i]:
+            i += 1
+        return "_".join(a[i:]) or name
+
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
     if matches:
-        return matches[0]
+        candidate = matches[0]
+        op_a = _op_suffix(lowered, candidate)
+        op_b = _op_suffix(candidate, lowered)
+        # If the emitted op and candidate op share a namespace prefix but the
+        # operations diverge, require the operations themselves to be a close
+        # match.  When there is no shared prefix (op == full name) this is a
+        # no-op and ordinary fuzzy behaviour is preserved.
+        shared_prefix = op_a != lowered or op_b != candidate
+        if shared_prefix:
+            op_ratio = SequenceMatcher(None, op_a, op_b).ratio()
+            if op_ratio < 0.7:
+                return None
+        return candidate
 
     return None
 

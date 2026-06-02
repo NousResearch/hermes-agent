@@ -104,7 +104,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleCh
         </BottomSheet>
       )}
 
-{open && !useMobileSheet && (
+      {open && !useMobileSheet && (
         <div
           aria-label={sheetTitle}
           className={cn(

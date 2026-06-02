@@ -1257,6 +1257,37 @@ def test_leading_indicator_drift_fails_when_operator_value_regresses(tmp_path):
     assert benchmark["trend"] == "regressing"
 
 
+def test_leading_indicator_drift_reads_legacy_top_level_history_fields():
+    history = {
+        "version": 1,
+        "evaluations": [
+            {
+                "operator_value_score": score,
+                "operator_value_alignment": {"score": score, "status": "pass"},
+                "reliability_gate": 0.95,
+                "anti_make_work": 0.95,
+            }
+            for score in [0.98, 0.9, 0.887, 0.884]
+        ],
+    }
+    operator_value = {"score": 0.883, "status": "pass", "metrics": {}}
+
+    drift = self_improvement_tool._evaluate_leading_indicator_drift_check(
+        operator_value,
+        history,
+        {
+            "reliability_gate": {"score": 0.95, "status": "pass"},
+            "anti_make_work_check": {"score": 0.95, "status": "pass"},
+            "operator_value_alignment": operator_value,
+        },
+    )
+
+    assert drift["metrics"]["previous_operator_value_score"] == 0.884
+    assert drift["metrics"]["series_sample_count"] == 5
+    assert drift["metrics"]["triggered_harbingers"] == ["critical_slowing_down"]
+    assert drift["report"]["harbingers"]["critical_slowing_down"]["triggered"] is True
+
+
 def test_leading_indicator_drift_reports_exact_degraded_plateau_hold():
     scores = [0.878, 0.878, 0.878, 0.878, 0.878, 0.4292, 0.4292, 0.4292]
     history = {

@@ -65,6 +65,11 @@ _LEADING_INDICATOR_HARBINGERS = (
     "flickering",
     "correlation_explosion",
 )
+_LEGACY_BENCHMARK_CHECK_FIELD_ALIASES = {
+    "reliability_gate": ("reliability_gate",),
+    "anti_make_work_check": ("anti_make_work_check", "anti_make_work"),
+    "operator_value_alignment": ("operator_value_alignment", "operator_value_score"),
+}
 _HARBINGER_EVIDENCE_FIELDS = {
     "critical_slowing_down": (
         "sample_count",
@@ -2605,10 +2610,7 @@ def _iter_benchmark_history_entries(history: dict[str, Any]) -> Iterable[dict[st
 def _history_check_scores(history: dict[str, Any], check_id: str) -> list[float]:
     scores: list[float] = []
     for entry in _iter_benchmark_history_entries(history):
-        checks = entry.get("checks")
-        if not isinstance(checks, dict):
-            continue
-        score = _coerce_score(checks.get(check_id))
+        score = _coerce_score(_benchmark_entry_check_value(entry, check_id))
         if score is not None:
             scores.append(score)
     return scores
@@ -2740,19 +2742,31 @@ def _normalize_benchmark_check(value: Any) -> Optional[dict[str, Any]]:
     return {"score": round(score, 4), "status": _coerce_check_status(value)}
 
 
+def _benchmark_entry_check_value(entry: dict[str, Any], check_id: str) -> Any:
+    checks = entry.get("checks")
+    if isinstance(checks, dict) and check_id in checks:
+        return checks.get(check_id)
+    for field in _LEGACY_BENCHMARK_CHECK_FIELD_ALIASES.get(check_id, (check_id,)):
+        if field in entry:
+            return entry.get(field)
+    return None
+
+
 def _benchmark_indicator_series(
     history: dict[str, Any],
     current_checks: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     series: list[dict[str, Any]] = []
     for entry in _iter_benchmark_history_entries(history):
-        checks = entry.get("checks")
-        if not isinstance(checks, dict):
-            continue
         normalized_checks = {
             check_id: normalized
             for check_id in _LEADING_INDICATOR_CHECK_IDS
-            if (normalized := _normalize_benchmark_check(checks.get(check_id))) is not None
+            if (
+                normalized := _normalize_benchmark_check(
+                    _benchmark_entry_check_value(entry, check_id)
+                )
+            )
+            is not None
         }
         if not normalized_checks:
             continue

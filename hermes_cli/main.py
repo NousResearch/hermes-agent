@@ -4575,6 +4575,7 @@ def _model_flow_named_custom(config, provider_info):
                 menu_items,
                 selected=default_idx,
                 cancel_returns=-1,
+                searchable=True,
             )
             print()
             if idx < 0 or idx >= len(models):
@@ -10174,8 +10175,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # agent runs drain instead of being SIGKILLed.
                             # The gateway's SIGUSR1 handler calls
                             # request_restart(via_service=True) → drain →
-                            # exit(75); systemd's Restart=on-failure (and
-                            # RestartForceExitStatus=75) respawns the unit.
+                            # exit; systemd's Restart=always respawns the unit.
                             _main_pid = 0
                             try:
                                 _show = subprocess.run(
@@ -10209,9 +10209,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 )
 
                             if _graceful_ok:
-                                # Gateway exited 75. ``Restart=always`` +
-                                # ``RestartForceExitStatus=75`` means systemd
-                                # WILL respawn the unit — but only after
+                                # Gateway exited after a planned restart.
+                                # ``Restart=always`` means systemd WILL respawn
+                                # the unit — but only after
                                 # ``RestartSec`` (default 60s on our unit
                                 # file). That 60s wait is a crash-loop guard,
                                 # and is the right default when the gateway
@@ -13266,6 +13266,43 @@ Examples:
         "-y",
         action="store_true",
         help="Skip confirmation prompt when using --restore",
+    )
+
+    skills_opt_out = skills_subparsers.add_parser(
+        "opt-out",
+        help="Stop bundled skills from being seeded into this profile",
+        description=(
+            "Write the .no-bundled-skills marker so the installer, "
+            "`hermes update`, and any direct sync stop seeding bundled skills "
+            "into the active profile. By default nothing already on disk is "
+            "touched. Pass --remove to ALSO delete bundled skills that are "
+            "unmodified (user-edited and hub/local skills are never removed)."
+        ),
+    )
+    skills_opt_out.add_argument(
+        "--remove",
+        action="store_true",
+        help="Also delete already-present unmodified bundled skills",
+    )
+    skills_opt_out.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt when using --remove",
+    )
+
+    skills_opt_in = skills_subparsers.add_parser(
+        "opt-in",
+        help="Re-enable bundled-skill seeding (undo opt-out)",
+        description=(
+            "Remove the .no-bundled-skills marker so bundled skills are seeded "
+            "again on the next `hermes update`. Pass --sync to re-seed now."
+        ),
+    )
+    skills_opt_in.add_argument(
+        "--sync",
+        action="store_true",
+        help="Re-seed bundled skills immediately instead of waiting for update",
     )
 
     skills_repair_official = skills_subparsers.add_parser(

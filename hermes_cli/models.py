@@ -235,13 +235,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
     ],
     "zai": [
         "glm-5.1",
@@ -295,16 +295,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
     "minimax-oauth": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
     ],
     "minimax-cn": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",

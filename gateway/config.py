@@ -1722,6 +1722,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in {"true", "1", "yes"},
         })
+        bluebubbles_require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
+        if bluebubbles_require_mention is not None:
+            config.platforms[Platform.BLUEBUBBLES].extra["require_mention"] = (
+                bluebubbles_require_mention.lower() in {"true", "1", "yes", "on"}
+            )
+        bluebubbles_mention_patterns = os.getenv("BLUEBUBBLES_MENTION_PATTERNS")
+        if bluebubbles_mention_patterns:
+            try:
+                parsed_patterns = json.loads(bluebubbles_mention_patterns)
+            except Exception:
+                parsed_patterns = [
+                    part.strip()
+                    for part in bluebubbles_mention_patterns.replace("\n", ",").split(",")
+                    if part.strip()
+                ]
+            config.platforms[Platform.BLUEBUBBLES].extra["mention_patterns"] = parsed_patterns
     bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
         config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(

@@ -189,6 +189,7 @@ class TestHandleUpdateCommand:
         """Writes .update_pending.json with correct platform and chat info."""
         runner = _make_runner()
         event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
+        event.message_id = "m-update"
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -211,6 +212,7 @@ class TestHandleUpdateCommand:
         assert data["platform"] == "telegram"
         assert data["chat_id"] == "99999"
         assert data["chat_type"] == "dm"
+        assert data["message_id"] == "m-update"
         assert "timestamp" in data
         assert not (hermes_home / ".update_exit_code").exists()
 
@@ -223,6 +225,7 @@ class TestHandleUpdateCommand:
             chat_id="99999",
             thread_id="777",
         )
+        event.message_id = "m-update-thread"
 
         fake_root = tmp_path / "project"
         fake_root.mkdir()
@@ -241,6 +244,7 @@ class TestHandleUpdateCommand:
 
         data = json.loads((hermes_home / ".update_pending.json").read_text())
         assert data["thread_id"] == "777"
+        assert data["message_id"] == "m-update-thread"
 
     @pytest.mark.asyncio
     async def test_spawns_setsid(self, tmp_path):
@@ -472,6 +476,7 @@ class TestSendUpdateNotification:
             "chat_id": "67890",
             "chat_type": "dm",
             "thread_id": "777",
+            "message_id": "m-update-thread",
             "user_id": "12345",
         }
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
@@ -488,6 +493,7 @@ class TestSendUpdateNotification:
             "thread_id": "777",
             "telegram_dm_topic_reply_fallback": True,
             "direct_messages_topic_id": "777",
+            "telegram_reply_to_message_id": "m-update-thread",
         }
 
     @pytest.mark.asyncio

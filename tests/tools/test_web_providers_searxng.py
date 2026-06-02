@@ -138,6 +138,25 @@ class TestSearXNGSearchProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"] == []
 
+    def test_url_less_high_score_result_does_not_consume_limit(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        data = {
+            "results": [
+                {"title": "No URL", "content": "ignored", "score": 100},
+                {"title": "Valid one", "url": "https://one.example.com", "content": "", "score": 0.9},
+                {"title": "Valid two", "url": "https://two.example.com", "content": "", "score": 0.8},
+            ]
+        }
+        mock_resp = self._make_mock_response(data)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("query", limit=2)
+
+        assert result["success"] is True
+        titles = [item["title"] for item in result["data"]["web"]]
+        assert titles == ["Valid one", "Valid two"]
+
     def test_missing_score_falls_back_to_zero(self, monkeypatch):
         """Results without a score field should sort to the bottom."""
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
@@ -327,3 +346,271 @@ class TestSearXNGOnlyExtractCrawlErrors:
         result = json.loads(result_str)
         assert result["success"] is False
         assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# SearXNG hardening: fallback attempts and HTML fallback
+# ---------------------------------------------------------------------------
+
+
+class TestSearXNGSearchProviderFallbacks:
+    def _make_mock_response(self, json_data, status_code=200, text=""):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.text = text
+        mock_resp.json.return_value = json_data
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    def test_general_search_uses_default_engine_pinning(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [{"title": "Pinned", "url": "https://example.com", "content": "ok", "score": 1}]
+        })
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs["params"])
+            return mock_resp
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("normal query", limit=5)
+
+        assert result["success"] is True
+        assert calls[0]["categories"] == "general"
+        assert calls[0]["language"] == "en"
+        assert calls[0]["engines"] == "bing,mojeek,presearch"
+
+    def test_custom_general_engines_env_is_respected(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("SEARXNG_GENERAL_ENGINES", "brave,duckduckgo")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        mock_resp = self._make_mock_response({
+            "results": [{"title": "Custom", "url": "https://example.com", "content": "ok", "score": 1}]
+        })
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs["params"])
+            return mock_resp
+
+        with patch("httpx.get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("normal query", limit=5)
+
+        assert calls[0]["engines"] == "brave,duckduckgo"
+
+    def test_news_query_retries_general_when_news_category_http_errors(self, monkeypatch):
+        import httpx
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        error_resp = MagicMock()
+        error_resp.status_code = 400
+        news_error = httpx.HTTPStatusError("bad category", request=MagicMock(), response=error_resp)
+        general_hit = self._make_mock_response({
+            "results": [{"title": "General after news error", "url": "https://news.example.com", "content": "ok", "score": 1}]
+        })
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs["params"])
+            if len(calls) == 1:
+                raise news_error
+            return general_hit
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("latest ai news", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "General after news error"
+        assert calls[0]["categories"] == "news"
+        assert calls[1]["categories"] == "general"
+
+    def test_news_query_retries_general_engines_when_news_empty(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        empty_news = self._make_mock_response({"results": []})
+        general_hit = self._make_mock_response({
+            "results": [{"title": "Fallback", "url": "https://news.example.com", "content": "ok", "score": 1}]
+        })
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs["params"])
+            return empty_news if len(calls) == 1 else general_hit
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("latest ai news", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Fallback"
+        assert calls[0]["categories"] == "news"
+        assert calls[1]["categories"] == "general"
+        assert calls[1]["engines"] == "bing,mojeek,presearch"
+
+    def test_pinned_general_engine_http_error_retries_without_language(self, monkeypatch):
+        import httpx
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        error_resp = MagicMock()
+        error_resp.status_code = 400
+        engine_error = httpx.HTTPStatusError("bad engines", request=MagicMock(), response=error_resp)
+        no_language_hit = self._make_mock_response({
+            "results": [{"title": "Recovered", "url": "https://example.com", "content": "ok", "score": 1}]
+        })
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs["params"])
+            if len(calls) == 1:
+                raise engine_error
+            return no_language_hit
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("normal query", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Recovered"
+        assert calls[0]["engines"] == "bing,mojeek,presearch"
+        assert "language" not in calls[1]
+
+    def test_language_pinned_empty_retries_without_language(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        empty = self._make_mock_response({"results": []})
+        no_language_hit = self._make_mock_response({
+            "results": [{"title": "No lang", "url": "https://example.com", "content": "ok", "score": 1}]
+        })
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs["params"])
+            return no_language_hit if len(calls) == 2 else empty
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("normal query", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "No lang"
+        assert "language" in calls[0]
+        assert "language" not in calls[1]
+
+    def test_pinned_engines_empty_retries_default_engines(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        empty = self._make_mock_response({"results": []})
+        default_engine_hit = self._make_mock_response({
+            "results": [{"title": "Default engines", "url": "https://example.com", "content": "ok", "score": 1}]
+        })
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs["params"])
+            return default_engine_hit if len(calls) == 3 else empty
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("normal query", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Default engines"
+        assert "engines" in calls[0]
+        assert "engines" in calls[1]
+        assert "engines" not in calls[2]
+
+    def test_html_fallback_when_json_parse_fails(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        bad_json_resp = self._make_mock_response({})
+        bad_json_resp.json.side_effect = ValueError("not json")
+        html = """
+        <html><body>
+          <article class="result">
+            <h3><a href="https://html-parse.example.com">HTML After Bad JSON</a></h3>
+            <p class="content">Recovered from HTML</p>
+          </article>
+        </body></html>
+        """
+        html_resp = self._make_mock_response({}, text=html)
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs)
+            return html_resp if kwargs.get("headers", {}).get("Accept") == "text/html" else bad_json_resp
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("parse fallback", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "HTML After Bad JSON"
+        assert calls[-1]["headers"]["Accept"] == "text/html"
+
+    def test_url_less_json_results_continue_to_html_fallback(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        url_less_json = self._make_mock_response({
+            "results": [{"title": "No URL", "content": "not usable", "score": 10}]
+        })
+        html = """
+        <html><body>
+          <article class="result">
+            <h3><a href="https://usable.example.com">Usable Fallback</a></h3>
+            <p class="content">usable html snippet</p>
+          </article>
+        </body></html>
+        """
+        html_resp = self._make_mock_response({}, text=html)
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs)
+            return html_resp if kwargs.get("headers", {}).get("Accept") == "text/html" else url_less_json
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("url less", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Usable Fallback"
+        assert calls[-1]["headers"]["Accept"] == "text/html"
+
+    def test_html_fallback_when_json_attempts_return_empty(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+
+        empty = self._make_mock_response({"results": []})
+        html = """
+        <html><body>
+          <article class="result">
+            <h3><a href="https://html.example.com">HTML Result</a></h3>
+            <p class="content">HTML snippet</p>
+          </article>
+        </body></html>
+        """
+        html_resp = self._make_mock_response({}, text=html)
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append(kwargs)
+            return html_resp if kwargs.get("headers", {}).get("Accept") == "text/html" else empty
+
+        with patch("httpx.get", side_effect=capture_get):
+            result = SearXNGWebSearchProvider().search("nothing", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"] == [
+            {
+                "title": "HTML Result",
+                "url": "https://html.example.com",
+                "description": "HTML snippet",
+                "position": 1,
+            }
+        ]
+        assert calls[-1]["headers"]["Accept"] == "text/html"

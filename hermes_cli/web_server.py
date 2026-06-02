@@ -2181,7 +2181,13 @@ def _merged_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
             latest[str(run_id)] = {**starts.get(str(run_id), {}), **row}
         else:
             latest[str(run_id)] = row
-    return [_normalize_ledger_event(_sanitize_run_ledger_row(row)) for row in latest.values()]
+    normalized = []
+    for row in latest.values():
+        row = _normalize_ledger_event(_sanitize_run_ledger_row(row))
+        row.setdefault("workspace_id", "hermes-local")
+        row.setdefault("session_id", "hermes-legacy")
+        normalized.append(row)
+    return normalized
 
 
 def _parse_run_ledger_time(value: Any) -> Optional[float]:
@@ -2895,6 +2901,9 @@ def _append_run_ledger_row(project: Optional[str], payload: Dict[str, Any]) -> D
             payload.get("event"),
             payload.get("classification"),
         )
+    # Add workspace/session scoping defaults for backward compatibility
+    payload.setdefault("workspace_id", "hermes-local")
+    payload.setdefault("session_id", "hermes-legacy")
     ledger_path = _run_ledger_path(project)
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with open(ledger_path, "a", encoding="utf-8") as f:
@@ -4834,7 +4843,12 @@ def _read_agent_runs_unlocked() -> list:
         raw = _AGENT_RUNS_PATH.read_text(encoding="utf-8")
         data = json.loads(raw)
         if isinstance(data, dict) and isinstance(data.get("runs"), list):
-            return data["runs"]
+            runs = data["runs"]
+            for run in runs:
+                if isinstance(run, dict):
+                    run.setdefault("workspace_id", "hermes-local")
+                    run.setdefault("session_id", "hermes-legacy")
+            return runs
         return []
     except (json.JSONDecodeError, OSError):
         return []
@@ -4854,6 +4868,10 @@ def _mutate_agent_run(run_id: str, mutator) -> dict | None:
     with _AGENT_RUNS_LOCK:
         with _agent_runs_file_lock():
             runs = _read_agent_runs_unlocked()
+            for run in runs:
+                if isinstance(run, dict):
+                    run.setdefault("workspace_id", "hermes-local")
+                    run.setdefault("session_id", "hermes-legacy")
             idx = _find_run_index(runs, run_id)
             if idx == -1:
                 return None

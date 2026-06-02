@@ -1135,6 +1135,33 @@ def dump_api_request_debug(
         return None
 
 
+# OpenRouter passes through Anthropic-style ``cache_control`` breakpoints for
+# this known set of non-Claude model slugs (Qwen / DeepSeek families) that
+# support explicit caching on their upstream provider. Without breakpoints
+# these models return 0% cache reads and re-bill the full prompt every turn.
+# Only models empirically verified to accept the markers (no 400s, real cache
+# hits) are listed here. Slugs are matched case-insensitively against the
+# lowercased full model id (which carries the provider prefix, e.g.
+# ``deepseek/``). OpenAI- and Google-family models are intentionally omitted:
+# OpenRouter manages their caching automatically.
+#
+# Qwen family + DeepSeek V3.2 ported from cline/cline#10578 (see #20945).
+# DeepSeek V4-flash (and its dated pin) verified on prod Hermes 2026-05-31:
+# 0% -> 98% cache hit rate after adding breakpoints.
+# See user guide: https://github.com/NousResearch/hermes-agent/pull/36971
+_OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS: frozenset[str] = frozenset({
+    # Qwen family (ported from cline/cline#10578)
+    "qwen/qwen-plus",
+    "qwen/qwen3-max",
+    "qwen/qwen3.6-plus",
+    "qwen/qwen3-coder-plus",
+    "qwen/qwen3-coder-flash",
+    # DeepSeek (V3.2 from #20945; V4-flash verified on prod: 0% -> 98%, 2026-05-31)
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash-20260423",
+})
+
 
 def anthropic_prompt_cache_policy(
     agent,
@@ -1191,6 +1218,15 @@ def anthropic_prompt_cache_policy(
     if is_native_anthropic:
         return True, True
     if (is_openrouter or is_nous_portal) and is_claude:
+        return True, False
+    # OpenRouter passes through explicit cache_control breakpoints for a known
+    # allow-list of non-Claude slugs (Qwen / DeepSeek). Envelope layout
+    # (native_anthropic=False), matching the OpenRouter Claude branch above.
+    # Without this our prod default deepseek/deepseek-v4-flash falls through to
+    # (False, False) and serves 0% cache hits. Extends #20945 (Qwen +
+    # DeepSeek-v3.2) with deepseek-v4-flash and its dated pin.
+    # See user guide: https://github.com/NousResearch/hermes-agent/pull/36971
+    if is_openrouter and model_lower in _OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS:
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter

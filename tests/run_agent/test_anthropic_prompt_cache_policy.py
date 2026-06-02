@@ -75,6 +75,59 @@ class TestOpenRouter:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestOpenRouterExplicitCacheControlAllowlist:
+    """Non-Claude OpenRouter slugs that support explicit cache_control breakpoints.
+
+    These models (Qwen family, DeepSeek) only return real cache hits when the
+    request carries explicit ``cache_control`` markers — otherwise they re-bill
+    the full prompt every turn. deepseek/deepseek-v4-flash (and its dated pin)
+    extend #20945; verified on prod Hermes 2026-05-31 (0% -> 98% cache hits).
+    The allowlist gate is OpenRouter-only — the same slug on a non-OpenRouter
+    gateway must NOT receive markers (we have not verified it there).
+    """
+
+    def test_deepseek_v4_flash_on_openrouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v4-flash",
+        )
+        # Envelope layout (native=False) — OpenRouter is OpenAI-wire.
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_deepseek_v4_flash_dated_pin_on_openrouter_caches(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v4-flash-20260423",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_deepseek_v3_2_on_openrouter_still_caches(self):
+        # Regression guard for the #20945 baseline entry.
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v3.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_deepseek_v4_flash_off_openrouter_does_not_cache(self):
+        # The allowlist gate is OpenRouter-specific. A non-OpenRouter,
+        # non-Anthropic-wire gateway serving the same slug must stay
+        # conservative — no markers, since caching there is unverified.
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://some-other-gateway.example.com/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestThirdPartyAnthropicGateway:
     """Third-party gateways speaking the Anthropic protocol (MiniMax, Zhipu GLM, LiteLLM)."""
 

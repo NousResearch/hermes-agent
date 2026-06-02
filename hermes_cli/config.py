@@ -869,6 +869,11 @@ DEFAULT_CONFIG = {
         # rather than pinning the running-agent guard forever.  CLI clarify
         # blocks indefinitely (input() is synchronous) and ignores this.
         "clarify_timeout": 600,
+        # Allow the agent to call the model_switch tool to self-optimise its
+        # model mid-conversation (e.g. down-routing to a cheap model for
+        # simple follow-up turns).  Requires the model_switch toolset to be
+        # available.  Disabled by default -- enable per-user in config.yaml.
+        "allow_self_model_switch": False,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.

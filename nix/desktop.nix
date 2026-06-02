@@ -106,6 +106,8 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 
+  passthru = { inherit (npm.passthru) npmLockfile; };
+
   meta = with lib; {
     description = "Native Electron desktop shell for Hermes Agent";
     homepage = "https://github.com/NousResearch/hermes-agent";

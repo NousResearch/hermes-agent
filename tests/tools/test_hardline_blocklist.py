@@ -7,6 +7,9 @@ gateway /yolo, approvals.mode=off, or cron approve mode.
 Inspired by Mercury Agent's permission-hardened blocklist.
 """
 import os
+from types import SimpleNamespace
+
+import tools.approval as approval_module
 
 import pytest
 
@@ -246,6 +249,40 @@ def test_container_backends_still_bypass(clean_session):
         assert r1["approved"] is True, f"container {env} should still bypass"
         r2 = check_all_command_guards("rm -rf /", env)
         assert r2["approved"] is True, f"container {env} should still bypass"
+
+
+def test_protected_git_push_is_hard_blocked_from_main(
+    clean_session, monkeypatch, tmp_path
+):
+    """Plain git push must hard-fail when the active branch is main/master."""
+
+    def fake_run(command, **kwargs):
+        assert command == ["git", "branch", "--show-current"]
+        return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+
+    monkeypatch.setattr(approval_module.subprocess, "run", fake_run)
+
+    result = check_all_command_guards("git push origin HEAD", "local", cwd=str(tmp_path))
+
+    assert result["approved"] is False
+    assert result.get("hardline") is True
+    assert result["message"] == "ERROR: Direct pushes to master are strictly forbidden by operator flip."
+
+
+def test_feature_branch_git_push_is_not_hard_blocked(
+    clean_session, monkeypatch, tmp_path
+):
+    """Feature-branch pushes must not hit the protected-branch floor."""
+
+    def fake_run(command, **kwargs):
+        assert command == ["git", "branch", "--show-current"]
+        return SimpleNamespace(stdout="feature/test\n", stderr="", returncode=0)
+
+    monkeypatch.setattr(approval_module.subprocess, "run", fake_run)
+
+    result = check_all_command_guards("git push origin HEAD", "local", cwd=str(tmp_path))
+
+    assert result["approved"] is True
 
 
 def test_hardline_runs_before_dangerous_detection(clean_session):

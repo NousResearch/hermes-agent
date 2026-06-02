@@ -12,33 +12,47 @@ from gateway.issue_resolution import (
     IssueMetadata,
     IssueResolutionRequest,
     IssueSelectionRequest,
+    IssueRun,
     IssueRunStatus,
     IssueRunType,
     PullRequestMetadata,
     cancel_issue_resolution,
+    CODER_TIERS,
+    ModelProvider,
     ReviewFindingsRetry,
     ReviewLoopCircuitBreaker,
     ReviewMergeGateError,
     ReviewTagParseError,
+    REVIEWER_TIERS,
+    ReviewSuggestionStats,
     IssueStateStore,
     _execute_master_issue,
     _execute_single_issue,
+    _assert_issue_branch_ready_for_pr,
     _guard_managed_repo_before_issue_dispatch,
     _inspect_managed_repo,
+    _prepare_issue_branch_from_synced_default,
     _find_existing_sub_issue,
+    _merge_ready_pr,
     _issue_branch_name,
+    _local_coder_prompt,
+    _load_pr_review_suggestion_stats,
     _load_next_open_issue,
     allowed_issue_repos,
     _pr_body,
     build_aider_invocation,
     can_merge_pr,
+    is_copilot_review_author,
     is_review_findings_for_coder,
+    plan_pr_manager_next_action,
     parse_review_routing_tag,
+    summarize_review_suggestions,
     github_issue_webhook_command,
     is_master_issue,
     parse_decomposition_response,
     parse_issue_cancel_command_args,
     parse_issue_command_args,
+    _push_issue_branch,
     submit_issue_resolution,
     parse_issue_next_command_args,
 )
@@ -57,13 +71,16 @@ def test_issue_command_is_gateway_known():
 def test_parse_issue_command_owner_repo_and_number(tmp_path):
     """Parse the normal Telegram form: /issue owner/repo #10."""
     request = parse_issue_command_args(
-        f"m0nklabs/cryptotrader #10 --workdir {tmp_path} --branch issue/10-test"
+        f"m0nklabs/cryptotrader #10 --workdir {tmp_path} --branch issue/10-test "
+        "--kanban-task t_abc123 --kanban-board production"
     )
 
     assert request.repo == "m0nklabs/cryptotrader"
     assert request.issue_number == 10
     assert request.workdir == tmp_path
     assert request.branch == "issue/10-test"
+    assert request.kanban_task_id == "t_abc123"
+    assert request.kanban_board == "production"
 
 
 def test_parse_issue_command_github_url(tmp_path):
@@ -269,12 +286,37 @@ def test_pr_body_records_issue_run_validation_risk_and_review_contract(tmp_path)
     assert "Validation is pending" in body
     assert "## Risk notes" in body
     assert (
+        "All implementation changes outside the KyberM0nk framework scope must be submitted through this PR"
+        in body
+    )
+    assert (
         "Direct implementation drift on protected CryptoTrader `master`/`main` is forbidden"
         in body
     )
     assert "## Review handoff" in body
     assert "State: `ready_for_review`" in body
     assert "Reviewer lane: `cloud_reviewer`" in body
+
+
+def test_local_coder_prompt_requires_pr_branch_and_issue_link():
+    """Local coder instructions should prohibit direct downstream edits."""
+    issue = IssueMetadata(
+        number=42,
+        title="Add PnL summary",
+        body="body",
+        url="https://github.com/m0nklabs/cryptotrader/issues/42",
+    )
+
+    prompt = _local_coder_prompt(
+        "m0nklabs/cryptotrader",
+        issue,
+        "issue/cryptotrader-42-add-pnl-summary",
+    )
+
+    assert "All changes outside the KyberM0nk framework scope" in prompt
+    assert "branch -> PR -> review" in prompt
+    assert "Do not switch to `main`, `master`, or any unrelated branch" in prompt
+    assert "Issue #42" in prompt
 
 
 def test_parse_review_routing_tag_detects_findings_for_coder():
@@ -361,6 +403,96 @@ def test_parse_review_routing_tag_rejects_malformed_tags():
         )
         is None
     )
+
+
+def test_parse_review_routing_tag_keeps_tier_and_suggestion_metadata():
+    """Reviewer routing tags should preserve tier telemetry fields."""
+    tag = parse_review_routing_tag(
+        "\n".join(
+            [
+                "kyber-tag.state=review_findings",
+                "next_action=coding_subagent",
+                "review_tier=tier1",
+                "suggestions_count=3",
+                "source=hermes-pr-manager",
+                "head_ref_oid=abc123",
+            ]
+        )
+    )
+
+    assert tag is not None
+    assert tag.tier == "tier1"
+    assert tag.suggestions_count == 3
+    assert tag.source == "hermes-pr-manager"
+
+
+def test_copilot_review_suggestions_route_to_coder_tier1():
+    """Actionable Copilot/code-quality comments should route to the coder lane."""
+    stats = summarize_review_suggestions(
+        reviews=[
+            {
+                "author": {"login": "copilot-pull-request-reviewer[bot]"},
+                "body": "Found one issue.",
+            }
+        ],
+        comments=[
+            {
+                "user": {"login": "github-code-quality[bot]"},
+                "path": "api/routes/execution.py",
+                "line": 42,
+                "body": "This can break the endpoint; please fix it.",
+            }
+        ],
+    )
+    decision = plan_pr_manager_next_action(
+        current_reviewer_tier="tier1",
+        suggestion_stats=stats,
+        findings_cycles=0,
+    )
+
+    assert is_copilot_review_author("github-code-quality[bot]") is True
+    assert stats.copilot_review_detected is True
+    assert stats.total_suggestions_count == 1
+    assert decision.next_action == "coding_subagent"
+    assert decision.coder_tier == CODER_TIERS[0]
+
+
+def test_complex_review_findings_escalate_to_coder_tier2():
+    """Hard findings should skip the cheap coder after repeated or complex signals."""
+    stats = ReviewSuggestionStats(
+        internal_suggestions_count=1,
+        copilot_suggestions_count=0,
+        copilot_review_detected=False,
+        complex_findings_detected=True,
+    )
+    decision = plan_pr_manager_next_action(
+        current_reviewer_tier="tier2",
+        suggestion_stats=stats,
+        findings_cycles=1,
+    )
+
+    assert decision.next_action == "coding_subagent"
+    assert decision.coder_tier == CODER_TIERS[1]
+
+
+def test_clean_tier1_escalates_and_clean_tier2_is_ready():
+    """Tier1 clean should continue review; Tier2 clean should produce exact merge-ready text."""
+    clean_stats = ReviewSuggestionStats(0, 0, False, False)
+
+    tier1_decision = plan_pr_manager_next_action(
+        current_reviewer_tier="tier1",
+        suggestion_stats=clean_stats,
+    )
+    tier2_decision = plan_pr_manager_next_action(
+        current_reviewer_tier="tier2",
+        suggestion_stats=clean_stats,
+    )
+
+    assert tier1_decision.next_action == "tier2_review"
+    assert tier1_decision.reviewer_tier is not None
+    assert tier1_decision.reviewer_tier.provider is ModelProvider.GUARDIAN
+    assert tier2_decision.next_action == "ready_for_merge"
+    assert tier2_decision.ready_comment == "Ready for merge"
     assert (
         parse_review_routing_tag(
             "kyber-tag.state=ready_for_merge\nnext_action=merge_now\nhead_ref_oid=abc123"
@@ -406,8 +538,17 @@ async def test_execute_single_issue_queues_fix_run_on_review_findings(
                 stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
                 stderr="",
             )
+        if command == ["git", "checkout", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command == ["git", "pull", "--ff-only", "origin", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command == ["git", "branch", "--show-current"]:
-            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+            return CompletedProcess(
+                command,
+                0,
+                stdout="issue/cryptotrader-42-add-pnl-summary\n",
+                stderr="",
+            )
         if command == ["git", "status", "--porcelain"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["git", "checkout", "-B"]:
@@ -511,8 +652,17 @@ async def test_execute_single_issue_trips_review_findings_circuit_breaker(
                 stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
                 stderr="",
             )
+        if command == ["git", "checkout", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command == ["git", "pull", "--ff-only", "origin", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command == ["git", "branch", "--show-current"]:
-            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+            return CompletedProcess(
+                command,
+                0,
+                stdout="issue/cryptotrader-42-add-pnl-summary\n",
+                stderr="",
+            )
         if command == ["git", "status", "--porcelain"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["git", "checkout", "-B"]:
@@ -585,9 +735,24 @@ async def test_execute_single_issue_merges_and_closes_ready_for_merge(
     tmp_path, monkeypatch
 ):
     """Current-head ready_for_merge reviews should merge PRs and close issues."""
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_ISSUE_AUTO_MERGE_ENABLED", "1")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db(board="production")
+    with kb.connect(board="production") as conn:
+        kanban_task_id = kb.create_task(conn, title="Resolve issue 42")
+
     store = IssueStateStore(tmp_path / "issues.db")
     store.enqueue_run(
-        IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
+        IssueResolutionRequest(
+            "m0nklabs/cryptotrader",
+            42,
+            tmp_path,
+            kanban_task_id=kanban_task_id,
+            kanban_board="production",
+        ),
         run_type=IssueRunType.ISSUE,
     )
     run = store.claim_next_run()
@@ -600,11 +765,13 @@ async def test_execute_single_issue_merges_and_closes_ready_for_merge(
     )
     commands: list[list[str]] = []
     messages: list[str] = []
+    pr_list_calls = 0
 
     async def notify(message: str):
         messages.append(message)
 
     async def fake_run(command, *, cwd=None, env=None, check=True):
+        nonlocal pr_list_calls
         commands.append(command)
         if command[:4] == ["gh", "repo", "view", "m0nklabs/cryptotrader"]:
             return CompletedProcess(
@@ -613,8 +780,17 @@ async def test_execute_single_issue_merges_and_closes_ready_for_merge(
                 stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
                 stderr="",
             )
+        if command == ["git", "checkout", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command == ["git", "pull", "--ff-only", "origin", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command == ["git", "branch", "--show-current"]:
-            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+            return CompletedProcess(
+                command,
+                0,
+                stdout="issue/cryptotrader-42-add-pnl-summary\n",
+                stderr="",
+            )
         if command == ["git", "status", "--porcelain"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["git", "checkout", "-B"]:
@@ -629,6 +805,9 @@ async def test_execute_single_issue_merges_and_closes_ready_for_merge(
                 stderr="",
             )
         if command[:3] == ["gh", "pr", "list"]:
+            pr_list_calls += 1
+            if pr_list_calls == 1:
+                return CompletedProcess(command, 0, stdout="[]", stderr="")
             payload = [
                 {
                     "number": 77,
@@ -686,6 +865,62 @@ async def test_execute_single_issue_merges_and_closes_ready_for_merge(
     assert any(command[:3] == ["gh", "pr", "merge"] for command in commands)
     assert any(command[:3] == ["gh", "issue", "close"] for command in commands)
     assert any("merged and Issue #42 closed" in message for message in messages)
+    with kb.connect(board="production") as conn:
+        task = kb.get_task(conn, kanban_task_id)
+        events = kb.list_events(conn, kanban_task_id)
+        comments = kb.list_comments(conn, kanban_task_id)
+
+    assert task is not None
+    assert task.status == "done"
+    event_kinds = [event.kind for event in events]
+    assert "issue_run_claimed" in event_kinds
+    assert "pr_opened" in event_kinds
+    assert "review_requested" in event_kinds
+    assert "merge_started" in event_kinds
+    assert "pr_merged" in event_kinds
+    assert "issue_closed" in event_kinds
+    assert "issue_run_completed" in event_kinds
+    assert "completed" in event_kinds
+    assert any("PR #77 merged automatically" in comment.body for comment in comments)
+    assert any("GitHub issue m0nklabs/cryptotrader#42 closed" in comment.body for comment in comments)
+
+
+@pytest.mark.asyncio
+async def test_merge_ready_pr_blocks_when_auto_merge_disabled(tmp_path, monkeypatch):
+    """The PR manager should not merge unless explicitly enabled."""
+    monkeypatch.delenv("HERMES_ISSUE_AUTO_MERGE_ENABLED", raising=False)
+    comments: list[str] = []
+
+    async def fake_post_pr_audit_comment(_repo, _pr, body):
+        comments.append(body)
+
+    monkeypatch.setattr(
+        "gateway.issue_resolution._post_pr_audit_comment",
+        fake_post_pr_audit_comment,
+    )
+    run = IssueRun(
+        id=123,
+        repo="m0nklabs/cryptotrader",
+        issue_number=42,
+        workdir=tmp_path,
+        branch="issue/42-test",
+        kanban_task_id=None,
+        kanban_board=None,
+        status=IssueRunStatus.RUNNING,
+        run_type=IssueRunType.ISSUE,
+        parent_run_id=None,
+        master_issue_number=None,
+        pr_number=77,
+        pr_url="https://github.com/m0nklabs/cryptotrader/pull/77",
+        error=None,
+    )
+    issue = IssueMetadata(42, "Issue", "body", "https://example.invalid/issue")
+    pr = PullRequestMetadata(77, "https://example.invalid/pr", "issue/42-test", "abc123")
+
+    with pytest.raises(ReviewMergeGateError, match="automatic merge disabled"):
+        await _merge_ready_pr("m0nklabs/cryptotrader", issue, pr, run)
+
+    assert any("automatic merge disabled" in comment for comment in comments)
 
 
 @pytest.mark.asyncio
@@ -720,8 +955,17 @@ async def test_execute_single_issue_blocks_stale_ready_for_merge_tag(
                 stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
                 stderr="",
             )
+        if command == ["git", "checkout", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command == ["git", "pull", "--ff-only", "origin", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command == ["git", "branch", "--show-current"]:
-            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+            return CompletedProcess(
+                command,
+                0,
+                stdout="issue/cryptotrader-42-add-pnl-summary\n",
+                stderr="",
+            )
         if command == ["git", "status", "--porcelain"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["git", "checkout", "-B"]:
@@ -796,6 +1040,7 @@ async def test_execute_single_issue_retries_malformed_review_tag_once(
     tmp_path, monkeypatch
 ):
     """Malformed review tags should get one bounded reviewer rerun."""
+    monkeypatch.setenv("HERMES_ISSUE_AUTO_MERGE_ENABLED", "1")
     store = IssueStateStore(tmp_path / "issues.db")
     store.enqueue_run(
         IssueResolutionRequest("m0nklabs/cryptotrader", 42, tmp_path),
@@ -824,8 +1069,17 @@ async def test_execute_single_issue_retries_malformed_review_tag_once(
                 stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
                 stderr="",
             )
+        if command == ["git", "checkout", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command == ["git", "pull", "--ff-only", "origin", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command == ["git", "branch", "--show-current"]:
-            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+            return CompletedProcess(
+                command,
+                0,
+                stdout="issue/cryptotrader-42-add-pnl-summary\n",
+                stderr="",
+            )
         if command == ["git", "status", "--porcelain"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["git", "checkout", "-B"]:
@@ -896,7 +1150,7 @@ async def test_execute_single_issue_retries_malformed_review_tag_once(
 
     await _execute_single_issue(store, run, issue, notify)
 
-    assert review_calls == 2
+    assert review_calls == 3
     assert store.get_run(run.id).status is IssueRunStatus.COMPLETED
     assert any("retrying once" in message for message in messages)
 
@@ -930,8 +1184,17 @@ async def test_execute_single_issue_fails_after_repeated_malformed_review_tag(
                 stdout=json.dumps({"defaultBranchRef": {"name": "master"}}),
                 stderr="",
             )
+        if command == ["git", "checkout", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        if command == ["git", "pull", "--ff-only", "origin", "master"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
         if command == ["git", "branch", "--show-current"]:
-            return CompletedProcess(command, 0, stdout="feature\n", stderr="")
+            return CompletedProcess(
+                command,
+                0,
+                stdout="issue/cryptotrader-42-add-pnl-summary\n",
+                stderr="",
+            )
         if command == ["git", "status", "--porcelain"]:
             return CompletedProcess(command, 0, stdout="", stderr="")
         if command[:3] == ["git", "checkout", "-B"]:
@@ -979,7 +1242,7 @@ async def test_execute_single_issue_fails_after_repeated_malformed_review_tag(
     with pytest.raises(ReviewTagParseError):
         await _execute_single_issue(store, run, issue, notify)
 
-    assert review_calls == 2
+    assert review_calls == 6
 
 
 def test_master_issue_label_detection():
@@ -1036,7 +1299,13 @@ def test_issue_state_store_persists_fifo_and_resets_running(tmp_path):
     """SQLite state stores queued runs and resets interrupted local coder work."""
     store = IssueStateStore(tmp_path / "issues.db")
     first = store.enqueue_run(
-        IssueResolutionRequest("m0nklabs/cryptotrader", 1, tmp_path),
+        IssueResolutionRequest(
+            "m0nklabs/cryptotrader",
+            1,
+            tmp_path,
+            kanban_task_id="t_abc123",
+            kanban_board="production",
+        ),
         run_type=IssueRunType.ISSUE,
     )
     second = store.enqueue_run(
@@ -1049,6 +1318,8 @@ def test_issue_state_store_persists_fifo_and_resets_running(tmp_path):
     assert claimed is not None
     assert claimed.id == first.id
     assert claimed.status is IssueRunStatus.RUNNING
+    assert claimed.kanban_task_id == "t_abc123"
+    assert claimed.kanban_board == "production"
     assert store.get_run(second.id).status is IssueRunStatus.QUEUED
     assert store.reset_interrupted_runs() == 1
     assert store.get_run(first.id).status is IssueRunStatus.QUEUED
@@ -1334,6 +1605,104 @@ async def test_managed_repo_guard_allows_only_aider_noise_on_protected_branch(
 
 
 @pytest.mark.asyncio
+async def test_issue_branch_ready_guard_blocks_branch_escape(tmp_path, monkeypatch):
+    """Coder output must still be on the expected issue branch before PR creation."""
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command=command, returncode=0, stdout="master\n", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    with pytest.raises(RuntimeError, match="expected issue branch"):
+        await _assert_issue_branch_ready_for_pr(
+            "m0nklabs/cryptotrader",
+            tmp_path,
+            "issue/cryptotrader-12-fix-drift",
+            "master",
+        )
+
+
+@pytest.mark.asyncio
+async def test_issue_branch_ready_guard_blocks_uncommitted_drift(
+    tmp_path, monkeypatch
+):
+    """Implementation changes must be committed to the issue branch before PR handoff."""
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout="issue/cryptotrader-12-fix-drift\n",
+                stderr="",
+            )
+        if command == ["git", "status", "--porcelain"]:
+            return CompletedProcess(
+                command=command,
+                returncode=0,
+                stdout=" M core/trading.py\n?? .aider.chat.history.md\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    with pytest.raises(RuntimeError, match="uncommitted implementation drift"):
+        await _assert_issue_branch_ready_for_pr(
+            "m0nklabs/cryptotrader",
+            tmp_path,
+            "issue/cryptotrader-12-fix-drift",
+            "master",
+        )
+
+
+@pytest.mark.asyncio
+async def test_prepare_issue_branch_from_synced_default_refreshes_base_first(
+    tmp_path, monkeypatch
+):
+    """Every new issue branch must start from a freshly pulled default branch."""
+    commands: list[list[str]] = []
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        commands.append(command)
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    await _prepare_issue_branch_from_synced_default(
+        tmp_path,
+        "master",
+        "issue/cryptotrader-12-fix-drift",
+    )
+
+    assert commands == [
+        ["git", "checkout", "master"],
+        ["git", "pull", "--ff-only", "origin", "master"],
+        ["git", "checkout", "-B", "issue/cryptotrader-12-fix-drift", "master"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_push_issue_branch_blocks_direct_master_pushes(tmp_path, monkeypatch):
+    """Hermes must abort if a push is attempted from master/main."""
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["git", "branch", "--show-current"]:
+            return CompletedProcess(command, 0, stdout="master\n", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    with pytest.raises(
+        RuntimeError,
+        match="ERROR: Direct pushes to master are strictly forbidden by operator flip\\.",
+    ):
+        await _push_issue_branch(tmp_path, "issue/cryptotrader-12-fix-drift")
+
+
+@pytest.mark.asyncio
 async def test_managed_repo_guard_skips_unmanaged_repos(tmp_path):
     """Only configured managed repos should receive the CryptoTrader guard."""
     status = await _inspect_managed_repo("m0nklabs/other", tmp_path)
@@ -1420,3 +1789,99 @@ def test_cloud_aider_invocation_targets_openrouter(tmp_path):
     assert "OPENAI_API_BASE" not in invocation.env
     assert invocation.env["OPENROUTER_API_KEY"] == "cloud-key"
     assert invocation.env["OPENAI_API_KEY"] == "cloud-key"
+
+
+def test_tier2_reviewer_invocation_targets_guardian(tmp_path):
+    """Tier2 reviewer should use the local Guardian route, not OpenRouter."""
+    invocation = build_aider_invocation(
+        AiderRole.CLOUD_REVIEWER,
+        Path(tmp_path),
+        "review it",
+        runtime_env={
+            "AIDER_BIN": "/opt/aider/bin/aider",
+            "AIDER_GUARDIAN_API_KEY": "local-key",
+            "GUARDIAN_BASE_URL": "http://host.docker.internal:11434/v1",
+            "KYBERM0NK_ENV": str(tmp_path / "missing.env"),
+        },
+        reviewer_tier=next(tier for tier in REVIEWER_TIERS if tier.name == "tier2"),
+    )
+
+    assert invocation.command[:3] == [
+        "/opt/aider/bin/aider",
+        "--model",
+        "openai/gemma4-26b-a4b",
+    ]
+    assert invocation.env["OPENAI_API_BASE"] == "http://127.0.0.1:11434/v1"
+    assert invocation.env["OPENAI_API_KEY"] == "local-key"
+
+
+def test_tier1_review_fix_coder_invocation_targets_openrouter(tmp_path):
+    """Review-fix coder Tier1 should use the cheap OpenRouter route."""
+    invocation = build_aider_invocation(
+        AiderRole.LOCAL_CODER,
+        Path(tmp_path),
+        "fix review findings",
+        runtime_env={
+            "AIDER_BIN": "/opt/aider/bin/aider",
+            "OPENROUTER_API_KEY": "cloud-key",
+            "KYBERM0NK_ENV": str(tmp_path / "missing.env"),
+        },
+        coder_tier=CODER_TIERS[0],
+    )
+
+    assert invocation.command[:3] == [
+        "/opt/aider/bin/aider",
+        "--model",
+        "openrouter/deepseek/deepseek-v4-flash",
+    ]
+    assert "OPENAI_API_BASE" not in invocation.env
+    assert invocation.env["OPENROUTER_API_KEY"] == "cloud-key"
+    assert invocation.env["OPENAI_API_KEY"] == "cloud-key"
+
+
+@pytest.mark.asyncio
+async def test_pr_review_metadata_loader_counts_current_head_copilot_comments(monkeypatch):
+    """Live PR-manager metadata should include only current-head Copilot suggestions."""
+    pr = PullRequestMetadata(
+        number=325,
+        url="https://github.com/m0nklabs/cryptotrader/pull/325",
+        head_ref_name="hermes/fix",
+        head_ref_oid="abc123",
+    )
+
+    async def fake_run(command, *, cwd=None, env=None, check=True):
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/325/reviews"]:
+            return CompletedProcess(command, 0, stdout="[]", stderr="")
+        if command == ["gh", "api", "repos/m0nklabs/cryptotrader/pulls/325/comments"]:
+            return CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "user": {"login": "github-code-quality[bot]"},
+                            "commit_id": "abc123",
+                            "path": "api/routes/execution.py",
+                            "line": 42,
+                            "body": "This DB execution path can fail.",
+                        },
+                        {
+                            "user": {"login": "github-code-quality[bot]"},
+                            "commit_id": "oldsha",
+                            "path": "api/routes/execution.py",
+                            "line": 41,
+                            "body": "Stale finding.",
+                        },
+                    ]
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("gateway.issue_resolution._run", fake_run)
+
+    stats = await _load_pr_review_suggestion_stats("m0nklabs/cryptotrader", pr)
+
+    assert stats.copilot_review_detected is True
+    assert stats.copilot_suggestions_count == 1
+    assert stats.total_suggestions_count == 1

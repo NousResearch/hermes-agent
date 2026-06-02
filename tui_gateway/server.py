@@ -6970,7 +6970,15 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
     try:
-        from tools.approval import detect_dangerous_command
+        from tools.approval import detect_dangerous_command, detect_protected_git_push
+
+        blocked_push, push_message = detect_protected_git_push(cmd, os.getcwd())
+        if blocked_push:
+            return _err(
+                rid,
+                4005,
+                push_message or "ERROR: Direct pushes to master are strictly forbidden by operator flip.",
+            )
 
         is_dangerous, _, desc = detect_dangerous_command(cmd)
         if is_dangerous:

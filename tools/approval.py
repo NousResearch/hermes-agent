@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -35,6 +36,10 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
+)
+_PROTECTED_GIT_PUSH_BRANCHES = frozenset({"master", "main"})
+_PROTECTED_GIT_PUSH_MESSAGE = (
+    "ERROR: Direct pushes to master are strictly forbidden by operator flip."
 )
 
 
@@ -312,6 +317,43 @@ def _sudo_stdin_block_result(description: str) -> dict:
             "manually in your own terminal."
         ),
     }
+
+
+def _protected_git_push_block_result() -> dict:
+    """Build the standard block result for protected-branch git pushes."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": _PROTECTED_GIT_PUSH_MESSAGE,
+    }
+
+
+def detect_protected_git_push(
+    command: str, cwd: str | None = None
+) -> tuple[bool, str | None]:
+    """Return true when a git push runs from the active main/master branch."""
+    normalized = _normalize_command_for_detection(command).lower()
+    if not re.search(r"\bgit\s+push\b", normalized):
+        return (False, None)
+    if not cwd:
+        return (False, None)
+
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return (False, None)
+
+    current_branch = (result.stdout or "").strip().lower()
+    if current_branch in _PROTECTED_GIT_PUSH_BRANCHES:
+        return (True, _PROTECTED_GIT_PUSH_MESSAGE)
+    return (False, None)
 
 
 # =========================================================================
@@ -1051,7 +1093,7 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None, *, cwd: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -1062,6 +1104,18 @@ def check_all_command_guards(command: str, env_type: str,
     # Skip containers for both checks
     if env_type in {"docker", "singularity", "modal", "daytona"}:
         return {"approved": True, "message": None}
+
+    is_protected_push, protected_push_message = detect_protected_git_push(
+        command, cwd
+    )
+    if is_protected_push:
+        logger.warning(
+            "Protected branch git push blocked: %s (command: %s, cwd: %s)",
+            protected_push_message,
+            command[:200],
+            cwd or "",
+        )
+        return _protected_git_push_block_result()
 
     # Hardline floor: unconditional block for catastrophic commands
     # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,

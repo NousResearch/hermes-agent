@@ -28,6 +28,10 @@ DEFAULT_GUARDIAN_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_LOCAL_MODEL = "openai/qwen3-35b-uncensored"
 DEFAULT_DECOMPOSE_MODEL = "qwen3-35b-uncensored"
 DEFAULT_CLOUD_MODEL = "openrouter/deepseek/deepseek-v4-flash"
+DEFAULT_REVIEWER_TIER2_MODEL = "openai/gemma4-26b-a4b"
+DEFAULT_REVIEWER_TIER3_MODEL = "openrouter/deepseek/deepseek-v4-pro"
+DEFAULT_CODER_TIER1_MODEL = "openrouter/deepseek/deepseek-v4-flash"
+DEFAULT_CODER_TIER2_MODEL = "openai/qwen-3.6-35b"
 DEFAULT_KYBER_ENV = Path.home() / "kyberm0nk" / ".env"
 DEFAULT_AIDER_BIN = Path.home() / "aider" / ".venv" / "bin" / "aider"
 DEFAULT_STATE_DB = get_hermes_home() / "issue_resolution.db"
@@ -39,8 +43,19 @@ ISSUE_RUN_IDLE_POLL_SECONDS = 5.0
 DEFAULT_ALLOWED_ISSUE_REPOS = ("m0nklabs/cryptotrader",)
 REVIEW_FINDINGS_MAX_FIX_ATTEMPTS = 2
 REVIEW_TAG_MAX_PARSE_ATTEMPTS = 2
+STRICT_PROTECTED_PUSH_BRANCHES = frozenset({"master", "main"})
+DIRECT_MASTER_PUSH_ERROR = (
+    "ERROR: Direct pushes to master are strictly forbidden by operator flip."
+)
 REVIEW_TAG_STATES = {"ready_for_merge", "review_findings", "review_inconclusive"}
-REVIEW_TAG_NEXT_ACTIONS = {"coding_subagent", "rerun_reviewer", "ready_for_merge"}
+REVIEW_TAG_NEXT_ACTIONS = {
+    "coding_subagent",
+    "rerun_reviewer",
+    "tier2_review",
+    "tier3_review",
+    "ready_for_merge",
+}
+ISSUE_AUTO_MERGE_ENV = "HERMES_ISSUE_AUTO_MERGE_ENABLED"
 MANAGED_REPO_POLICIES = {
     "m0nklabs/cryptotrader": {
         "name": "CryptoTrader",
@@ -66,6 +81,84 @@ class AiderRole(str, Enum):
 
     LOCAL_CODER = "local_coder"
     CLOUD_REVIEWER = "cloud_reviewer"
+
+
+class ModelProvider(str, Enum):
+    """Model routing provider used by PR-manager tiers."""
+
+    OPENROUTER = "openrouter"
+    GUARDIAN = "guardian"
+
+
+@dataclass(frozen=True)
+class ModelTier:
+    """One ordered reviewer or coder model tier."""
+
+    name: str
+    provider: ModelProvider
+    model: str
+    purpose: str
+
+
+@dataclass(frozen=True)
+class ReviewSuggestionStats:
+    """Suggestion counters extracted from internal and Copilot review metadata."""
+
+    internal_suggestions_count: int
+    copilot_suggestions_count: int
+    copilot_review_detected: bool
+    complex_findings_detected: bool
+
+    @property
+    def total_suggestions_count(self) -> int:
+        """Return the total actionable suggestion count."""
+        return self.internal_suggestions_count + self.copilot_suggestions_count
+
+
+@dataclass(frozen=True)
+class PRManagerDecision:
+    """Next PR-manager action after evaluating review signals."""
+
+    next_action: str
+    reviewer_tier: ModelTier | None = None
+    coder_tier: ModelTier | None = None
+    ready_comment: str | None = None
+
+
+REVIEWER_TIERS: tuple[ModelTier, ...] = (
+    ModelTier(
+        name="tier1",
+        provider=ModelProvider.OPENROUTER,
+        model=DEFAULT_CLOUD_MODEL,
+        purpose="fast high-confidence review",
+    ),
+    ModelTier(
+        name="tier2",
+        provider=ModelProvider.GUARDIAN,
+        model=DEFAULT_REVIEWER_TIER2_MODEL,
+        purpose="local deep review",
+    ),
+    ModelTier(
+        name="tier3",
+        provider=ModelProvider.OPENROUTER,
+        model=DEFAULT_REVIEWER_TIER3_MODEL,
+        purpose="cloud escalation review",
+    ),
+)
+CODER_TIERS: tuple[ModelTier, ...] = (
+    ModelTier(
+        name="tier1",
+        provider=ModelProvider.OPENROUTER,
+        model=DEFAULT_CODER_TIER1_MODEL,
+        purpose="cheap review-fix coder",
+    ),
+    ModelTier(
+        name="tier2",
+        provider=ModelProvider.GUARDIAN,
+        model=DEFAULT_CODER_TIER2_MODEL,
+        purpose="local hard-fix coder",
+    ),
+)
 
 
 class IssueRunStatus(str, Enum):
@@ -111,6 +204,8 @@ class IssueResolutionRequest:
     issue_number: int
     workdir: Path
     branch: str | None = None
+    kanban_task_id: str | None = None
+    kanban_board: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +236,7 @@ class PullRequestMetadata:
     url: str
     head_ref_name: str
     head_ref_oid: str
+    action: str = "opened"
 
 
 @dataclass(frozen=True)
@@ -182,6 +278,9 @@ class ReviewRoutingTag:
     state: str
     next_action: str | None = None
     head_ref_oid: str | None = None
+    tier: str | None = None
+    suggestions_count: int = 0
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +292,8 @@ class IssueRun:
     issue_number: int
     workdir: Path
     branch: str | None
+    kanban_task_id: str | None
+    kanban_board: str | None
     status: IssueRunStatus
     run_type: IssueRunType
     parent_run_id: int | None
@@ -281,6 +382,8 @@ async def submit_next_issue_resolution(
             issue_number=issue.number,
             workdir=request.workdir,
             branch=request.branch,
+            kanban_task_id=request.kanban_task_id,
+            kanban_board=request.kanban_board,
         ),
         notify=notify,
     )
@@ -302,6 +405,12 @@ async def cancel_issue_resolution(
             run.repo,
             run.issue_number,
             f"Hermes audit: run #{run_id} cancelled by operator. Reason: {reason}",
+        )
+        await _record_kanban_task_audit(
+            run,
+            "issue_run_cancelled",
+            _issue_run_audit_payload(run, reason=reason),
+            comment=f"Hermes audit: issue-resolution run #{run_id} cancelled. Reason: {reason}",
         )
     return result
 
@@ -380,6 +489,12 @@ async def _issue_queue_worker() -> None:
             ReviewMergeGateError,
         ) as exc:
             store.mark_failed(run.id, str(exc))
+            await _record_kanban_task_audit(
+                run,
+                "issue_run_failed",
+                _issue_run_audit_payload(run, error=str(exc), failure_kind="review_safety_gate"),
+                comment=f"Hermes audit: issue-resolution run #{run.id} failed review safety gate: {exc}",
+            )
             await notify(
                 f"Hermes: Issue run #{run.id} failed review safety gate: {exc}"
             )
@@ -390,6 +505,17 @@ async def _issue_queue_worker() -> None:
             if store.mark_retry_or_failed(run, str(exc)):
                 retrying = store.get_run(run.id)
                 delay = max(0, int(retrying.next_attempt_at - _now()))
+                await _record_kanban_task_audit(
+                    retrying,
+                    "issue_run_retry_queued",
+                    _issue_run_audit_payload(
+                        retrying,
+                        error=str(exc),
+                        attempt_count=retrying.attempt_count,
+                        max_attempts=ISSUE_RUN_MAX_ATTEMPTS,
+                        retry_delay_seconds=delay,
+                    ),
+                )
                 await notify(
                     f"Hermes: Issue run #{run.id} failed attempt "
                     f"{retrying.attempt_count}/{ISSUE_RUN_MAX_ATTEMPTS}; "
@@ -398,6 +524,20 @@ async def _issue_queue_worker() -> None:
                 logger.exception("issue-resolution run %s failed; queued retry", run.id)
             else:
                 failed = store.get_run(run.id)
+                await _record_kanban_task_audit(
+                    failed,
+                    "issue_run_failed",
+                    _issue_run_audit_payload(
+                        failed,
+                        error=str(exc),
+                        attempt_count=failed.attempt_count,
+                        max_attempts=ISSUE_RUN_MAX_ATTEMPTS,
+                    ),
+                    comment=(
+                        f"Hermes audit: issue-resolution run #{run.id} failed after "
+                        f"{failed.attempt_count}/{ISSUE_RUN_MAX_ATTEMPTS} attempts: {exc}"
+                    ),
+                )
                 await notify(
                     f"Hermes: Issue run #{run.id} failed after "
                     f"{failed.attempt_count}/{ISSUE_RUN_MAX_ATTEMPTS} attempts: {exc}"
@@ -466,10 +606,13 @@ async def _execute_single_issue(
     issue: IssueMetadata,
     notify: Callable[[str], Awaitable[None]],
 ) -> None:
-    """Run local coder, push branch, open PR, and trigger cloud reviewer."""
+    """Sync the base branch, run local coder, push branch, and trigger review."""
     default_branch = await _load_default_branch(run.repo)
     branch = run.branch or _issue_branch_name(issue, run.repo)
     await _guard_managed_repo_before_issue_dispatch(run, issue, branch)
+    await _prepare_issue_branch_from_synced_default(
+        run.workdir, default_branch, branch
+    )
 
     await notify(f"Hermes: Starting local coder for Issue #{issue.number}.")
     await _post_issue_audit_comment(
@@ -477,19 +620,47 @@ async def _execute_single_issue(
         issue.number,
         f"Hermes audit: run #{run.id} claimed issue for branch `{branch}`.",
     )
-    await _run(["git", "checkout", "-B", branch], cwd=run.workdir)
+    await _record_kanban_task_audit(
+        run,
+        "issue_run_claimed",
+        _issue_run_audit_payload(
+            run,
+            issue=issue,
+            branch=branch,
+            default_branch=default_branch,
+        ),
+    )
     local_prompt = _local_coder_prompt(run.repo, issue, branch)
+    coder_tier = (
+        _coder_tier_for_findings(
+            findings_cycles=run.review_findings_count,
+            complex_findings=False,
+        )
+        if run.review_findings_count > 0
+        else None
+    )
+    if coder_tier is not None:
+        await notify(
+            f"Hermes: routing same-branch fix for run #{run.id} to "
+            f"{coder_tier.name} coder ({coder_tier.model})."
+        )
     local_invocation = build_aider_invocation(
-        AiderRole.LOCAL_CODER, run.workdir, local_prompt
+        AiderRole.LOCAL_CODER,
+        run.workdir,
+        local_prompt,
+        coder_tier=coder_tier,
     )
     await _run(
         local_invocation.command, cwd=local_invocation.cwd, env=local_invocation.env
+    )
+    await _assert_issue_branch_ready_for_pr(
+        run.repo, run.workdir, branch, default_branch
     )
 
     await notify(
         f"Hermes: Local coder finished Issue #{issue.number}; pushing `{branch}`."
     )
-    await _run(["git", "push", "-u", "origin", branch], cwd=run.workdir)
+    await _push_issue_branch(run.workdir, branch)
 
     pr = await _create_or_find_pr(run.repo, issue, branch, default_branch, run=run)
     store.record_pr(run.id, pr)
@@ -499,10 +670,25 @@ async def _execute_single_issue(
         issue.number,
         f"Hermes audit: run #{run.id} opened or reused PR #{pr.number}: {pr.url}",
     )
+    pr_event_kind = "pr_reused" if pr.action == "reused" else "pr_opened"
+    await _record_kanban_task_audit(
+        run,
+        pr_event_kind,
+        _issue_run_audit_payload(run, issue=issue, pr=pr),
+        comment=(
+            f"Hermes audit: run #{run.id} {'reused' if pr.action == 'reused' else 'opened'} "
+            f"PR #{pr.number} for GitHub issue {run.repo}#{issue.number}: {pr.url}"
+        ),
+    )
     await _post_pr_audit_comment(
         run.repo,
         pr,
         f"Hermes audit: cloud review requested for run #{run.id} at head `{pr.head_ref_oid}`.",
+    )
+    await _record_kanban_task_audit(
+        run,
+        "review_requested",
+        _issue_run_audit_payload(run, issue=issue, pr=pr),
     )
 
     review_output, routing_tag = await _run_cloud_reviewer_with_tag(
@@ -517,6 +703,21 @@ async def _execute_single_issue(
                 pr,
                 f"Hermes audit: review loop circuit breaker tripped for run #{run.id} "
                 f"after {findings_count} reviewer findings cycles.",
+            )
+            await _record_kanban_task_audit(
+                run,
+                "review_loop_circuit_breaker",
+                _issue_run_audit_payload(
+                    run,
+                    issue=issue,
+                    pr=pr,
+                    findings_count=findings_count,
+                    max_fix_attempts=REVIEW_FINDINGS_MAX_FIX_ATTEMPTS,
+                ),
+                comment=(
+                    f"Hermes audit: review loop circuit breaker tripped for run #{run.id} "
+                    f"after {findings_count} reviewer findings cycles."
+                ),
             )
             raise ReviewLoopCircuitBreaker(
                 f"review_findings repeated {findings_count} times for PR #{pr.number}; "
@@ -533,14 +734,46 @@ async def _execute_single_issue(
             f"Hermes audit: reviewer findings routed run #{run.id} back to same-branch coding "
             f"({findings_count}/{REVIEW_FINDINGS_MAX_FIX_ATTEMPTS}).",
         )
+        await _record_kanban_task_audit(
+            run,
+            "review_fix_routed",
+            _issue_run_audit_payload(
+                run,
+                issue=issue,
+                pr=pr,
+                findings_count=findings_count,
+                max_fix_attempts=REVIEW_FINDINGS_MAX_FIX_ATTEMPTS,
+            ),
+            comment=(
+                f"Hermes audit: reviewer findings routed run #{run.id} back to "
+                f"same-branch coding ({findings_count}/{REVIEW_FINDINGS_MAX_FIX_ATTEMPTS})."
+            ),
+        )
         raise ReviewFindingsRetry("review_findings queued same-branch coding fix")
 
     if not can_merge_pr(routing_tag, pr):
+        routing_state = routing_tag.state if routing_tag is not None else "missing"
+        routing_next_action = routing_tag.next_action if routing_tag is not None else "missing"
         await _post_pr_audit_comment(
             run.repo,
             pr,
             f"Hermes audit: automatic merge blocked for run #{run.id}; routing state "
-            f"`{routing_tag.state}` next action `{routing_tag.next_action}`.",
+            f"`{routing_state}` next action `{routing_next_action}`.",
+        )
+        await _record_kanban_task_audit(
+            run,
+            "merge_blocked",
+            _issue_run_audit_payload(
+                run,
+                issue=issue,
+                pr=pr,
+                routing_state=routing_state,
+                next_action=routing_next_action,
+            ),
+            comment=(
+                f"Hermes audit: automatic merge blocked for run #{run.id}; routing state "
+                f"`{routing_state}` next action `{routing_next_action}`."
+            ),
         )
         raise ReviewMergeGateError(
             f"PR #{pr.number} did not receive a current-head ready_for_merge tag"
@@ -548,6 +781,13 @@ async def _execute_single_issue(
 
     await _merge_ready_pr(run.repo, issue, pr, run)
     store.mark_completed(run.id)
+    await _record_kanban_task_audit(
+        run,
+        "issue_run_completed",
+        _issue_run_audit_payload(run, issue=issue, pr=pr),
+        comment=f"Hermes audit: issue-resolution run #{run.id} completed successfully.",
+        complete_task=True,
+    )
     await _post_pr_audit_comment(
         run.repo,
         pr,
@@ -563,33 +803,80 @@ async def _run_cloud_reviewer_with_tag(
     pr: PullRequestMetadata,
     notify: Callable[[str], Awaitable[None]],
 ) -> tuple[str, ReviewRoutingTag]:
-    """Run the cloud reviewer and require a valid routing tag with one retry."""
+    """Run tiered reviewers and require a valid routing tag with one retry per tier."""
     last_output = ""
-    for attempt in range(1, REVIEW_TAG_MAX_PARSE_ATTEMPTS + 1):
-        reviewer_prompt = _cloud_reviewer_prompt(
-            repo, pr, retry_tag_required=attempt > 1
-        )
-        reviewer_invocation = build_aider_invocation(
-            AiderRole.CLOUD_REVIEWER, workdir, reviewer_prompt
-        )
-        reviewer_output = await _run(
-            reviewer_invocation.command,
-            cwd=reviewer_invocation.cwd,
-            env=reviewer_invocation.env,
-        )
-        last_output = reviewer_output.stdout
-        routing_tag = parse_review_routing_tag(last_output)
-        if routing_tag is not None:
-            return last_output, routing_tag
-        if attempt < REVIEW_TAG_MAX_PARSE_ATTEMPTS:
-            await notify(
-                f"Hermes: Reviewer output for PR #{pr.number} had no valid kyber-tag; "
-                "retrying once."
+    existing_suggestion_stats = await _load_pr_review_suggestion_stats(repo, pr)
+    for reviewer_tier in REVIEWER_TIERS:
+        for attempt in range(1, REVIEW_TAG_MAX_PARSE_ATTEMPTS + 1):
+            reviewer_prompt = _cloud_reviewer_prompt(
+                repo,
+                pr,
+                retry_tag_required=attempt > 1,
+                reviewer_tier=reviewer_tier,
             )
+            reviewer_invocation = build_aider_invocation(
+                AiderRole.CLOUD_REVIEWER,
+                workdir,
+                reviewer_prompt,
+                reviewer_tier=reviewer_tier,
+            )
+            reviewer_output = await _run(
+                reviewer_invocation.command,
+                cwd=reviewer_invocation.cwd,
+                env=reviewer_invocation.env,
+            )
+            last_output = reviewer_output.stdout
+            routing_tag = parse_review_routing_tag(last_output)
+            if routing_tag is not None:
+                suggestion_stats = _combine_review_suggestion_stats(
+                    routing_tag,
+                    last_output,
+                    existing_suggestion_stats,
+                )
+                decision = plan_pr_manager_next_action(
+                    current_reviewer_tier=reviewer_tier.name,
+                    suggestion_stats=suggestion_stats,
+                    review_state=routing_tag.state,
+                )
+                if decision.next_action == "coding_subagent":
+                    await notify(
+                        f"Hermes: {reviewer_tier.name} found "
+                        f"{suggestion_stats.total_suggestions_count} actionable suggestion(s) "
+                        f"for PR #{pr.number}; routing to {decision.coder_tier.name}."
+                    )
+                    return last_output, _review_findings_tag_from_signal(
+                        routing_tag,
+                        reviewer_tier,
+                        suggestion_stats,
+                    )
+                if routing_tag.state == "review_findings":
+                    return last_output, routing_tag
+                if routing_tag.state == "ready_for_merge":
+                    if decision.next_action == "ready_for_merge":
+                        await _post_pr_audit_comment(repo, pr, "Ready for merge")
+                        return last_output, routing_tag
+                    await notify(
+                        f"Hermes: {reviewer_tier.name} clean for PR #{pr.number}; "
+                        f"escalating to {decision.reviewer_tier.name}."
+                    )
+                    break
+                if routing_tag.state == "review_inconclusive":
+                    if decision.reviewer_tier is not None:
+                        await notify(
+                            f"Hermes: {reviewer_tier.name} inconclusive for PR #{pr.number}; "
+                            f"escalating to {decision.reviewer_tier.name}."
+                        )
+                        break
+                return last_output, routing_tag
+            if attempt < REVIEW_TAG_MAX_PARSE_ATTEMPTS:
+                await notify(
+                    f"Hermes: {reviewer_tier.name} output for PR #{pr.number} had no valid kyber-tag; "
+                    "retrying once."
+                )
 
     raise ReviewTagParseError(
         f"reviewer output for PR #{pr.number} lacked a valid kyber-tag after "
-        f"{REVIEW_TAG_MAX_PARSE_ATTEMPTS} attempt(s)"
+        f"{REVIEW_TAG_MAX_PARSE_ATTEMPTS} attempt(s); last output: {last_output[:300]}"
     )
 
 
@@ -628,15 +915,17 @@ class IssueStateStore:
             cur = conn.execute(
                 """
                 INSERT INTO issue_runs (
-                    repo, issue_number, workdir, branch, status, run_type,
-                    parent_run_id, master_issue_number, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    repo, issue_number, workdir, branch, kanban_task_id, kanban_board,
+                    status, run_type, parent_run_id, master_issue_number, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request.repo,
                     request.issue_number,
                     str(request.workdir),
                     request.branch,
+                    request.kanban_task_id,
+                    request.kanban_board,
                     IssueRunStatus.QUEUED.value,
                     run_type.value,
                     parent_run_id,
@@ -926,6 +1215,8 @@ class IssueStateStore:
                     issue_number INTEGER NOT NULL,
                     workdir TEXT NOT NULL,
                     branch TEXT,
+                    kanban_task_id TEXT,
+                    kanban_board TEXT,
                     status TEXT NOT NULL,
                     run_type TEXT NOT NULL DEFAULT 'issue',
                     parent_run_id INTEGER,
@@ -971,6 +1262,8 @@ class IssueStateStore:
             self._ensure_column(
                 conn, "issue_runs", "next_attempt_at", "REAL NOT NULL DEFAULT 0"
             )
+            self._ensure_column(conn, "issue_runs", "kanban_task_id", "TEXT")
+            self._ensure_column(conn, "issue_runs", "kanban_board", "TEXT")
             conn.commit()
 
     @staticmethod
@@ -993,6 +1286,8 @@ class IssueStateStore:
             issue_number=int(row["issue_number"]),
             workdir=Path(str(row["workdir"])),
             branch=str(row["branch"]) if row["branch"] else None,
+            kanban_task_id=str(row["kanban_task_id"]) if row["kanban_task_id"] else None,
+            kanban_board=str(row["kanban_board"]) if row["kanban_board"] else None,
             status=IssueRunStatus(str(row["status"])),
             run_type=IssueRunType(str(row["run_type"])),
             parent_run_id=int(row["parent_run_id"])
@@ -1017,6 +1312,8 @@ def parse_issue_command_args(raw_args: str) -> IssueResolutionRequest:
     issue_number: int | None = None
     workdir: Path | None = None
     branch: str | None = None
+    kanban_task_id: str | None = None
+    kanban_board: str | None = None
 
     idx = 0
     while idx < len(tokens):
@@ -1035,6 +1332,14 @@ def parse_issue_command_args(raw_args: str) -> IssueResolutionRequest:
             continue
         if token in {"--branch", "-b"} and idx + 1 < len(tokens):
             branch = tokens[idx + 1]
+            idx += 2
+            continue
+        if token == "--kanban-task" and idx + 1 < len(tokens):
+            kanban_task_id = tokens[idx + 1]
+            idx += 2
+            continue
+        if token == "--kanban-board" and idx + 1 < len(tokens):
+            kanban_board = tokens[idx + 1]
             idx += 2
             continue
         if not repo:
@@ -1064,6 +1369,8 @@ def parse_issue_command_args(raw_args: str) -> IssueResolutionRequest:
         issue_number=issue_number,
         workdir=workdir or _default_workdir(repo),
         branch=branch,
+        kanban_task_id=kanban_task_id,
+        kanban_board=kanban_board,
     )
 
 
@@ -1189,24 +1496,47 @@ def build_aider_invocation(
     prompt: str,
     *,
     runtime_env: dict[str, str] | None = None,
+    reviewer_tier: ModelTier | None = None,
+    coder_tier: ModelTier | None = None,
 ) -> AiderInvocation:
     """Build the Aider subprocess command for a role."""
     env = _merged_runtime_env(runtime_env)
     aider_bin = Path(env.get("AIDER_BIN") or DEFAULT_AIDER_BIN).expanduser()
     if role is AiderRole.LOCAL_CODER:
-        env["OPENAI_API_BASE"] = _normalize_guardian_base(
-            env.get("GUARDIAN_BASE_URL") or DEFAULT_GUARDIAN_BASE_URL
-        )
-        env["OPENAI_API_KEY"] = _require_secret(env, "AIDER_GUARDIAN_API_KEY")
-        model = (
-            env.get("AIDER_LOCAL_MODEL")
-            or env.get("AIDER_MODEL")
-            or (
-                f"openai/{env['DEFAULT_MODEL']}"
-                if env.get("DEFAULT_MODEL")
-                else DEFAULT_LOCAL_MODEL
+        if coder_tier is not None:
+            model = coder_tier.model
+            if coder_tier.provider is ModelProvider.OPENROUTER:
+                openrouter_key = _resolve_secret(
+                    env, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_FILE"
+                )
+                if not openrouter_key:
+                    raise RuntimeError(
+                        "OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE is required."
+                    )
+                env["OPENROUTER_API_KEY"] = openrouter_key
+                env["OPENAI_API_KEY"] = openrouter_key
+                env.pop("OPENAI_API_BASE", None)
+                env.pop("OPENAI_BASE_URL", None)
+            else:
+                env["OPENAI_API_BASE"] = _normalize_guardian_base(
+                    env.get("GUARDIAN_BASE_URL") or DEFAULT_GUARDIAN_BASE_URL
+                )
+                env["OPENAI_API_KEY"] = _require_secret(env, "AIDER_GUARDIAN_API_KEY")
+                env.pop("OPENAI_BASE_URL", None)
+        else:
+            env["OPENAI_API_BASE"] = _normalize_guardian_base(
+                env.get("GUARDIAN_BASE_URL") or DEFAULT_GUARDIAN_BASE_URL
             )
-        )
+            env["OPENAI_API_KEY"] = _require_secret(env, "AIDER_GUARDIAN_API_KEY")
+            model = (
+                env.get("AIDER_LOCAL_MODEL")
+                or env.get("AIDER_MODEL")
+                or (
+                    f"openai/{env['DEFAULT_MODEL']}"
+                    if env.get("DEFAULT_MODEL")
+                    else DEFAULT_LOCAL_MODEL
+                )
+            )
         command = [
             str(aider_bin),
             "--model",
@@ -1219,18 +1549,28 @@ def build_aider_invocation(
         return AiderInvocation(command=command, env=env, cwd=cwd)
 
     if role is AiderRole.CLOUD_REVIEWER:
-        openrouter_key = _resolve_secret(
-            env, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_FILE"
-        )
-        if not openrouter_key:
-            raise RuntimeError(
-                "OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE is required."
+        tier = reviewer_tier or REVIEWER_TIERS[0]
+        model = env.get("AIDER_CLOUD_REVIEW_MODEL") or tier.model
+        if reviewer_tier is not None:
+            model = reviewer_tier.model
+        if tier.provider is ModelProvider.OPENROUTER:
+            openrouter_key = _resolve_secret(
+                env, "OPENROUTER_API_KEY", "OPENROUTER_API_KEY_FILE"
             )
-        env["OPENROUTER_API_KEY"] = openrouter_key
-        env["OPENAI_API_KEY"] = openrouter_key
-        env.pop("OPENAI_API_BASE", None)
-        env.pop("OPENAI_BASE_URL", None)
-        model = env.get("AIDER_CLOUD_REVIEW_MODEL") or DEFAULT_CLOUD_MODEL
+            if not openrouter_key:
+                raise RuntimeError(
+                    "OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE is required."
+                )
+            env["OPENROUTER_API_KEY"] = openrouter_key
+            env["OPENAI_API_KEY"] = openrouter_key
+            env.pop("OPENAI_API_BASE", None)
+            env.pop("OPENAI_BASE_URL", None)
+        else:
+            env["OPENAI_API_BASE"] = _normalize_guardian_base(
+                env.get("GUARDIAN_BASE_URL") or DEFAULT_GUARDIAN_BASE_URL
+            )
+            env["OPENAI_API_KEY"] = _require_secret(env, "AIDER_GUARDIAN_API_KEY")
+            env.pop("OPENAI_BASE_URL", None)
         command = [
             str(aider_bin),
             "--model",
@@ -1249,8 +1589,17 @@ def build_aider_invocation(
 
 def _local_coder_prompt(repo: str, issue: IssueMetadata, branch: str) -> str:
     return (
-        f"Create a new branch for Issue #{issue.number}, write the code to fix the issue, "
-        "and push the branch to GitHub.\n\n"
+        f"Resolve Issue #{issue.number} only on the prepared issue branch and leave "
+        "the work ready for a GitHub pull request.\n\n"
+        "Hard policy:\n"
+        "- KyberM0nk-managed downstream projects must never receive direct implementation "
+        "changes on their default/protected branch.\n"
+        "- All changes outside the KyberM0nk framework scope must be submitted through "
+        "a branch -> PR -> review flow.\n"
+        "- Do not switch to `main`, `master`, or any unrelated branch.\n"
+        "- Do not leave local-only implementation changes outside the PR branch.\n"
+        "- Because this work is issue-driven, the PR must mention and link the source "
+        f"Issue #{issue.number}; Hermes will create/reuse that PR after your branch work.\n\n"
         f"Repository: {repo}\n"
         f"Branch: {branch}\n"
         f"Issue URL: {issue.url}\n"
@@ -1260,7 +1609,11 @@ def _local_coder_prompt(repo: str, issue: IssueMetadata, branch: str) -> str:
 
 
 def _cloud_reviewer_prompt(
-    repo: str, pr: PullRequestMetadata, *, retry_tag_required: bool = False
+    repo: str,
+    pr: PullRequestMetadata,
+    *,
+    retry_tag_required: bool = False,
+    reviewer_tier: ModelTier | None = None,
 ) -> str:
     retry_note = ""
     if retry_tag_required:
@@ -1268,6 +1621,8 @@ def _cloud_reviewer_prompt(
             "\nYour previous response lacked a valid kyber-tag. Return the review again "
             "with a valid routing tag.\n"
         )
+    tier = reviewer_tier or REVIEWER_TIERS[0]
+    next_clean_action = "ready_for_merge" if tier.name in {"tier2", "tier3"} else "tier2_review"
     return (
         "Review this new PR and create an inline comment thread directly inside "
         "the GitHub PR with feedback.\n\n"
@@ -1275,12 +1630,18 @@ def _cloud_reviewer_prompt(
         f"PR: #{pr.number}\n"
         f"PR URL: {pr.url}\n"
         f"Current PR head SHA: {pr.head_ref_oid}\n"
+        f"Reviewer tier: {tier.name} ({tier.purpose}) using {tier.model}\n"
         f"{retry_note}\n"
-        "Return concise feedback suitable for one GitHub inline review comment. "
-        "Do not edit files or create commits.\n\n"
+        "Return concise feedback suitable for GitHub inline review threads. "
+        "Do not edit files or create commits. Count both your own findings and existing "
+        "Copilot/code-quality inline review comments as suggestions_count when they are actionable.\n\n"
         "End with a routing tag on separate lines using exactly one of these states:\n"
         "kyber-tag.state=review_findings | ready_for_merge | review_inconclusive\n"
-        "next_action=coding_subagent | rerun_reviewer | ready_for_merge\n"
+        f"next_action=coding_subagent | rerun_reviewer | tier2_review | tier3_review | ready_for_merge\n"
+        f"review_tier={tier.name}\n"
+        "suggestions_count=<integer actionable findings count>\n"
+        "source=hermes-pr-manager\n"
+        f"If this tier is clean, use next_action={next_clean_action}.\n"
         f"head_ref_oid={pr.head_ref_oid}"
     )
 
@@ -1299,6 +1660,9 @@ def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
     state: str | None = None
     next_action: str | None = None
     head_ref_oid: str | None = None
+    tier: str | None = None
+    suggestions_count = 0
+    source: str | None = None
     for raw_line in (output or "").splitlines():
         line = raw_line.strip()
         if not line:
@@ -1309,6 +1673,13 @@ def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
             next_action = line.split("=", 1)[1].strip()
         elif line.startswith("head_ref_oid="):
             head_ref_oid = line.split("=", 1)[1].strip()
+        elif line.startswith("review_tier="):
+            tier = line.split("=", 1)[1].strip()
+        elif line.startswith("suggestions_count="):
+            raw_count = line.split("=", 1)[1].strip()
+            suggestions_count = int(raw_count) if raw_count.isdigit() else 0
+        elif line.startswith("source="):
+            source = line.split("=", 1)[1].strip()
     if state not in REVIEW_TAG_STATES:
         return None
     if next_action not in REVIEW_TAG_NEXT_ACTIONS:
@@ -1319,6 +1690,9 @@ def parse_review_routing_tag(output: str) -> ReviewRoutingTag | None:
         state=state,
         next_action=next_action,
         head_ref_oid=head_ref_oid,
+        tier=tier,
+        suggestions_count=suggestions_count,
+        source=source,
     )
 
 
@@ -1339,6 +1713,263 @@ def can_merge_pr(tag: ReviewRoutingTag | None, pr: PullRequestMetadata) -> bool:
     )
 
 
+async def _load_pr_review_suggestion_stats(
+    repo: str, pr: PullRequestMetadata
+) -> ReviewSuggestionStats:
+    """Load current-head PR review/comment metadata for suggestion routing."""
+    try:
+        reviews = await _load_pr_review_records(repo, pr, "reviews")
+        comments = await _load_pr_review_records(repo, pr, "comments")
+    except Exception as exc:  # pragma: no cover - defensive telemetry fallback.
+        logger.warning(
+            "Could not load PR review metadata for %s#%s: %s",
+            repo,
+            pr.number,
+            exc,
+        )
+        return ReviewSuggestionStats(0, 0, False, False)
+    return summarize_review_suggestions(reviews, comments)
+
+
+async def _load_pr_review_records(
+    repo: str, pr: PullRequestMetadata, record_type: str
+) -> list[dict[str, Any]]:
+    """Return current-head GitHub PR review records or an empty list on API failure."""
+    result = await _run(
+        ["gh", "api", f"repos/{repo}/pulls/{pr.number}/{record_type}"],
+        check=False,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "GitHub PR %s metadata endpoint %s failed: %s",
+            pr.number,
+            record_type,
+            result.stderr.strip(),
+        )
+        return []
+    try:
+        records = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        logger.warning(
+            "GitHub PR %s metadata endpoint %s returned invalid JSON",
+            pr.number,
+            record_type,
+        )
+        return []
+    if not isinstance(records, list):
+        return []
+    return [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and _review_record_matches_head(record, pr.head_ref_oid)
+    ]
+
+
+def _review_record_matches_head(record: dict[str, Any], head_ref_oid: str) -> bool:
+    """Return true when a GitHub review/comment record applies to the current head."""
+    commit_id = str(record.get("commit_id") or record.get("original_commit_id") or "")
+    return not commit_id or commit_id == head_ref_oid
+
+
+def _combine_review_suggestion_stats(
+    tag: ReviewRoutingTag,
+    review_output: str,
+    existing_stats: ReviewSuggestionStats,
+) -> ReviewSuggestionStats:
+    """Merge reviewer tag counts with existing Copilot/code-quality metadata."""
+    internal_count = max(
+        existing_stats.internal_suggestions_count,
+        tag.suggestions_count - existing_stats.copilot_suggestions_count,
+        1 if tag.state == "review_findings" else 0,
+    )
+    return ReviewSuggestionStats(
+        internal_suggestions_count=internal_count,
+        copilot_suggestions_count=existing_stats.copilot_suggestions_count,
+        copilot_review_detected=existing_stats.copilot_review_detected,
+        complex_findings_detected=(
+            existing_stats.complex_findings_detected
+            or _looks_like_complex_finding(review_output)
+        ),
+    )
+
+
+def _review_findings_tag_from_signal(
+    source_tag: ReviewRoutingTag,
+    reviewer_tier: ModelTier,
+    suggestion_stats: ReviewSuggestionStats,
+) -> ReviewRoutingTag:
+    """Build a blocking routing tag when metadata contains actionable suggestions."""
+    return ReviewRoutingTag(
+        state="review_findings",
+        next_action="coding_subagent",
+        head_ref_oid=source_tag.head_ref_oid,
+        tier=reviewer_tier.name,
+        suggestions_count=suggestion_stats.total_suggestions_count,
+        source=source_tag.source or "hermes-pr-manager",
+    )
+
+
+def is_copilot_review_author(login: str) -> bool:
+    """Return true for GitHub Copilot/code-quality review bot identities."""
+    normalized = (login or "").strip().lower()
+    return normalized in {
+        "copilot",
+        "copilot-pull-request-reviewer[bot]",
+        "github-code-quality[bot]",
+    } or normalized.startswith("copilot-")
+
+
+def summarize_review_suggestions(
+    reviews: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+) -> ReviewSuggestionStats:
+    """Count actionable internal and Copilot suggestions from PR review metadata."""
+    internal_count = 0
+    copilot_count = 0
+    copilot_detected = False
+    complex_detected = False
+
+    for record in [*reviews, *comments]:
+        if not isinstance(record, dict):
+            continue
+        body = _review_record_body(record)
+        login = _review_record_author_login(record)
+        is_copilot = is_copilot_review_author(login) or _looks_like_copilot_body(body)
+        is_internal = _looks_like_internal_review_body(body)
+        suggestion_count = _explicit_suggestion_count(record)
+        if suggestion_count <= 0:
+            continue
+        if is_copilot:
+            copilot_detected = True
+            copilot_count += suggestion_count
+        elif is_internal:
+            internal_count += suggestion_count
+        if _looks_like_complex_finding(body):
+            complex_detected = True
+
+    return ReviewSuggestionStats(
+        internal_suggestions_count=internal_count,
+        copilot_suggestions_count=copilot_count,
+        copilot_review_detected=copilot_detected,
+        complex_findings_detected=complex_detected,
+    )
+
+
+def plan_pr_manager_next_action(
+    *,
+    current_reviewer_tier: str | None,
+    suggestion_stats: ReviewSuggestionStats,
+    findings_cycles: int = 0,
+    review_state: str = "ready_for_merge",
+) -> PRManagerDecision:
+    """Choose the next PR-manager reviewer/coder step from review signals."""
+    if suggestion_stats.total_suggestions_count > 0:
+        coder_tier = _coder_tier_for_findings(
+            findings_cycles=findings_cycles,
+            complex_findings=suggestion_stats.complex_findings_detected,
+        )
+        return PRManagerDecision(next_action="coding_subagent", coder_tier=coder_tier)
+
+    if review_state == "review_inconclusive":
+        next_tier = _next_reviewer_tier(current_reviewer_tier, include_tier3=True)
+        if next_tier is not None:
+            return PRManagerDecision(
+                next_action=f"{next_tier.name}_review",
+                reviewer_tier=next_tier,
+            )
+
+    next_tier = _next_reviewer_tier(current_reviewer_tier)
+    if next_tier is not None:
+        return PRManagerDecision(
+            next_action=f"{next_tier.name}_review",
+            reviewer_tier=next_tier,
+        )
+
+    return PRManagerDecision(next_action="ready_for_merge", ready_comment="Ready for merge")
+
+
+def _review_record_author_login(record: dict[str, Any]) -> str:
+    author = record.get("author") if isinstance(record.get("author"), dict) else record.get("user")
+    if isinstance(author, dict):
+        return str(author.get("login") or "")
+    return ""
+
+
+def _review_record_body(record: dict[str, Any]) -> str:
+    return str(record.get("body") or "")
+
+
+def _looks_like_internal_review_body(body: str) -> bool:
+    normalized = body.lower()
+    return "[pr-manager]" in normalized or "kyber-tag" in normalized or "aider-reviewer" in normalized
+
+
+def _looks_like_copilot_body(body: str) -> bool:
+    normalized = body.lower()
+    return "copilot" in normalized or "github code quality" in normalized
+
+
+def _explicit_suggestion_count(record: dict[str, Any]) -> int:
+    body = _review_record_body(record)
+    suggestion_blocks = len(re.findall(r"```suggestion\b", body, flags=re.IGNORECASE))
+    posted_match = re.search(r"Inline suggestions posted:\s*(\d+)", body, flags=re.IGNORECASE)
+    posted_count = int(posted_match.group(1)) if posted_match else 0
+    review_findings_count = 1 if "review_findings" in body else 0
+    inline_comment_count = 1 if record.get("path") and (record.get("line") or record.get("position")) else 0
+    return max(suggestion_blocks, posted_count, review_findings_count, inline_comment_count)
+
+
+def _looks_like_complex_finding(body: str) -> bool:
+    normalized = body.lower()
+    complex_terms = (
+        "credential",
+        "secret",
+        "database",
+        "migration",
+        "race",
+        "data loss",
+        "money",
+        "trade",
+        "execution",
+        "risk",
+        "security",
+        "hard veto",
+    )
+    return any(term in normalized for term in complex_terms)
+
+
+def _coder_tier_for_findings(*, findings_cycles: int, complex_findings: bool) -> ModelTier:
+    if complex_findings or findings_cycles >= REVIEW_FINDINGS_MAX_FIX_ATTEMPTS:
+        return CODER_TIERS[1]
+    return CODER_TIERS[0]
+
+
+def _next_reviewer_tier(current_tier: str | None, *, include_tier3: bool = False) -> ModelTier | None:
+    if current_tier is None:
+        return REVIEWER_TIERS[0]
+    for index, tier in enumerate(REVIEWER_TIERS):
+        if tier.name != current_tier:
+            continue
+        if index + 1 >= len(REVIEWER_TIERS):
+            return None
+        next_tier = REVIEWER_TIERS[index + 1]
+        if next_tier.name == "tier3" and not include_tier3:
+            return None
+        return next_tier
+    return REVIEWER_TIERS[0]
+
+
+def issue_auto_merge_enabled() -> bool:
+    """Return true only when the issue PR-manager may merge PRs."""
+    return os.environ.get(ISSUE_AUTO_MERGE_ENV, "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 async def _merge_ready_pr(
     repo: str,
     issue: IssueMetadata,
@@ -1346,7 +1977,32 @@ async def _merge_ready_pr(
     run: IssueRun,
 ) -> None:
     """Merge a reviewer-approved PR and explicitly close the linked issue."""
+    if not issue_auto_merge_enabled():
+        await _post_pr_audit_comment(
+            repo,
+            pr,
+            f"Hermes audit: automatic merge disabled for run #{run.id}; set "
+            f"`{ISSUE_AUTO_MERGE_ENV}=1` to re-enable PR-manager merges.",
+        )
+        await _record_kanban_task_audit(
+            run,
+            "merge_disabled",
+            _issue_run_audit_payload(run, issue=issue, pr=pr),
+            comment=(
+                f"Hermes audit: automatic merge disabled for run #{run.id}; "
+                "operator merge required."
+            ),
+        )
+        raise ReviewMergeGateError(
+            f"automatic merge disabled by {ISSUE_AUTO_MERGE_ENV}=0"
+        )
+
     await _assert_pr_merge_ready(repo, pr)
+    await _record_kanban_task_audit(
+        run,
+        "merge_started",
+        _issue_run_audit_payload(run, issue=issue, pr=pr),
+    )
     await _post_pr_audit_comment(
         repo,
         pr,
@@ -1367,6 +2023,12 @@ async def _merge_ready_pr(
         pr,
         f"Hermes audit: PR #{pr.number} merged automatically for run #{run.id}.",
     )
+    await _record_kanban_task_audit(
+        run,
+        "pr_merged",
+        _issue_run_audit_payload(run, issue=issue, pr=pr),
+        comment=f"Hermes audit: PR #{pr.number} merged automatically for issue-resolution run #{run.id}.",
+    )
     await _post_issue_audit_comment(
         repo,
         issue.number,
@@ -1382,6 +2044,15 @@ async def _merge_ready_pr(
         "--comment",
         f"Hermes audit: Issue closed after automatic merge of PR #{pr.number} for run #{run.id}.",
     ])
+    await _record_kanban_task_audit(
+        run,
+        "issue_closed",
+        _issue_run_audit_payload(run, issue=issue, pr=pr),
+        comment=(
+            f"Hermes audit: GitHub issue {repo}#{issue.number} closed after "
+            f"automatic merge of PR #{pr.number}."
+        ),
+    )
 
 
 async def _assert_pr_merge_ready(repo: str, pr: PullRequestMetadata) -> None:
@@ -1535,6 +2206,16 @@ async def _create_or_find_pr(
 ) -> PullRequestMetadata:
     title = f"Fix #{issue.number}: {issue.title}"
     body = _pr_body(repo, issue, branch, base_branch, run=run)
+    existing = await _find_pr_for_branch(repo, branch)
+    if existing is not None:
+        return PullRequestMetadata(
+            number=existing.number,
+            url=existing.url,
+            head_ref_name=existing.head_ref_name,
+            head_ref_oid=existing.head_ref_oid,
+            action="reused",
+        )
+
     create = await _run(
         [
             "gh",
@@ -1556,6 +2237,19 @@ async def _create_or_find_pr(
     if create.returncode not in {0, 1}:
         create.raise_for_status()
 
+    pr = await _find_pr_for_branch(repo, branch)
+    if pr is None:
+        raise RuntimeError("PR creation completed but no PR was found for the branch.")
+    return PullRequestMetadata(
+        number=pr.number,
+        url=pr.url,
+        head_ref_name=pr.head_ref_name,
+        head_ref_oid=pr.head_ref_oid,
+        action="opened",
+    )
+
+
+async def _find_pr_for_branch(repo: str, branch: str) -> PullRequestMetadata | None:
     result = await _run([
         "gh",
         "pr",
@@ -1571,13 +2265,14 @@ async def _create_or_find_pr(
     ])
     rows = json.loads(result.stdout or "[]")
     if not rows:
-        raise RuntimeError("PR creation completed but no PR was found for the branch.")
+        return None
     row = rows[0]
     return PullRequestMetadata(
         number=int(row["number"]),
         url=str(row["url"]),
         head_ref_name=str(row["headRefName"]),
         head_ref_oid=str(row["headRefOid"]),
+        action="found",
     )
 
 
@@ -1630,6 +2325,88 @@ async def _post_issue_audit_comment(repo: str, issue_number: int, body: str) -> 
         "--body",
         body,
     ])
+
+
+def _issue_run_audit_payload(
+    run: IssueRun,
+    *,
+    issue: IssueMetadata | None = None,
+    pr: PullRequestMetadata | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "issue_run_id": run.id,
+        "repo": run.repo,
+        "issue_number": run.issue_number,
+        "branch": run.branch,
+        "run_type": run.run_type.value,
+        "parent_run_id": run.parent_run_id,
+        "master_issue_number": run.master_issue_number,
+    }
+    if issue is not None:
+        payload.update({"issue_title": issue.title, "issue_url": issue.url})
+    if pr is not None:
+        payload.update(
+            {
+                "pr_number": pr.number,
+                "pr_url": pr.url,
+                "head_ref_name": pr.head_ref_name,
+                "head_ref_oid": pr.head_ref_oid,
+                "pr_action": pr.action,
+            }
+        )
+    payload.update(extra)
+    return payload
+
+
+async def _record_kanban_task_audit(
+    run: IssueRun,
+    kind: str,
+    payload: dict[str, Any],
+    *,
+    comment: str | None = None,
+    complete_task: bool = False,
+) -> None:
+    """Record a lifecycle event/comment on the linked Kanban task, when any."""
+    if not run.kanban_task_id:
+        return
+    await asyncio.to_thread(
+        _record_kanban_task_audit_sync,
+        run,
+        kind,
+        payload,
+        comment,
+        complete_task,
+    )
+
+
+def _record_kanban_task_audit_sync(
+    run: IssueRun,
+    kind: str,
+    payload: dict[str, Any],
+    comment: str | None,
+    complete_task_flag: bool,
+) -> None:
+    from hermes_cli import kanban_db
+
+    with kanban_db.connect(board=run.kanban_board) as conn:
+        kanban_db.record_task_event(
+            conn,
+            run.kanban_task_id or "",
+            kind,
+            payload,
+            run_id=run.id,
+        )
+        if comment:
+            kanban_db.add_audit_comment(conn, run.kanban_task_id or "", comment)
+        if complete_task_flag:
+            kanban_db.complete_task(
+                conn,
+                run.kanban_task_id or "",
+                result=f"GitHub issue {run.repo}#{run.issue_number} merged and closed by Hermes run #{run.id}.",
+                summary=f"Hermes run #{run.id} completed issue {run.repo}#{run.issue_number}.",
+                metadata=payload,
+            )
 
 
 async def _post_pr_audit_comment(repo: str, pr: PullRequestMetadata, body: str) -> None:
@@ -1834,6 +2611,79 @@ async def _guard_managed_repo_before_issue_dispatch(
     )
 
 
+async def _prepare_issue_branch_from_synced_default(
+    workdir: Path,
+    default_branch: str,
+    branch: str,
+) -> None:
+    """Refresh the default branch, then branch issue work from that synced base."""
+    if branch == default_branch:
+        raise RuntimeError(
+            f"Hermes PR discipline violation: issue work cannot target the default branch `{default_branch}`."
+        )
+
+    await _run(["git", "checkout", default_branch], cwd=workdir)
+    await _run(["git", "pull", "--ff-only", "origin", default_branch], cwd=workdir)
+    await _run(["git", "checkout", "-B", branch, default_branch], cwd=workdir)
+
+
+async def _push_issue_branch(workdir: Path, branch: str) -> None:
+    """Push only non-protected issue branches to origin."""
+    current_branch = (
+        await _run(["git", "branch", "--show-current"], cwd=workdir)
+    ).stdout.strip()
+    if current_branch in STRICT_PROTECTED_PUSH_BRANCHES or branch in STRICT_PROTECTED_PUSH_BRANCHES:
+        raise RuntimeError(DIRECT_MASTER_PUSH_ERROR)
+
+    await _run(["git", "push", "-u", "origin", branch], cwd=workdir)
+
+
+async def _assert_issue_branch_ready_for_pr(
+    repo: str,
+    workdir: Path,
+    expected_branch: str,
+    default_branch: str,
+) -> None:
+    """Fail when coder output is not fully captured by the issue PR branch."""
+    if expected_branch == default_branch:
+        raise RuntimeError(
+            f"Hermes PR discipline violation for {repo}: issue work cannot target "
+            f"the default branch `{default_branch}`. Use a dedicated issue branch."
+        )
+
+    branch_result = await _run(["git", "branch", "--show-current"], cwd=workdir)
+    current_branch = branch_result.stdout.strip()
+    if current_branch != expected_branch:
+        current = current_branch or "detached HEAD"
+        raise RuntimeError(
+            f"Hermes PR discipline violation for {repo}: expected issue branch "
+            f"`{expected_branch}` before PR creation, but checkout is on `{current}`. "
+            "All changes outside the KyberM0nk framework scope must stay on the "
+            "issue branch and be submitted through a PR."
+        )
+
+    status_result = await _run(["git", "status", "--porcelain"], cwd=workdir)
+    allowed_dirty_prefixes = _managed_repo_allowed_dirty_prefixes(repo)
+    dirty_paths = tuple(
+        _normalize_status_path(line)
+        for line in status_result.stdout.splitlines()
+        if line.strip()
+    )
+    violating = tuple(
+        path
+        for path in dirty_paths
+        if not _is_allowed_dirty_path(path, allowed_dirty_prefixes)
+    )
+    if violating:
+        paths = ", ".join(violating)
+        raise RuntimeError(
+            f"Hermes PR discipline violation for {repo}: uncommitted implementation "
+            f"drift remains on `{expected_branch}` before PR creation: {paths}. "
+            "Commit it to the issue branch or stop; do not leave local-only changes "
+            "outside the PR."
+        )
+
+
 async def _inspect_managed_repo(repo: str, workdir: Path) -> ManagedRepoStatus | None:
     """Inspect a configured managed repo without mutating it."""
     policy = MANAGED_REPO_POLICIES.get(repo.lower())
@@ -1842,9 +2692,7 @@ async def _inspect_managed_repo(repo: str, workdir: Path) -> ManagedRepoStatus |
 
     name = str(policy["name"])
     protected_branches = tuple(str(value) for value in policy["protected_branches"])
-    allowed_dirty_prefixes = tuple(
-        str(value) for value in policy["allowed_dirty_prefixes"]
-    )
+    allowed_dirty_prefixes = _managed_repo_allowed_dirty_prefixes(repo)
 
     if not workdir.exists():
         return ManagedRepoStatus(
@@ -1914,6 +2762,14 @@ def _normalize_status_path(line: str) -> str:
     return raw.strip()
 
 
+def _managed_repo_allowed_dirty_prefixes(repo: str) -> tuple[str, ...]:
+    """Return local tool-noise prefixes allowed for a managed repository."""
+    policy = MANAGED_REPO_POLICIES.get(repo.lower())
+    if policy is None:
+        return ()
+    return tuple(str(value) for value in policy["allowed_dirty_prefixes"])
+
+
 def _is_allowed_dirty_path(path: str, prefixes: tuple[str, ...]) -> bool:
     """Return true when a dirty path is allowed local tool noise."""
     return any(
@@ -1961,6 +2817,7 @@ def _pr_body(
         f"- {PR_BODY_VALIDATION_PLACEHOLDER}\n\n"
         "## Risk notes\n\n"
         "- Hermes must preserve the issue-to-branch-to-PR-to-review-to-merge discipline.\n"
+        "- All implementation changes outside the KyberM0nk framework scope must be submitted through this PR.\n"
         "- Direct implementation drift on protected CryptoTrader `master`/`main` is forbidden.\n"
         "- Merge remains blocked until review output is clean or an explicit audited override is recorded.\n\n"
         "## Review handoff\n\n"

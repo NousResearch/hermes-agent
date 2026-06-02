@@ -3,6 +3,7 @@ from plugins.memory.hindsight.session_summary_generator import (
     SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
     SessionSummaryBudget,
     SessionSummaryRequest,
+    build_session_summary_budgeted_text,
     build_session_summary_prompt,
     render_session_summary,
     sanitize_session_summary_text,
@@ -83,6 +84,39 @@ def test_operational_metadata_keys_do_not_become_entities():
         assert forbidden not in combined
 
 
+def test_inline_metadata_json_negative_anchor_matrix_is_ignored():
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                '{"bank":"bank-alpha","source":"telegram-source","session":"session-123",'
+                '"sender":"sender-alpha","profile":"prod-profile","provider":"slack-provider",'
+                '"tool":"metadata-tool"}\n'
+                "The real project is source-map-cli."
+            ),
+        }
+    ]
+
+    result = FakeSessionSummaryGenerator().generate(_request(messages=messages))
+    combined = " ".join(
+        result.summary_json["active_projects"]
+        + result.summary_json["exact_identifiers"]
+        + result.summary_json["semantic_anchors"]
+    )
+
+    assert "source-map-cli" in combined
+    for forbidden in (
+        "bank-alpha",
+        "telegram-source",
+        "session-123",
+        "sender-alpha",
+        "prod-profile",
+        "slack-provider",
+        "metadata-tool",
+    ):
+        assert forbidden not in combined
+
+
 def test_sanitizer_removes_injection_and_privacy_canaries_without_literal_fixture():
     secret_canary = "OC_SECRET" + "_CANARY_DO_NOT_STORE_7f3a9c"
     private_path = "/private/canary/path/" + "DO_NOT_LEAK_42"
@@ -114,10 +148,30 @@ def test_sanitizer_removes_injection_and_privacy_canaries_without_literal_fixtur
 def test_summary_cadence_defaults_do_not_follow_retain_every_turn():
     assert should_update_session_summary(1, retain_every_n_turns=1) is False
     assert should_update_session_summary(2, retain_every_n_turns=1) is True
+    assert should_update_session_summary(1, retain_every_n_turns=2) is False
+    assert should_update_session_summary(2, retain_every_n_turns=2) is True
     assert should_update_session_summary(3, retain_every_n_turns=4) is False
     assert should_update_session_summary(4, retain_every_n_turns=4) is True
     assert should_update_session_summary(3, 1, update_every_n_turns=3) is True
     assert should_update_session_summary(1, 1, update_every_n_turns=1, min_update_every_n_turns=2) is False
+    assert (
+        should_update_session_summary(
+            4,
+            retain_every_n_turns=2,
+            retain_overlap_turns=3,
+            recall_context_turns=4,
+        )
+        is True
+    )
+    assert (
+        should_update_session_summary(
+            3,
+            retain_every_n_turns=2,
+            retain_overlap_turns=3,
+            recall_context_turns=4,
+        )
+        is False
+    )
 
 
 def test_budget_trimming_preserves_latest_query_reserve():
@@ -135,6 +189,30 @@ def test_budget_trimming_preserves_latest_query_reserve():
     assert trimmed.latest_query.startswith("latest-query-")
     assert sum(len(m["content"]) for m in trimmed.messages) <= 48
     assert trimmed.messages[-1]["content"].endswith("b" * 48)
+
+
+def test_budgeted_text_enforces_independent_summary_budgets():
+    summary = {
+        "active_projects": ["source-map-cli"],
+        "semantic_anchors": ["Anchor " + ("x" * 120)],
+        "decisions": ["Decision " + ("y" * 120)],
+    }
+    budget = SessionSummaryBudget(
+        max_input_chars=100,
+        max_output_chars=50,
+        max_recall_query_chars=80,
+        recall_query_budget_ratio=0.25,
+        max_prompt_inject_chars=30,
+        max_retain_context_chars=40,
+    )
+
+    rendered = build_session_summary_budgeted_text(summary, budget)
+
+    assert len(rendered.output_text) <= 50
+    assert len(rendered.recall_query_text) <= 25
+    assert len(rendered.prompt_inject_text) <= 30
+    assert len(rendered.retain_context_text) <= 40
+    assert rendered.recall_query_text != rendered.prompt_inject_text
 
 
 def test_prompt_and_render_are_bounded_and_summary_only():

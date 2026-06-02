@@ -312,7 +312,12 @@ class TestConfig:
         assert provider._session_summary_timeout_seconds == 20
         assert provider._session_summary_budget.max_input_chars == 16000
         assert provider._session_summary_budget.max_output_chars == 2000
+        assert provider._session_summary_budget.max_recall_query_chars == 800
+        assert provider._session_summary_budget.recall_query_budget_ratio == 0.25
+        assert provider._session_summary_budget.max_prompt_inject_chars == 1200
+        assert provider._session_summary_budget.max_retain_context_chars == 1200
         assert provider._session_summary_budget.min_latest_query_reserve_chars == 400
+        assert provider._session_summary_budget.drop_completed_todos_after_turns == 20
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None

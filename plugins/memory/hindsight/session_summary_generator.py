@@ -79,6 +79,14 @@ class SessionSummaryBudget:
 
 
 @dataclass(frozen=True)
+class SessionSummaryBudgetedText:
+    output_text: str
+    recall_query_text: str
+    prompt_inject_text: str
+    retain_context_text: str
+
+
+@dataclass(frozen=True)
 class SessionSummaryRequest:
     session_id: str
     identity_scope: str
@@ -110,6 +118,7 @@ def sanitize_session_summary_text(text: str, *, max_chars: int | None = None) ->
         return ""
     cleaned = _MEMORY_TAG_RE.sub("", str(text))
     cleaned = _METADATA_BLOCK_RE.sub("", cleaned)
+    cleaned = _strip_operational_metadata_json_objects(cleaned)
     cleaned = _SECRET_RE.sub("[redacted-secret]", cleaned)
     kept_lines: list[str] = []
     for raw_line in cleaned.splitlines():
@@ -170,8 +179,11 @@ def should_update_session_summary(
     retain_every_n_turns: int,
     update_every_n_turns: int | None = None,
     min_update_every_n_turns: int = 2,
+    retain_overlap_turns: int = 0,
+    recall_context_turns: int = 1,
 ) -> bool:
     """Return whether a background summary refresh should be scheduled."""
+    del retain_overlap_turns, recall_context_turns
     if turn_index <= 0:
         return False
     minimum = max(1, int(min_update_every_n_turns or 1))
@@ -206,6 +218,29 @@ def trim_session_summary_inputs(
         if remaining <= 0:
             break
     return replace(request, latest_query=latest, messages=list(reversed(kept_reversed)), budget=budget)
+
+
+def build_session_summary_budgeted_text(
+    summary_json: dict[str, Any],
+    budget: SessionSummaryBudget,
+) -> SessionSummaryBudgetedText:
+    """Render summary-derived text variants with independent stage budgets."""
+    output_text = render_session_summary(summary_json, max_chars=budget.max_output_chars)
+    return SessionSummaryBudgetedText(
+        output_text=output_text,
+        recall_query_text=_render_budgeted_summary_variant(
+            summary_json,
+            max_chars=_effective_recall_query_chars(budget),
+        ),
+        prompt_inject_text=_render_budgeted_summary_variant(
+            summary_json,
+            max_chars=budget.max_prompt_inject_chars,
+        ),
+        retain_context_text=_render_budgeted_summary_variant(
+            summary_json,
+            max_chars=budget.max_retain_context_chars,
+        ),
+    )
 
 
 class FakeSessionSummaryGenerator:
@@ -258,6 +293,23 @@ def _evidence_text(messages: list[dict[str, Any]]) -> str:
         if content:
             lines.append(content)
     return "\n".join(lines)
+
+
+def _strip_operational_metadata_json_objects(text: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        if not isinstance(parsed, dict):
+            return raw
+        keys = {str(key).lower().replace("-", "_") for key in parsed}
+        if keys & OPERATIONAL_METADATA_KEYS:
+            return ""
+        return raw
+
+    return re.sub(r"\{[^\{\}\n]*\}", _replace, text)
 
 
 def _active_projects(evidence_text: str, previous_summary: dict[str, Any] | None) -> list[str]:
@@ -313,6 +365,14 @@ def _looks_like_metadata_assignment(text: str) -> bool:
     stripped = text.strip().strip(",")
     if not stripped:
         return False
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        keys = {str(key).lower().replace("-", "_") for key in parsed}
+        if keys & OPERATIONAL_METADATA_KEYS:
+            return True
     key = stripped.split(":", 1)[0].strip().strip("\"'").lower().replace("-", "_")
     return key in OPERATIONAL_METADATA_KEYS
 
@@ -341,3 +401,21 @@ def _dedupe(values: list[str], *, limit: int) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def _effective_recall_query_chars(budget: SessionSummaryBudget) -> int:
+    ratio_limit = int(max(0, budget.max_input_chars) * max(0.0, budget.recall_query_budget_ratio))
+    return max(0, min(budget.max_recall_query_chars, ratio_limit))
+
+
+def _render_budgeted_summary_variant(summary_json: dict[str, Any], *, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    full = render_session_summary(summary_json, max_chars=max_chars)
+    if len(full) < max_chars:
+        return full
+    anchors = _as_string_list(summary_json.get("semantic_anchors"))
+    if not anchors:
+        return full
+    anchor_only = render_session_summary({"semantic_anchors": anchors}, max_chars=max_chars)
+    return anchor_only or full

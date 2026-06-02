@@ -50,9 +50,11 @@ from hermes_cli.config import cfg_get
 from plugins.memory.hindsight.session_summary_generator import (
     FakeSessionSummaryGenerator,
     SessionSummaryBudget,
+    SessionSummaryBudgetedText,
     SessionSummaryGenerator,
     SessionSummaryRequest,
     SessionSummaryResult,
+    build_session_summary_budgeted_text,
     build_session_summary_prompt,
     render_session_summary,
     sanitize_session_summary_text,

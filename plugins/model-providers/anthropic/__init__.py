@@ -46,7 +46,7 @@ anthropic = AnthropicProfile(
     env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     base_url="https://api.anthropic.com",
     auth_type="api_key",
-    default_aux_model="claude-haiku-4-5-20251001",
+    default_aux_model="",  # backstop cleared 2026-05-31: empty = fall to main model, not haiku
 )
 
 register_provider(anthropic)

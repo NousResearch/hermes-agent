@@ -40,6 +40,8 @@ import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # ── Prompt templates ──────────────────────────────────────────────────────────
@@ -225,6 +227,9 @@ class CouncilOrchestrator:
         self.min_plan_lines = config.get("min_plan_lines", 15)
         self.min_plan_chars = config.get("min_plan_chars", 500)
 
+        # Retry tolerance
+        self.max_retries = config.get("max_retries", 2)
+
         if not self.proposers:
             logger.warning("Council: no proposers configured")
         if not self.critic:
@@ -360,7 +365,7 @@ class CouncilOrchestrator:
 
     # ── State persistence ────────────────────────────────────────────
 
-    COUNCIL_STATE_PATH = os.path.expanduser("~/.hermes/council_state.json")
+    COUNCIL_STATE_PATH = os.path.join(get_hermes_home(), "council_state.json")
     STATE_SCHEMA_VERSION = 1
 
     def save_state(
@@ -368,12 +373,24 @@ class CouncilOrchestrator:
         stages: dict, models_used: dict,
     ) -> str:
         """Save council state to JSON file for resume. Returns path."""
+        # Strip output from per-proposer stage entries (already in plans[])
+        clean_stages = {}
+        for k, v in stages.items():
+            if isinstance(v, dict) and v.get("time_seconds"):
+                d = dict(v)
+                if "proposers" in d:
+                    d["proposers"] = [
+                        {kk: vv for kk, vv in p.items() if kk != "output"}
+                        for p in d["proposers"]
+                    ]
+                clean_stages[k] = d
+
         state = {
             "schema_version": self.STATE_SCHEMA_VERSION,
             "task": task,
             "plans": [self._extract_text(p) for p in plans if p is not None],
             "critiques": [self._extract_text(c) for c in critiques],
-            "stages": {k: v for k, v in stages.items() if isinstance(v, dict) and v.get("time_seconds")},
+            "stages": clean_stages,
             "models_used": models_used,
             "timestamp": datetime.datetime.now().isoformat(),
         }
@@ -851,6 +868,7 @@ class CouncilOrchestrator:
                             fn=_do_call,
                             input_texts=task_text,
                             stage_key="proposer_flat",
+                            max_retries=self.max_retries,
                         )
                         elapsed = time.time() - start
                         lines = output.count('\n') + 1
@@ -1051,6 +1069,7 @@ class CouncilOrchestrator:
                 fn=_do_critique,
                 input_texts=[task] + plan_texts,
                 stage_key="critique",
+                max_retries=self.max_retries,
             )
             return {"critiques": [result], "error": None, "skipped": False} if result else \
                    {"critiques": [], "error": "Critic returned empty content after retries", "skipped": False}
@@ -1107,6 +1126,7 @@ class CouncilOrchestrator:
             fn=_do_chairman,
             input_texts=[task] + plan_texts + critique_texts,
             stage_key="chairman",
+            max_retries=self.max_retries,
         )
 
     # ── Content validation markers ──────────────────────────────

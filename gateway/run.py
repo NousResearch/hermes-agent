@@ -15164,7 +15164,7 @@ class GatewayRunner:
             critic_model = council_config.get("critic", {}).get("model", "?")
             chairman_model = council_config.get("chairman", {}).get("model", "?")
             mode_label = "subagent" if council_config.get("subagent_delegation", False) else "flat"
-            pipe_timeout = council_config.get("pipeline_timeout_seconds", 1800)
+            pipe_timeout = council_config.get("pipeline_timeout_seconds", 2400)
 
             # Progress callback for interim diagnostic logging
             task_text = args.strip()

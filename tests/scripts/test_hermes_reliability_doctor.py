@@ -246,6 +246,41 @@ def test_check_quality_policy_presence_reports_markers_without_prompt_text(tmp_p
     assert "verification lane" not in rendered
 
 
+def test_reliability_doctor_reports_quality_gate_status(tmp_path):
+    repo = tmp_path / "repo"
+    gateway = repo / "gateway"
+    tools = repo / "tools"
+    gateway.mkdir(parents=True)
+    tools.mkdir()
+    (gateway / "session.py").write_text(
+        "QUALITY_LANE_POLICY_MARKERS = ('implementation lane', 'verification lane')\n"
+        "def render_quality_lane_policy_for_prompt(): return ''\n"
+        "def build_session_context_prompt():\n"
+        "    return render_quality_lane_policy_for_prompt()\n",
+        encoding="utf-8",
+    )
+    (gateway / "quality_lanes.py").write_text(
+        "QUALITY_LANE_REQUIRED_FIELDS = ('Task classification',)\n"
+        "def require_quality_lane_section(): return ''\n"
+        "def validate_quality_lane_section(): return {'valid': True}\n"
+        "def detect_delegate_task_capability(): return {'available': True}\n"
+        "def ensure_quality_lane_section(): return ''\n"
+        "Subagent unavailable/not invoked; checklist fallback used.\n",
+        encoding="utf-8",
+    )
+    (tools / "delegate_tool.py").write_text("def delegate_task(): pass\n", encoding="utf-8")
+    (repo / "toolsets.py").write_text("_HERMES_CORE_TOOLS = ['delegate_task']\n", encoding="utf-8")
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home / "memories").mkdir(parents=True)
+
+    result = doctor.check_quality_policy_presence(repo, hermes_home)
+
+    assert result["quality_lane_gate_available"] is True
+    assert result["real_subagent_capability_detected"] == "yes"
+    assert result["checklist_fallback_available"] is True
+    assert result["high_risk_final_report_template_available"] is True
+
+
 def test_evaluate_runtime_topology_flags_cli_split_brain():
     result = doctor.evaluate_runtime_topology(
         expected_runtime_checkout="/clean",

@@ -213,6 +213,9 @@ QUALITY_LANE_POLICY_MARKERS = (
 
 def render_quality_lane_policy_for_prompt() -> str:
     """Compact high-rigor work policy for gateway/runtime prompts."""
+    from gateway.quality_lanes import QUALITY_LANE_REQUIRED_FIELDS
+
+    required_fields = ", ".join(field.rstrip(":") for field in QUALITY_LANE_REQUIRED_FIELDS)
     return "\n".join(
         [
             "## Quality Lanes for High-Rigor Work",
@@ -227,8 +230,9 @@ def render_quality_lane_policy_for_prompt() -> str:
             "verification lane, and deployment/report lane.",
             "",
             "Do not claim real subagents ran unless delegation actually ran. "
-            "Final reports should state which lanes were completed and what "
-            "verification evidence was checked.",
+            "Quality lanes section is required in final reports for high-rigor "
+            "work. It must include: "
+            f"{required_fields}.",
         ]
     )
 

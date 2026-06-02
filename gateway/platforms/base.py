@@ -3510,6 +3510,20 @@ class BasePlatformAdapter(ABC):
                     "approved_execute",
                 }:
                     return
+                task_text = getattr(record, "task_summary", None) or getattr(record, "command", None) or event.text
+                try:
+                    from gateway.quality_lanes import ensure_quality_lane_section
+
+                    content = ensure_quality_lane_section(
+                        content,
+                        task_text,
+                        verification_summary="Agent final report persisted by approved/background execute path.",
+                        safety_summary="Gateway persisted the report only; no restart or deployment action performed here.",
+                        subagent_available=None,
+                        subagent_invoked=False,
+                    )
+                except Exception:
+                    logger.debug("[%s] Quality lane final-report wrapping failed", self.name, exc_info=True)
                 store.persist_final_report(
                     session_key=session_key,
                     content=content,

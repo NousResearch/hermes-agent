@@ -37,6 +37,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from gateway.quality_lanes import QUALITY_LANE_GOAL_REQUIREMENT
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +76,7 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "Continue working toward this goal. Take the next concrete step. "
     "If you believe the goal is complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly and stop."
+    + QUALITY_LANE_GOAL_REQUIREMENT
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
@@ -89,6 +92,7 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "additional criterion are complete, state so explicitly and stop. "
     "If you are blocked and need input from the user, say so clearly "
     "and stop."
+    + QUALITY_LANE_GOAL_REQUIREMENT
 )
 
 

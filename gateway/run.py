@@ -3614,6 +3614,25 @@ class GatewayRunner:
             if persisted:
                 lines.extend(["", "Recovered final report:", persisted])
 
+        try:
+            from gateway.quality_lanes import require_quality_lane_section
+
+            task_text = getattr(record, "task_summary", None) or getattr(record, "command", None)
+            lines.extend(
+                [
+                    "",
+                    require_quality_lane_section(
+                        task_text,
+                        verification_summary=f"Recovery inspected process state: {process_state}.",
+                        safety_summary="Recovery report constructed read-only; no restart performed by this report.",
+                        subagent_available=None,
+                        subagent_invoked=False,
+                    ),
+                ]
+            )
+        except Exception:
+            logger.debug("quality lane recovery section failed", exc_info=True)
+
         return "\n".join(lines)
 
     async def _recover_inactive_active_execute(

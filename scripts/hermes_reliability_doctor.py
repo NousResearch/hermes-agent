@@ -407,9 +407,27 @@ def check_quality_policy_presence(
 ) -> dict[str, Any]:
     root = Path(repo_root)
     session_py = root / "gateway" / "session.py"
+    quality_lanes_py = root / "gateway" / "quality_lanes.py"
+    delegate_tool_py = root / "tools" / "delegate_tool.py"
+    toolsets_py = root / "toolsets.py"
     source = ""
     try:
         source = session_py.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    quality_source = ""
+    try:
+        quality_source = quality_lanes_py.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    delegate_source = ""
+    try:
+        delegate_source = delegate_tool_py.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    toolsets_source = ""
+    try:
+        toolsets_source = toolsets_py.read_text(encoding="utf-8", errors="replace")
     except OSError:
         pass
     source_markers = {
@@ -417,6 +435,24 @@ def check_quality_policy_presence(
         "prompt_renderer": "render_quality_lane_policy_for_prompt" in source,
         "prompt_builder_call": "render_quality_lane_policy_for_prompt()" in source,
     }
+    gate_markers = {
+        "quality_lane_required_fields": "QUALITY_LANE_REQUIRED_FIELDS" in quality_source,
+        "section_renderer": "def require_quality_lane_section" in quality_source,
+        "section_validator": "def validate_quality_lane_section" in quality_source,
+        "delegate_capability_detector": "def detect_delegate_task_capability" in quality_source,
+        "final_report_wrapper": "def ensure_quality_lane_section" in quality_source,
+    }
+    fallback_available = (
+        "Subagent unavailable/not invoked; checklist fallback used." in quality_source
+        and "checklist fallback" in quality_source.lower()
+    )
+    real_subagent_capability = "unknown"
+    if delegate_source or toolsets_source:
+        real_subagent_capability = (
+            "yes"
+            if "def delegate_task" in delegate_source and "delegate_task" in toolsets_source
+            else "no"
+        )
     memory_text = ""
     home = Path(hermes_home)
     for path in (home / "memories" / "MEMORY.md", home / "memories" / "USER.md"):
@@ -434,6 +470,15 @@ def check_quality_policy_presence(
     return {
         "injection_path_enabled": all(source_markers.values()),
         "source_markers": source_markers,
+        "quality_lane_gate_available": all(gate_markers.values()),
+        "quality_gate_markers": gate_markers,
+        "real_subagent_capability_detected": real_subagent_capability,
+        "checklist_fallback_available": fallback_available,
+        "high_risk_final_report_template_available": (
+            gate_markers["quality_lane_required_fields"]
+            and gate_markers["section_renderer"]
+            and gate_markers["final_report_wrapper"]
+        ),
         "memory_markers": memory_markers,
     }
 
@@ -525,6 +570,10 @@ def format_report(report: dict[str, Any]) -> str:
             "",
             "Quality policy:",
             f"  injection enabled: {quality_policy.get('injection_path_enabled')}",
+            f"  quality lane gate available: {quality_policy.get('quality_lane_gate_available')}",
+            f"  real subagent capability detected: {quality_policy.get('real_subagent_capability_detected')}",
+            f"  checklist fallback available: {quality_policy.get('checklist_fallback_available')}",
+            f"  high-risk final report template available: {quality_policy.get('high_risk_final_report_template_available')}",
             f"  memory markers: {quality_policy.get('memory_markers')}",
             "",
             "Storage:",

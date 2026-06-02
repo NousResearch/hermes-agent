@@ -997,7 +997,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
     -- Proof-node gate for infra/operator cards: when set to a node name
     -- (conductor, cfo-vm, mac), completion must include metadata with
     -- verified_on_node matching this value. NULL or 'any' allow completion

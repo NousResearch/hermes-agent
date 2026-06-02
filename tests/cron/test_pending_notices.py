@@ -7,6 +7,7 @@ from cron.pending_notices import (
     mark_accepted,
     dismiss,
     new_notice_id,
+    normalize_notify_mode,
     _MAX_PER_KEY,
 )
 
@@ -132,3 +133,38 @@ class TestInjectGating:
         ids = {new_notice_id() for _ in range(50)}
         assert len(ids) == 50
         assert all(isinstance(i, str) and 0 < len(i) <= 16 for i in ids)
+
+
+class TestNotifyMode:
+    """cron.notify_session normalizes to off / auto / button, preserving the
+    legacy bool semantics (True == on == auto, False/None == off)."""
+
+    def test_true_is_auto(self):
+        assert normalize_notify_mode(True) == "auto"
+
+    def test_false_is_off(self):
+        assert normalize_notify_mode(False) == "off"
+
+    def test_none_is_off(self):
+        assert normalize_notify_mode(None) == "off"
+
+    def test_button_aliases(self):
+        assert normalize_notify_mode("button") == "button"
+        assert normalize_notify_mode("buttons") == "button"
+
+    def test_off_aliases(self):
+        for v in ("off", "no", "false", "disabled", ""):
+            assert normalize_notify_mode(v) == "off"
+
+    def test_auto_aliases(self):
+        for v in ("auto", "on", "yes", "true"):
+            assert normalize_notify_mode(v) == "auto"
+
+    def test_case_insensitive(self):
+        assert normalize_notify_mode("Button") == "button"
+        assert normalize_notify_mode("OFF") == "off"
+
+    def test_unknown_present_value_defaults_to_auto(self):
+        # a non-empty but unrecognized value stays on (matches the old
+        # "any truthy config value enabled it" behavior)
+        assert normalize_notify_mode("wat") == "auto"

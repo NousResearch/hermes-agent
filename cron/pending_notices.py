@@ -58,6 +58,26 @@ def new_notice_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def normalize_notify_mode(value) -> str:
+    """Normalize a ``cron.notify_session`` config value to off / auto / button.
+
+    Back-compatible with the original boolean knob: True (or any recognized
+    on-ish value) means auto, False / None / off-ish means off. "button" opts
+    into inline accept/dismiss buttons. An unrecognized but present value stays
+    on (auto), matching the old "any truthy config value enabled it" behavior.
+    """
+    if value is True:
+        return "auto"
+    if value is False or value is None:
+        return "off"
+    s = str(value).strip().lower()
+    if s in {"button", "buttons"}:
+        return "button"
+    if s in {"off", "no", "false", "0", "disabled", "none", ""}:
+        return "off"
+    return "auto"
+
+
 def _load(path: Path) -> Dict[str, List[dict]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

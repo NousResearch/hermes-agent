@@ -393,6 +393,32 @@ class MatrixAdapter(BasePlatformAdapter):
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
 
+        # Auto-accept room invites only from these Matrix user IDs. A single
+        # "*" accepts invites from anyone. Empty (the default) falls back to
+        # the @admin account on our own homeserver, so out of the box only the
+        # server admin can pull this bot into a room. Mirrors rustyclaw's
+        # `auto_accept_invites_from`.
+        invite_from_raw = os.getenv("MATRIX_AUTO_ACCEPT_INVITES_FROM", "")
+        configured_inviters = {
+            u.strip() for u in invite_from_raw.split(",") if u.strip()
+        }
+        self._auto_accept_any_inviter: bool = "*" in configured_inviters
+        if configured_inviters:
+            self._auto_accept_invites_from: Set[str] = configured_inviters
+        else:
+            server_name = (
+                self._user_id.split(":", 1)[1] if ":" in self._user_id else ""
+            )
+            self._auto_accept_invites_from = (
+                {f"@admin:{server_name}"} if server_name else set()
+            )
+
+    def _invite_allowed(self, inviter: str) -> bool:
+        """Whether an invite from `inviter` should be auto-accepted."""
+        if self._auto_accept_any_inviter:
+            return True
+        return inviter in self._auto_accept_invites_from
+
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
         if not event_id:
@@ -1847,14 +1873,21 @@ class MatrixAdapter(BasePlatformAdapter):
         await self.handle_message(msg_event)
 
     async def _on_invite(self, event: Any) -> None:
-        """Auto-join rooms when invited."""
+        """Auto-join rooms when invited by an allowed user."""
 
         room_id = str(getattr(event, "room_id", ""))
+        inviter = str(getattr(event, "sender", ""))
 
-        logger.info(
-            "Matrix: invited to %s — joining",
-            room_id,
-        )
+        if not self._invite_allowed(inviter):
+            logger.info(
+                "Matrix: ignoring invite to %s from %s "
+                "(not in MATRIX_AUTO_ACCEPT_INVITES_FROM)",
+                room_id,
+                inviter or "unknown",
+            )
+            return
+
+        logger.info("Matrix: invited to %s by %s — joining", room_id, inviter)
         await self._join_room_by_id(room_id)
 
     async def _join_room_by_id(self, room_id: str) -> bool:
@@ -1879,11 +1912,34 @@ class MatrixAdapter(BasePlatformAdapter):
         invites = rooms.get("invite", {})
         if not isinstance(invites, dict):
             return
-        for room_id in invites:
+        for room_id, info in invites.items():
             if room_id in self._joined_rooms:
+                continue
+            inviter = self._invite_sender(info)
+            if not self._invite_allowed(inviter):
+                logger.info(
+                    "Matrix: ignoring pending invite to %s from %s (not allowed)",
+                    room_id,
+                    inviter or "unknown",
+                )
                 continue
             logger.info("Matrix: reconciling pending invite for %s", room_id)
             await self._join_room_by_id(str(room_id))
+
+    def _invite_sender(self, invite_info: Any) -> str:
+        """Extract the inviter MXID from an invite room's stripped state."""
+        try:
+            events = invite_info.get("invite_state", {}).get("events", [])
+            for ev in events:
+                if (
+                    ev.get("type") == "m.room.member"
+                    and ev.get("state_key") == self._user_id
+                    and ev.get("content", {}).get("membership") == "invite"
+                ):
+                    return str(ev.get("sender", ""))
+        except Exception:
+            pass
+        return ""
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)

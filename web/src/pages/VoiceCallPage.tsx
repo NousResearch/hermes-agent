@@ -432,9 +432,12 @@ export default function VoiceCallPage() {
     const endText = reason === "setup_error"
       ? "Call ended after setup error; microphone released."
       : "Call ended by user; microphone released.";
+    const voiceTasksAtEnd = voiceTasks.map((task) => ({ task_id: task.task_id, status: task.status, session_id: task.session_id }));
     persistTranscript("system", endText, "call_end", {
       duration_ms: durationMs,
       pending_saves_at_end: pendingTranscriptSavesRef.current.length,
+      active_work_count_at_end: activeWorkRef.current.size,
+      voice_tasks_at_end: voiceTasksAtEnd,
       log_entries: logs.length,
       status_before_end: statusAtEnd,
       status_at_end: "ending",
@@ -472,7 +475,7 @@ export default function VoiceCallPage() {
     Promise.allSettled([...pendingTranscriptSavesRef.current]).then(() => setSaveStatus("Call saved"));
     setStatus("idle");
     addLog("system", `Call ended; saved end marker (${(durationMs / 1000).toFixed(1)}s).`);
-  }, [addLog, logs.length, persistTranscript, status, stopBackgroundCallSupport, stopMicMonitor, stopWorkingCue]);
+  }, [addLog, logs.length, persistTranscript, status, stopBackgroundCallSupport, stopMicMonitor, stopWorkingCue, voiceTasks]);
 
   const sendRealtimeEvent = useCallback((payload: Record<string, unknown>) => {
     const channel = dataRef.current;
@@ -578,11 +581,16 @@ export default function VoiceCallPage() {
   );
 
   const pollVoiceTask = useCallback(
-    async (taskId: string, toolCallId: string) => {
+    async (taskId: string, toolCallId: string, callSeq: number) => {
       let lastProgress = "";
       try {
         for (;;) {
           await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          if (callSeqRef.current !== callSeq || !dataRef.current || dataRef.current.readyState !== "open") {
+            addLog("system", `${taskId}: stopped live polling because the call is no longer active.`);
+            markWorkFinished(`task:${taskId}`, false);
+            return;
+          }
           const task: VoiceTaskResponse = await api.getVoiceTask(taskId, speaker);
           rememberVoiceTask(task);
           const latest = task.progress?.[task.progress.length - 1]?.message ?? task.status;
@@ -596,6 +604,7 @@ export default function VoiceCallPage() {
             addLog("tool", `${taskId} complete\n${output.slice(0, 700)}`);
             persistTranscript("tool", output, "delegation_handoff", { task_id: taskId, session_id: task.session_id });
             queueOrSendToolOutput(`handoff:${taskId}`, output, taskId);
+            markWorkFinished(`task:${taskId}`, "done");
             return;
           }
           if (task.status === "failed" || task.status === "cancelled") {
@@ -603,6 +612,7 @@ export default function VoiceCallPage() {
             addLog("error", output);
             persistTranscript("tool", output, "delegation_error", { task_id: taskId, session_id: task.session_id });
             queueOrSendToolOutput(`handoff:${taskId}`, output, taskId);
+            markWorkFinished(`task:${taskId}`, "error");
             return;
           }
         }
@@ -611,9 +621,10 @@ export default function VoiceCallPage() {
         addLog("error", `${taskId} polling failed: ${message}`);
         persistTranscript("tool", message, "delegation_error", { task_id: taskId });
         queueOrSendToolOutput(toolCallId, `Background task status check failed: ${message}`, taskId);
+        markWorkFinished(`task:${taskId}`, "error");
       }
     },
-    [addLog, persistTranscript, queueOrSendToolOutput, rememberVoiceTask, speaker],
+    [addLog, markWorkFinished, persistTranscript, queueOrSendToolOutput, rememberVoiceTask, speaker],
   );
 
   const handleToolCall = useCallback(
@@ -647,7 +658,7 @@ export default function VoiceCallPage() {
       const startedAt = Date.now();
       markWorkStarted(`tool:${toolKey}`, `${name} running since ${formatClock(new Date(startedAt).toISOString())}`);
       addLog("tool", `Running ${name}… ${JSON.stringify(args).slice(0, 300)}`);
-      persistTranscript("tool", `Running ${name}: ${JSON.stringify(args)}`, "tool_call", {
+      await persistTranscript("tool", `Running ${name}: ${JSON.stringify(args)}`, "tool_call", {
         realtime_call_id: callId,
         tool_name: name,
         started_at: new Date(startedAt).toISOString(),
@@ -676,7 +687,8 @@ export default function VoiceCallPage() {
         const taskId = typeof result.data?.task_id === "string" ? result.data.task_id : "";
         if (name === "rolly_background" && taskId) {
           rememberVoiceTask(result.data as unknown as VoiceTaskResponse);
-          void pollVoiceTask(taskId, callId);
+          markWorkStarted(`task:${taskId}`, `${taskId} running in background`);
+          void pollVoiceTask(taskId, callId, callSeqRef.current);
         }
       } catch (exc) {
         const durationMs = Date.now() - startedAt;

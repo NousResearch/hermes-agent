@@ -533,6 +533,46 @@ def test_xai_loopback_worker_skips_persist_when_cancelled(monkeypatch):
     assert session_id not in ws._oauth_sessions
 
 
+def test_cancel_loopback_session_shuts_down_callback_server():
+    """Cancelling a loopback session must free the bound callback port now."""
+    from hermes_cli import web_server as ws
+
+    shutdown_calls = {"shutdown": 0, "close": 0, "join": 0}
+
+    class _FakeServer:
+        def shutdown(self):
+            shutdown_calls["shutdown"] += 1
+
+        def server_close(self):
+            shutdown_calls["close"] += 1
+
+    class _FakeThread:
+        def join(self, timeout=None):
+            shutdown_calls["join"] += 1
+
+    session_id = "xai-loopback-cancel-shutdown-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "loopback",
+        "created_at": time.time(),
+        "status": "pending",
+        "server": _FakeServer(),
+        "thread": _FakeThread(),
+    }
+
+    try:
+        resp = client.delete(
+            f"/api/providers/oauth/sessions/{session_id}", headers=HEADERS
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is True
+        assert shutdown_calls == {"shutdown": 1, "close": 1, "join": 1}
+        assert session_id not in ws._oauth_sessions
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 def test_unknown_pkce_provider_rejected_cleanly():
     """A future PKCE provider without an explicit branch must NOT silently route to Anthropic.
 

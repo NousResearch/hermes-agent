@@ -3022,7 +3022,7 @@ async def list_oauth_providers():
     Response shape (per provider):
         id              stable identifier (used in DELETE path)
         name            human label
-        flow            "pkce" | "device_code" | "external"
+        flow            "pkce" | "device_code" | "external" | "loopback"
         cli_command     fallback CLI command for users to run manually
         docs_url        external docs/portal link for the "Learn more" link
         status:
@@ -3121,6 +3121,19 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
 #          every 2s until status != "pending".
 #     4. On "approved" the background thread has already saved creds; UI
 #        refreshes the providers list.
+#
+#   Loopback PKCE (xAI Grok):
+#     1. POST /api/providers/oauth/xai-oauth/start
+#          → server binds a 127.0.0.1 callback listener, builds the xAI
+#            authorize URL, spawns a background worker waiting on the redirect
+#          → returns { session_id, flow: "loopback", auth_url, expires_in }
+#     2. UI opens auth_url in the browser. There is NO user_code/code to
+#        paste — the redirect lands back on the loopback listener.
+#     3. UI polls GET /api/providers/oauth/{provider}/poll/{session_id}
+#          (same endpoint as device_code) until status != "pending".
+#     4. The worker exchanges the code, persists creds, sets "approved".
+#        DELETE /sessions/{id} cancels: the worker bails before persisting
+#        and the callback server is shut down to free the port immediately.
 #
 # Sessions are kept in-memory only (single-process FastAPI) and time out
 # after 15 minutes. A periodic cleanup runs on each /start call to GC
@@ -4038,7 +4051,13 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
 
 @app.get("/api/providers/oauth/{provider_id}/poll/{session_id}")
 async def poll_oauth_session(provider_id: str, session_id: str):
-    """Poll a device-code session's status (no auth — read-only state)."""
+    """Poll a session's status (no auth — read-only state).
+
+    Shared by the device-code flows (Nous, OpenAI Codex, MiniMax) and the
+    loopback flow (xAI Grok). Both surface progress through the same
+    background-worker-updated ``status`` field, so a single poll endpoint
+    serves them all.
+    """
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if not sess:
@@ -4061,6 +4080,24 @@ async def cancel_oauth_session(session_id: str, request: Request):
         sess = _oauth_sessions.pop(session_id, None)
     if sess is None:
         return {"ok": False, "message": "session not found"}
+    # Loopback sessions own a bound 127.0.0.1 callback server. Without an
+    # explicit shutdown the worker would keep that port held until
+    # _xai_wait_for_callback times out (up to 5 min). Free it immediately so
+    # an orphaned listener can't block a subsequent sign-in attempt.
+    if sess.get("flow") == "loopback":
+        server = sess.get("server")
+        thread = sess.get("thread")
+        try:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+        except Exception:
+            pass
+        try:
+            if thread is not None:
+                thread.join(timeout=1.0)
+        except Exception:
+            pass
     return {"ok": True, "session_id": session_id}
 
 

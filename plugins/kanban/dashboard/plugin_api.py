@@ -1954,8 +1954,19 @@ def dispatch(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        try:
+            from hermes_cli.plugins import build_worker_lane_dispatch
+
+            worker_lane_spawn, worker_lane_exists = build_worker_lane_dispatch()
+        except Exception:
+            worker_lane_spawn, worker_lane_exists = None, None
         result = kanban_db.dispatch_once(
-            conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            conn,
+            spawn_fn=worker_lane_spawn,
+            spawnable_assignee_fn=worker_lane_exists,
+            dry_run=dry_run,
+            max_spawn=max_n,
+            board=board,
         )
         # DispatchResult is a dataclass.
         try:

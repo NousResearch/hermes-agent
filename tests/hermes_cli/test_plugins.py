@@ -15,6 +15,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    build_worker_lane_dispatch,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -653,6 +654,29 @@ class TestPluginContext:
         mgr.discover_and_load()
 
         assert "plugin_echo" in mgr._plugin_tool_names
+
+    def test_register_worker_lane_builds_dispatch_helpers(self, monkeypatch):
+        manifest = PluginManifest(name="lane_plugin")
+        mgr = PluginManager()
+        ctx = PluginContext(manifest, mgr)
+        calls = []
+
+        def spawn_fn(task, workspace, *, board=None):
+            calls.append((task.assignee, workspace, board))
+            return 4242
+
+        ctx.register_worker_lane(match="agentplane-*", spawn_fn=spawn_fn, profile_exists=True)
+
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda: mgr)
+        spawn, is_spawnable = build_worker_lane_dispatch()
+
+        class Task:
+            assignee = "agentplane-coder"
+
+        assert is_spawnable("agentplane-coder") is True
+        assert is_spawnable("daily") is False
+        assert spawn(Task(), "/workspace/project", board="repo-board") == 4242
+        assert calls == [("agentplane-coder", "/workspace/project", "repo-board")]
 
         from tools.registry import registry
         assert "plugin_echo" in registry._tools

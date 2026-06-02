@@ -5784,6 +5784,7 @@ def dispatch_once(
     conn: sqlite3.Connection,
     *,
     spawn_fn=None,
+    spawnable_assignee_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
@@ -5975,7 +5976,13 @@ def dispatch_once(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
+        external_spawnable = False
+        if spawnable_assignee_fn is not None:
+            try:
+                external_spawnable = bool(spawnable_assignee_fn(row_assignee))
+            except Exception:
+                external_spawnable = False
+        if profile_exists is not None and not profile_exists(row_assignee) and not external_spawnable:
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -6109,7 +6116,13 @@ def dispatch_once(
             from hermes_cli.profiles import profile_exists
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        external_spawnable = False
+        if spawnable_assignee_fn is not None:
+            try:
+                external_spawnable = bool(spawnable_assignee_fn(row["assignee"]))
+            except Exception:
+                external_spawnable = False
+        if profile_exists is not None and not profile_exists(row["assignee"]) and not external_spawnable:
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:

@@ -1293,6 +1293,32 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_dispatch_spawns_registered_external_lane(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, task.assignee, workspace))
+        return 4242
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="agentplane", assignee="agentplane-coder")
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            spawnable_assignee_fn=lambda assignee: str(assignee).startswith("agentplane-"),
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task_id not in res.skipped_nonspawnable
+    assert len(spawns) == 1
+    assert spawns[0][1] == "agentplane-coder"
+    assert task.status == "running"
+    assert task.worker_pid == 4242
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

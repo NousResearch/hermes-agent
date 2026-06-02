@@ -2150,9 +2150,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
+    try:
+        from hermes_cli.plugins import build_worker_lane_dispatch
+
+        worker_lane_spawn, worker_lane_exists = build_worker_lane_dispatch()
+    except Exception:
+        worker_lane_spawn, worker_lane_exists = None, None
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
             conn,
+            spawn_fn=worker_lane_spawn,
+            spawnable_assignee_fn=worker_lane_exists,
             dry_run=args.dry_run,
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,

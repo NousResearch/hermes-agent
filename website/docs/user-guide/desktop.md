@@ -92,8 +92,9 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
 | `--skip-build`       | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |
+| `--force-build`      | Force a full rebuild even if the content stamp matches                                    |
+| `--build-only`       | Build the desktop app but do not launch it (used by `hermes update`)                      |
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
-| `--build-only`       | Build the desktop app but do not launch it (used by the installer's `--update` flow)      |
 | `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
 | `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
 | `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |

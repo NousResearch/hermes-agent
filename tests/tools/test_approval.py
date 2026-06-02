@@ -187,6 +187,36 @@ class TestWebhookReadonlyAllowlist:
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
+    def test_webhook_still_blocks_unquoted_command_substitution(self):
+        reason = "Specific gap: build evidence is missing, so Reid must run npx next build and post the exact output."
+        command = self._curl_mutation_with_data(
+            repr(self._grant_update_notes_payload(self._grant_verdict_notes(reason=reason)))
+        ) + " $(touch /tmp/grant_injected)"
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_still_blocks_unquoted_backtick_command_substitution(self):
+        reason = "Specific gap: build evidence is missing, so Reid must run npx next build and post the exact output."
+        command = self._curl_mutation_with_data(
+            repr(self._grant_update_notes_payload(self._grant_verdict_notes(reason=reason)))
+        ) + " `touch /tmp/grant_injected`"
+        result = self._check(command)
+        assert result["approved"] is False
+        assert result.get("webhook_allowlisted") is not True
+
+    def test_webhook_allows_inline_grant_verdict_with_literal_dollar_paren_in_json_string(self):
+        notes = self._grant_verdict_notes(
+            verdict="PASS",
+            reason="Evidence: JSON verdict text may include literal $(not a shell operator) safely when quoted.",
+        )
+        command = self._curl_mutation_with_data(
+            repr(self._grant_update_notes_payload(notes))
+        )
+        result = self._check(command)
+        assert result["approved"] is True
+        assert result.get("webhook_allowlisted") is True
+
     def test_webhook_allows_confined_grant_verdict_atfile(self, tmp_path):
         payload_path = self._write_grant_tmp_payload(
             Path("tmp"),

@@ -923,10 +923,14 @@ def _has_unquoted_shell_control_operator(command: str) -> bool:
     quoted JSON payload is data, not shell control syntax; treating it as an
     operator pushes Grant toward unsafe @file workarounds that write the service
     token to /tmp.
+
+    Keep command-substitution coverage quote-aware too: unquoted ``$(...)`` and
+    backticks are shell execution primitives, but the same bytes inside a quoted
+    JSON string are verdict text and must remain allowed.
     """
     quote = ""
     escaped = False
-    for char in command:
+    for index, char in enumerate(command):
         if escaped:
             escaped = False
             continue
@@ -941,6 +945,8 @@ def _has_unquoted_shell_control_operator(command: str) -> bool:
             quote = char
             continue
         if char in ";&|`" or char == "\n":
+            return True
+        if char == "$" and index + 1 < len(command) and command[index + 1] == "(":
             return True
     return False
 

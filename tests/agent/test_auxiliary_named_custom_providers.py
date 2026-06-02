@@ -58,8 +58,10 @@ class TestNormalizeVisionProvider:
         assert _normalize_vision_provider("deepseek") == "deepseek"
 
     def test_custom_colon_named_provider_preserved(self):
+        """custom:name is preserved intact so the named-custom-provider branch
+        can resolve it through custom_providers.  (Not stripped to bare name.)"""
         from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("custom:beans") == "beans"
+        assert _normalize_vision_provider("custom:beans") == "custom:beans"
 
     def test_codex_alias_still_works(self):
         from agent.auxiliary_client import _normalize_vision_provider

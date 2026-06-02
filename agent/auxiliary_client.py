@@ -300,11 +300,11 @@ _PROVIDER_ALIASES = {
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
-    if normalized.startswith("custom:"):
-        suffix = normalized.split(":", 1)[1].strip()
-        if not suffix:
-            return "custom"
-        normalized = suffix
+    # Named custom providers (e.g. "custom:qwen") are preserved intact so
+    # resolve_provider_client can route them through the named-custom-provider
+    # branch which reads custom_providers from config.yaml.  Bare "custom"
+    # (no colon) still falls through to the anonymous-custom path that reads
+    # model.base_url + OPENAI_API_KEY from config/env.
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
@@ -2400,8 +2400,29 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
 
     custom_base = custom_base.strip().rstrip("/")
     if base_url_host_matches(custom_base, "openrouter.ai"):
-        # requested='custom' falls back to OpenRouter when no custom endpoint is
-        # configured. Treat that as "no custom endpoint" for auxiliary routing.
+        # requested='custom' fell back to OpenRouter because the user has a
+        # named custom provider (e.g. custom:qwen in custom_providers) but no
+        # bare "custom" entry.  Try resolving with requested=None so the
+        # resolver picks up the user's actual main provider from config.
+        try:
+            main_runtime = resolve_runtime_provider(requested=None)
+            if isinstance(main_runtime, dict):
+                mb = main_runtime.get("base_url")
+                mk = main_runtime.get("api_key")
+                if isinstance(mb, str) and mb.strip():
+                    mb = mb.strip().rstrip("/")
+                    if not base_url_host_matches(mb, "openrouter.ai"):
+                        logger.debug(
+                            "Auxiliary client: custom runtime fell back to main "
+                            "provider %s → %s",
+                            main_runtime.get("provider", "unknown"), mb,
+                        )
+                        if not isinstance(mk, str) or not mk.strip():
+                            mk = "no-key-required"
+                        mm = main_runtime.get("api_mode")
+                        return mb, mk.strip(), mm.strip() if isinstance(mm, str) and mm.strip() else None
+        except Exception:
+            pass
         return None, None, None
 
     # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.

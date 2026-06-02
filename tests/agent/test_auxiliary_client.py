@@ -394,6 +394,22 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_named_custom_providers_preserved(self):
+        """Named custom providers (custom:xxx) are preserved intact so
+        resolve_provider_client can route them through the named-custom-provider
+        branch. Bare 'custom' (no colon) stays as 'custom' for the anonymous path.
+
+        Regression test: the old strip-to-custom approach (#37182) fixed a bug where
+        'custom:qwen' was normalised to 'qwen' (no auxiliary backend), but it broke
+        named custom providers in auxiliary tasks (vision, goal_judge, etc.) because
+        the strip prevented the named-custom-provider lookup from ever running.
+        """
+        assert _normalize_aux_provider("custom:qwen") == "custom:qwen"
+        assert _normalize_aux_provider("custom:my-vllm") == "custom:my-vllm"
+        assert _normalize_aux_provider("custom:local") == "custom:local"
+        assert _normalize_aux_provider("custom:") == "custom:"
+        assert _normalize_aux_provider("custom") == "custom"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

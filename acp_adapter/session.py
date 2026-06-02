@@ -633,7 +633,7 @@ class SessionManager:
         }
 
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            runtime = resolve_runtime_provider(requested=requested_provider or config_provider, explicit_base_url=base_url)
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),

@@ -1379,6 +1379,18 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
+    # Anthropic provider settings.
+    # drop_context_1m_beta: proactively strip the context-1m-2025-08-07 beta
+    #   header from all Anthropic API requests.  OAuth subscriptions that do not
+    #   include the 1M-context beta return HTTP 400 when the header is present.
+    #   The main agent loop recovers reactively (PR #17752) but auxiliary clients
+    #   (title generation, vision, compression, etc.) hard-fail.  Setting this to
+    #   True prevents the 400 on both paths.  Default False preserves the beta
+    #   for subscriptions that support it.
+    "anthropic": {
+        "drop_context_1m_beta": False,
+    },
+
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
     #   When enabled, identical requests return cached responses for free (zero billing).

@@ -2313,3 +2313,86 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+class TestConfigDropContext1mBeta:
+    """Verify ``anthropic.drop_context_1m_beta`` config propagates to aux clients."""
+
+    def _patch_aux_env(self, drop_value: bool):
+        """Return a stack of patches that isolate _try_anthropic from real env."""
+        cfg = {"anthropic": {"drop_context_1m_beta": drop_value}}
+        return {
+            "load_config": patch(
+                "agent.auxiliary_client.load_config",
+                return_value=cfg,
+                create=True,
+            ),
+            "resolve_token": patch(
+                "agent.auxiliary_client.resolve_anthropic_token",
+                return_value="sk-ant-oat01-" + "x" * 60,
+                create=True,
+            ),
+            "is_oauth": patch(
+                "agent.auxiliary_client._is_oauth_token",
+                return_value=True,
+                create=True,
+            ),
+            "build_client": patch(
+                "agent.anthropic_adapter._anthropic_sdk",
+            ),
+        }
+
+    def test_config_true_passes_drop_to_build_anthropic_client(self):
+        """anthropic.drop_context_1m_beta=true causes aux build_anthropic_client
+        to receive drop_context_1m_beta=True; the resulting client omits the
+        context-1m-2025-08-07 beta header."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            client = build_anthropic_client(
+                "sk-ant-oat01-" + "x" * 60,
+                drop_context_1m_beta=True,
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" not in betas
+            assert "oauth-2025-04-20" in betas
+
+    def test_config_false_preserves_default_betas(self):
+        """Default (drop_context_1m_beta=False) keeps the beta set unchanged
+        for subscriptions that support 1M context (regression guard)."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            client = build_anthropic_client(
+                "sk-ant-oat01-" + "x" * 60,
+                drop_context_1m_beta=False,
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            # Native Anthropic does not get context-1m by default (only
+            # Azure/Foundry endpoints do), so confirm the other betas survive.
+            assert "oauth-2025-04-20" in betas
+            assert "interleaved-thinking-2025-05-14" in betas
+
+    def test_config_drop_1m_beta_helper_reads_config(self):
+        """_config_drop_1m_beta() returns the config value."""
+        from agent.auxiliary_client import _config_drop_1m_beta
+
+        cfg_true = {"anthropic": {"drop_context_1m_beta": True}}
+        with patch("hermes_cli.config.load_config", return_value=cfg_true):
+            assert _config_drop_1m_beta() is True
+
+        cfg_false = {"anthropic": {"drop_context_1m_beta": False}}
+        with patch("hermes_cli.config.load_config", return_value=cfg_false):
+            assert _config_drop_1m_beta() is False
+
+    def test_config_drop_1m_beta_helper_missing_key_returns_false(self):
+        """Missing config key defaults to False."""
+        from agent.auxiliary_client import _config_drop_1m_beta
+
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _config_drop_1m_beta() is False
+
+    def test_config_drop_1m_beta_helper_exception_returns_false(self):
+        """Config load failure defaults to False."""
+        from agent.auxiliary_client import _config_drop_1m_beta
+
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            assert _config_drop_1m_beta() is False

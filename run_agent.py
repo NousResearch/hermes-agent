@@ -4194,10 +4194,16 @@ class AIAgent:
         requires a direct Anthropic API key.
 
         Honors ``self._oauth_1m_beta_disabled`` (set by the reactive recovery
-        path when an OAuth subscription rejects the 1M-context beta) so the
-        rebuilt client carries the reduced beta set.
+        path when an OAuth subscription rejects the 1M-context beta) and the
+        proactive ``anthropic.drop_context_1m_beta`` config flag so the rebuilt
+        client carries the reduced beta set.
         """
-        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
+        try:
+            from hermes_cli.config import load_config
+            _cfg_drop = bool(load_config().get("anthropic", {}).get("drop_context_1m_beta", False))
+        except Exception:
+            _cfg_drop = False
+        _drop_1m = _cfg_drop or bool(getattr(self, "_oauth_1m_beta_disabled", False))
         if getattr(self, "provider", None) == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"

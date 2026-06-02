@@ -160,6 +160,16 @@ def aux_interrupt_protection(active: bool = True):
         _aux_interrupt_protection.active = prev
 
 
+def _config_drop_1m_beta() -> bool:
+    """Read ``anthropic.drop_context_1m_beta`` from the user config."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return bool(cfg.get("anthropic", {}).get("drop_context_1m_beta", False))
+    except Exception:
+        return False
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:

@@ -245,6 +245,25 @@ describe('Md wrapping', () => {
     expect(rendered).toContain('if __name__ == "__main__":')
     expect(rendered).toContain('obj.__init__()')
   })
+
+  it('renders markdown-labeled fences as literal code blocks', () => {
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 80 },
+        React.createElement(Md, {
+          t: DEFAULT_THEME,
+          text: ['```markdown', '# Title', '', '```python', 'print("hi")', '```', '```'].join('\n')
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('# Title')
+    expect(rendered).toContain('```python')
+    expect(rendered).toContain('print("hi")')
+  })
 })
 
 describe('Md link labels', () => {

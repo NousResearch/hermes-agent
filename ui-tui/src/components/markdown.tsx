@@ -738,13 +738,6 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           i++
         }
 
-        if (['md', 'markdown'].includes(lang)) {
-          start('paragraph')
-          nodes.push(<Md cols={cols} compact={compact} key={key} t={t} text={block.join('\n')} />)
-
-          continue
-        }
-
         start('code')
 
         const isDiff = lang === 'diff'

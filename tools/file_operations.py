@@ -37,7 +37,6 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
-    get_safe_write_root as _shared_get_safe_write_root,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -114,15 +113,34 @@ def _normalize_line_endings(text: str, target: str) -> str:
     return text
 
 
-def _get_safe_write_root() -> Optional[str]:
-    """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset.
+# UTF-8 byte order mark. Some Windows editors (Notepad, older Visual Studio,
+# some PowerShell redirects) prepend this invisible 3-byte marker
+# (EF BB BF == U+FEFF) to UTF-8 text files. It renders as nothing but is a
+# real character at the start of the decoded string, so without handling it:
+#   - read_file would surface a stray U+FEFF as the first character (the
+#     model sees a phantom char before `import ...`), and
+#   - patch matches against the true first line would miss, and write_file
+#     would silently drop or double the marker on rewrite.
+# We strip it on read so the model sees clean content, and restore it on
+# write when the original file had one — exactly mirroring the line-ending
+# preservation above (detect on disk, preserve across the edit).
+_UTF8_BOM = "\ufeff"
 
-    When set, all write_file/patch operations are constrained to this
-    directory tree.  Writes outside it are denied even if the target is
-    not on the static deny list.  Opt-in hardening for gateway/messaging
-    deployments that should only touch a workspace checkout.
+
+def _strip_bom(text: str) -> tuple[str, bool]:
+    """Return (text-without-leading-BOM, had_bom).
+
+    Only a single leading BOM is stripped; a BOM appearing mid-content is
+    left alone (it's legitimate data there, not a file marker).
     """
-    return _shared_get_safe_write_root()
+    if text and text.startswith(_UTF8_BOM):
+        return text[len(_UTF8_BOM):], True
+    return text, False
+
+
+def _has_bom(text: Optional[str]) -> bool:
+    """True if ``text`` begins with a UTF-8 BOM."""
+    return bool(text) and text.startswith(_UTF8_BOM)
 
 
 def _is_write_denied(path: str) -> bool:
@@ -334,6 +352,16 @@ class FileOperations(ABC):
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
+
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Default implementation delegates to ``delete_file``
+        for the non-recursive case; backends with native recursive support
+        should override.
+        """
+        if recursive:
+            return WriteResult(error="Recursive delete not implemented for this backend")
+        return self.delete_file(path)
 
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
@@ -684,7 +712,20 @@ class ShellFileOperations(FileOperations):
         return ext in IMAGE_EXTENSIONS
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
-        """Add line numbers to content in LINE_NUM|CONTENT format."""
+        """Add line numbers to content in ``LINE_NUM|CONTENT`` format.
+
+        The gutter uses a compact ``<n>|`` prefix (e.g. ``34|foo``) rather
+        than a fixed-width zero/space-padded one (``    34|foo``). The
+        padding was pure token overhead: on dense source the padded gutter
+        cost ~48% more tokens than the bare content and ~16% more than the
+        compact form, because the leading spaces + zero-padding tokenize
+        into extra tokens on every single line. An A/B (Sonnet 4.6, 2
+        passes) showed the compact gutter matches the padded gutter on
+        line-reference / patch / value-lookup / structure tasks (4/4 both),
+        while dropping line numbers entirely regressed line-referencing
+        (the model hand-counted and was off-by-one, 3/4) — so we keep the
+        numbers, just not the padding.
+        """
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
         lines = content.split('\n')
@@ -693,7 +734,7 @@ class ShellFileOperations(FileOperations):
             # Truncate long lines
             if len(line) > max_line_length:
                 line = line[:max_line_length] + "... [truncated]"
-            numbered.append(f"{i:6d}|{line}")
+            numbered.append(f"{i}|{line}")
         return '\n'.join(numbered)
     
     def _expand_path(self, path: str) -> str:
@@ -738,6 +779,60 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
+        """Write ``content`` to ``path`` atomically via temp-file + rename.
+
+        Streams ``content`` over stdin into a temp file in the SAME
+        directory as ``path`` (so the final ``mv`` is a real rename on the
+        same filesystem, not a non-atomic cross-device copy), preserves the
+        existing file's mode if it exists, then renames over the target.
+        On any failure the temp file is removed so we never leak a partial
+        ``.hermes-tmp`` file next to the user's data, and the original file
+        is left untouched. Content rides stdin so there is no ARG_MAX limit.
+
+        Returns an :class:`ExecuteResult`; ``exit_code == 0`` means the file
+        was swapped into place atomically. A non-zero exit means nothing was
+        renamed and the original (if any) is intact.
+        """
+        q_path = self._escape_shell_arg(path)
+        parent = os.path.dirname(path) or "."
+        q_parent = self._escape_shell_arg(parent)
+        # template basename: hidden so it doesn't show up in casual `ls`,
+        # carries a marker so an orphaned temp (only possible on a hard
+        # crash *between* cat and mv) is identifiable.
+        tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
+
+        # One shell script, fully quoted. Notes:
+        #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
+        #    same-FS atomic; we fall back to a PID-stamped name if the
+        #    backend lacks mktemp (rare; busybox/macOS/Linux all ship it).
+        #  - `chmod --reference` is GNU-only, so we read the octal mode with
+        #    `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly;
+        #    silent best-effort — a perms-copy failure must not abort the
+        #    write, the file still lands with default umask perms.
+        #  - `trap ... EXIT` guarantees the temp is removed on every error
+        #    path (cat failure, mv failure, signal) but NOT after a
+        #    successful mv (the temp no longer exists by then).
+        #  - we `cat >` the temp, then `mv -f` it over the target.
+        script = (
+            "set -e; "
+            f"d={q_parent}; t={q_path}; "
+            'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
+            '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
+            '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
+            '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
+            "trap 'rm -f \"$tmp\"' EXIT; "
+            # preserve mode of an existing target (best-effort, never fatal)
+            'if [ -e "$t" ]; then '
+            'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
+            '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
+            "fi; "
+            'cat > "$tmp"; '
+            'mv -f "$tmp" "$t"; '
+            "trap - EXIT"
+        )
+        return self._exec(script, stdin_data=content)
+
     def _detect_file_line_ending(self, path: str, pre_content: Optional[str] = None) -> Optional[str]:
         """Detect the dominant line ending of a file on disk.
 
@@ -758,6 +853,22 @@ class ShellFileOperations(FileOperations):
         if head_result.exit_code != 0 or not head_result.stdout:
             return None
         return _detect_line_ending(head_result.stdout)
+
+    def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
+        """Whether the file on disk starts with a UTF-8 BOM.
+
+        Uses ``pre_content`` if we already read the file (zero extra exec
+        calls); otherwise issues a tiny ``head -c 3`` to sample just the
+        marker. A missing/empty file returns False (new writes get no BOM
+        unless the caller explicitly includes one).
+        """
+        if pre_content is not None:
+            return _has_bom(pre_content)
+        head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
+        head_result = self._exec(head_cmd)
+        if head_result.exit_code != 0 or not head_result.stdout:
+            return False
+        return _has_bom(head_result.stdout)
 
 
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
@@ -843,6 +954,11 @@ class ShellFileOperations(FileOperations):
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         read_output = _strip_terminal_fence_leaks(read_result.stdout)
+        # Strip a leading UTF-8 BOM so the model never sees a phantom U+FEFF
+        # before the first real character. Only meaningful on the first
+        # chunk (the marker lives at byte 0); later pages can't carry it.
+        if offset == 1:
+            read_output, _ = _strip_bom(read_output)
         
         # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
@@ -947,19 +1063,76 @@ class ShellFileOperations(FileOperations):
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        # Strip a leading UTF-8 BOM so patch's fuzzy matcher operates on
+        # clean content (a phantom U+FEFF before line 1 would defeat an
+        # exact first-line match). write_file restores the BOM on the way
+        # back out — it re-probes the on-disk file, which still has the
+        # marker — so the round-trip preserves it.
+        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
         return ReadResult(
-            content=_strip_terminal_fence_leaks(cat_result.stdout),
+            content=raw_content,
             file_size=file_size,
         )
 
     def delete_file(self, path: str) -> WriteResult:
-        """Delete a file via rm."""
+        """Delete a single file.
+
+        Cross-platform: runs via ``python -c`` against the terminal env's
+        Python so it works on Windows shells (``cmd.exe``/PowerShell) that
+        don't ship ``rm``. Directories are rejected here — use
+        ``delete_path(recursive=True)`` for trees.
+        """
+        return self._python_delete(path, recursive=False)
+
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Always preferred over emitting ``rm -rf`` /
+        ``Remove-Item -Recurse`` directly so the same tool call works on
+        every backend (local / docker / ssh / Windows).
+        """
+        return self._python_delete(path, recursive=recursive)
+
+    def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
         if _is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
-        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+
+        # We can't shell out to ``rm`` here — it doesn't exist on Windows
+        # ``cmd.exe`` or PowerShell, so this code path is what's left when
+        # the backend's terminal is a Windows shell. Path is baked into the
+        # snippet via ``repr()`` so quoting is correct on every shell.
+        snippet = (
+            "import shutil, pathlib, sys\n"
+            f"p = pathlib.Path({path!r})\n"
+            f"recursive = {bool(recursive)!r}\n"
+            "try:\n"
+            "    if p.is_dir() and not p.is_symlink():\n"
+            "        if recursive:\n"
+            "            shutil.rmtree(p)\n"
+            "        else:\n"
+            "            print('is a directory: ' + str(p), file=sys.stderr); sys.exit(2)\n"
+            "    else:\n"
+            # NOTE: avoid ``unlink(missing_ok=True)`` — that kwarg lands in
+            # Python 3.8 and the remote interpreter (docker/ssh) may still
+            # be 3.7 on older distros. The FileNotFoundError handler below
+            # covers the same case and works back to 3.4.
+            "        p.unlink()\n"
+            "except FileNotFoundError:\n"
+            "    pass\n"
+            "except Exception as exc:\n"
+            "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+        )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+
+        # Fall back to ``python`` (Windows / older systems where there's no
+        # ``python3`` symlink but a ``python`` binary is on PATH).
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
         if result.exit_code != 0:
-            return WriteResult(error=f"Failed to delete {path}: {result.stdout}")
+            return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
+
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:
@@ -1048,6 +1221,18 @@ class ShellFileOperations(FileOperations):
         if original_ending == "\r\n":
             content = _normalize_line_endings(content, "\r\n")
 
+        # ── BOM preservation ──────────────────────────────────────────
+        # If the file on disk started with a UTF-8 BOM, keep it. read_file
+        # strips the BOM so the agent never sees it, which means the
+        # content it hands back to write_file / patch has no BOM either —
+        # without restoring it here a round-trip would silently strip the
+        # marker and change the file's byte signature (some Windows
+        # toolchains key on it). Only prepend when the original had a BOM
+        # and the new content doesn't already carry one (guards against
+        # double-BOM if a caller passed raw bytes).
+        if self._file_has_bom(path, pre_content) and not _has_bom(content):
+            content = _UTF8_BOM + content
+
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
         # by this specific edit.  Mirrors claude-code's
@@ -1065,10 +1250,22 @@ class ShellFileOperations(FileOperations):
             if mkdir_result.exit_code == 0:
                 dirs_created = True
 
-        # Write via stdin pipe — content bypasses shell arg parsing entirely,
-        # so there's no ARG_MAX limit regardless of file size.
-        write_cmd = f"cat > {self._escape_shell_arg(path)}"
-        write_result = self._exec(write_cmd, stdin_data=content)
+        # Write atomically: stream into a temp file in the SAME directory,
+        # then ``mv`` it over the target. The rename is atomic on POSIX
+        # (and on every backend FS we run on), so a crash / power loss /
+        # truncated pipe mid-write leaves the original file intact instead
+        # of a half-written corrupt file. Same-directory is load-bearing —
+        # ``mv`` across filesystems degrades to copy+unlink, which is NOT
+        # atomic; keeping the temp beside the target guarantees a real
+        # rename. Content still rides stdin so there's no ARG_MAX limit.
+        #
+        # The temp file is created with ``mktemp`` (collision-safe) when the
+        # backend has it, falling back to a PID-stamped name otherwise. We
+        # then chmod the temp to match the existing file's mode (if any) so
+        # the atomic swap doesn't silently widen or narrow permissions, and
+        # clean the temp up on any failure so we never leak a ``.hermes-tmp``
+        # turd next to the user's file.
+        write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
@@ -1139,7 +1336,13 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
-        
+        # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
+        # the diff operate on clean content (a phantom U+FEFF before line 1
+        # defeats an exact first-line match). write_file restores the BOM on
+        # the way back out by re-probing the on-disk file, so the round-trip
+        # preserves the marker.
+        content, _ = _strip_bom(content)
+
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
@@ -1188,8 +1391,13 @@ class ShellFileOperations(FileOperations):
         # ``new_content`` string has bare LFs.  Without this normalization
         # every patch on Windows returns a bogus "wrote 39, read 42"
         # false-negative even though the edit landed correctly.  POSIX
-        # backends don't translate, so this is a no-op there.
-        _verify_stdout_normalized = verify_result.stdout.replace("\r\n", "\n").replace("\r", "\n")
+        # backends don't translate, so this is a no-op there.  We also
+        # strip a leading BOM from the re-read: write_file restored the
+        # marker on disk but ``new_content`` is the BOM-less string we
+        # matched against, so the comparison must drop it to stay
+        # apples-to-apples.
+        _verify_bomless, _ = _strip_bom(verify_result.stdout)
+        _verify_stdout_normalized = _verify_bomless.replace("\r\n", "\n").replace("\r", "\n")
         _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
         if _verify_stdout_normalized != _new_content_normalized:
             return PatchResult(error=(

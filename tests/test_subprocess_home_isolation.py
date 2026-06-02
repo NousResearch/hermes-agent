@@ -11,9 +11,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------

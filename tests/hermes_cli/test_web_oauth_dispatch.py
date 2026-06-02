@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_server import _SESSION_TOKEN, app
@@ -99,7 +100,7 @@ def test_minimax_login_does_not_launch_anthropic_flow():
     assert body["expires_in"] == 600
 
 
-def test_nous_dashboard_device_flow_honors_legacy_scope_override(monkeypatch):
+def test_nous_dashboard_device_flow_ignores_legacy_scope_override(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws
 
@@ -109,24 +110,24 @@ def test_nous_dashboard_device_flow_honors_legacy_scope_override(monkeypatch):
         requested_scopes.append(kwargs["scope"])
         return _fake_nous_device_data()
 
-    monkeypatch.setenv(auth_mod.NOUS_LEGACY_SESSION_KEYS_ENV, "true")
+    monkeypatch.setenv("HERMES_AGENT_USE_LEGACY_SESSION_KEYS", "true")
     monkeypatch.setattr(auth_mod, "_request_device_code", fake_request_device_code)
     monkeypatch.setattr(ws, "_nous_poller", lambda sid: None)
 
     result = asyncio.run(ws._start_device_code_flow("nous"))
     try:
-        assert requested_scopes == [auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE]
+        assert requested_scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
         assert result["flow"] == "device_code"
         assert result["user_code"] == "NOUS-1234"
         assert (
             ws._oauth_sessions[result["session_id"]]["scope"]
-            == auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE
+            == auth_mod.DEFAULT_NOUS_SCOPE
         )
     finally:
         ws._oauth_sessions.pop(result["session_id"], None)
 
 
-def test_nous_dashboard_device_flow_retries_legacy_scope_on_invoke_refusal(monkeypatch):
+def test_nous_dashboard_device_flow_does_not_retry_legacy_scope_on_invoke_refusal(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws
 
@@ -134,26 +135,76 @@ def test_nous_dashboard_device_flow_retries_legacy_scope_on_invoke_refusal(monke
 
     def fake_request_device_code(**kwargs):
         requested_scopes.append(kwargs["scope"])
-        if len(requested_scopes) == 1:
-            raise _invoke_scope_refusal()
-        return _fake_nous_device_data()
+        raise _invoke_scope_refusal()
 
-    monkeypatch.delenv(auth_mod.NOUS_LEGACY_SESSION_KEYS_ENV, raising=False)
+    monkeypatch.delenv("HERMES_AGENT_USE_LEGACY_SESSION_KEYS", raising=False)
     monkeypatch.setattr(auth_mod, "_request_device_code", fake_request_device_code)
     monkeypatch.setattr(ws, "_nous_poller", lambda sid: None)
 
-    result = asyncio.run(ws._start_device_code_flow("nous"))
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(ws._start_device_code_flow("nous"))
+    assert requested_scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
+
+
+def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch):
+    from hermes_cli import web_server as ws
+    from hermes_cli.auth import get_active_provider
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    access_token = "h.eyJleHAiOjk5OTk5OTk5OTl9.s"
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            if url.endswith("/deviceauth/usercode"):
+                return _Resp(200, {
+                    "device_auth_id": "device-auth-id",
+                    "interval": 3,
+                    "user_code": "CODEX-1234",
+                })
+            if url.endswith("/deviceauth/token"):
+                return _Resp(200, {
+                    "authorization_code": "authorization-code",
+                    "code_verifier": "code-verifier",
+                })
+            return _Resp(200, {
+                "access_token": access_token,
+                "refresh_token": "codex-refresh",
+            })
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(httpx, "Client", _Client)
+    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
+
+    sid, _ = ws._new_oauth_session("openai-codex", "device_code")
     try:
-        assert requested_scopes == [
-            auth_mod.DEFAULT_NOUS_SCOPE,
-            auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE,
-        ]
-        assert (
-            ws._oauth_sessions[result["session_id"]]["scope"]
-            == auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE
-        )
+        ws._codex_full_login_worker(sid)
+
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+        assert get_active_provider() == "openai-codex"
+
+        runtime = resolve_runtime_provider(requested=None)
+        assert runtime["provider"] == "openai-codex"
+        assert runtime["api_key"] == access_token
+        assert runtime["api_mode"] == "codex_responses"
     finally:
-        ws._oauth_sessions.pop(result["session_id"], None)
+        ws._oauth_sessions.pop(sid, None)
 
 
 def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(monkeypatch):
@@ -173,13 +224,13 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
         "device_code": "device-code",
         "interval": 5,
         "expires_at": time.time() + 600,
-        "scope": auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE,
+        "scope": auth_mod.DEFAULT_NOUS_SCOPE,
     }
     captured_state = {}
 
     def fake_refresh_nous_oauth_from_state(state, **kwargs):
         captured_state.update(state)
-        return {**state, "agent_key": "legacy-agent-key"}
+        return {**state, "agent_key": "jwt-agent-key"}
 
     monkeypatch.setattr(
         auth_mod,
@@ -200,7 +251,7 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
 
     try:
         ws._nous_poller(session_id)
-        assert captured_state["scope"] == auth_mod.NOUS_LEGACY_AGENT_KEY_SCOPE
+        assert captured_state["scope"] == auth_mod.DEFAULT_NOUS_SCOPE
         assert ws._oauth_sessions[session_id]["status"] == "approved"
     finally:
         ws._oauth_sessions.pop(session_id, None)

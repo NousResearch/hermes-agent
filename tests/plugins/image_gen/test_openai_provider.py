@@ -137,7 +137,6 @@ class TestGenerate:
         assert result["error_type"] == "auth_required"
 
     def test_b64_saves_to_cache(self, provider, tmp_path):
-        import base64
         png_bytes = bytes.fromhex(_PNG_HEX)
         fake_client = MagicMock()
         fake_client.images.generate.return_value = _fake_response(b64=_b64_png())

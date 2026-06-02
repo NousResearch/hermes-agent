@@ -326,7 +326,6 @@ def test_browser_navigate_returns_policy_block(monkeypatch):
 
 def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path):
     """Missing shared blocklist files are warned and skipped, not fatal."""
-    from tools import browser_tool
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

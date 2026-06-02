@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "沒有可復原的內容。"
-    removed:               "↩️ 已復原 {count} 則訊息。\n已移除：「{preview}」"
+    removed:               "↩️ 已復原 {turns} 個回合（{count} 則訊息）。\n已備份至：「{preview}」\n複製/編輯上方的文字並傳送，即可從此處重新提問。"
+    invalid_count:         "無效的數量「{arg}」—— 請使用 /undo 或 /undo N。"
 
   update:
     platform_not_messaging:  "✗ /update 僅在訊息平台上可用。請在終端機執行 `hermes update`。"

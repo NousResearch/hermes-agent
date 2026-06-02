@@ -255,7 +255,7 @@ gateway:
     title:                 "**Título:** {title}"
     created:               "**Creado:** {timestamp}"
     last_activity:         "**Última actividad:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Tokens de API acumulados (reenviados en cada llamada):** {tokens}"
     agent_running:         "**Agente activo:** {state}"
     state_yes:             "Sí ⚡"
     state_no:              "No"
@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Nada que deshacer."
-    removed:               "↩️ {count} mensaje(s) deshecho(s).\nEliminado: \"{preview}\""
+    removed:               "↩️ {turns} turno(s) deshecho(s) ({count} mensaje(s)).\nRespaldado en: \"{preview}\"\nCopia/edita el texto de arriba y envíalo para volver a preguntar desde aquí."
+    invalid_count:         "Cantidad no válida \"{arg}\" — usa /undo o /undo N."
 
   update:
     platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."

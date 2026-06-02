@@ -33,26 +33,19 @@ except ModuleNotFoundError:
 
 import asyncio
 import base64
-import concurrent.futures
-import contextvars
 import copy
 import hashlib
 import json
 import logging
 logger = logging.getLogger(__name__)
 import os
-import random
 import re
-import ssl
 import sys
 import tempfile
 import time
 import threading
-from types import SimpleNamespace
-import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
-from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -72,13 +65,13 @@ from hermes_constants import get_hermes_home
 
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
 # `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
+# The other `# noqa: F401` re-exports below cover names accessed via
+# `mock.patch("run_agent.<X>")`, `from run_agent import <X>` in production
+# siblings, or the `_ra().<X>` indirection in agent/system_prompt.py — none
+# of which ruff's in-module usage scan can see.
 from agent.process_bootstrap import (
-    OpenAI,
-    _OpenAIProxy,
-    _load_openai_cls,
-    _SafeWriter,
-    _install_safe_stdio,
-    _get_proxy_from_env,
+    OpenAI,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.OpenAI")
+    _SafeWriter,  # noqa: F401  # re-exported for tests that `from run_agent import _SafeWriter`
     _get_proxy_for_base_url,
 )
 from agent.iteration_budget import IterationBudget
@@ -102,77 +95,38 @@ else:
 
 # Import our tool system
 from model_tools import (
-    get_tool_definitions,
+    get_tool_definitions,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.get_tool_definitions")
     get_toolset_for_tool,
-    handle_function_call,
-    check_toolset_requirements,
+    handle_function_call,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.handle_function_call")
+    check_toolset_requirements,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.check_toolset_requirements")
 )
-from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
-from tools.terminal_tool import (
-    set_approval_callback as _set_approval_callback,
-    set_sudo_password_callback as _set_sudo_password_callback,
-    _get_approval_callback,
-    _get_sudo_password_callback,
-)
-from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
+from tools.terminal_tool import cleanup_vm
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
-from agent.think_scrubber import StreamingThinkScrubber
-from agent.retry_utils import jittered_backoff
-from agent.error_classifier import classify_api_error, FailoverReason
+from agent.memory_manager import sanitize_context
+from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
-from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE,
-    KANBAN_GUIDANCE,
-    build_nous_subscription_prompt,
-)
 from agent.model_metadata import (
-    fetch_model_metadata,
-    estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
-    get_next_probe_tier, parse_context_limit_from_error,
-    parse_available_output_tokens_from_error,
-    save_context_length, is_local_endpoint,
-    query_ollama_num_ctx,
+    estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
+    is_local_endpoint,
 )
-from agent.context_compressor import ContextCompressor
-from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from agent.codex_responses_adapter import (
-    _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
-    _deterministic_call_id as _codex_deterministic_call_id,
-    _split_responses_tool_id as _codex_split_responses_tool_id,
-    _summarize_user_message_for_log,
+from agent.usage_pricing import normalize_usage
+# Re-exported for tests that monkeypatch these symbols on run_agent.
+from agent.context_compressor import ContextCompressor  # noqa: F401
+from agent.retry_utils import jittered_backoff  # noqa: F401
+from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
+    DEFAULT_AGENT_IDENTITY,
+    build_skills_system_prompt,
+    build_context_files_prompt,
+    build_environment_hints,
+    build_nous_subscription_prompt,
+    load_soul_md,
 )
-from agent.display import (
-    KawaiiSpinner, build_tool_preview as _build_tool_preview,
-    get_cute_tool_message as _get_cute_tool_message_impl,
-    _detect_tool_failure,
-    get_tool_emoji as _get_tool_emoji,
-)
-from agent.tool_guardrails import (
-    ToolCallGuardrailConfig,
-    ToolCallGuardrailController,
-    ToolGuardrailDecision,
-    append_toolguard_guidance,
-    toolguard_synthetic_result,
-)
-from agent.tool_result_classification import (
-    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
-    file_mutation_result_landed,
-)
-from agent.trajectory import (
-    convert_scratchpad_to_think,
-    save_trajectory as _save_trajectory_to_file,
-)
-from agent.message_sanitization import (
+from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
+from agent.message_sanitization import (  # noqa: F401
     _SURROGATE_RE,
     _sanitize_surrogates,
     _sanitize_structure_surrogates,
@@ -185,25 +139,38 @@ from agent.message_sanitization import (
     _strip_images_from_messages,
     _sanitize_structure_non_ascii,
 )
+from agent.codex_responses_adapter import (
+    _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
+    _deterministic_call_id as _codex_deterministic_call_id,
+    _split_responses_tool_id as _codex_split_responses_tool_id,
+    _summarize_user_message_for_log,  # noqa: F401  # re-exported for tests
+)
+from agent.tool_guardrails import (
+    ToolGuardrailDecision,
+    append_toolguard_guidance,
+    toolguard_synthetic_result,
+)
+from agent.tool_result_classification import (
+    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
+    file_mutation_result_landed,
+)
+from agent.trajectory import (
+    convert_scratchpad_to_think,
+    save_trajectory as _save_trajectory_to_file,
+)
 from agent.tool_dispatch_helpers import (
-    _NEVER_PARALLEL_TOOLS,
-    _PARALLEL_SAFE_TOOLS,
-    _PATH_SCOPED_TOOLS,
-    _DESTRUCTIVE_PATTERNS,
-    _REDIRECT_OVERWRITE,
-    _is_destructive_command,
     _should_parallelize_tool_batch,
-    _extract_parallel_scope_path,
-    _paths_overlap,
+    _is_destructive_command,  # noqa: F401  # re-exported for tests that access `run_agent._is_destructive_command`
+    _extract_parallel_scope_path,  # noqa: F401  # re-exported for tests that `from run_agent import _extract_parallel_scope_path`
+    _paths_overlap,  # noqa: F401  # re-exported for tests that `from run_agent import _paths_overlap`
     _is_multimodal_tool_result,
     _multimodal_text_summary,
-    _append_subdir_hint_to_multimodal,
+    _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
     _extract_file_mutation_targets,
     _extract_error_preview,
-    _trajectory_normalize_msg,
+    _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
-from hermes_cli.config import cfg_get
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 
 
@@ -1239,6 +1206,21 @@ class AIAgent:
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
+    @staticmethod
+    def _requested_output_cap_from_api_kwargs(api_kwargs: Any) -> Optional[int]:
+        """Extract the outgoing response token cap from a prepared request."""
+        if not isinstance(api_kwargs, dict):
+            return None
+        for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+            raw = api_kwargs.get(key)
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any reasoning/thinking blocks.
@@ -1679,6 +1661,63 @@ class AIAgent:
         return False
 
     @staticmethod
+    def _decorate_xai_entitlement_error(detail: str) -> str:
+        """Append a neutral hint when xAI's OAuth surface returns the
+        permission-denied 403.
+
+        xAI's ``/v1/responses`` endpoint replies to several distinct failure
+        modes with the SAME body::
+
+            {"code": "The caller does not have permission to execute the
+             specified operation", "error": "You have either run out of
+             available resources or do not have an active Grok subscription.
+             Manage subscriptions at https://grok.com/?_s=usage or subscribe
+             at https://grok.com/supergrok"}
+
+        That body covers several real causes we cannot distinguish without
+        more info from xAI.  The most common (and least obvious) one is
+        that **X Premium+ does NOT include API access** — only standalone
+        SuperGrok subscribers can use Hermes against xai-oauth.  Lots of
+        users see Grok in their X app, assume it works here too, and hit
+        this 403 with no idea why.  Lead the hint with that.
+
+        Other possible causes:
+          * No Grok subscription at all
+          * SuperGrok tier doesn't include the requested model (e.g.
+            grok-4.3 may need a higher tier)
+          * Monthly quota exhausted (the ``?_s=usage`` URL hints at this)
+
+        Surface the raw xAI text verbatim and point at
+        https://grok.com/?_s=usage where the user can see WHICH applies.
+
+        Matched once per detail string — won't double-decorate if the
+        upstream already concatenated the same text.
+        """
+        if not detail:
+            return detail
+        lower = detail.lower()
+        is_entitlement = (
+            "do not have an active grok subscription" in lower
+            or ("out of available resources" in lower and "grok" in lower)
+            or ("does not have permission" in lower and "grok" in lower)
+        )
+        if not is_entitlement:
+            return detail
+        hint = (
+            " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
+            "include xAI API access — only standalone SuperGrok subscribers "
+            "can use this provider. Other possible causes: no Grok "
+            "subscription, your tier doesn't include this model, or your "
+            "quota is exhausted. Check https://grok.com/?_s=usage to see "
+            "which, or run `/model` to switch providers."
+        )
+        # Idempotency: detect prior decoration by a substring unique to the
+        # hint (not present in xAI's own body text).
+        if "X Premium+ does NOT include" in detail:
+            return detail
+        return f"{detail}{hint}"
+
+    @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
@@ -1717,12 +1756,12 @@ class AIAgent:
             if msg:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
-                return f"{prefix}{msg[:300]}"
+                return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
-        return f"{prefix}{raw[:500]}"
+        return AIAgent._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never
@@ -2139,13 +2178,48 @@ class AIAgent:
             pass
         return True  # safe default: verifier on
 
-    @staticmethod
-    def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
+    # Bare absolute / home / Windows-drive file paths in a footer line.
+    # Anchors mirror the gateway's ``extract_local_files`` bare-path
+    # detector so that anything the gateway WOULD auto-attach is wrapped
+    # in inline-code backticks here first (the extractor skips paths inside
+    # `code` spans).  Defense-in-depth: even if a future error message
+    # echoes a credential path (config.yaml, .env, auth.json) into the
+    # user-facing footer, it can never be matched as a deliverable bare
+    # path and silently uploaded to a messaging channel (#35584).
+    _FOOTER_PATH_RE = re.compile(
+        r"(?<![/:\w.`])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.[\w]+",
+    )
+
+    @classmethod
+    def _neutralize_footer_paths(cls, text: str) -> str:
+        """Wrap bare file paths in backticks so they aren't auto-delivered.
+
+        The gateway's ``extract_local_files`` scans response text for bare
+        absolute/home paths ending in a deliverable extension and uploads
+        any that exist on disk as native attachments — but it explicitly
+        skips paths inside inline-code (`` `...` ``) spans.  Backticking
+        every path the footer renders defeats that auto-detection while
+        keeping the path fully human-readable.  Paths already wrapped in a
+        backtick (the negative lookbehind excludes a preceding `` ` ``) are
+        left untouched so we never double-wrap.
+        """
+        if not text:
+            return text
+        return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
+
+    @classmethod
+    def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
 
         Displays up to 10 paths with their first error preview, then a
         count of any additional failures.  Returns an empty string when
         the dict is empty so callers can concatenate unconditionally.
+
+        Every file path that reaches the user-facing text — both the bullet
+        path and any path echoed inside the tool's error preview — is
+        backtick-wrapped via ``_neutralize_footer_paths`` so the gateway's
+        bare-path media extractor can never auto-attach a protected file
+        (e.g. ``~/.hermes/config.yaml``) to a messaging channel (#35584).
         """
         if not failed:
             return ""
@@ -2162,14 +2236,137 @@ class AIAgent:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
             if preview:
-                lines.append(f"  • {path} — [{tool}] {preview}")
+                lines.append(f"  • `{path}` — [{tool}] {preview}")
             else:
-                lines.append(f"  • {path} — [{tool}] failed")
+                lines.append(f"  • `{path}` — [{tool}] failed")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")
-        return "\n".join(lines)
+        # Neutralize any path the preview text echoed (the bullet path is
+        # already backticked above; the lookbehind keeps it from being
+        # double-wrapped).
+        return cls._neutralize_footer_paths("\n".join(lines))
+
+    def _turn_completion_explainer_enabled(self) -> bool:
+        """Check whether the end-of-turn completion explainer footer is on.
+
+        Config path: ``display.turn_completion_explainer`` (bool, default
+        True).  ``HERMES_TURN_COMPLETION_EXPLAINER`` env var overrides
+        config.  Exposed as a method so tests can patch a single seam,
+        mirroring ``_file_mutation_verifier_enabled``.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_TURN_COMPLETION_EXPLAINER")
+            if env is not None:
+                return env.strip().lower() not in {"0", "false", "no", "off"}
+            # Read from the persisted config.yaml so gateway and CLI share
+            # the same setting.  Import lazily to avoid a startup-time cycle.
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "turn_completion_explainer" in _display:
+                return bool(_display.get("turn_completion_explainer"))
+        except Exception:
+            pass
+        return True  # safe default: explainer on
+
+    @staticmethod
+    def _format_turn_completion_explanation(turn_exit_reason: str) -> str:
+        """Render a user-facing explanation for an abnormal turn ending.
+
+        Maps the internal ``turn_exit_reason`` to a short, actionable
+        message so a turn that produced no usable assistant reply (empty
+        content after retries, a partial/truncated stream, a still-pending
+        tool result, or an iteration/budget limit) is never silent from
+        the UI's perspective — the symptom users report in #34452.
+
+        Returns an empty string for reasons that are NOT abnormal (e.g.
+        a normal ``text_response(...)`` exit), so callers can concatenate
+        or substitute unconditionally without warning on healthy turns
+        like a terse ``Done.``.
+        """
+        if not turn_exit_reason:
+            return ""
+        reason = str(turn_exit_reason)
+
+        # Normal completion — stay quiet.  ``text_response(...)`` is the
+        # healthy terminal; anything that produced a real reply is fine.
+        if reason.startswith("text_response"):
+            return ""
+
+        prefix = "⚠️ No reply: "
+        if reason == "empty_response_exhausted":
+            return (
+                prefix
+                + "the model returned empty content after retries and any "
+                "fallback providers. Try `continue`, switch model/provider, "
+                "or inspect the tool output above."
+            )
+        if reason == "all_retries_exhausted_no_response":
+            return (
+                prefix
+                + "all API retries were exhausted before a response was "
+                "produced (provider errors / rate limits). Try `continue` "
+                "or switch provider."
+            )
+        if reason == "partial_stream_recovery":
+            return (
+                prefix
+                + "streaming stopped early and only a partial response was "
+                "recovered. Send `continue` to resume from where it stopped."
+            )
+        if reason == "fallback_prior_turn_content":
+            return (
+                prefix
+                + "no new content was produced this turn; showing recovered "
+                "prior context. Send `continue` to retry."
+            )
+        if reason == "interrupted_during_api_call":
+            return (
+                prefix
+                + "the request was interrupted mid-call before a reply was "
+                "received. Send `continue` to retry."
+            )
+        if reason == "budget_exhausted":
+            return (
+                prefix
+                + "the per-turn iteration/cost budget was exhausted before a "
+                "final answer. Send `continue` to keep going."
+            )
+        if reason == "ollama_runtime_context_too_small":
+            return (
+                prefix
+                + "the local model's context window was too small to finish. "
+                "Increase the context size or use a larger model."
+            )
+        if reason.startswith("max_iterations_reached"):
+            return (
+                prefix
+                + "the maximum tool-iteration limit was reached before a "
+                "final answer. Send `continue` to keep going, or raise "
+                "`max_iterations`."
+            )
+        if reason.startswith("error_near_max_iterations"):
+            return (
+                prefix
+                + "an error occurred near the iteration limit before a final "
+                "answer. Check the tool output above, then send `continue`."
+            )
+        if reason == "pending_tool_result":
+            return (
+                prefix
+                + "the turn stopped while a tool result was still pending and "
+                "the model produced no follow-up text. Send `continue` to "
+                "let it summarize."
+            )
+        # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
+        # which already surfaces its own message) — don't second-guess.
+        return ""
 
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Forwarder — see ``agent.agent_runtime_helpers.apply_pending_steer_to_tool_results``."""
@@ -2177,9 +2374,26 @@ class AIAgent:
         return apply_pending_steer_to_tool_results(self, messages, num_tool_msgs)
 
     def _touch_activity(self, desc: str) -> None:
-        """Update the last-activity timestamp and description (thread-safe)."""
+        """Update the last-activity timestamp and description (thread-safe).
+
+        Also bridges to the kanban board's heartbeat fields when this
+        process is a dispatcher-spawned worker (HERMES_KANBAN_TASK set),
+        so the dispatcher watchdog doesn't reclaim an actively-running
+        worker as stale (#31752). Bridge is rate-limited (60s) and
+        best-effort — it never raises into the agent loop.
+        """
         self._last_activity_ts = time.time()
         self._last_activity_desc = desc
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            try:
+                from tools.kanban_tools import heartbeat_current_worker_from_env
+                heartbeat_current_worker_from_env()
+            except Exception:
+                # Never let the bridge break the agent loop.  The function
+                # already swallows exceptions internally; this outer guard
+                # covers import-time failures (kanban_tools unavailable,
+                # etc.) on niche deployment surfaces.
+                pass
 
     def _capture_rate_limits(self, http_response: Any) -> None:
         """Parse x-ratelimit-* headers from an HTTP response and cache the state.
@@ -3015,27 +3229,16 @@ class AIAgent:
         self,
         *,
         force: bool = True,
-        inference_auth_mode: str | None = None,
     ) -> bool:
         if self.api_mode != "chat_completions" or self.provider != "nous":
             return False
 
         try:
-            from hermes_cli.auth import (
-                NOUS_INFERENCE_AUTH_MODE_AUTO,
-                NOUS_INFERENCE_AUTH_MODE_LEGACY,
-                resolve_nous_runtime_credentials,
-            )
+            from hermes_cli.auth import resolve_nous_runtime_credentials
 
-            selected_auth_mode = inference_auth_mode or (
-                NOUS_INFERENCE_AUTH_MODE_LEGACY
-                if force
-                else NOUS_INFERENCE_AUTH_MODE_AUTO
-            )
             creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-                inference_auth_mode=selected_auth_mode,
+                force_refresh=force,
             )
         except Exception as exc:
             logger.debug("Nous credential refresh failed: %s", exc)
@@ -3456,6 +3659,18 @@ class AIAgent:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
         from agent.chat_completion_helpers import try_activate_fallback
         return try_activate_fallback(self, reason)
+
+    def _has_pending_fallback(self) -> bool:
+        """Whether a fallback provider is actually available to switch to.
+
+        Used to gate user-facing "trying fallback..." status so we don't
+        announce a fallback that will never be attempted (the user has no
+        fallback chain configured).  Mirrors the early-return guard in
+        ``try_activate_fallback`` (#35314, #17446).
+        """
+        chain = getattr(self, "_fallback_chain", None) or []
+        index = getattr(self, "_fallback_index", 0)
+        return index < len(chain)
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 

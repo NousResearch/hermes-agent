@@ -244,9 +244,16 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "elevenlabs",
             },
-            # Mistral (Voxtral TTS) temporarily hidden — `mistralai` PyPI
-            # package is currently quarantined (malicious 2.4.6 release on
-            # 2026-05-12). Restore this entry once PyPI un-quarantines.
+            # Mistral Voxtral TTS — `mistralai` SDK lazy-installs on first use.
+            {
+                "name": "Mistral (Voxtral TTS)",
+                "badge": "paid",
+                "tag": "Multilingual, native Opus",
+                "env_vars": [
+                    {"key": "MISTRAL_API_KEY", "prompt": "Mistral API key", "url": "https://console.mistral.ai/"},
+                ],
+                "tts_provider": "mistral",
+            },
             {
                 "name": "Google Gemini TTS",
                 "badge": "preview",
@@ -339,11 +346,26 @@ TOOL_CATEGORIES = {
     "video_gen": {
         "name": "Video Generation",
         "icon": "🎬",
-        # Providers list is intentionally empty — every video gen backend
-        # is a plugin, surfaced by ``_plugin_video_gen_providers()`` and
-        # injected by ``_visible_providers``. Mirrors the design we'll
-        # converge image_gen toward.
-        "providers": [],
+        # "Nous Subscription" row mirrors the image_gen pattern — managed
+        # FAL video generation billed via the Nous Portal.  Plugin-backed
+        # provider rows (FAL BYOK, xAI, …) are injected at runtime by
+        # ``_plugin_video_gen_providers()`` in ``_visible_providers``.
+        "providers": [
+            {
+                "name": "Nous Subscription",
+                "badge": "subscription",
+                "tag": "Managed FAL video generation billed to your subscription",
+                "env_vars": [],
+                "requires_nous_auth": True,
+                "managed_nous_feature": "video_gen",
+                "override_env_vars": ["FAL_KEY"],
+                # The underlying plugin backend — when the user picks
+                # "Nous Subscription" we set video_gen.provider = "fal"
+                # and video_gen.use_gateway = True so the FAL plugin
+                # routes through the managed queue gateway.
+                "video_gen_plugin_name": "fal",
+            },
+        ],
     },
     "x_search": {
         "name": "X (Twitter) Search",
@@ -469,6 +491,31 @@ TOOL_CATEGORIES = {
                     # optional pin for reproducibility across macOS updates.
                 ],
                 "post_setup": "cua_driver",
+            },
+        ],
+    },
+    "langfuse": {
+        "name": "Langfuse Observability",
+        "icon": "📊",
+        "providers": [
+            {
+                "name": "Langfuse Cloud",
+                "tag": "Hosted Langfuse (cloud.langfuse.com)",
+                "env_vars": [
+                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)", "url": "https://cloud.langfuse.com"},
+                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)", "url": "https://cloud.langfuse.com"},
+                ],
+                "post_setup": "langfuse",
+            },
+            {
+                "name": "Langfuse Self-Hosted",
+                "tag": "Self-hosted Langfuse instance",
+                "env_vars": [
+                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)"},
+                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)"},
+                    {"key": "HERMES_LANGFUSE_BASE_URL", "prompt": "Langfuse server URL (e.g. http://localhost:3000)", "default": "http://localhost:3000"},
+                ],
+                "post_setup": "langfuse",
             },
         ],
     },
@@ -857,35 +904,21 @@ def _run_post_setup(post_setup_key: str):
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
         if not camofox_dir.exists() and _npm_bin:
-            _print_info("    Installing Camofox browser package...")
-            _print_info("    First run downloads the Camoufox engine (~300MB) — this can take several minutes.")
+            _print_info("    Installing Camofox browser server...")
             import subprocess
-            # Install @askjo/camofox-browser on-demand. It is NOT in
-            # package.json so that `hermes update` does not silently pull
-            # the ~300MB Camoufox Firefox-fork binary for every user.
-            # Stream output (no capture, no --silent) so the long-running
-            # postinstall download is visible instead of looking frozen.
-            try:
-                result = subprocess.run(
-                    [_npm_bin, "install", "@askjo/camofox-browser@^1.5.2",
-                     "--no-fund", "--no-audit", "--progress=false"],
-                    cwd=str(PROJECT_ROOT),
-                )
-                if result.returncode == 0:
-                    _print_success("    Camofox installed")
-                else:
-                    _print_warning(
-                        "    npm install failed — run manually: "
-                        "npm install @askjo/camofox-browser"
-                    )
-            except Exception as exc:
-                _print_warning(f"    Camofox install failed: {exc}")
-                _print_info(
-                    "    Run manually: npm install @askjo/camofox-browser"
-                )
+            # Absolute npm path so .cmd shim executes on Windows.
+            result = subprocess.run(
+                [_npm_bin, "install", "--silent"],
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+            )
+            if result.returncode == 0:
+                _print_success("    Camofox installed")
+            else:
+                _print_warning("    npm install failed - run manually: npm install")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
+            _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
@@ -993,6 +1026,36 @@ def _run_post_setup(post_setup_key: str):
         except Exception as exc:
             _print_warning(f"    Spotify login failed: {exc}")
             _print_info("    Run manually: hermes auth spotify")
+
+    elif post_setup_key == "langfuse":
+        # Install the langfuse SDK.
+        try:
+            __import__("langfuse")
+            _print_success("    langfuse SDK already installed")
+        except ImportError:
+            _print_info("    Installing langfuse SDK...")
+            result = _pip_install(["langfuse", "--quiet"], timeout=120)
+            if result.returncode == 0:
+                _print_success("    langfuse SDK installed")
+            else:
+                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
+        # Opt the bundled observability/langfuse plugin into plugins.enabled.
+        # The plugin ships in the repo but doesn't load until the user enables
+        # it (standalone plugins are opt-in).
+        try:
+            from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
+            enabled = _get_enabled_set()
+            if "observability/langfuse" in enabled or "langfuse" in enabled:
+                _print_success("    Plugin observability/langfuse already enabled")
+            else:
+                enabled.add("observability/langfuse")
+                _save_enabled_set(enabled)
+                _print_success("    Plugin observability/langfuse enabled")
+        except Exception as exc:
+            _print_warning(f"    Could not enable plugin automatically: {exc}")
+            _print_info("    Run manually: hermes plugins enable observability/langfuse")
+        _print_info("    Restart Hermes for tracing to take effect.")
+        _print_info("    Verify: hermes plugins list")
 
     elif post_setup_key == "xai_grok":
         # Shared credential bootstrap for any picker entry that talks to xAI
@@ -1438,7 +1501,7 @@ def _toolset_has_keys(
         except Exception:
             return False
 
-    if ts_key in {"web", "image_gen", "tts", "browser"}:
+    if ts_key in {"web", "image_gen", "video_gen", "tts", "browser"}:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
@@ -1854,18 +1917,46 @@ def _visible_providers(
     *,
     force_fresh: bool = False,
 ) -> list[dict]:
-    """Return provider entries visible for the current auth/config state."""
+    """Return provider entries visible for the current auth/config state.
+
+    Nous-managed Tool Gateway rows (``managed_nous_feature``) are always
+    shown — even to logged-out / unentitled users — so the picker advertises
+    that the capability exists.  Selecting one drives an inline Nous Portal
+    login + entitlement check (see ``_configure_provider``); the row only
+    *activates* the gateway once paid access is confirmed.
+    """
     features = get_nous_subscription_features(config, force_fresh=force_fresh)
-    managed_available = bool(
-        features.account_info
-        and features.account_info.logged_in
-        and features.account_info.paid_service_access is True
+    acct = features.account_info
+    # Pool-only users (entitled to managed tools via the free tool pool but with
+    # no paid access) get image gen but NOT video gen — the pool doesn't fund
+    # `fal-video`. Rather than advertise a managed video row that would be denied
+    # on select, hide it for them. Logged-out users still see it (advertising)
+    # and paid users are entitled to it.
+    pool_only = bool(
+        acct
+        and acct.logged_in
+        and acct.paid_service_access is not True
+        and acct.tool_gateway_entitled
     )
     visible = []
     for provider in cat.get("providers", []):
-        if provider.get("managed_nous_feature") and not managed_available:
+        # Nous-managed Tool Gateway rows stay visible regardless of auth —
+        # selecting one drives an inline Portal login. A `requires_nous_auth`
+        # row that is NOT a managed gateway feature (pure pre-auth UX) is
+        # still hidden until the user is logged in.
+        if (
+            provider.get("requires_nous_auth")
+            and not provider.get("managed_nous_feature")
+            and not features.nous_auth_present
+        ):
             continue
-        if provider.get("requires_nous_auth") and not features.nous_auth_present:
+        # Hide the managed video-gen row from pool-only users — their free tool
+        # pool doesn't cover video, so showing it would only lead to a denial.
+        if (
+            pool_only
+            and provider.get("managed_nous_feature") == "video_gen"
+            and not (acct and acct.tool_gateway_entitled_for("fal-video"))
+        ):
             continue
         visible.append(provider)
 
@@ -1911,22 +2002,16 @@ def _hidden_nous_gateway_message(
     *,
     force_fresh: bool = False,
 ) -> str:
-    """Return a reason when a category's Nous provider is hidden."""
-    features = get_nous_subscription_features(config, force_fresh=force_fresh)
-    managed_available = bool(
-        features.account_info
-        and features.account_info.logged_in
-        and features.account_info.paid_service_access is True
-    )
-    if managed_available:
-        return ""
-    if not any(p.get("managed_nous_feature") for p in cat.get("providers", [])):
-        return ""
-    message = format_nous_portal_entitlement_message(
-        features.account_info,
-        capability=capability,
-    )
-    return message or ""
+    """Deprecated: Nous Tool Gateway rows are no longer hidden.
+
+    Previously this returned a "log in / upgrade" banner shown above a
+    category when its Nous-managed rows were filtered out for unentitled
+    users. Those rows are now always listed (see ``_visible_providers``), and
+    the login + entitlement guidance happens inline when the user selects one
+    (``ensure_nous_portal_access``). Kept as a no-op so call sites stay simple;
+    always returns an empty string.
+    """
+    return ""
 
 
 _POST_SETUP_INSTALLED: dict = {
@@ -2110,14 +2195,17 @@ def _configure_tool_category(
                     configured = ""
                 else:
                     configured = " [configured]"
-            # Highlight Nous-managed entries when the user has Portal auth.
-            # curses_radiolist can't render ANSI inside item strings, so we
-            # use a plain unicode star + parenthetical phrase. Suppressed
-            # when no Portal auth is present so non-subscribers see the
-            # picker unchanged.
+            # Mark Nous-managed entries. Logged-in paid subscribers get the
+            # "included" star; everyone else gets a "via Nous Portal" hint so
+            # it's clear selecting the row triggers a Portal login. The rows
+            # are always shown now (see _visible_providers) — selecting one
+            # drives an inline login + entitlement check.
             sub_marker = ""
-            if _nous_logged_in and p.get("managed_nous_feature"):
-                sub_marker = "  ★ Included with your Nous subscription"
+            if p.get("managed_nous_feature"):
+                if _nous_logged_in:
+                    sub_marker = "  ★ Included with your Nous subscription"
+                else:
+                    sub_marker = "  ★ via Nous Portal (login on select)"
             provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
 
         # Add skip option
@@ -2153,7 +2241,7 @@ def _is_provider_active(
         return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
 
     video_plugin_name = provider.get("video_gen_plugin_name")
-    if video_plugin_name:
+    if video_plugin_name and not provider.get("managed_nous_feature"):
         video_cfg = config.get("video_gen", {})
         return isinstance(video_cfg, dict) and video_cfg.get("provider") == video_plugin_name
 
@@ -2170,6 +2258,15 @@ def _is_provider_active(
                 if configured_provider not in {None, "", "fal"}:
                     return False
                 if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
+                    return False
+            return feature.managed_by_nous
+        if managed_feature == "video_gen":
+            video_cfg = config.get("video_gen", {})
+            if isinstance(video_cfg, dict):
+                configured_provider = video_cfg.get("provider")
+                if configured_provider not in {None, "", "fal"}:
+                    return False
+                if video_cfg.get("use_gateway") is not None and not is_truthy_value(video_cfg.get("use_gateway"), default=False):
                     return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
@@ -2505,16 +2602,117 @@ def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None
     _print_success(f"  Model set to: {chosen}")
 
 
-def _select_plugin_video_gen_provider(plugin_name: str, config: dict) -> None:
+def _select_plugin_video_gen_provider(plugin_name: str, config: dict, *, use_gateway: bool = False) -> None:
     """Persist a plugin-backed video generation provider selection."""
     vid_cfg = config.setdefault("video_gen", {})
     if not isinstance(vid_cfg, dict):
         vid_cfg = {}
         config["video_gen"] = vid_cfg
     vid_cfg["provider"] = plugin_name
-    vid_cfg["use_gateway"] = False
+    vid_cfg["use_gateway"] = use_gateway
     _print_success(f"  video_gen.provider set to: {plugin_name}")
     _configure_videogen_model_for_plugin(plugin_name, config)
+
+
+def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> None:
+    """Persist the provider/backend config keys for a selected provider.
+
+    This is the pure, non-interactive core of :func:`_configure_provider` —
+    it writes ``tts.provider`` / ``browser.cloud_provider`` / ``web.backend``
+    and the ``use_gateway`` flags based on the provider's markers, but does
+    NOT prompt for env vars, run post-setup hooks, gate on Nous auth, or run
+    interactive model pickers. Both the CLI configurator and the desktop GUI
+    ``PUT .../provider`` endpoint call through here so there is one code path.
+    """
+    # Set TTS provider in config if applicable
+    if provider.get("tts_provider"):
+        tts_cfg = config.setdefault("tts", {})
+        tts_cfg["provider"] = provider["tts_provider"]
+        tts_cfg["use_gateway"] = bool(managed_feature)
+
+    # Set browser cloud provider in config if applicable
+    if "browser_provider" in provider:
+        bp = provider["browser_provider"]
+        browser_cfg = config.setdefault("browser", {})
+        if bp:
+            browser_cfg["cloud_provider"] = bp
+        browser_cfg["use_gateway"] = bool(managed_feature)
+
+    # Set web search backend in config if applicable
+    if provider.get("web_backend"):
+        web_cfg = config.setdefault("web", {})
+        web_cfg["backend"] = provider["web_backend"]
+        web_cfg["use_gateway"] = bool(managed_feature)
+
+    # For tools without a specific config key (e.g. image_gen), still
+    # track use_gateway so the runtime knows the user's intent.
+    if managed_feature and managed_feature not in {"web", "tts", "browser"}:
+        config.setdefault(managed_feature, {})["use_gateway"] = True
+    elif not managed_feature:
+        # User picked a non-gateway provider — find which category this
+        # belongs to and clear use_gateway if it was previously set.
+        for cat_key, cat in TOOL_CATEGORIES.items():
+            if provider in cat.get("providers", []):
+                section = config.get(cat_key)
+                if isinstance(section, dict) and section.get("use_gateway"):
+                    section["use_gateway"] = False
+                break
+
+
+def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
+    """Non-interactively persist a provider selection for a toolset.
+
+    Resolves ``provider_name`` within ``ts_key``'s category (matching the
+    rows the GUI/CLI picker shows via :func:`_visible_providers`) and writes
+    the corresponding backend/provider config keys. Unlike
+    :func:`_configure_provider`, this does NOT prompt for API keys, run
+    post-setup hooks, gate on Nous Portal auth, or run interactive model
+    pickers — those are handled separately (env endpoints, post-setup
+    endpoints, the model picker) in the desktop GUI.
+
+    Raises ``KeyError`` if the toolset has no category or the provider name
+    is not found among the visible providers.
+    """
+    cat = TOOL_CATEGORIES.get(ts_key)
+    if cat is None:
+        raise KeyError(f"Toolset has no configurable category: {ts_key}")
+
+    providers = _visible_providers(cat, config, force_fresh=True)
+    provider = next((p for p in providers if p.get("name") == provider_name), None)
+    if provider is None:
+        raise KeyError(f"Unknown provider {provider_name!r} for toolset {ts_key!r}")
+
+    managed_feature = provider.get("managed_nous_feature")
+    _write_provider_config(provider, config, managed_feature=managed_feature)
+
+    # Plugin-registered image/video gen backends record the provider name in
+    # their own config section. Write that here (without the interactive
+    # model picker the CLI runs afterwards — model choice is a separate GUI
+    # flow).
+    plugin_name = provider.get("image_gen_plugin_name")
+    if plugin_name:
+        img_cfg = config.setdefault("image_gen", {})
+        if not isinstance(img_cfg, dict):
+            img_cfg = {}
+            config["image_gen"] = img_cfg
+        img_cfg["provider"] = plugin_name
+        img_cfg["use_gateway"] = bool(managed_feature)
+
+    video_plugin = provider.get("video_gen_plugin_name")
+    if video_plugin:
+        vid_cfg = config.setdefault("video_gen", {})
+        if not isinstance(vid_cfg, dict):
+            vid_cfg = {}
+            config["video_gen"] = vid_cfg
+        vid_cfg["provider"] = video_plugin
+        vid_cfg["use_gateway"] = bool(managed_feature)
+
+    # In-tree FAL imagegen backend: keep image_gen.provider on the legacy
+    # path (mirrors _configure_provider).
+    if provider.get("imagegen_backend"):
+        img_cfg = config.setdefault("image_gen", {})
+        if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
+            img_cfg["provider"] = "fal"
 
 
 def _configure_provider(
@@ -2527,7 +2725,30 @@ def _configure_provider(
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
 
-    if provider.get("requires_nous_auth"):
+    # Nous-managed Tool Gateway backends are always listed (see
+    # _visible_providers), but only *activate* once the user has paid Nous
+    # Portal access. Selecting one runs an inline Portal login when needed —
+    # auth + entitlement only, no inference-provider switch and no bulk
+    # "enable all tools" prompt (that lives in `hermes model`).
+    if managed_feature:
+        from hermes_cli.nous_subscription import (
+            MANAGED_FEATURE_COVERAGE_CATEGORY,
+            ensure_nous_portal_access,
+        )
+
+        if not ensure_nous_portal_access(
+            capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
+            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature),
+        ):
+            _print_warning(
+                "  Not enabled — Nous Portal access is required for this backend."
+            )
+            return
+
+    # Pure pre-auth UX rows (requires_nous_auth without a managed gateway
+    # feature) keep the old gate. Managed rows are handled by the inline
+    # login above, so don't double-check them here.
+    if provider.get("requires_nous_auth") and not managed_feature:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
         entitled = bool(
             features.account_info and features.account_info.paid_service_access is True
@@ -2551,35 +2772,19 @@ def _configure_provider(
     # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
-        browser_cfg = config.setdefault("browser", {})
         if bp == "local":
-            browser_cfg["cloud_provider"] = "local"
             _print_success("  Browser set to local mode")
         elif bp:
-            browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
-        browser_cfg["use_gateway"] = bool(managed_feature)
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        web_cfg = config.setdefault("web", {})
-        web_cfg["backend"] = provider["web_backend"]
-        web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
-    # For tools without a specific config key (e.g. image_gen), still
-    # track use_gateway so the runtime knows the user's intent.
-    if managed_feature and managed_feature not in {"web", "tts", "browser"}:
-        config.setdefault(managed_feature, {})["use_gateway"] = True
-    elif not managed_feature:
-        # User picked a non-gateway provider — find which category this
-        # belongs to and clear use_gateway if it was previously set.
-        for cat_key, cat in TOOL_CATEGORIES.items():
-            if provider in cat.get("providers", []):
-                section = config.get(cat_key)
-                if isinstance(section, dict) and section.get("use_gateway"):
-                    section["use_gateway"] = False
-                break
+    # Persist the provider/backend config keys + use_gateway flags. Shared
+    # with the GUI provider-select endpoint via apply_provider_selection so
+    # there is a single source of truth for these writes.
+    _write_provider_config(provider, config, managed_feature=managed_feature)
 
     if not env_vars:
         if provider.get("post_setup"):
@@ -2597,7 +2802,7 @@ def _configure_provider(
         # registry.
         video_plugin = provider.get("video_gen_plugin_name")
         if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
+            _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
             return
         # Imagegen backends prompt for model selection after backend pick.
         backend = provider.get("imagegen_backend")
@@ -2676,7 +2881,7 @@ def _configure_provider(
             return
         video_plugin = provider.get("video_gen_plugin_name")
         if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
+            _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
             return
         # Imagegen backends prompt for model selection after env vars are in.
         backend = provider.get("imagegen_backend")
@@ -2891,7 +3096,26 @@ def _reconfigure_provider(
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
 
-    if provider.get("requires_nous_auth"):
+    # Same inline Nous Portal login + entitlement gate as _configure_provider:
+    # managed Tool Gateway backends only activate with paid Portal access.
+    if managed_feature:
+        from hermes_cli.nous_subscription import (
+            MANAGED_FEATURE_COVERAGE_CATEGORY,
+            ensure_nous_portal_access,
+        )
+
+        if not ensure_nous_portal_access(
+            capability=f"{provider.get('name', 'the Nous Tool Gateway')}",
+            coverage_category=MANAGED_FEATURE_COVERAGE_CATEGORY.get(managed_feature),
+        ):
+            _print_warning(
+                "  Not enabled — Nous Portal access is required for this backend."
+            )
+            return
+
+    # Pure pre-auth UX rows keep the old gate; managed rows already handled
+    # by the inline login above.
+    if provider.get("requires_nous_auth") and not managed_feature:
         features = get_nous_subscription_features(config, force_fresh=force_fresh)
         entitled = bool(
             features.account_info and features.account_info.paid_service_access is True
@@ -2957,7 +3181,7 @@ def _reconfigure_provider(
         # Plugin-registered video_gen provider — same flow, different registry.
         video_plugin = provider.get("video_gen_plugin_name")
         if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
+            _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
             return
         # Imagegen backends prompt for model selection on reconfig too.
         backend = provider.get("imagegen_backend")
@@ -2997,7 +3221,7 @@ def _reconfigure_provider(
     # Plugin-registered video_gen provider — same flow, different registry.
     video_plugin = provider.get("video_gen_plugin_name")
     if video_plugin:
-        _select_plugin_video_gen_provider(video_plugin, config)
+        _select_plugin_video_gen_provider(video_plugin, config, use_gateway=bool(managed_feature))
         return
 
     backend = provider.get("imagegen_backend")

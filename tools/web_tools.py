@@ -51,21 +51,11 @@ import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_t
 if TYPE_CHECKING:
     from firecrawl import Firecrawl  # noqa: F401 — type hints only
 from plugins.web.firecrawl.provider import (
-    Firecrawl,
-    _FirecrawlProxy,
-    _FIRECRAWL_CLS_CACHE,
-    _extract_scrape_payload,
-    _extract_web_search_results,
+    Firecrawl,  # noqa: F401  # re-exported for tests that mock.patch("tools.web_tools.Firecrawl")
     _firecrawl_backend_help_suffix,
-    _get_direct_firecrawl_config,
-    _get_firecrawl_client,
+    _get_firecrawl_client,  # noqa: F401  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
     _get_firecrawl_gateway_url,
-    _has_direct_firecrawl_config,
     _is_tool_gateway_ready,
-    _load_firecrawl_cls,
-    _normalize_result_list,
-    _raise_web_backend_configuration_error,
-    _to_plain_object,
     check_firecrawl_api_key,
 )
 # Tavily helpers re-exported for backward-compat with existing unit tests
@@ -103,6 +93,7 @@ from tools.debug_helpers import DebugSession
 # tools.web_tools (the firecrawl plugin reads them via its own import chain).
 from tools.managed_tool_gateway import (  # noqa: F401 — backward-compat names for tests
     build_vendor_gateway_url,
+    peek_nous_access_token as _peek_nous_access_token,
     read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
@@ -112,7 +103,6 @@ from tools.tool_backend_helpers import (  # noqa: F401
     prefers_gateway,
 )
 from tools.url_safety import is_safe_url
-from tools.website_policy import check_website_access
 import sys
 
 logger = logging.getLogger(__name__)
@@ -743,6 +733,35 @@ def clean_base64_images(text: str) -> str:
 # dispatchers in this file resolve them via get_active_*_provider().
 
 
+def _ensure_web_plugins_loaded() -> None:
+    """Idempotently trigger plugin discovery so the web registry is populated.
+
+    Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
+    tavily, firecrawl) registers itself via ``plugins/web/<vendor>/__init__.py``
+    during plugin discovery. Tool dispatch can be reached from contexts that
+    haven't already triggered discovery — subprocess agent runs, delegate
+    children, standalone scripts, certain test paths — and without it the
+    registry is empty and ``get_provider('firecrawl')`` returns ``None`` even
+    when the user has ``web.extract_backend: firecrawl`` configured and
+    ``FIRECRAWL_API_KEY`` set. The symptom is a misleading "No web extract
+    provider configured" error (issue #27580).
+
+    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` exactly:
+    the underlying discovery call is idempotent and cheap on subsequent
+    invocations.
+    """
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+    except Exception as exc:  # noqa: BLE001
+        # Warning, not debug: if a plugin import is genuinely broken the
+        # user otherwise hits the misleading "No web extract provider
+        # configured" error this helper is meant to eliminate, with no
+        # clue in normal logs about the real cause.
+        logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -803,6 +822,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
+        _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
             get_provider as _wsp_get_provider,
@@ -935,6 +955,7 @@ async def web_extract_tool(
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
+            _ensure_web_plugins_loaded()
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
@@ -1134,11 +1155,11 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
     )
 
 

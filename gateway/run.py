@@ -7791,6 +7791,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "autopilot":
+            return await self._handle_autopilot_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -9949,6 +9952,39 @@ class GatewayRunner:
 
         # Gateway messages have practical length caps; truncate long
         # listings to keep the UX reasonable.
+        if len(output) > 3800:
+            output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
+        return output or t("gateway.kanban.no_output")
+
+    async def _handle_autopilot_command(self, event: MessageEvent) -> str:
+        """Handle /autopilot as an explicit parent-scoped Kanban dispatch.
+
+        This is intentionally a thin, deterministic wrapper around the shared
+        Kanban dispatcher instead of an LLM turn.  ``/autopilot on <parent>``
+        means: select only hierarchy descendants of that approved parent,
+        honor the strict ready gate and dispatcher caps, and do not restart,
+        merge, deploy, or mutate external systems.
+        """
+        import asyncio
+        import shlex
+        from hermes_cli.kanban import run_slash
+
+        raw = (event.get_command_args() or "").strip()
+        tokens = shlex.split(raw) if raw else []
+        if not tokens or tokens[0] in {"help", "-h", "--help"}:
+            return "Usage: /autopilot on <parent-task-id> [--dry-run] [--max N]"
+        action = tokens.pop(0).lower()
+        if action not in {"on", "once", "run"}:
+            return "Usage: /autopilot on <parent-task-id> [--dry-run] [--max N]"
+        if not tokens:
+            return "Usage: /autopilot on <parent-task-id> [--dry-run] [--max N]"
+        parent_id = tokens.pop(0)
+        passthrough = " ".join(shlex.quote(tok) for tok in tokens)
+        command = f"dispatch --parent {shlex.quote(parent_id)} {passthrough}".strip()
+        try:
+            output = await asyncio.to_thread(run_slash, command)
+        except Exception as exc:  # pragma: no cover - defensive
+            return t("gateway.kanban.error_prefix", error=exc)
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")

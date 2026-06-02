@@ -3197,6 +3197,32 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return [r["child_id"] for r in rows]
 
 
+def hierarchy_descendant_ids(conn: sqlite3.Connection, task_id: str) -> set[str]:
+    """Return all hierarchy descendants for an umbrella/parent task.
+
+    Parent-scoped Autopilot should operate on the approved child hierarchy,
+    not the whole raw ready queue.  Only ``hierarchy`` links participate here;
+    ``dependency`` remains scheduler ordering, not umbrella membership.
+    """
+    rows = conn.execute(
+        """
+        WITH RECURSIVE descendants(id) AS (
+            SELECT child_id
+              FROM task_links
+             WHERE parent_id = ? AND relation_type = 'hierarchy'
+            UNION
+            SELECT l.child_id
+              FROM task_links l
+              JOIN descendants d ON l.parent_id = d.id
+             WHERE l.relation_type = 'hierarchy'
+        )
+        SELECT id FROM descendants ORDER BY id
+        """,
+        (task_id,),
+    ).fetchall()
+    return {str(r["id"]) for r in rows}
+
+
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
     """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
     rows = conn.execute(
@@ -6928,6 +6954,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    parent_task_id: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -6993,11 +7020,20 @@ def dispatch_once(
             ).fetchone()[0]
         )
 
+    # Parent-scoped Autopilot: when an operator approves a parent/umbrella,
+    # selection must be limited to that hierarchy.  This does not make
+    # dependency edges into scope membership; they remain scheduling gates.
+    parent_scope_ids: Optional[set[str]] = None
+    if parent_task_id:
+        parent_scope_ids = hierarchy_descendant_ids(conn, str(parent_task_id))
+
     ready_rows = conn.execute(
         "SELECT * FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if parent_scope_ids is not None:
+        ready_rows = [row for row in ready_rows if str(row["id"]) in parent_scope_ids]
 
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
@@ -7243,6 +7279,8 @@ def dispatch_once(
         "  AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if parent_scope_ids is not None:
+        verifier_rows = [row for row in verifier_rows if str(row["id"]) in parent_scope_ids]
     for row in verifier_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break

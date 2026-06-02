@@ -1836,6 +1836,49 @@ Done criteria:
     assert task.status == "running"
 
 
+def test_dispatch_parent_scope_only_spawns_descendant_ready_tasks(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "true")
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent umbrella", triage=True)
+        in_scope = kb.create_task(
+            conn,
+            title="in scope child",
+            body="structured child",
+            assignee="alice",
+            goal_mode=True,
+        )
+        out_of_scope = kb.create_task(
+            conn,
+            title="out of scope child",
+            body="structured sibling elsewhere",
+            assignee="alice",
+            goal_mode=True,
+        )
+        conn.execute(
+            "UPDATE tasks SET admission_snapshot = ? WHERE id IN (?, ?)",
+            (json.dumps({"ready_contract": _structured_ready_contract()}), in_scope, out_of_scope),
+        )
+        kb.link_tasks(conn, parent, in_scope, relation_type="hierarchy")
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, parent_task_id=parent)
+        in_scope_task = kb.get_task(conn, in_scope)
+        out_of_scope_task = kb.get_task(conn, out_of_scope)
+
+    assert [item[0] for item in res.spawned] == [in_scope]
+    assert spawns == [in_scope]
+    assert in_scope_task.status == "running"
+    assert out_of_scope_task.status == "ready"
+
+
+
 def _governed_worker_body() -> str:
     return """
 Goal: Complete a read-only smoke.

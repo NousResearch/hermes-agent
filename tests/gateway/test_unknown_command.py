@@ -147,6 +147,35 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_autopilot_slash_dispatches_parent_scoped_kanban(monkeypatch):
+    """/autopilot on <parent> should be a deterministic parent-scoped dispatch,
+    not a free-text LLM turn or unknown command."""
+    import gateway.run as gateway_run
+    import hermes_cli.kanban as kanban_cli
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/autopilot leaked through to the agent")
+    )
+    seen = {}
+
+    def fake_run_slash(text):
+        seen["text"] = text
+        return "Spawned:      1"
+
+    monkeypatch.setattr(kanban_cli, "run_slash", fake_run_slash)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/autopilot on t_parent --dry-run"))
+
+    assert result == "Spawned:      1"
+    assert seen["text"] == "dispatch --parent t_parent --dry-run"
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

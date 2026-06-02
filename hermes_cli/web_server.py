@@ -5183,6 +5183,7 @@ async def get_toolset_config(name: str):
     from hermes_cli.tools_config import (
         TOOL_CATEGORIES,
         _get_effective_configurable_toolsets,
+        _is_provider_active,
         _visible_providers,
     )
     from hermes_cli.config import get_env_value
@@ -5194,6 +5195,7 @@ async def get_toolset_config(name: str):
     config = load_config()
     cat = TOOL_CATEGORIES.get(name)
     providers = []
+    active_provider = None
     if cat:
         for prov in _visible_providers(cat, config, force_fresh=True):
             env_vars = [
@@ -5206,6 +5208,13 @@ async def get_toolset_config(name: str):
                 }
                 for e in prov.get("env_vars", [])
             ]
+            # Surface the same active-provider determination the CLI picker
+            # uses (``_is_provider_active``) so the GUI highlights the provider
+            # actually written to config (e.g. web.backend), not just the first
+            # keyless one in the list.
+            is_active = _is_provider_active(prov, config, force_fresh=True)
+            if is_active and active_provider is None:
+                active_provider = prov["name"]
             providers.append({
                 "name": prov["name"],
                 "badge": prov.get("badge", ""),
@@ -5213,11 +5222,13 @@ async def get_toolset_config(name: str):
                 "env_vars": env_vars,
                 "post_setup": prov.get("post_setup"),
                 "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                "is_active": is_active,
             })
     return {
         "name": name,
         "has_category": cat is not None,
         "providers": providers,
+        "active_provider": active_provider,
     }
 
 

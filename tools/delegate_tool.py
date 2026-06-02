@@ -1925,6 +1925,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    model: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -1997,6 +1998,14 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Resolve per-invocation model override.
+    # Priority: per-invocation model > delegation config > parent inherit
+    invocation_model_obj = model or {}
+    invocation_model_name = invocation_model_obj.get("model")
+    invocation_provider = invocation_model_obj.get("provider")
+    child_model = invocation_model_name or creds["model"]
+    child_provider = invocation_provider or creds["provider"]
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2058,16 +2067,19 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_model_obj = t.get("model") or invocation_model_obj
+            task_model = task_model_obj.get("model") or child_model
+            task_provider = task_model_obj.get("provider") or child_provider
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
+                override_provider=task_provider,
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -2736,6 +2748,20 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "object",
+                            "description": "Optional per-subagent model override. Overrides the delegation config/parent model for this invocation.",
+                            "properties": {
+                                "provider": {
+                                    "type": "string",
+                                    "description": "Provider name (e.g. openrouter, anthropic, or custom:<name>). Omit to use the current provider chain."
+                                },
+                                "model": {
+                                    "type": "string",
+                                    "description": "Model name (e.g. anthropic/claude-sonnet-4, claude-sonnet-4, gemma4:31b)"
+                                }
+                            },
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2771,6 +2797,20 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "model": {
+                "type": "object",
+                "description": "Optional per-subagent model override. Overrides the delegation config/parent model for this invocation.",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Provider name (e.g. openrouter, anthropic, or custom:<name>). Omit to use the current provider chain."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model name (e.g. anthropic/claude-sonnet-4, claude-sonnet-4, gemma4:31b)"
+                    }
+                },
+            },
         },
         "required": [],
     },
@@ -2794,6 +2834,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
+        model=args.get("model"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

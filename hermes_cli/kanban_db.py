@@ -6712,24 +6712,36 @@ def _reviewer_loop_max_attempts(closeout_evidence: Any) -> int:
     return 2
 
 
-def _reviewer_fail_remediation_pending(
+def _closeout_remediation_pending(
     closeout_evidence: Any,
     *,
     status: Optional[str] = None,
     review_phase: Optional[str] = None,
 ) -> bool:
-    """True when reviewer FAIL intentionally requeued the original worker.
+    """True when closeout verification intentionally requeued work.
 
-    This differs from a raw ready task with an active PR: the next worker must
-    update the existing branch/PR with reviewer remediation, not create a
-    duplicate PR.  The dispatcher may therefore respawn the worker even when
-    recent-run or active-PR guards would otherwise defer it.
+    A pending remediation request means the next worker should repair the
+    existing task/PR/evidence package, not be suppressed by recent-success or
+    active-PR respawn guards.
     """
     if status is not None and status not in {"ready", "running"}:
         return False
     if review_phase not in (None, ""):
         return False
     evidence = _mapping_from_jsonish(closeout_evidence)
+    request = evidence.get("remediation_request") if isinstance(evidence.get("remediation_request"), dict) else {}
+    if request:
+        if request.get("schema") != "kanban_remediation_request.v1":
+            return False
+        if request.get("dispatcher_owned") is not True or request.get("retry_allowed") is not True:
+            return False
+        try:
+            next_attempt = int(request.get("next_attempt") or 1)
+            max_attempts = int(request.get("max_attempts") or _reviewer_loop_max_attempts(evidence))
+        except (TypeError, ValueError):
+            return False
+        return next_attempt <= max_attempts
+
     last_result = evidence.get("last_reviewer_result") if isinstance(evidence.get("last_reviewer_result"), dict) else {}
     if str(last_result.get("verdict") or "").strip().upper() != "FAIL":
         return False
@@ -6742,6 +6754,16 @@ def _reviewer_fail_remediation_pending(
     except (TypeError, ValueError):
         attempt = 1
     return attempt < _reviewer_loop_max_attempts(evidence)
+
+
+def _reviewer_fail_remediation_pending(
+    closeout_evidence: Any,
+    *,
+    status: Optional[str] = None,
+    review_phase: Optional[str] = None,
+) -> bool:
+    """Backward-compatible alias for reviewer-fail remediation checks."""
+    return _closeout_remediation_pending(closeout_evidence, status=status, review_phase=review_phase)
 
 
 def _recent_pr_urls(conn: sqlite3.Connection, task_id: str, cutoff: int = 0) -> list[str]:
@@ -6809,7 +6831,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     now = int(time.time())
 
-    remediation_pending = _reviewer_fail_remediation_pending(
+    remediation_pending = _closeout_remediation_pending(
         row["closeout_evidence"],
         status=row["status"],
         review_phase=row["review_phase"],
@@ -7926,23 +7948,32 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
         lines.append("")
 
-    if _reviewer_fail_remediation_pending(
+    if _closeout_remediation_pending(
         task.closeout_evidence,
         status=task.status,
         review_phase=task.review_phase,
     ):
-        lines.append("## Reviewer remediation mode")
-        lines.append(
-            "A reviewer returned FAIL and this worker run is a remediation retry. "
-            "Do not open a new PR. Update the existing task branch/PR only, then "
-            "submit the fixed evidence for another reviewer pass."
-        )
+        evidence = task.closeout_evidence if isinstance(task.closeout_evidence, dict) else {}
+        remediation_request = evidence.get("remediation_request") if isinstance(evidence.get("remediation_request"), dict) else {}
+        if remediation_request:
+            lines.append("## Closeout remediation mode")
+            lines.append(
+                "A deterministic closeout gate blocked review_ready and queued this worker as a bounded remediation retry. "
+                "Do not open a duplicate PR. Repair the existing evidence/task branch, then resubmit for verifier review."
+            )
+            lines.append(f"Remediation request: `{_cap(json.dumps(remediation_request, ensure_ascii=False, sort_keys=True))}`")
+        else:
+            lines.append("## Reviewer remediation mode")
+            lines.append(
+                "A reviewer returned FAIL and this worker run is a remediation retry. "
+                "Do not open a new PR. Update the existing task branch/PR only, then "
+                "submit the fixed evidence for another reviewer pass."
+            )
         pr_urls = _recent_pr_urls(conn, task_id)
         if pr_urls:
             lines.append("Existing PR target(s):")
             for url in pr_urls:
                 lines.append(f"- {url}")
-        evidence = task.closeout_evidence if isinstance(task.closeout_evidence, dict) else {}
         reviewer_result = evidence.get("last_reviewer_result") if isinstance(evidence.get("last_reviewer_result"), dict) else {}
         if reviewer_result:
             lines.append("Reviewer FAIL payload:")

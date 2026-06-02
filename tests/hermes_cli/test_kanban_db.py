@@ -1587,6 +1587,73 @@ def test_dispatch_skips_unassigned(kanban_home):
     assert not res.spawned
 
 
+
+def test_respawn_guard_allows_structural_closeout_remediation_despite_recent_success_and_pr(kanban_home):
+    now = int(time.time())
+    remediation_request = {
+        "schema": "kanban_remediation_request.v1",
+        "source_phase": "review_ready",
+        "blockers": ["ambiguous_check_evidence", "invalid_residue_evidence"],
+        "remediation_goal": "Add machine-readable checks[] and residue evidence.",
+        "retry_allowed": True,
+        "dispatcher_owned": True,
+        "attempt": 1,
+        "next_attempt": 2,
+        "max_attempts": 3,
+    }
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="structural remediation dispatch",
+            assignee="alice",
+            closeout_evidence={
+                "reviewer_loop": {"enabled": True, "attempt": 2, "max_attempts": 3},
+                "remediation_request": remediation_request,
+            },
+        )
+        conn.execute("UPDATE tasks SET status='ready', review_phase=NULL WHERE id=?", (t,))
+        conn.execute(
+            "INSERT INTO task_runs(task_id, profile, status, outcome, started_at, ended_at) VALUES (?, 'verifier', 'done', 'completed', ?, ?)",
+            (t, now - 1, now),
+        )
+        kb.add_comment(conn, t, "worker", "Existing PR: https://github.com/chriskim12/hermes-agent/pull/222")
+        guard = kb.check_respawn_guard(conn, t)
+
+    assert guard is None
+
+
+def test_worker_context_includes_structural_remediation_request(kanban_home):
+    remediation_request = {
+        "schema": "kanban_remediation_request.v1",
+        "source_phase": "review_ready",
+        "blockers": ["ambiguous_check_evidence", "invalid_residue_evidence"],
+        "remediation_goal": "Add machine-readable checks[] and residue evidence.",
+        "required_outputs": ["checks[] terminal conclusions", "residue summary/items"],
+        "retry_allowed": True,
+        "dispatcher_owned": True,
+        "attempt": 1,
+        "next_attempt": 2,
+        "max_attempts": 3,
+    }
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="structural remediation context",
+            assignee="alice",
+            closeout_evidence={
+                "reviewer_loop": {"enabled": True, "attempt": 2, "max_attempts": 3},
+                "remediation_request": remediation_request,
+            },
+        )
+        conn.execute("UPDATE tasks SET status='ready', review_phase=NULL WHERE id=?", (t,))
+        ctx = kb.build_worker_context(conn, t)
+
+    assert "## Closeout remediation mode" in ctx
+    assert "ambiguous_check_evidence" in ctx
+    assert "invalid_residue_evidence" in ctx
+    assert "checks[]" in ctx
+    assert "residue evidence" in ctx
+
 def test_dispatch_strict_ready_gate_blocks_raw_ready_before_spawn(kanban_home, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "true")
     from hermes_cli import profiles

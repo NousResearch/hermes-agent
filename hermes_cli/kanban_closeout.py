@@ -649,32 +649,117 @@ def _reviewer_loop_attempt(evidence: Mapping[str, Any]) -> tuple[int, int]:
     return max(1, attempt), max(1, max_attempts)
 
 
-def _remediation_candidate(evidence: Mapping[str, Any], blockers: list[str] | None = None) -> dict[str, Any] | None:
-    result = _as_mapping(evidence.get("verifier_result"))
-    if _lower(result.get("verdict")) != "fail" or result.get("retry_allowed") is not True:
-        return None
-    allowed_blockers = {"verifier_result_not_pass", "criterion_verifier_not_pass", "missing_verifier_pass"}
-    if blockers is not None and (set(blockers) - allowed_blockers):
-        return None
-    goal = _text(result.get("remediation_goal"))
-    if not goal:
-        return None
-    attempt, max_attempts = _reviewer_loop_attempt(evidence)
-    if attempt >= max_attempts:
-        return {
-            "allowed": False,
-            "blocker": "remediation_attempts_exhausted",
-            "attempt": attempt,
-            "max_attempts": max_attempts,
-        }
+_REVIEWER_FAIL_REMEDIATION_BLOCKERS = {
+    "verifier_result_not_pass",
+    "criterion_verifier_not_pass",
+    "missing_verifier_pass",
+}
+
+_STRUCTURAL_REMEDIATION_BLOCKERS = {
+    "ambiguous_check_evidence",
+    "missing_checks",
+    "invalid_residue_evidence",
+    "missing_residue_evidence",
+}
+
+_REMEDIATION_SCHEMA = "kanban_remediation_request.v1"
+
+
+def _make_remediation_request(
+    *,
+    source_phase: str,
+    blockers: list[str],
+    goal: str,
+    attempt: int,
+    max_attempts: int,
+    kind: str,
+    required_outputs: list[str] | None = None,
+) -> dict[str, Any]:
     return {
+        "schema": _REMEDIATION_SCHEMA,
         "allowed": True,
+        "source_phase": source_phase,
+        "kind": kind,
+        "blockers": list(dict.fromkeys(blockers)),
         "remediation_goal": goal,
+        "required_outputs": required_outputs or [],
+        "retry_allowed": True,
         "attempt": attempt,
         "next_attempt": attempt + 1,
         "max_attempts": max_attempts,
         "dispatcher_owned": True,
     }
+
+
+def _remediation_candidate(evidence: Mapping[str, Any], blockers: list[str] | None = None) -> dict[str, Any] | None:
+    blocker_set = set(blockers or [])
+    result = _as_mapping(evidence.get("verifier_result"))
+    verdict = _lower(result.get("verdict"))
+    attempt, max_attempts = _reviewer_loop_attempt(evidence)
+
+    if verdict == "fail" and result.get("retry_allowed") is True:
+        if blockers is not None and (blocker_set - _REVIEWER_FAIL_REMEDIATION_BLOCKERS):
+            return None
+        goal = _text(result.get("remediation_goal"))
+        if not goal:
+            return None
+        if attempt >= max_attempts:
+            return {
+                "allowed": False,
+                "blocker": "remediation_attempts_exhausted",
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            }
+        return _make_remediation_request(
+            source_phase="review_ready",
+            blockers=blockers or ["verifier_result_not_pass"],
+            goal=goal,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            kind="verifier_fail",
+            required_outputs=[
+                "updated worker_evidence per failed criterion",
+                "updated tests/proof referenced by verifier_result.missing_evidence",
+                "resubmitted verifier_result for the existing task/PR",
+            ],
+        )
+
+    structural_blockers = [b for b in (blockers or []) if b in _STRUCTURAL_REMEDIATION_BLOCKERS]
+    if verdict == "pass" and structural_blockers and blocker_set <= _STRUCTURAL_REMEDIATION_BLOCKERS:
+        if attempt >= max_attempts:
+            return {
+                "allowed": False,
+                "blocker": "remediation_attempts_exhausted",
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            }
+        goal_parts: list[str] = []
+        if "ambiguous_check_evidence" in structural_blockers or "missing_checks" in structural_blockers:
+            goal_parts.append(
+                "Add checks[] evidence where every check has a machine-readable terminal conclusion "
+                "such as success, neutral, or skipped."
+            )
+        if "invalid_residue_evidence" in structural_blockers or "missing_residue_evidence" in structural_blockers:
+            goal_parts.append(
+                "Add residue evidence as an object with summary or items[], and ensure every residue "
+                "item has an accepted disposition plus reason/ttl when retained."
+            )
+        goal = " ".join(goal_parts) or "Repair structural review_ready closeout evidence and resubmit."
+        return _make_remediation_request(
+            source_phase="review_ready",
+            blockers=structural_blockers,
+            goal=goal,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            kind="structural_closeout_evidence",
+            required_outputs=[
+                "checks[] with terminal conclusions",
+                "residue object with summary or items[]",
+                "updated closeout_evidence package for review_ready",
+            ],
+        )
+
+    return None
 
 
 def _review_package_work(evidence: Mapping[str, Any]) -> dict[str, Any]:
@@ -765,9 +850,6 @@ def _review_ready_blockers(evidence: Mapping[str, Any]) -> list[str]:
     blockers.extend(ledger_blockers)
     blockers.extend(_validate_worker_evidence_contract(evidence, ledger))
     blockers.extend(_validate_verifier_result_contract(evidence, ledger))
-    remediation = _remediation_candidate(evidence, blockers)
-    if remediation and remediation.get("allowed") is False:
-        blockers.append(_text(remediation.get("blocker")) or "remediation_blocked")
     if not _has_worker_evidence(evidence):
         blockers.append("missing_worker_evidence")
     if not _verifier_pass_present(evidence):
@@ -780,6 +862,9 @@ def _review_ready_blockers(evidence: Mapping[str, Any]) -> list[str]:
         blockers.append(cleanup_blocker)
     if evidence.get("ambiguous") is True:
         blockers.append("ambiguous_evidence")
+    remediation = _remediation_candidate(evidence, list(dict.fromkeys(blockers)))
+    if remediation and remediation.get("allowed") is False:
+        blockers.append(_text(remediation.get("blocker")) or "remediation_blocked")
     # Preserve order while de-duplicating.
     return list(dict.fromkeys(blockers))
 
@@ -1007,7 +1092,9 @@ def transition_task_closeout(
                                claim_lock = NULL,
                                claim_expires = NULL,
                                worker_pid = NULL,
-                               completed_at = NULL
+                               completed_at = NULL,
+                               last_failure_error = NULL,
+                               consecutive_failures = 0
                          WHERE id = ?
                            AND status != 'archived'
                         """,

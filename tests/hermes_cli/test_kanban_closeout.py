@@ -1156,6 +1156,134 @@ def test_reviewer_fail_requests_exactly_one_dispatcher_owned_remediation(kanban_
     assert "Add criterion DC-001 evidence" in events[-1].payload["remediation_goal"]
 
 
+
+def test_review_ready_structural_blockers_create_remediation_request(kanban_home, git_repo):
+    evidence = _governed_evidence(git_repo)
+    evidence["checks"] = [{"name": "local smoke", "status": "COMPLETED"}]
+    evidence["residue"] = []
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="structural remediation", workspace_kind="dir", workspace_path=str(git_repo))
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "worker candidate"})
+        result = closeout.transition_task_closeout(conn, task_id, "review_ready", evidence, repo_path=git_repo)
+        task = kb.get_task(conn, task_id)
+        events = [ev for ev in kb.list_events(conn, task_id) if ev.kind == "remediation_requested"]
+
+    assert result["status"] == "remediation_requested"
+    assert task.status == "ready"
+    assert task.review_phase is None
+    remediation = task.closeout_evidence["remediation_request"]
+    assert remediation["schema"] == "kanban_remediation_request.v1"
+    assert remediation["source_phase"] == "review_ready"
+    assert remediation["dispatcher_owned"] is True
+    assert remediation["retry_allowed"] is True
+    assert "ambiguous_check_evidence" in remediation["blockers"]
+    assert "invalid_residue_evidence" in remediation["blockers"]
+    assert "checks[]" in remediation["remediation_goal"]
+    assert "residue" in remediation["remediation_goal"]
+    assert len(events) == 1
+
+
+
+def test_structural_remediation_retry_can_reach_review_ready(kanban_home, git_repo):
+    broken = _governed_evidence(git_repo)
+    broken["checks"] = [{"name": "local smoke", "status": "COMPLETED"}]
+    broken["residue"] = []
+    fixed = _governed_evidence(git_repo)
+    fixed["checks"] = [{"name": "local smoke", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+    fixed["residue"] = {"summary": "Residue: none", "items": []}
+    fixed["reviewer_loop"] = {"attempt": 2, "max_attempts": 3}
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="structural remediation e2e", workspace_kind="dir", workspace_path=str(git_repo))
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "worker candidate"})
+        first = closeout.transition_task_closeout(conn, task_id, "review_ready", broken, repo_path=git_repo)
+        retry_task = kb.get_task(conn, task_id)
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "remediation worker fixed structural evidence"})
+        second = closeout.transition_task_closeout(conn, task_id, "review_ready", fixed, repo_path=git_repo)
+        final_task = kb.get_task(conn, task_id)
+        event_kinds = [ev.kind for ev in kb.list_events(conn, task_id)]
+
+    assert first["status"] == "remediation_requested"
+    assert retry_task.status == "ready"
+    assert retry_task.review_phase is None
+    assert second["status"] == "transitioned"
+    assert second["review_phase"] == "review_ready"
+    assert final_task.status == "blocked"
+    assert final_task.review_phase == "review_ready"
+    assert "remediation_requested" in event_kinds
+
+
+def test_structural_remediation_requeue_clears_stale_failure_guard(kanban_home, git_repo):
+    evidence = _governed_evidence(git_repo)
+    evidence["checks"] = [{"name": "local smoke", "status": "COMPLETED"}]
+    evidence["residue"] = []
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="stale failure remediation", workspace_kind="dir", workspace_path=str(git_repo))
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "worker candidate"})
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, consecutive_failures = 2 WHERE id = ?",
+            ("authentication token expired", task_id),
+        )
+        result = closeout.transition_task_closeout(conn, task_id, "review_ready", evidence, repo_path=git_repo)
+        row = conn.execute("SELECT status, last_failure_error, consecutive_failures FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        guard = kb.check_respawn_guard(conn, task_id)
+
+    assert result["status"] == "remediation_requested"
+    assert row["status"] == "ready"
+    assert row["last_failure_error"] is None
+    assert row["consecutive_failures"] == 0
+    assert guard is None
+
+
+def test_repeated_structural_remediation_attempts_eventually_exhaust(kanban_home, git_repo):
+    first = _governed_evidence(git_repo)
+    first["checks"] = [{"name": "local smoke", "status": "COMPLETED"}]
+    first["residue"] = []
+    second = _governed_evidence(git_repo)
+    second["reviewer_loop"] = {"attempt": 2, "max_attempts": 3}
+    second["checks"] = [{"name": "local smoke", "status": "COMPLETED"}]
+    second["residue"] = []
+    third = _governed_evidence(git_repo)
+    third["reviewer_loop"] = {"attempt": 3, "max_attempts": 3}
+    third["checks"] = [{"name": "local smoke", "status": "COMPLETED"}]
+    third["residue"] = []
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="repeated structural remediation", workspace_kind="dir", workspace_path=str(git_repo))
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "initial worker"})
+        r1 = closeout.transition_task_closeout(conn, task_id, "review_ready", first, repo_path=git_repo)
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "first remediation still bad"})
+        r2 = closeout.transition_task_closeout(conn, task_id, "review_ready", second, repo_path=git_repo)
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "second remediation still bad"})
+        r3 = closeout.transition_task_closeout(conn, task_id, "review_ready", third, repo_path=git_repo)
+        task = kb.get_task(conn, task_id)
+
+    assert r1["status"] == "remediation_requested"
+    assert r2["status"] == "remediation_requested"
+    assert r3["status"] == "blocked"
+    assert "remediation_attempts_exhausted" in r3["blockers"]
+    assert task.status == "blocked"
+    assert task.review_phase == "worker_done"
+
+def test_review_ready_structural_remediation_blocks_after_max_attempts(kanban_home, git_repo):
+    evidence = _governed_evidence(git_repo)
+    evidence["reviewer_loop"] = {"attempt": 3, "max_attempts": 3}
+    evidence["checks"] = [{"name": "local smoke", "status": "COMPLETED"}]
+    evidence["residue"] = []
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="structural max attempts", workspace_kind="dir", workspace_path=str(git_repo))
+        closeout.transition_task_closeout(conn, task_id, "worker_done", {"summary": "worker candidate"})
+        result = closeout.transition_task_closeout(conn, task_id, "review_ready", evidence, repo_path=git_repo)
+        task = kb.get_task(conn, task_id)
+
+    assert result["status"] == "blocked"
+    assert "remediation_attempts_exhausted" in result["blockers"]
+    assert task.status == "blocked"
+    assert task.review_phase == "worker_done"
+
 def test_reviewer_fail_blocks_after_max_attempts(kanban_home, git_repo):
     evidence = _governed_evidence(git_repo)
     evidence["reviewer_loop"] = {"attempt": 3, "max_attempts": 3}

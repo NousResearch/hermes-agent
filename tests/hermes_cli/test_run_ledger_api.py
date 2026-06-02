@@ -1749,3 +1749,73 @@ def test_old_tasks_without_task_type_are_compatible():
     assert task_type == TaskType.investigation
     # The default task_type field in models should not break old API consumers
     assert task_type.value == "investigation"
+
+
+# ---------------------------------------------------------------------------
+# Canonical Ledger Event tests
+# ---------------------------------------------------------------------------
+
+def test_ledger_event_type_enum_all_members():
+    from agent.managed_agents.execution_policy import LedgerEventType
+    expected = {
+        "execution.queued", "execution.started", "execution.completed",
+        "execution.failed", "policy.triggered", "policy.proposed",
+        "policy.approved", "policy.blocked", "watchdog.timeout",
+        "watchdog.stale", "router.candidates_ranked",
+        "router.agent_selected", "user.acknowledged", "user.overrode",
+    }
+    members = {m.value for m in LedgerEventType}
+    assert members == expected, f"Missing: {expected - members}"
+
+
+def test_ledger_event_from_legacy_run_queued():
+    from agent.managed_agents.execution_policy import LedgerEventType
+    assert LedgerEventType.from_legacy_event("run_queued") == LedgerEventType.execution_queued
+
+
+def test_ledger_event_from_legacy_run_started():
+    from agent.managed_agents.execution_policy import LedgerEventType
+    assert LedgerEventType.from_legacy_event("run_started") == LedgerEventType.execution_started
+
+
+def test_ledger_event_from_legacy_fallback():
+    from agent.managed_agents.execution_policy import LedgerEventType
+    assert LedgerEventType.from_legacy_event(None) == LedgerEventType("unknown")
+    assert LedgerEventType.from_legacy_event("bogus_event") == LedgerEventType("unknown")
+
+
+def test_normalize_old_record_adds_event_type():
+    from hermes_cli.web_server import _normalize_ledger_event
+    row = {"event": "run_queued", "task_id": "test-1"}
+    result = _normalize_ledger_event(row)
+    assert result["event_type"] == "execution.queued"
+    assert result["event"] == "run_queued"  # preserved
+
+
+def test_normalize_old_record_finished_ok():
+    from hermes_cli.web_server import _normalize_ledger_event
+    row = {"event": "run_finished", "classification": "ok", "task_id": "test-2"}
+    result = _normalize_ledger_event(row)
+    assert result["event_type"] == "execution.completed"
+
+
+def test_normalize_old_record_finished_failed():
+    from hermes_cli.web_server import _normalize_ledger_event
+    row = {"event": "run_finished", "classification": "timeout", "task_id": "test-3"}
+    result = _normalize_ledger_event(row)
+    assert result["event_type"] == "execution.failed"
+
+
+def test_normalize_preserves_existing_event_type():
+    from hermes_cli.web_server import _normalize_ledger_event
+    row = {"event_type": "policy.blocked", "event": "whatever", "task_id": "test-4"}
+    result = _normalize_ledger_event(row)
+    assert result["event_type"] == "policy.blocked"
+
+
+def test_canonical_event_type_helper():
+    from hermes_cli.web_server import _canonical_event_type
+    assert _canonical_event_type("run_queued") == "execution.queued"
+    assert _canonical_event_type("run_finished", "ok") == "execution.completed"
+    assert _canonical_event_type("run_finished", "timeout") == "execution.failed"
+    assert _canonical_event_type(None) == "unknown"

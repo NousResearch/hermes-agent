@@ -41,6 +41,24 @@ export const TASK_TYPE_LABELS: Record<TaskType, string> = {
 };
 
 export const DEFAULT_TASK_TYPE: TaskType = "investigation";
+/** Canonical Run Ledger event types. */
+export type LedgerEventType =
+  | "execution.queued"
+  | "execution.started"
+  | "execution.completed"
+  | "execution.failed"
+  | "policy.triggered"
+  | "policy.proposed"
+  | "policy.approved"
+  | "policy.blocked"
+  | "watchdog.timeout"
+  | "watchdog.stale"
+  | "router.candidates_ranked"
+  | "router.agent_selected"
+  | "user.acknowledged"
+  | "user.overrode"
+  | "unknown";
+
 
 export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;

@@ -2135,6 +2135,7 @@ def _sanitize_run_ledger_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _merged_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
+    from agent.managed_agents.execution_policy import LedgerEventType  # noqa: F811
     latest: Dict[str, Dict[str, Any]] = {}
     starts: Dict[str, Dict[str, Any]] = {}
     for row in _load_run_ledger(project):
@@ -2148,7 +2149,7 @@ def _merged_run_ledger(project: Optional[str]) -> List[Dict[str, Any]]:
             latest[str(run_id)] = {**starts.get(str(run_id), {}), **row}
         else:
             latest[str(run_id)] = row
-    return [_sanitize_run_ledger_row(row) for row in latest.values()]
+    return [_normalize_ledger_event(_sanitize_run_ledger_row(row)) for row in latest.values()]
 
 
 def _parse_run_ledger_time(value: Any) -> Optional[float]:
@@ -2827,7 +2828,40 @@ def _append_smoke_seed_run(
     return payload
 
 
+def _canonical_event_type(legacy_event: str | None, classification: str | None = None) -> str:
+    from agent.managed_agents.execution_policy import LedgerEventType  # noqa: F811
+    """Derive canonical event_type from legacy event name and optional classification.
+    
+    Finer-grained events (execution.completed vs execution.failed) use
+    classification when available.
+    """
+    if legacy_event == "run_finished":
+        if classification and classification != "ok":
+            return "execution.failed"
+        return "execution.completed"
+    return LedgerEventType.from_legacy_event(legacy_event).value
+
+
+def _normalize_ledger_event(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a single ledger row: add event_type if missing, preserve old event field."""
+    if not isinstance(row, dict):
+        return row
+    if "event_type" not in row:
+        row["event_type"] = _canonical_event_type(
+            row.get("event"),
+            row.get("classification"),
+        )
+    return row
+
+
 def _append_run_ledger_row(project: Optional[str], payload: Dict[str, Any]) -> Dict[str, Any]:
+    from agent.managed_agents.execution_policy import LedgerEventType  # noqa: F811
+    # Add canonical event_type alongside legacy event for backward compatibility
+    if "event_type" not in payload and "event" in payload:
+        payload["event_type"] = _canonical_event_type(
+            payload.get("event"),
+            payload.get("classification"),
+        )
     ledger_path = _run_ledger_path(project)
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with open(ledger_path, "a", encoding="utf-8") as f:

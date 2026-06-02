@@ -54,6 +54,46 @@ class TaskType(str, Enum):
         except ValueError:
             return default
 
+# -- Canonical Run Ledger event types ------------------------------------------
+
+class LedgerEventType(str, Enum):
+    execution_queued = "execution.queued"
+    execution_started = "execution.started"
+    execution_completed = "execution.completed"
+    execution_failed = "execution.failed"
+    policy_triggered = "policy.triggered"
+    policy_proposed = "policy.proposed"
+    policy_approved = "policy.approved"
+    policy_blocked = "policy.blocked"
+    watchdog_timeout = "watchdog.timeout"
+    watchdog_stale = "watchdog.stale"
+    router_candidates_ranked = "router.candidates_ranked"
+    router_agent_selected = "router.agent_selected"
+    user_acknowledged = "user.acknowledged"
+    user_overrode = "user.overrode"
+
+    @staticmethod
+    def from_legacy_event(event_name: str | None) -> "LedgerEventType":
+        """Map legacy "run_*" event strings to canonical event types."""
+        if not event_name:
+            return LedgerEventType("unknown")
+        mapping: dict[str, LedgerEventType] = {
+            "run_queued": LedgerEventType.execution_queued,
+            "run_started": LedgerEventType.execution_started,
+            "run_finished": LedgerEventType.execution_completed,
+            "run_completed": LedgerEventType.execution_completed,
+            "run_failed": LedgerEventType.execution_failed,
+            "run_timed_out": LedgerEventType.watchdog_timeout,
+            "run_stale": LedgerEventType.watchdog_stale,
+            "execution_policy_evaluated": LedgerEventType.policy_triggered,
+            "run_rerouted": LedgerEventType.router_agent_selected,
+            "user_acknowledged": LedgerEventType.user_acknowledged,
+            "user_overrode": LedgerEventType.user_overrode,
+        }
+        return mapping.get(event_name, LedgerEventType("unknown"))
+
+
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionPolicyDecision:

@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "source_scan": {"schema_version": "1.0.0"},
+  "source_imports": {"schema_version": "1.0.0", "generated_at": "2026-06-02T00:00:00Z"},
+  "files": {
+    "src/app.py": {
+      "imports": [
+        {"module": "os", "classification": "stdlib"},
+        {"module": "json", "classification": "stdlib"},
+        {"module": "requests", "classification": "third_party"},
+        {"module": ".utils", "classification": "relative"},
+        {"module": ".models", "classification": "relative"}
+      ],
+      "totals": {"stdlib": 2, "third_party": 1, "local": 0, "relative": 2, "unknown": 0}
+    },
+    "src/main.py": {
+      "imports": [
+        {"module": "sys", "classification": "stdlib"},
+        {"module": "app", "classification": "local"}
+      ],
+      "totals": {"stdlib": 1, "third_party": 0, "local": 1, "relative": 0, "unknown": 0}
+    },
+    "src/utils.py": {
+      "imports": [
+        {"module": "pathlib", "classification": "stdlib"},
+        {"module": "typing", "classification": "stdlib"}
+      ],
+      "totals": {"stdlib": 2, "third_party": 0, "local": 0, "relative": 0, "unknown": 0}
+    }
+  },
+  "totals": {
+    "stdlib": 5,
+    "third_party": 1,
+    "local": 1,
+    "relative": 2,
+    "unknown": 0
+  }
+}

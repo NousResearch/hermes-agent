@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "orphans": {
+    "expected": [
+      {"node_id": "n8", "reason": "documentation file"}
+    ],
+    "entrypoint_candidate": [],
+    "suspicious": [
+      {"node_id": "n6", "reason": "unreferenced source"},
+      {"node_id": "n7", "reason": "unreferenced source"}
+    ],
+    "unknown": []
+  },
+  "totals": {
+    "total_orphans": 3,
+    "expected": 1,
+    "entrypoint_candidate": 0,
+    "suspicious": 2,
+    "unknown": 0
+  }
+}

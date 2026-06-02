@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "nodes": [
+    {"node_id": "n1", "node_type": "file", "filePath": "src/app.py", "label": "app.py", "functions": ["run", "setup"], "classes": ["App"]},
+    {"node_id": "n2", "node_type": "file", "filePath": "src/main.py", "label": "main.py", "functions": ["main"], "classes": []},
+    {"node_id": "n3", "node_type": "file", "filePath": "src/utils.py", "label": "utils.py", "functions": ["helper", "format"], "classes": []},
+    {"node_id": "n4", "node_type": "file", "filePath": "src/helpers.py", "label": "helpers.py", "functions": ["do_thing"], "classes": []},
+    {"node_id": "n5", "node_type": "file", "filePath": "src/models.py", "label": "models.py", "functions": [], "classes": ["Model", "Record"]},
+    {"node_id": "n6", "node_type": "file", "filePath": "src/orphan_file.py", "label": "orphan_file.py", "functions": ["unused"], "classes": []},
+    {"node_id": "n7", "node_type": "file", "filePath": "src/suspicious.py", "label": "suspicious.py", "functions": ["weird_func"], "classes": []},
+    {"node_id": "n8", "node_type": "file", "filePath": "README.md", "label": "README.md", "functions": [], "classes": []}
+  ],
+  "edges": [
+    {"source": "n2", "target": "n1"},
+    {"source": "n1", "target": "n3"},
+    {"source": "n1", "target": "n5"},
+    {"source": "n3", "target": "n4"},
+    {"source": "n5", "target": "n5"}
+  ],
+  "analytics": {
+    "top_in_degree": [
+      {"node_id": "n1", "filePath": "src/app.py", "in_degree": 1},
+      {"node_id": "n5", "filePath": "src/models.py", "in_degree": 2}
+    ],
+    "top_out_degree": [
+      {"node_id": "n1", "filePath": "src/app.py", "out_degree": 2}
+    ]
+  },
+  "warnings": []
+}

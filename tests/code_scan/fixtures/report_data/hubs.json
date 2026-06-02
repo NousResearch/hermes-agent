@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "hub_rankings": [
+    {"node_id": "n1", "file_path": "src/app.py", "hub_score": 3.0, "in_degree": 1, "out_degree": 2, "confidence": "high"},
+    {"node_id": "n5", "file_path": "src/models.py", "hub_score": 2.0, "in_degree": 2, "out_degree": 0, "confidence": "high"},
+    {"node_id": "n3", "file_path": "src/utils.py", "hub_score": 2.0, "in_degree": 1, "out_degree": 1, "confidence": "high"},
+    {"node_id": "n2", "file_path": "src/main.py", "hub_score": 1.0, "in_degree": 0, "out_degree": 1, "confidence": "high"},
+    {"node_id": "n4", "file_path": "src/helpers.py", "hub_score": 1.0, "in_degree": 1, "out_degree": 0, "confidence": "medium"}
+  ],
+  "entrypoint_like": [],
+  "totals": {
+    "files_ranked": 5,
+    "top_n": 5
+  },
+  "disclaimer": "Hub scores are ranking hints, not proof of importance."
+}

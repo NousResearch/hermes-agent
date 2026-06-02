@@ -1,0 +1,60 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/semantic_extract",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 6,
+  "total_lines": 65,
+  "languages": {"python": 2, "javascript": 1, "go": 1, "rust": 1, "shell": 1},
+  "categories": {"code": 6},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/semantic_extract/src/app.py",
+      "relative_path": "src/app.py",
+      "language": "python",
+      "category": "code",
+      "lines": 20,
+      "size_bytes": 500
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/semantic_extract/src/malformed.py",
+      "relative_path": "src/malformed.py",
+      "language": "python",
+      "category": "code",
+      "lines": 10,
+      "size_bytes": 200
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/semantic_extract/src/server.ts",
+      "relative_path": "src/server.ts",
+      "language": "typescript",
+      "category": "code",
+      "lines": 15,
+      "size_bytes": 400
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/semantic_extract/src/main.go",
+      "relative_path": "src/main.go",
+      "language": "go",
+      "category": "code",
+      "lines": 10,
+      "size_bytes": 300
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/semantic_extract/src/lib.rs",
+      "relative_path": "src/lib.rs",
+      "language": "rust",
+      "category": "code",
+      "lines": 10,
+      "size_bytes": 350
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/semantic_extract/src/build.sh",
+      "relative_path": "src/build.sh",
+      "language": "shell",
+      "category": "code",
+      "lines": 10,
+      "size_bytes": 153
+    }
+  ],
+  "warnings": []
+}

@@ -1,0 +1,28 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_cli",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 2,
+  "total_lines": 20,
+  "languages": {"python": 2},
+  "categories": {"code": 2},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_cli/src/cli.py",
+      "relative_path": "src/cli.py",
+      "language": "python",
+      "category": "code",
+      "lines": 15,
+      "size_bytes": 336
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_cli/src/utils.py",
+      "relative_path": "src/utils.py",
+      "language": "python",
+      "category": "code",
+      "lines": 8,
+      "size_bytes": 109
+    }
+  ],
+  "warnings": []
+}

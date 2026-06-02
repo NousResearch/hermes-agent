@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "source_scan": {
+    "project_root": "/tmp/test-project",
+    "total_files": 3
+  },
+  "generated_at": "2026-05-30T12:00:00Z",
+  "files": {
+    "/tmp/test-project/src/main.py": {
+      "imports": ["os", "sys"],
+      "warnings": []
+    },
+    "/tmp/test-project/src/utils.py": {
+      "imports": ["os", "json"],
+      "warnings": []
+    },
+    "/tmp/test-project/tests/test_main.py": {
+      "imports": ["unittest", "os"],
+      "warnings": []
+    }
+  },
+  "totals": {
+    "files_with_imports": 3,
+    "files_without_imports": 0,
+    "unique_modules": 4,
+    "total_warnings": 0
+  }
+}

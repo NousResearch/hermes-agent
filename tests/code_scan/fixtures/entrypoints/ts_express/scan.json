@@ -1,0 +1,20 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/ts_express",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 1,
+  "total_lines": 12,
+  "languages": {"typescript": 1},
+  "categories": {"code": 1},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/ts_express/src/main.ts",
+      "relative_path": "src/main.ts",
+      "language": "typescript",
+      "category": "code",
+      "lines": 12,
+      "size_bytes": 216
+    }
+  ],
+  "warnings": []
+}

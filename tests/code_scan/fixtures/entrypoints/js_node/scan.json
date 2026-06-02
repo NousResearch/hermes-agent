@@ -1,0 +1,36 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/js_node",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 3,
+  "total_lines": 25,
+  "languages": {"javascript": 2, "json": 1},
+  "categories": {"code": 2, "infra": 1},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/js_node/app/index.js",
+      "relative_path": "app/index.js",
+      "language": "javascript",
+      "category": "code",
+      "lines": 11,
+      "size_bytes": 245
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/js_node/package.json",
+      "relative_path": "package.json",
+      "language": "json",
+      "category": "infra",
+      "lines": 7,
+      "size_bytes": 129
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/js_node/src/utils.js",
+      "relative_path": "src/utils.js",
+      "language": "javascript",
+      "category": "code",
+      "lines": 7,
+      "size_bytes": 107
+    }
+  ],
+  "warnings": []
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "files": {
+    "added": ["src/new_module.py"],
+    "removed": [],
+    "common_count": 10
+  },
+  "languages": {
+    "python": {"old": 7, "new": 8, "delta": 1},
+    "json": {"old": 2, "new": 2, "delta": 0},
+    "markdown": {"old": 1, "new": 1, "delta": 0}
+  },
+  "categories": {
+    "source": {"old": 7, "new": 8, "delta": 1},
+    "config": {"old": 2, "new": 2, "delta": 0},
+    "docs": {"old": 1, "new": 1, "delta": 0}
+  },
+  "frameworks": {
+    "added": [],
+    "removed": []
+  },
+  "fingerprints": null,
+  "warnings": []
+}

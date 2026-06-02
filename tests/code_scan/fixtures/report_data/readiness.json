@@ -1,0 +1,9 @@
+{
+  "detected_stacks": ["python"],
+  "required_commands": [
+    {"command": "python", "available": true, "version": "3.11", "reason": "Python project detected"}
+  ],
+  "suggested_verification": ["python -m pytest"],
+  "verification_status": "verification_ready",
+  "blockers": []
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "entrypoints": [
+    {
+      "file": "src/main.py",
+      "language": "python",
+      "type": "python_main",
+      "signals": ["if __name__ == '__main__'", "main function"],
+      "confidence": 0.95
+    },
+    {
+      "file": "src/app.py",
+      "language": "python",
+      "type": "python_fastapi",
+      "signals": ["FastAPI import", "app.run"],
+      "confidence": 0.80
+    }
+  ],
+  "totals": {
+    "entrypoints_found": 2,
+    "by_type": {
+      "python_main": 1,
+      "python_fastapi": 1
+    }
+  }
+}

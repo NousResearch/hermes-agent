@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/fake/project",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 6,
+  "total_lines": 130,
+  "languages": {"python": 4, "javascript": 1, "markdown": 1, "typescript": 1},
+  "categories": {"code": 5, "docs": 1},
+  "frameworks": ["fastapi", "express"],
+  "files": [
+    {"path": "/fake/project/src/main.py", "relative_path": "src/main.py", "language": "python", "category": "code", "lines": 45, "size_bytes": 1350},
+    {"path": "/fake/project/src/utils.py", "relative_path": "src/utils.py", "language": "python", "category": "code", "lines": 30, "size_bytes": 900},
+    {"path": "/fake/project/src/config.js", "relative_path": "src/config.js", "language": "javascript", "category": "code", "lines": 20, "size_bytes": 600},
+    {"path": "/fake/project/src/new_module.py", "relative_path": "src/new_module.py", "language": "python", "category": "code", "lines": 15, "size_bytes": 450},
+    {"path": "/fake/project/src/routes.ts", "relative_path": "src/routes.ts", "language": "typescript", "category": "code", "lines": 20, "size_bytes": 600},
+    {"path": "/fake/project/README.md", "relative_path": "README.md", "language": "markdown", "category": "docs", "lines": 0, "size_bytes": 500}
+  ],
+  "warnings": ["Detected new framework: express"]
+}

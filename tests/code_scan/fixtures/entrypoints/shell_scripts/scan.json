@@ -1,0 +1,28 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/shell_scripts",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 2,
+  "total_lines": 18,
+  "languages": {"shell": 1, "python": 1},
+  "categories": {"code": 2},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/shell_scripts/bin/deploy.sh",
+      "relative_path": "bin/deploy.sh",
+      "language": "shell",
+      "category": "code",
+      "lines": 9,
+      "size_bytes": 162
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/shell_scripts/scripts/build.py",
+      "relative_path": "scripts/build.py",
+      "language": "python",
+      "category": "code",
+      "lines": 12,
+      "size_bytes": 207
+    }
+  ],
+  "warnings": []
+}

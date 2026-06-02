@@ -1,0 +1,36 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/rust_app",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 3,
+  "total_lines": 8,
+  "languages": {"rust": 3},
+  "categories": {"code": 3},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/rust_app/src/main.rs",
+      "relative_path": "src/main.rs",
+      "language": "rust",
+      "category": "code",
+      "lines": 3,
+      "size_bytes": 48
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/rust_app/src/bin/extra_tool.rs",
+      "relative_path": "src/bin/extra_tool.rs",
+      "language": "rust",
+      "category": "code",
+      "lines": 3,
+      "size_bytes": 58
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/rust_app/src/lib.rs",
+      "relative_path": "src/lib.rs",
+      "language": "rust",
+      "category": "code",
+      "lines": 2,
+      "size_bytes": 34
+    }
+  ],
+  "warnings": []
+}

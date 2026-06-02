@@ -18,6 +18,11 @@ This test pins that the constructed ``httpx.Client`` mounts an ``HTTPProxy``
 pool when a proxy env var is set, AND that the socket-level keepalive
 transport is still installed on the no-proxy default path.
 """
+# Need to suppress lazy dependency installs: AIAgent.__init__ triggers tool
+# discovery which runs check_tts_requirements(), which calls
+# _import_edge_tts() / _import_elevenlabs() -> ensure("tts.edge") /
+# ensure("tts.elevenlabs"). In CI those packages aren't installed, so ensure()
+# runs pip install and hangs past the 30s timeout.
 from unittest.mock import patch
 
 import httpx
@@ -75,8 +80,9 @@ def test_get_proxy_from_env_normalizes_socks_alias(monkeypatch):
     assert _get_proxy_from_env() == "socks5://127.0.0.1:1080/"
 
 
+@patch("tools.lazy_deps.ensure")
 @patch("run_agent.OpenAI")
-def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeypatch):
+def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, _mock_ensure, monkeypatch):
     """With HTTPS_PROXY set, the custom httpx.Client must mount an HTTPProxy pool.
 
     This is the WSL2 + Clash / corporate-egress case. Before the fix, the custom
@@ -115,8 +121,9 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
     http_client.close()
 
 
+@patch("tools.lazy_deps.ensure")
 @patch("run_agent.OpenAI")
-def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
+def test_create_openai_client_no_proxy_when_env_unset(mock_openai, _mock_ensure, monkeypatch):
     """Without proxy env vars, the keepalive transport must still be installed
     and no HTTPProxy mount should exist."""
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
@@ -188,8 +195,9 @@ def test_get_proxy_for_base_url_returns_none_when_proxy_unset(monkeypatch):
     assert _get_proxy_for_base_url("https://api.openai.com/v1") is None
 
 
+@patch("tools.lazy_deps.ensure")
 @patch("run_agent.OpenAI")
-def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monkeypatch):
+def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, _mock_ensure, monkeypatch):
     """E2E: with HTTPS_PROXY + NO_PROXY=localhost, a local base_url gets a
     keepalive client with NO HTTPProxy mount."""
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",

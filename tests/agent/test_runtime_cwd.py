@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 import agent.runtime_cwd as rt
-from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
+from agent.runtime_cwd import (
+    clear_session_cwd,
+    resolve_agent_cwd,
+    resolve_context_cwd,
+    set_session_cwd,
+)
 
 
 def _raise_oserror(*args, **kwargs):
@@ -77,3 +82,48 @@ class TestResolveContextCwd:
         # than building Path("   ") and resolving garbage under the launch dir.
         monkeypatch.setenv("TERMINAL_CWD", "   ")
         assert resolve_context_cwd() is None
+
+
+class TestSessionCwdOverride:
+    """The #29531 per-session arm: a contextvar cwd wins over TERMINAL_CWD so a
+    multi-session gateway can pin each session to its own folder."""
+
+    def test_session_cwd_overrides_terminal_cwd(self, monkeypatch, tmp_path):
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        token = set_session_cwd(str(other))
+        try:
+            assert resolve_agent_cwd() == other
+            assert resolve_context_cwd() == other
+        finally:
+            rt._SESSION_CWD.reset(token)
+
+    def test_empty_session_cwd_falls_back_to_terminal_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        token = set_session_cwd("")
+        try:
+            assert resolve_agent_cwd() == tmp_path
+            assert resolve_context_cwd() == tmp_path
+        finally:
+            rt._SESSION_CWD.reset(token)
+
+    def test_clear_session_cwd_restores_terminal_cwd(self, monkeypatch, tmp_path):
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        token = set_session_cwd(str(other))
+        try:
+            clear_session_cwd()
+            assert resolve_agent_cwd() == tmp_path
+        finally:
+            rt._SESSION_CWD.reset(token)
+
+    def test_nonexistent_session_cwd_falls_back(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        token = set_session_cwd(str(tmp_path / "gone"))
+        try:
+            # resolve_agent_cwd guards on isdir; a missing session cwd must not win.
+            assert resolve_agent_cwd() == tmp_path
+        finally:
+            rt._SESSION_CWD.reset(token)

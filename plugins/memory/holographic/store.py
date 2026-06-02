@@ -163,6 +163,20 @@ class MemoryStore:
             self._conn.execute("ALTER TABLE facts ADD COLUMN ingestion_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         if "strength" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN strength REAL DEFAULT 1.0")
+        if "emotional_valence" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN emotional_valence REAL DEFAULT 0.0")
+        if "surprise_score" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN surprise_score REAL DEFAULT 0.0")
+        if "encoding_time" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN encoding_time TIMESTAMP")
+        if "silence_threshold" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN silence_threshold REAL DEFAULT 0.0")
+        if "reconsolidation_count" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN reconsolidation_count INTEGER DEFAULT 0")
+        if "last_retrieved" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN last_retrieved TIMESTAMP")
+        if "context_hash" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN context_hash TEXT")
         # Bitemporal indexes for time-range queries
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_event_time ON facts(event_time)")
@@ -180,6 +194,7 @@ class MemoryStore:
         category: str = "general",
         tags: str = "",
         event_time: str | None = None,
+        metadata: dict | None = None,
     ) -> int:
         """Insert a fact and return its fact_id.
 
@@ -192,7 +207,19 @@ class MemoryStore:
                 in the real world (e.g. "2025-01-15T10:30:00").  Stored as the
                 bitemporal *event_time* column; defaults to None (unknown).
                 ingestion_time is always set to CURRENT_TIMESTAMP automatically.
+            metadata: Optional pipeline metadata from MemoryPipeline.pre_memory_write.
+                Keys: pipeline_salience, pipeline_emotion, pipeline_novelty,
+                pipeline_importance, pipeline_temporal_recency_boost.
         """
+        # Derive initial strength and emotional valence from pipeline metadata
+        pipeline_salience = 1.0
+        emotional_valence = 0.0
+        surprise_score = 0.0
+        if metadata:
+            pipeline_salience = float(metadata.get("pipeline_salience", 1.0))
+            emotional_valence = float(metadata.get("pipeline_emotion", 0.0))
+            surprise_score = float(metadata.get("pipeline_novelty", 0.0))
+
         with self._lock:
             content = content.strip()
             if not content:
@@ -201,10 +228,14 @@ class MemoryStore:
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score, strength, event_time)
-                    VALUES (?, ?, ?, ?, 1.0, ?)
+                    INSERT INTO facts (content, category, tags, trust_score,
+                                       strength, emotional_valence, surprise_score,
+                                       event_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust, event_time),
+                    (content, category, tags, self.default_trust,
+                     pipeline_salience, emotional_valence, surprise_score,
+                     event_time),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]

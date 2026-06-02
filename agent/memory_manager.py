@@ -663,11 +663,14 @@ class MemoryManager:
         Skips the builtin provider itself (it's the source of the write).
         """
         # Pipeline pre-intercept (Phase 2+: salience gate, reconsolidation check)
+        effective_metadata = dict(metadata or {})
         if self._pipeline:
             try:
-                self._pipeline.pre_memory_write(
-                    action, target, content, dict(metadata or {})
+                enriched = self._pipeline.pre_memory_write(
+                    action, target, content, effective_metadata
                 )
+                if enriched:
+                    effective_metadata = enriched
             except Exception as e:
                 logger.debug("MemoryPipeline pre_memory_write failed: %s", e)
 
@@ -678,10 +681,10 @@ class MemoryManager:
                 metadata_mode = self._provider_memory_write_metadata_mode(provider)
                 if metadata_mode == "keyword":
                     provider.on_memory_write(
-                        action, target, content, metadata=dict(metadata or {})
+                        action, target, content, metadata=effective_metadata
                     )
                 elif metadata_mode == "positional":
-                    provider.on_memory_write(action, target, content, dict(metadata or {}))
+                    provider.on_memory_write(action, target, content, effective_metadata)
                 else:
                     provider.on_memory_write(action, target, content)
             except Exception as e:

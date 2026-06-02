@@ -725,6 +725,19 @@ class Task:
     # ``kanban.failure_limit`` config, and then to ``DEFAULT_FAILURE_LIMIT``.
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
+    # When True, the dispatched worker runs in a Ralph-style goal loop
+    # (the same engine behind the ``/goal`` slash command): after each
+    # turn an auxiliary judge model evaluates the worker's response
+    # against this card's title/body (treated as the goal). If the judge
+    # says "not done" and budget remains, the worker is fed a
+    # continuation prompt IN THE SAME SESSION and keeps working until the
+    # judge agrees, the goal-turn budget is exhausted (→ kanban_block),
+    # or the worker explicitly blocks/completes. ``False`` (default) =
+    # the classic single-shot worker. ``goal_max_turns`` bounds the loop.
+    goal_mode: bool = False
+    # Goal-loop turn budget for ``goal_mode`` workers. ``None`` falls
+    # through to the goals engine default (``goals.DEFAULT_MAX_TURNS``).
+    goal_max_turns: Optional[int] = None
     # Originating chat/agent session id, when the task was created from
     # within an agent loop that propagated ``HERMES_SESSION_ID``. NULL for
     # tasks created from the CLI, the dashboard, or any path that doesn't
@@ -796,6 +809,12 @@ class Task:
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
+            ),
+            goal_mode=(
+                bool(row["goal_mode"]) if "goal_mode" in keys and row["goal_mode"] else False
+            ),
+            goal_max_turns=(
+                row["goal_max_turns"] if "goal_max_turns" in keys and row["goal_max_turns"] else None
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
@@ -946,6 +965,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
+    -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
+    -- auxiliary judge re-evaluates the worker's response against the
+    -- card title/body after each turn and feeds a continuation prompt
+    -- back into the SAME session until the judge agrees the work is done
+    -- or ``goal_max_turns`` is exhausted. NULL/0 = classic single-shot
+    -- worker (the default).
+    goal_mode            INTEGER NOT NULL DEFAULT 0,
+    -- Goal-loop turn budget for ``goal_mode`` workers. NULL = use the
+    -- goals-engine default.
+    goal_max_turns       INTEGER,
     -- Originating chat/agent session id when the task was created from
     -- inside an agent loop that propagated ``HERMES_SESSION_ID``. NULL
     -- for tasks created from the CLI, dashboard, or any path that doesn't
@@ -1584,6 +1613,20 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
 
+    if "goal_mode" not in cols:
+        # Ralph-style goal loop toggle for the dispatched worker. 0 (the
+        # default) = classic single-shot worker, preserving the behaviour
+        # existing rows had before the column existed.
+        _add_column_if_missing(
+            conn, "tasks", "goal_mode", "goal_mode INTEGER NOT NULL DEFAULT 0"
+        )
+
+    if "goal_max_turns" not in cols:
+        # Per-task goal-loop turn budget. NULL = goals-engine default.
+        _add_column_if_missing(
+            conn, "tasks", "goal_max_turns", "goal_max_turns INTEGER"
+        )
+
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
         # created from within an agent loop that propagated
@@ -1967,6 +2010,8 @@ def create_task(
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
+    goal_mode: bool = False,
+    goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -2134,8 +2179,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2154,6 +2199,8 @@ def create_task(
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
+                        1 if goal_mode else 0,
+                        int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
                     ),
                 )
@@ -2173,6 +2220,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "goal_mode": bool(goal_mode) or None,
                     },
                 )
             return task_id
@@ -4305,13 +4353,21 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if root_row is None:
             return None
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        # Children inherit the root's workspace by default so a fan-out
+        # of a code-gen task lands in the parent's project dir/worktree
+        # rather than throwaway scratch tmp dirs. A child dict can still
+        # override with its own 'workspace_kind' / 'workspace_path'.
+        root_ws_kind = root_row["workspace_kind"] or "scratch"
+        root_ws_path = root_row["workspace_path"]
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -4322,16 +4378,30 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            # Per-child override wins; otherwise inherit the root's
+            # workspace. A child that sets workspace_kind without a path
+            # falls back to the root path only when kinds match (so a
+            # child can't accidentally point a 'dir' at the root's
+            # worktree path or vice versa).
+            child_ws_kind = child.get("workspace_kind") or root_ws_kind
+            if child.get("workspace_path"):
+                child_ws_path = child.get("workspace_path")
+            elif child_ws_kind == root_ws_kind:
+                child_ws_path = root_ws_path
+            else:
+                child_ws_path = None
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    child_ws_kind,
+                    child_ws_path,
                     tenant,
                     now,
                     (author or "decomposer"),
@@ -6412,6 +6482,13 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    # Goal-loop mode: the worker reads these and wraps its run in the
+    # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
+    # when enabled so non-goal tasks keep a clean env.
+    if task.goal_mode:
+        env["HERMES_KANBAN_GOAL_MODE"] = "1"
+        if task.goal_max_turns is not None:
+            env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
     terminal_timeout = _worker_terminal_timeout_env(
         task.max_runtime_seconds,
         env.get("TERMINAL_TIMEOUT"),

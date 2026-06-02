@@ -308,11 +308,14 @@ def compress_context(
     # The check itself sets ``agent._compression_warning`` so the
     # status-callback replay machinery still emits the warning to the user
     # the first time it would matter.
-    if not getattr(agent, "_compression_feasibility_checked", True):
-        try:
-            check_compression_model_feasibility(agent)
-        finally:
-            agent._compression_feasibility_checked = True
+    if not getattr(agent, "_compression_feasibility_checked", False):
+        # Mark as checked only after the probe completes. If the check
+        # raises (e.g. a fatal aux-context ValueError that aborts the
+        # session), leaving the flag unset is harmless; a non-fatal
+        # transient failure is swallowed inside the function so the flag
+        # is set normally on the next successful pass.
+        check_compression_model_feasibility(agent)
+        agent._compression_feasibility_checked = True
 
     _pre_msg_count = len(messages)
     logger.info(
@@ -644,6 +647,12 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     # after a confirmed provider rejection, so the alternative is failure.
     target_bytes = 4 * 1024 * 1024
     changed_count = 0
+    # Track parts that are over the target but could NOT be shrunk under it.
+    # If any survive, retrying is pointless — the same oversized payload will
+    # be re-sent and rejected again, wasting the single retry budget.  We only
+    # report success (caller retries) when every over-threshold image was
+    # actually brought under the target.
+    unshrinkable_oversized = 0
 
     def _shrink_data_url(url: str) -> Optional[str]:
         """Return a smaller data URL, or None if shrink can't help."""
@@ -710,17 +719,34 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                 if resized:
                     image_value["url"] = resized
                     changed_count += 1
+                elif isinstance(url, str) and url.startswith("data:") \
+                        and len(url) > target_bytes:
+                    unshrinkable_oversized += 1
             elif isinstance(image_value, str):
                 resized = _shrink_data_url(image_value)
                 if resized:
                     part["image_url"] = resized
                     changed_count += 1
+                elif image_value.startswith("data:") \
+                        and len(image_value) > target_bytes:
+                    unshrinkable_oversized += 1
 
     if changed_count:
         logger.info(
             "image-shrink recovery: re-encoded %d image part(s) to fit under %.0f MB",
             changed_count, target_bytes / (1024 * 1024),
         )
+    if unshrinkable_oversized:
+        # At least one oversized image could not be shrunk under the target.
+        # Retrying would re-send it and fail identically, so signal "no
+        # progress" even if other parts shrank — the caller will surface the
+        # original error rather than burning its single retry on a no-op.
+        logger.warning(
+            "image-shrink recovery: %d oversized image part(s) could not be "
+            "shrunk under %.0f MB — not retrying (would re-send rejected payload)",
+            unshrinkable_oversized, target_bytes / (1024 * 1024),
+        )
+        return False
     return changed_count > 0
 
 

@@ -216,8 +216,11 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
+        # Repo root additionally passes --workspaces=false so npm does not
+        # recursively install every apps/* workspace (desktop, shared).
+        repo_flags = [*update_flags, "--workspaces=false"]
         assert npm_calls[:2] == [
-            (update_flags, PROJECT_ROOT),
+            (repo_flags, PROJECT_ROOT),
             (update_flags, PROJECT_ROOT / "ui-tui"),
         ]
         if len(npm_calls) > 2:
@@ -279,6 +282,83 @@ class TestCmdUpdateBranchFallback:
             captured = capsys.readouterr()
             assert "applying safe config migrations" in captured.out
             assert "API keys require manual entry" in captured.out
+
+
+class TestCmdUpdateMigrationPrompt:
+    """The config-migration prompt names what changed and skips the prompt
+    entirely when only the config format version moved.
+
+    Regression guard for the contentless-prompt report (ScottFive / Tt2021):
+    previously the prompt printed only counts ("1 new config option") and
+    asked "configure them now?" even for pure version bumps, where saying
+    yes looked like a no-op.
+    """
+
+    def test_version_bump_only_applies_silently_without_prompt(
+        self, mock_args, capsys
+    ):
+        """Only the version moved → apply non-interactively, never prompt."""
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch("builtins.input") as mock_input, patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=[]
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=[]
+        ), patch(
+            "hermes_cli.config.check_config_version", return_value=(5, 24)
+        ), patch(
+            "hermes_cli.config.migrate_config",
+            return_value={"env_added": [], "config_added": [], "warnings": []},
+        ) as mock_migrate:
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+            mock_input.assert_not_called()
+            mock_migrate.assert_called_once_with(interactive=False, quiet=True)
+            out = capsys.readouterr().out
+            assert "Updating config format (v5 → v24)" in out
+            assert "no new settings to configure" in out
+            # The misleading question must NOT appear for a pure version bump.
+            assert "configure them now" not in out.lower()
+
+    def test_new_options_are_listed_by_name_before_prompt(
+        self, mock_args, capsys
+    ):
+        """New env/config keys are printed by name so the user can decide."""
+        env_items = [
+            {"name": "FOO_API_KEY", "description": "Foo service API key"},
+        ]
+        cfg_items = [
+            {"key": "display.new_widget", "description": "New config option: display.new_widget"},
+        ]
+        with patch("shutil.which", return_value=None), patch(
+            "subprocess.run"
+        ) as mock_run, patch("builtins.input", return_value="n"), patch(
+            "hermes_cli.config.get_missing_env_vars", return_value=env_items
+        ), patch(
+            "hermes_cli.config.get_missing_config_fields", return_value=cfg_items
+        ), patch(
+            "hermes_cli.config.check_config_version", return_value=(1, 24)
+        ), patch(
+            "hermes_cli.config.migrate_config",
+            return_value={"env_added": [], "config_added": [], "warnings": []},
+        ), patch("hermes_cli.main.sys") as mock_sys:
+            mock_sys.stdin.isatty.return_value = True
+            mock_sys.stdout.isatty.return_value = True
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+            out = capsys.readouterr().out
+            # Names, not just counts.
+            assert "FOO_API_KEY" in out
+            assert "Foo service API key" in out
+            assert "display.new_widget" in out
 
 
 class TestCmdUpdateProfileSkillSync:

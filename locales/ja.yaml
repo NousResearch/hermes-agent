@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "元に戻せる操作がありません。"
-    removed:               "↩️ {count} 件のメッセージを取り消しました。\n削除: 「{preview}」"
+    removed:               "↩️ {turns} ターンを取り消しました（{count} 件のメッセージ）。\nバックアップ先: 「{preview}」\n上のテキストをコピー／編集して送信すると、ここから再入力できます。"
+    invalid_count:         "無効な数値「{arg}」— /undo または /undo N を使用してください。"
 
   update:
     platform_not_messaging:  "✗ /update はメッセージングプラットフォームでのみ利用可能です。ターミナルで `hermes update` を実行してください。"

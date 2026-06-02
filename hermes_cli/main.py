@@ -201,6 +201,7 @@ if _try_termux_ultrafast_version():
     raise SystemExit(0)
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -381,10 +382,19 @@ except Exception:
 
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
+# Dashboard entrypoints bootstrap with GUI mode so gui.log is always present
+# during GUI testing, including pre-dispatch startup failures.
 try:
     from hermes_logging import setup_logging as _setup_logging
 
-    _setup_logging(mode="cli")
+    _setup_logging(
+        mode=(
+            "gui"
+            if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
+            in {"dashboard", "gui", "desktop"}
+            else "cli"
+        )
+    )
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
@@ -1701,6 +1711,26 @@ def _pin_kanban_board_env() -> None:
         pass
 
 
+def _sync_bundled_skills_quietly() -> None:
+    """Seed ``~/.hermes/skills/`` with the bundled skill library on first launch.
+
+    Called from any CLI entrypoint that the user might use as their first
+    interaction with Hermes — chat, dashboard (the desktop GUI's backend),
+    and gateway. The skills_sync module is manifest-based and idempotent:
+    skipped skills cost ~milliseconds, so calling this repeatedly is fine.
+
+    Failures are swallowed because skills are an enhancement, not a hard
+    dependency. Hermes still functions without them; the user just sees an
+    empty skills library.
+    """
+    try:
+        from tools.skills_sync import sync_skills
+
+        sync_skills(quiet=True)
+    except Exception:
+        pass
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
@@ -1888,6 +1918,8 @@ def cmd_chat(args):
 
 def cmd_gateway(args):
     """Gateway management commands."""
+    _sync_bundled_skills_quietly()
+
     from hermes_cli.gateway import gateway_command
 
     gateway_command(args)
@@ -2434,7 +2466,8 @@ def select_provider_and_model(args=None):
     for row in grouped_rows:
         if row["kind"] == "group":
             gid = row["group_id"]
-            label = f"{row['label']} ▸"
+            group_desc = row.get("description", "")
+            label = f"{row['label']} ▸ ({group_desc})" if group_desc else f"{row['label']} ▸"
             key = f"group:{gid}"
             is_active = bool(active_group) and gid == active_group
             members = row["members"]
@@ -2484,13 +2517,14 @@ def select_provider_and_model(args=None):
     selected_members = ordered[provider_idx][2]
 
     # Group row → drill into a member sub-picker. Default to the active member
-    # if the active provider lives in this group.
+    # if the active provider lives in this group. The descriptive text lives on
+    # the group row itself, so member rows show only their short label here.
     if selected_members:
         member_default = 0
         if active in selected_members:
             member_default = selected_members.index(active)
         member_labels = [
-            canonical_descs.get(m, provider_labels.get(m, m)) for m in selected_members
+            provider_labels.get(m, m) for m in selected_members
         ]
         member_idx = _prompt_provider_choice(member_labels, default=member_default)
         if member_idx is None:
@@ -4455,23 +4489,17 @@ def _remove_custom_provider(config):
     choices.append("Cancel")
 
     try:
-        from simple_term_menu import TerminalMenu
+        from hermes_cli.curses_ui import curses_radiolist
 
-        menu = TerminalMenu(
-            [f"  {c}" for c in choices],
-            cursor_index=0,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_red", "bold"),
-            menu_highlight_style=("fg_red",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title="Select provider to remove:",
+        idx = curses_radiolist(
+            "Select provider to remove:",
+            list(choices),
+            selected=0,
+            cancel_returns=-1,
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-
-        flush_stdin()
         print()
+        if idx < 0:
+            idx = None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
@@ -4538,27 +4566,20 @@ def _model_flow_named_custom(config, provider_info):
 
         print(f"Found {len(models)} model(s):\n")
         try:
-            from simple_term_menu import TerminalMenu
+            from hermes_cli.curses_ui import curses_radiolist
 
             menu_items = [
-                f"  {m} (current)" if m == saved_model else f"  {m}" for m in models
-            ] + ["  Cancel"]
-            menu = TerminalMenu(
+                f"{m} (current)" if m == saved_model else m for m in models
+            ] + ["Cancel"]
+            idx = curses_radiolist(
+                f"Select model from {name}:",
                 menu_items,
-                cursor_index=default_idx,
-                menu_cursor="-> ",
-                menu_cursor_style=("fg_green", "bold"),
-                menu_highlight_style=("fg_green",),
-                cycle_cursor=True,
-                clear_screen=False,
-                title=f"Select model from {name}:",
+                selected=default_idx,
+                cancel_returns=-1,
+                searchable=True,
             )
-            idx = menu.show()
-            from hermes_cli.curses_ui import flush_stdin
-
-            flush_stdin()
             print()
-            if idx is None or idx >= len(models):
+            if idx < 0 or idx >= len(models):
                 print("Cancelled.")
                 return
             model_name = models[idx]
@@ -4735,26 +4756,18 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         default_idx = 0
 
     try:
-        from simple_term_menu import TerminalMenu
+        from hermes_cli.curses_ui import curses_radiolist
 
-        choices = [f"  {_label(effort)}" for effort in ordered]
-        choices.append(f"  {disable_label}")
-        choices.append(f"  {skip_label}")
-        menu = TerminalMenu(
+        choices = [_label(effort) for effort in ordered]
+        choices.append(disable_label)
+        choices.append(skip_label)
+        idx = curses_radiolist(
+            "Select reasoning effort:",
             choices,
-            cursor_index=default_idx,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title="Select reasoning effort:",
+            selected=default_idx,
+            cancel_returns=-1,
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-
-        flush_stdin()
-        if idx is None:
+        if idx < 0:
             return None
         print()
         if idx < len(ordered):
@@ -6566,12 +6579,16 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
 def _web_ui_build_needed(web_dir: Path) -> bool:
     """Return True if the web UI dist is missing or stale.
 
-    The Vite build outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
-    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``.  Uses the Vite
-    manifest as the sentinel because it is written last and therefore has the
-    newest mtime of any build output.
+    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
+    The dashboard source lives under ``web/``, but the Vite build
+    still outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
+    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``, so Python
+    packaging can continue serving the same static asset directory. Uses the
+    Vite manifest as the sentinel because it is written last and therefore
+    has the newest mtime of any build output.
     """
-    dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
+    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    dist_dir = project_root / "hermes_cli" / "web_dist"
     sentinel = dist_dir / ".vite" / "manifest.json"
     if not sentinel.exists():
         sentinel = dist_dir / "index.html"
@@ -6745,7 +6762,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
     Args:
-        web_dir: Path to the ``web/`` source directory.
+        web_dir: Path to the dashboard frontend source directory.
         fatal: If True, print error guidance and return False on failure
                instead of a soft warning (used by ``hermes web``).
 
@@ -6823,7 +6840,8 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         build_output = (r2.stderr or "") + (r2.stdout or "")
         stderr_preview = build_output.strip()
         stderr_tail = "\n  ".join(stderr_preview.splitlines()[-10:]) if stderr_preview else ""
-        dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
+        project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+        dist_dir = project_root / "hermes_cli" / "web_dist"
         dist_index = dist_dir / "index.html"
 
         # If a stale dist exists, serve it as a fallback instead of failing.
@@ -6845,6 +6863,341 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         return False
     _say("  ✓ Web UI built")
     return True
+
+
+def _desktop_dist_exists(desktop_dir: Path) -> bool:
+    """Return True when a local desktop renderer build is present."""
+    return (desktop_dir / "dist" / "index.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# Desktop build stamp — content-hash based skip logic
+# ---------------------------------------------------------------------------
+# The desktop Electron build is expensive.
+# Unlike the web UI (which uses mtime comparison), the desktop uses a
+# SHA-256 content hash of the source tree so that:
+#   - ``git checkout`` / ``git pull`` that touch mtimes but not content
+#     don't trigger a rebuild
+#   - ``hermes update`` can unconditionally call ``hermes desktop --build-only``
+#     and it will skip if nothing actually changed
+#   - ``hermes desktop`` (interactive launch) skips the build when the
+#     stamp matches, making repeated launches fast
+#
+# Stamp file: $HERMES_HOME/desktop-build-stamp.json
+# Schema:
+#   {
+#     "contentHash": "<sha256 hex of source files>",
+#     "sourceMode": true | false,
+#     "builtAt": "<ISO 8601>"
+#   }
+
+def _compute_desktop_content_hash(project_root: Path) -> str:
+    """Return a SHA-256 hex digest of all source files that feed the desktop build.
+
+    Covers ``apps/desktop/`` (excluding anything matched by .gitignore)
+    plus the root ``package.json`` / ``package-lock.json`` (workspace config
+    that determines dependency resolution for the desktop workspace).
+
+    Parses the repo-root ``.gitignore`` via *pathspec* so we automatically
+    skip ``node_modules/``, ``dist/``, ``*.pyc``, etc. without maintaining
+    a hardcoded skip-list.
+    """
+    h = hashlib.sha256()
+
+    def _hash_file(path: Path) -> None:
+        rel = str(path.relative_to(project_root))
+        h.update(rel.encode())
+        h.update(b"\0")
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+        except (OSError, IOError):
+            pass
+        h.update(b"\0")
+
+
+    from pathspec import PathSpec
+
+    gitignore = project_root / ".gitignore"
+    lines: list[str] = []
+    if gitignore.is_file():
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+    spec = PathSpec.from_lines("gitignore", lines)
+
+    # Root workspace config
+    for name in ("package.json", "package-lock.json"):
+        p = project_root / name
+        if p.is_file():
+            rel = str(p.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(p)
+
+    # Walk apps/desktop/ — prune ignored directories in-place
+    desktop_dir = project_root / "apps" / "desktop"
+    for dirpath, dirnames, filenames in os.walk(desktop_dir, topdown=True):
+        # Prune ignored directories so we never descend into them
+        dirnames[:] = [
+            d for d in dirnames
+            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
+        ]
+
+        for fn in sorted(filenames):
+            fp = Path(dirpath) / fn
+            rel = str(fp.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(fp)
+
+    return h.hexdigest()
+
+
+def _desktop_stamp_path() -> Path:
+    """Return the path to the desktop build stamp file under $HERMES_HOME."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "desktop-build-stamp.json"
+
+
+def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
+    """Return True when the desktop build output is stale or missing.
+
+    Compares the current content hash against the saved stamp. Also returns
+    True if the expected build artifact doesn't exist (e.g. first run after
+    ``hermes update`` that pulled new source but hasn't built yet).
+    """
+    # If there's no build output at all, we definitely need to build
+    if source_mode:
+        if not _desktop_dist_exists(desktop_dir):
+            return True
+    else:
+        if _desktop_packaged_executable(desktop_dir) is None:
+            return True
+
+    stamp_file = _desktop_stamp_path()
+    if not stamp_file.is_file():
+        return True
+
+    try:
+        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, KeyError):
+        return True
+
+    # If the mode changed (source vs packaged), force a rebuild
+    if stamp_data.get("sourceMode") != source_mode:
+        return True
+
+    saved_hash = stamp_data.get("contentHash")
+    if not saved_hash:
+        return True
+
+    current_hash = _compute_desktop_content_hash(project_root)
+    return current_hash != saved_hash
+
+
+def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
+    """Write the desktop build stamp after a successful build."""
+    stamp_file = _desktop_stamp_path()
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        content_hash = _compute_desktop_content_hash(project_root)
+        from datetime import datetime, timezone
+        stamp_data = {
+            "contentHash": content_hash,
+            "sourceMode": source_mode,
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+        }
+        stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        # Never let stamp-writing block or fail a build
+        logger.debug("Failed to write desktop build stamp: %s", exc)
+
+
+def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
+    """Return the current platform's unpacked Electron app executable."""
+    release_dir = desktop_dir / "release"
+    if sys.platform == "darwin":
+        candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
+    elif sys.platform == "win32":
+        candidates = [
+            release_dir / "win-unpacked" / "Hermes.exe",
+            release_dir / "win-ia32-unpacked" / "Hermes.exe",
+            release_dir / "win-arm64-unpacked" / "Hermes.exe",
+        ]
+    else:
+        candidates = [
+            release_dir / "linux-unpacked" / "hermes",
+            release_dir / "linux-unpacked" / "Hermes",
+        ]
+
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
+    """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
+
+    An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
+    when the self-updater rebuilds the bundle in place with a fresh build (a new,
+    different cdhash) Gatekeeper/LaunchServices treats the changed code as
+    tampering and macOS reports "Hermes is damaged and can't be opened." The
+    bundle also inherits the com.apple.quarantine flag from the downloaded
+    installer process chain. Both make the relaunch fail.
+
+    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
+    (omitting the hardened-runtime flag, which is meaningless without a real
+    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
+    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
+    signed/notarized build is never clobbered. Best-effort: never raises.
+    """
+    if sys.platform != "darwin":
+        return
+    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
+        return
+    exe = _desktop_packaged_executable(desktop_dir)
+    if exe is None:
+        return
+    # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
+    app = exe.parents[2]
+    if not str(app).endswith(".app") or not app.is_dir():
+        return
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return
+    try:
+        subprocess.run(["xattr", "-cr", str(app)], check=False)
+        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+    except Exception as exc:
+        print(f"  (warning: macOS relaunch fixup skipped: {exc})")
+
+def cmd_gui(args: argparse.Namespace):
+    """Build and launch the native Electron desktop GUI."""
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    if not (desktop_dir / "package.json").exists():
+        print(f"Desktop GUI source not found at: {desktop_dir}")
+        sys.exit(1)
+
+    try:
+        from hermes_logging import setup_logging as _setup_logging_gui
+        _setup_logging_gui(mode="gui")
+    except Exception:
+        pass
+
+    env = os.environ.copy()
+    if getattr(args, "fake_boot", False):
+        env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
+    if getattr(args, "ignore_existing", False):
+        env["HERMES_DESKTOP_IGNORE_EXISTING"] = "1"
+    if getattr(args, "hermes_root", None):
+        env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
+    if getattr(args, "cwd", None):
+        env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+
+    source_mode = getattr(args, "source", False)
+    skip_build = getattr(args, "skip_build", False)
+    force_build = getattr(args, "force_build", False)
+
+    packaged_executable = _desktop_packaged_executable(desktop_dir)
+
+    if source_mode or not skip_build:
+        npm = shutil.which("npm")
+        if not npm:
+            print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
+            print("Install Node.js, then run:  hermes gui")
+            sys.exit(1)
+    else:
+        npm = None
+
+    if skip_build:
+        if source_mode:
+            if not _desktop_dist_exists(desktop_dir):
+                print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")
+                print("  Pre-build first:  cd apps/desktop && npm run build")
+                print("  Or drop --skip-build to install dependencies and build automatically.")
+                sys.exit(1)
+            if not (PROJECT_ROOT / "node_modules" / "electron" / "package.json").exists():
+                print("✗ --skip-build --source requires existing workspace dependencies.")
+                print(f"  Install first:  cd {PROJECT_ROOT} && npm ci")
+                print("  Or drop --skip-build to install dependencies and build automatically.")
+                sys.exit(1)
+            print(f"→ Skipping desktop source build (--skip-build --source); using dist at {desktop_dir / 'dist'}")
+        elif packaged_executable is None:
+            print(f"✗ --skip-build was passed but no packaged desktop app was found at: {desktop_dir / 'release'}")
+            print("  Pre-build first:  cd apps/desktop && npm run pack")
+            print("  Or drop --skip-build to package automatically.")
+            sys.exit(1)
+        else:
+            print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
+    else:
+        # Check the content-hash stamp before doing any build work.
+        # If the source tree hasn't changed since the last successful build,
+        # skip the npm install + build entirely (saves a ton of useless work).
+        # --force-build overrides the stamp and always rebuilds.
+        build_needed = force_build or _desktop_build_needed(
+            desktop_dir, PROJECT_ROOT, source_mode=source_mode
+        )
+        if not build_needed:
+            build_label = "source build" if source_mode else "packaged app"
+            print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
+        else:
+            print("→ Installing desktop workspace dependencies...")
+            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False)
+            if install_result.returncode != 0:
+                print("✗ Desktop dependency install failed")
+                print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
+                sys.exit(install_result.returncode or 1)
+
+            build_label = "source build" if source_mode else "packaged app"
+            print(f"→ Building desktop {build_label}...")
+            build_script = "build" if source_mode else "pack"
+            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0:
+                print("✗ Desktop GUI build failed")
+                print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
+                sys.exit(build_result.returncode or 1)
+            packaged_executable = _desktop_packaged_executable(desktop_dir)
+            if not source_mode:
+                # Locally-built apps are ad-hoc signed; make them relaunchable after
+                # an in-place self-update (otherwise macOS reports "Hermes is
+                # damaged"). No-op on non-macOS and on real-identity builds.
+                _desktop_macos_relaunchable_fixup(desktop_dir)
+
+            # Build succeeded — write the stamp so next run can skip
+            _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
+
+    # --build-only: produce the artifact but do NOT launch. The installer's
+    # --update flow drives the rebuild headlessly and then launches the desktop
+    # itself (detached, after the old exe has exited), so the launch must NOT
+    # happen here — it would block the installer and, on Windows, the old exe
+    # is still being replaced. Verify the expected artifact exists so a silent
+    # "built nothing" can't slip past, then return success.
+    if getattr(args, "build_only", False):
+        if source_mode:
+            if not _desktop_dist_exists(desktop_dir):
+                print(f"✗ --build-only --source produced no dist at: {desktop_dir / 'dist'}")
+                sys.exit(1)
+            print(f"✓ Desktop source build ready at {desktop_dir / 'dist'} (not launching; --build-only)")
+        elif packaged_executable is None:
+            print(f"✗ --build-only produced no launchable app at: {desktop_dir / 'release'}")
+            print("  Expected an unpacked Electron app for the current OS.")
+            sys.exit(1)
+        else:
+            print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+        return
+
+    if source_mode:
+        print("→ Launching Hermes Desktop from source build...")
+        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        sys.exit(launch_result.returncode)
+
+    if packaged_executable is None:
+        print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
+        print("  Expected an unpacked Electron app for the current OS.")
+        sys.exit(1)
+
+    print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
+    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
+    sys.exit(launch_result.returncode)
 
 
 def _find_stale_dashboard_pids() -> list[int]:
@@ -7312,11 +7665,6 @@ def _update_via_zip(args):
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
     _update_node_dependencies()
-    # Core (Python deps + git pull / ZIP extract) is now complete; the CLI
-    # is functional from this point onward. The web UI build below is
-    # optional — a failure here only affects ``hermes dashboard``. Make
-    # that visible so users don't panic and reboot mid-build (#33788).
-    print("→ Core update complete. Building dashboard (optional)...")
     _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
@@ -8424,10 +8772,19 @@ def _update_node_dependencies() -> None:
         # appearing to hang silently for minutes (#18840).  The
         # `_UpdateOutputStream` wrapper installed by the updater mirrors
         # streamed output to ``~/.hermes/logs/update.log`` so nothing is lost.
+        #
+        # The repo root install also passes `--workspaces=false` so npm
+        # does not recursively install every `apps/*` workspace (dashboard,
+        # desktop, shared) — those are installed/built on demand via
+        # `_build_web_ui()` and the desktop launchers.
+        extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+        if path == PROJECT_ROOT:
+            extra_args.append("--workspaces=false")
+
         result = _run_npm_install_deterministic(
             npm,
             path,
-            extra_args=("--no-fund", "--no-audit", "--progress=false"),
+            extra_args=tuple(extra_args),
             capture_output=False,
         )
         if result.returncode == 0:
@@ -8942,6 +9299,43 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _discard_lockfile_churn(git_cmd, repo_root):
+    """Restore tracked ``package-lock.json`` files that npm dirtied locally.
+
+    npm rewrites lockfiles non-deterministically at install/build time. On a
+    managed install those diffs are never intentional, so we discard them so
+    ``hermes update`` sees a clean tree instead of autostashing every run.
+    Best-effort; only ever touches files named ``package-lock.json``.
+    """
+    try:
+        diff = subprocess.run(
+            git_cmd + ["diff", "--name-only"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        if diff.returncode != 0:
+            return
+        dirty = [
+            line.strip()
+            for line in diff.stdout.splitlines()
+            if line.strip().endswith("package-lock.json")
+        ]
+        if not dirty:
+            return
+        subprocess.run(
+            git_cmd + ["checkout", "--", *dirty],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
+    except Exception:
+        # Never let lockfile cleanup block an update.
+        pass
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9118,6 +9512,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_cmd = ["git"]
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    # Discard npm lockfile churn before any stash/branch logic. npm rewrites
+    # tracked package-lock.json files non-deterministically at install/build
+    # time (platform-specific optional deps, ideallyInert annotations, etc.),
+    # which is never an intentional edit on a managed install but leaves the
+    # tree dirty — forcing an autostash on every update and making branch
+    # switches fragile. Restoring them first lets the common case (only
+    # lockfile churn) update with a clean tree.
+    _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
@@ -9449,11 +9852,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refresh_active_lazy_features()
 
         _update_node_dependencies()
-        # See note above (ZIP path): core is now complete, web UI build is
-        # optional from a CLI perspective. Telegraphing this avoids the
-        # "stuck at webui-build → reboot → broken install" trap (#33788).
-        print("→ Core update complete. Building dashboard (optional)...")
         _build_web_ui(PROJECT_ROOT / "web")
+
+        # Rebuild the desktop app if the source tree changed since the last
+        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
+        # internally, so this is effectively a no-op when nothing changed.
+        # Only bother if the user has a desktop app installed (indicated by
+        # an existing packaged executable or desktop dist); people who have
+        # never run ``hermes desktop`` shouldn't be forced into a full
+        # Electron build by ``hermes update``.
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
+            print("→ Checking if desktop app needs rebuilding...")
+            build_result = subprocess.run(
+                [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
+                cwd=PROJECT_ROOT,
+                check=False,
+            )
+            if build_result.returncode != 0:
+                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
         print()
         print("✓ Code updated!")
@@ -9557,16 +9975,61 @@ def _cmd_update_impl(args, gateway_mode: bool):
         missing_config = get_missing_config_fields()
         current_ver, latest_ver = check_config_version()
 
-        needs_migration = missing_env or missing_config or current_ver < latest_ver
+        has_new_options = bool(missing_env or missing_config)
+        version_bump_only = (
+            not has_new_options and current_ver < latest_ver
+        )
+        needs_migration = has_new_options or current_ver < latest_ver
 
-        if needs_migration:
+        if version_bump_only:
+            # Nothing for the user to fill in — only the config format version
+            # changed (new defaults already merge in transparently). Asking
+            # "configure new options now?" here is misleading: saying yes just
+            # bumps the version and looks like a no-op (issue: ScottFive /
+            # Tt2021). Apply it silently and say what actually happened.
             print()
+            print(
+                f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…"
+            )
+            try:
+                migrate_config(interactive=False, quiet=True)
+                print("  ✓ Config format updated (no new settings to configure)")
+            except Exception as _mig_err:
+                print(f"  ⚠️  Config format update failed: {_mig_err}")
+                print("     Run 'hermes config migrate' to retry.")
+        elif needs_migration:
+            print()
+            # Show WHAT changed, not just a count, so the user can make an
+            # informed yes/no decision (previously the prompt named nothing).
+            def _print_items(items, label, key, fallback_key=None):
+                if not items:
+                    return
+                print(f"  {label}:")
+                shown = items[:8]
+                for it in shown:
+                    if isinstance(it, dict):
+                        name = it.get(key) or (fallback_key and it.get(fallback_key)) or "?"
+                        desc = (it.get("description") or "").strip()
+                    else:
+                        # Defensive: some callers/mocks pass bare name strings.
+                        name = str(it)
+                        desc = ""
+                    if desc:
+                        print(f"      • {name} — {desc}")
+                    else:
+                        print(f"      • {name}")
+                extra = len(items) - len(shown)
+                if extra > 0:
+                    print(f"      … and {extra} more")
+
             if missing_env:
                 print(
                     f"  ⚠️  {len(missing_env)} new required setting(s) need configuration"
                 )
+                _print_items(missing_env, "New settings", "name")
             if missing_config:
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
+                _print_items(missing_config, "New options", "key")
 
             print()
             if assume_yes:
@@ -9888,8 +10351,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # agent runs drain instead of being SIGKILLed.
                             # The gateway's SIGUSR1 handler calls
                             # request_restart(via_service=True) → drain →
-                            # exit(75); systemd's Restart=on-failure (and
-                            # RestartForceExitStatus=75) respawns the unit.
+                            # exit; systemd's Restart=always respawns the unit.
                             _main_pid = 0
                             try:
                                 _show = subprocess.run(
@@ -9923,9 +10385,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 )
 
                             if _graceful_ok:
-                                # Gateway exited 75. ``Restart=always`` +
-                                # ``RestartForceExitStatus=75`` means systemd
-                                # WILL respawn the unit — but only after
+                                # Gateway exited after a planned restart.
+                                # ``Restart=always`` means systemd WILL respawn
+                                # the unit — but only after
                                 # ``RestartSec`` (default 60s on our unit
                                 # file). That 60s wait is a crash-loop guard,
                                 # and is the right default when the gateway
@@ -10315,6 +10777,8 @@ def _coalesce_session_name_args(argv: list) -> list:
         "uninstall",
         "profile",
         "dashboard",
+        "desktop",
+        "gui",
         "honcho",
         "claw",
         "plugins",
@@ -11044,6 +11508,14 @@ def cmd_dashboard(args):
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
 
+    # Attach gui.log early so dashboard startup/build failures are captured in
+    # the same logs directory as every other Hermes surface.
+    try:
+        from hermes_logging import setup_logging as _setup_logging_gui
+        _setup_logging_gui(mode="gui")
+    except Exception:
+        pass
+
     try:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
@@ -11058,11 +11530,17 @@ def cmd_dashboard(args):
         print(f"Import error: {e}")
         sys.exit(1)
 
+    # Seed bundled skills on first dashboard launch so the desktop GUI's
+    # skills picker / agent skill discovery sees the bundled library.
+    # cmd_chat does this in its own pre-dispatch block; the dashboard
+    # backend is the desktop's primary entrypoint and needs the same.
+    _sync_bundled_skills_quietly()
+
     if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
     elif getattr(args, "skip_build", False):
-        # --skip-build trusts the caller to have pre-built the web UI.
+        # --build-mode skip trusts the caller to have pre-built the web UI.
         # Verify the dist actually exists; otherwise the server will start
         # and serve 404s with no obvious cause (issue #23817).
         _dist_root = (
@@ -11159,7 +11637,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
+        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -12966,6 +13444,43 @@ Examples:
         help="Skip confirmation prompt when using --restore",
     )
 
+    skills_opt_out = skills_subparsers.add_parser(
+        "opt-out",
+        help="Stop bundled skills from being seeded into this profile",
+        description=(
+            "Write the .no-bundled-skills marker so the installer, "
+            "`hermes update`, and any direct sync stop seeding bundled skills "
+            "into the active profile. By default nothing already on disk is "
+            "touched. Pass --remove to ALSO delete bundled skills that are "
+            "unmodified (user-edited and hub/local skills are never removed)."
+        ),
+    )
+    skills_opt_out.add_argument(
+        "--remove",
+        action="store_true",
+        help="Also delete already-present unmodified bundled skills",
+    )
+    skills_opt_out.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt when using --remove",
+    )
+
+    skills_opt_in = skills_subparsers.add_parser(
+        "opt-in",
+        help="Re-enable bundled-skill seeding (undo opt-out)",
+        description=(
+            "Remove the .no-bundled-skills marker so bundled skills are seeded "
+            "again on the next `hermes update`. Pass --sync to re-seed now."
+        ),
+    )
+    skills_opt_in.add_argument(
+        "--sync",
+        action="store_true",
+        help="Re-seed bundled skills immediately instead of waiting for update",
+    )
+
     skills_repair_official = skills_subparsers.add_parser(
         "repair-official",
         help="Backfill or restore official optional skills from repo source",
@@ -14376,12 +14891,71 @@ Examples:
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================
+    # desktop (a.k.a. gui) command
+    #
+    # The canonical name is "desktop"; "gui" is kept as a deprecated alias
+    # for one release. The Hermes-Setup.exe success screen tells users to
+    # run `hermes desktop` from a terminal, so the canonical name needs
+    # to be the one that appears in --help (argparse promotes the primary
+    # name; aliases stay hidden).
+    # =========================================================================
+    gui_parser = subparsers.add_parser(
+        "desktop",
+        aliases=["gui"],
+        help="Build and launch the native desktop app",
+        description=(
+            "Launch the Hermes Electron desktop app. By default this installs "
+            "workspace Node dependencies, builds the current OS's unpacked "
+            "Electron app, then launches that packaged artifact."
+        ),
+    )
+    gui_parser.add_argument(
+        "--source",
+        action="store_true",
+        help="Launch via `electron .` against apps/desktop/dist instead of the packaged app",
+    )
+    gui_parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Build the desktop app but do not launch it (used by the installer's --update flow)",
+    )
+    gui_parser.add_argument(
+        "--fake-boot",
+        action="store_true",
+        help="Enable deterministic desktop boot delays for validating startup UI",
+    )
+    gui_parser.add_argument(
+        "--ignore-existing",
+        action="store_true",
+        help="Force Desktop to ignore any hermes CLI already on PATH during backend resolution",
+    )
+    gui_parser.add_argument(
+        "--hermes-root",
+        help="Override the Hermes source root used by Desktop (sets HERMES_DESKTOP_HERMES_ROOT)",
+    )
+    gui_parser.add_argument(
+        "--cwd",
+        help="Initial project directory for Desktop chat sessions (sets HERMES_DESKTOP_CWD)",
+    )
+    gui_parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
+    )
+    gui_parser.add_argument(
+        "--force-build",
+        action="store_true",
+        help="Force a full rebuild even if the content stamp matches",
+    )
+    gui_parser.set_defaults(func=cmd_gui)
+
+    # =========================================================================
     # logs command
     # =========================================================================
     logs_parser = subparsers.add_parser(
         "logs",
         help="View and filter Hermes log files",
-        description="View, tail, and filter agent.log / errors.log / gateway.log",
+        description="View, tail, and filter agent.log / errors.log / gateway.log / gui.log",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -14389,6 +14963,7 @@ Examples:
     hermes logs -f                 Follow agent.log in real time
     hermes logs errors             Show last 50 lines of errors.log
     hermes logs gateway -n 100     Show last 100 lines of gateway.log
+    hermes logs gui -f             Follow gui.log in real time
     hermes logs --level WARNING    Only show WARNING and above
     hermes logs --session abc123   Filter by session ID
     hermes logs --component tools  Only show tool-related lines
@@ -14401,7 +14976,7 @@ Examples:
         "log_name",
         nargs="?",
         default="agent",
-        help="Log to view: agent (default), errors, gateway, or 'list' to show available files",
+        help="Log to view: agent (default), errors, gateway, gui, or 'list' to show available files",
     )
     logs_parser.add_argument(
         "-n",
@@ -14434,7 +15009,7 @@ Examples:
     logs_parser.add_argument(
         "--component",
         metavar="NAME",
-        help="Filter by component: gateway, agent, tools, cli, cron",
+        help="Filter by component: gateway, agent, tools, cli, cron, gui",
     )
     logs_parser.set_defaults(func=cmd_logs)
 

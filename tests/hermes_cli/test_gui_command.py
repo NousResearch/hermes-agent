@@ -153,6 +153,75 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
+def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.write_text("", encoding="utf-8")
+    sandbox.chmod(0o755)
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/sudo", "chown", "root:root", str(sandbox)]
+    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/sudo", "chmod", "4755", str(sandbox)]
+    assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
+
+
+def test_gui_linux_rejects_symlink_sandbox(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    # Point chrome-sandbox at an unrelated file via symlink
+    target = tmp_path / "dangerous"
+    target.write_text("pwned", encoding="utf-8")
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.symlink_to(target)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 1
+    # Must NOT have called sudo chown/chmod on the symlink target
+    for call in mock_run.call_args_list:
+        assert "chown" not in call.args[0]
+        assert "chmod" not in call.args[0]
+
+
+def test_gui_linux_skips_fixup_when_already_configured(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.write_text("", encoding="utf-8")
+    # Simulate root-owned 4755 — lstat().st_uid==0 and mode==0o4755
+    # We can't actually chown to root in tests, so mock lstat to return
+    # the expected values directly.
+    import stat as stat_mod
+    fake_stat = type("s", (), {"st_uid": 0, "st_mode": 0o4755 | stat_mod.S_IFREG})()
+    sandbox_lstat_orig = type(sandbox).lstat
+    monkeypatch.setattr(type(sandbox), "lstat", lambda self: fake_stat)
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    # Only the launch call — no sudo chown/chmod
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == [str(packaged_exe)]
+
+
 def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"

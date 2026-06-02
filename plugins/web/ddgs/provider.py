@@ -96,28 +96,29 @@ class DDGSWebSearchProvider(WebSearchProvider):
                     )
             return results
 
+        _pool = _cf.ThreadPoolExecutor(max_workers=1)
         try:
-            web_results = []
-            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                _future = _pool.submit(_search_sync)
-                try:
-                    web_results = _future.result(timeout=_SEARCH_TIMEOUT)
-                except _cf.TimeoutError:
-                    logger.warning(
-                        "DDGS search timed out after %ds for query: %r",
-                        _SEARCH_TIMEOUT, query,
-                    )
-                    return {
-                        "success": False,
-                        "error": (
-                            f"DuckDuckGo search timed out after {_SEARCH_TIMEOUT}s — "
-                            "DuckDuckGo may be rate-limiting or slow. "
-                            "Try again later or switch to a different search provider."
-                        ),
-                    }
+            _future = _pool.submit(_search_sync)
+            try:
+                web_results = _future.result(timeout=_SEARCH_TIMEOUT)
+            except _cf.TimeoutError:
+                logger.warning(
+                    "DDGS search timed out after %ds for query: %r",
+                    _SEARCH_TIMEOUT, query,
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"DuckDuckGo search timed out after {_SEARCH_TIMEOUT}s — "
+                        "DuckDuckGo may be rate-limiting or slow. "
+                        "Try again later or switch to a different search provider."
+                    ),
+                }
         except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
             logger.warning("DDGS search error: %s", exc)
             return {"success": False, "error": f"DuckDuckGo search failed: {exc}"}
+        finally:
+            _pool.shutdown(wait=False, cancel_futures=True)
 
         logger.info("DDGS search '%s': %d results (limit %d)", query, len(web_results), limit)
         return {"success": True, "data": {"web": web_results}}

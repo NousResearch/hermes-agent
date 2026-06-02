@@ -74,6 +74,13 @@ try:
 except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
 
+
+def _build_agent_browser_env(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Build the environment used for agent-browser subprocesses."""
+    from tools.environments.local import _sanitize_subprocess_env
+
+    return _sanitize_subprocess_env(os.environ, extra_env)
+
 try:
     from tools.url_safety import (
         is_safe_url as _is_safe_url,
@@ -857,7 +864,7 @@ def _run_chrome_fallback_command(
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
-    browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+    browser_env = _build_agent_browser_env({"AGENT_BROWSER_SOCKET_DIR": task_socket_dir})
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
@@ -1991,7 +1998,7 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = {**os.environ}
+        browser_env = _build_agent_browser_env()
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.

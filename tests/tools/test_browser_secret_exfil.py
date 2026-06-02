@@ -42,6 +42,35 @@ class TestBrowserSecretExfil:
         # Should NOT be blocked by secret detection
         assert "API key or token" not in parsed.get("error", "")
 
+    def test_agent_browser_env_strips_operator_credentials(self, monkeypatch):
+        from tools.browser_tool import _build_agent_browser_env
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai")
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-test-anthropic")
+        monkeypatch.setenv("GH_TOKEN", "ghp_testgithub")
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "operator")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("AGENT_BROWSER_ARGS", "--disable-gpu")
+
+        env = _build_agent_browser_env({"AGENT_BROWSER_SOCKET_DIR": "/tmp/browser-socket"})
+
+        assert "OPENAI_API_KEY" not in env
+        assert "ANTHROPIC_TOKEN" not in env
+        assert "GH_TOKEN" not in env
+        assert "GATEWAY_ALLOWED_USERS" not in env
+        assert env["PATH"] == "/usr/bin"
+        assert env["AGENT_BROWSER_ARGS"] == "--disable-gpu"
+        assert env["AGENT_BROWSER_SOCKET_DIR"] == "/tmp/browser-socket"
+
+    def test_agent_browser_env_preserves_forced_operator_passthrough(self, monkeypatch):
+        from tools.browser_tool import _build_agent_browser_env
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai")
+
+        env = _build_agent_browser_env({"_HERMES_FORCE_OPENAI_API_KEY": "explicit-pass"})
+
+        assert env["OPENAI_API_KEY"] == "explicit-pass"
+
 
 class TestWebExtractSecretExfil:
     """Verify web_extract_tool blocks URLs containing secrets."""

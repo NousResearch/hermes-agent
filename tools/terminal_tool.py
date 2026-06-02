@@ -1006,9 +1006,20 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     task_id, we honour it by returning the task_id unchanged -- those
     rollouts need their own isolated sandbox, which is the whole point of
     the override.
+
+    CWD-only overrides (registered by the ACP adapter for workspace
+    tracking) are *not* isolation signals — they should not cause each
+    session to spin up its own container.  Only overrides containing
+    backend-specific image keys or ``env_type`` trigger isolation.
     """
+    _ISOLATION_KEYS = frozenset({
+        "docker_image", "modal_image", "singularity_image",
+        "daytona_image", "env_type",
+    })
     if task_id and task_id in _task_env_overrides:
-        return task_id
+        overrides = _task_env_overrides[task_id]
+        if set(overrides.keys()) & _ISOLATION_KEYS:
+            return task_id
     return "default"
 
 

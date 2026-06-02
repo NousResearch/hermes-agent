@@ -2935,6 +2935,16 @@ def _require_task_control_envelopes_enabled() -> None:
         raise HTTPException(status_code=404, detail="Task Control Envelopes disabled")
 
 
+def _evidence_cards_enabled() -> bool:
+    config = load_config()
+    return cfg_get(config, "dashboard", "evidence_cards_enabled", default=False) is True
+
+
+def _require_evidence_cards_enabled() -> None:
+    if not _evidence_cards_enabled():
+        raise HTTPException(status_code=404, detail="Evidence Cards disabled")
+
+
 def _mission_brief_error(exc: Exception) -> HTTPException:
     from hermes_cli.mission_briefs import MissionBriefError
 
@@ -2981,6 +2991,18 @@ def _task_control_envelope_error(exc: Exception) -> HTTPException:
             return HTTPException(status_code=404, detail="Task Control Envelope not found")
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail="Task Control Envelope error")
+
+
+def _evidence_card_error(exc: Exception) -> HTTPException:
+    from hermes_cli.mission_control_evidence_cards import EvidenceCardError
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="Evidence Card not found")
+    if isinstance(exc, EvidenceCardError):
+        if str(exc) == "Invalid evidence card id":
+            return HTTPException(status_code=404, detail="Evidence Card not found")
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Evidence Card error")
 
 
 @app.get("/api/mission-control/packets")
@@ -3264,6 +3286,36 @@ async def archive_task_control_envelope(envelope_id: str):
         return transition_task_control_envelope(envelope_id, "archived")
     except Exception as exc:
         raise _task_control_envelope_error(exc) from exc
+
+
+@app.get("/api/mission-control/evidence-cards")
+async def get_evidence_cards():
+    _require_evidence_cards_enabled()
+    from hermes_cli.mission_control_evidence_cards import list_cards
+
+    return list_cards()
+
+
+@app.post("/api/mission-control/evidence-cards")
+async def post_evidence_card(body: Dict[str, Any]):
+    _require_evidence_cards_enabled()
+    from hermes_cli.mission_control_evidence_cards import create_card
+
+    try:
+        return {"card": create_card(dict(body))}
+    except Exception as exc:
+        raise _evidence_card_error(exc) from exc
+
+
+@app.get("/api/mission-control/evidence-cards/{card_id}")
+async def get_evidence_card(card_id: str):
+    _require_evidence_cards_enabled()
+    from hermes_cli.mission_control_evidence_cards import get_card
+
+    try:
+        return get_card(card_id)
+    except Exception as exc:
+        raise _evidence_card_error(exc) from exc
 
 
 @app.get("/api/mission-control/project-rooms")

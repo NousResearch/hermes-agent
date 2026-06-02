@@ -3058,6 +3058,20 @@ class FeishuAdapter(BasePlatformAdapter):
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
+        # [v2.10 Phase 5B] Record session binding for multi-entry session binding.
+        try:
+            from gateway.session import build_session_key
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+            from gateway.platforms.feishu_session_binding_bridge import record_feishu_session_binding
+            record_feishu_session_binding(source, session_key)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Session binding sidecar skipped (non-critical)", exc_info=True
+            )
         normalized = MessageEvent(
             text=text,
             message_type=inbound_type,

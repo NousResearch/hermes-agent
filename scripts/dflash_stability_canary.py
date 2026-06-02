@@ -204,9 +204,11 @@ def run_subprocess(cmd: Sequence[str], *, cwd: Path, timeout_s: float) -> Comman
             elapsed_s=elapsed_s,
         )
     except subprocess.TimeoutExpired:
-        if start_new_session and hasattr(signal, "SIGUSR1"):
+        sigusr1 = getattr(signal, "SIGUSR1", None)
+        killpg = getattr(os, "killpg", None)
+        if start_new_session and sigusr1 is not None and killpg is not None:
             try:
-                os.killpg(proc.pid, signal.SIGUSR1)
+                killpg(proc.pid, sigusr1)
                 time.sleep(1.0)
             except Exception:
                 pass

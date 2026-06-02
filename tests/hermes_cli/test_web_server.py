@@ -1523,13 +1523,52 @@ class TestNewEndpoints:
         assert data["has_category"] is True
         assert isinstance(data["providers"], list)
         assert data["providers"], "tts always has at least the built-in providers"
+        # active_provider is part of the contract so the GUI can highlight the
+        # provider actually written to config (else it falls back to the first
+        # keyless one). It's either None or the name of one listed provider.
+        assert "active_provider" in data
+        names = {p["name"] for p in data["providers"]}
+        assert data["active_provider"] is None or data["active_provider"] in names
         for prov in data["providers"]:
             assert "name" in prov
+            assert "is_active" in prov
             assert "env_vars" in prov
             assert isinstance(prov["env_vars"], list)
             for ev in prov["env_vars"]:
                 assert "key" in ev
                 assert "is_set" in ev
+        # active_provider summarizes the first provider flagged is_active
+        # (some catalogs list two rows backed by the same config value, e.g.
+        # Firecrawl cloud + self-hosted both map to web.backend=firecrawl).
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        if active:
+            assert data["active_provider"] == active[0]
+        else:
+            assert data["active_provider"] is None
+
+    def test_get_toolset_config_reflects_selected_provider(self):
+        """Selecting a provider is reflected in the next /config read.
+
+        Regression: the GUI's provider panel highlighted the first keyless
+        provider on relaunch because /config never reported which provider was
+        actually active. After selecting one, is_active / active_provider must
+        point at it.
+        """
+        sel = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert sel.status_code == 200
+
+        resp = self.client.get("/api/tools/toolsets/web/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active_provider"] == "Firecrawl Self-Hosted"
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        # The first active row is what the GUI highlights; it must be the
+        # selected provider.
+        assert active, "expected at least one provider flagged active"
+        assert active[0] == "Firecrawl Self-Hosted"
 
     def test_get_toolset_config_no_category_toolset(self):
         """A toolset without a TOOL_CATEGORIES entry returns has_category False."""

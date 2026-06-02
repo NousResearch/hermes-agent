@@ -998,6 +998,190 @@ def test_execution_throughput_gap_prioritizes_journal_followthrough_without_ctx_
     )
 
 
+def test_spare_capacity_uses_safe_repo_candidates_when_selected_work_is_review_held(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "parallel-capacity-signal",
+                    "occurredAt": recent,
+                    "summary": "Recorded execution capacity selection evidence.",
+                    "operatorDecisionSupport": (
+                        "Operator can keep selected PR review separate from spare capacity."
+                    ),
+                    "changedFiles": ["tools/self_improvement_tool.py"],
+                    "tests": ["pytest tests/tools/test_self_improvement_tool.py passed"],
+                    "selfImprovementFocus": [
+                        {
+                            "title": "Increase self-improvement execution throughput",
+                            "activeLinearIssueIds": ["HAD-1168"],
+                            "outcomeNote": (
+                                "Selected work is PR/review-held; spare capacity should "
+                                "use independent safe repo-backed candidates."
+                            ),
+                            "spareCapacity": 3,
+                            "selectedWork": {
+                                "identifier": "HAD-1168",
+                                "title": "Increase self-improvement execution throughput",
+                                "repo": "hermes-agent",
+                                "state": "pr_review",
+                                "pullRequestUrl": (
+                                    "https://github.com/taboularasa/hermes-agent/pull/143"
+                                ),
+                            },
+                            "backlogCandidates": [
+                                {
+                                    "identifier": "HAD-1169",
+                                    "title": "Repair execution loop saturation report",
+                                    "repo": "hermes-agent",
+                                    "repoResolved": True,
+                                    "owner": "agent",
+                                    "state": "ready",
+                                },
+                                {
+                                    "identifier": "HAD-1170",
+                                    "title": "Add journal follow-through proof",
+                                    "repo": "hermes-agent",
+                                    "repoResolved": True,
+                                    "owner": "agent",
+                                    "state": "ready",
+                                },
+                                {
+                                    "identifier": "HAD-1171",
+                                    "title": "Ignored project candidate",
+                                    "repo": "hermes-agent",
+                                    "ignoredProject": True,
+                                    "owner": "agent",
+                                    "state": "ready",
+                                },
+                                {
+                                    "identifier": "HAD-1172",
+                                    "title": "Human-owned candidate",
+                                    "repo": "hermes-agent",
+                                    "labels": ["owner:human"],
+                                    "state": "ready",
+                                },
+                                {
+                                    "identifier": "HAD-1173",
+                                    "title": "Duplicate candidate",
+                                    "repo": "hermes-agent",
+                                    "labels": ["Duplicate"],
+                                    "state": "ready",
+                                },
+                                {
+                                    "identifier": "HAD-1174",
+                                    "title": "Repo unresolved candidate",
+                                    "repoUnresolved": True,
+                                    "owner": "agent",
+                                    "state": "ready",
+                                },
+                                {
+                                    "identifier": "HAD-1168",
+                                    "title": "Selected item must remain separate",
+                                    "repo": "hermes-agent",
+                                    "owner": "agent",
+                                    "state": "ready",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                f"codex_{idx}": {
+                    "run_id": f"codex_{idx}",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "exit_code": 0,
+                    "final_message": (
+                        "CHANGED_FILES\n"
+                        "- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n"
+                        "- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                        f"COMMIT\n- def456{idx}\n"
+                    ),
+                }
+                for idx in range(6)
+            }
+        },
+    )
+    _write_json(
+        ctx_path,
+        {"sessions": {"ctx_retired": {"active": False, "updated_at": recent}}},
+    )
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    execution = benchmark["checks"]["execution_loop"]
+    capacity = execution["metrics"]["capacity_saturation"]
+    assert capacity["spare_capacity"] == 3
+    assert capacity["selected_pr_review_held"] is True
+    assert capacity["selected_state_separate"] is True
+    assert capacity["safe_repo_backed_candidate_count"] == 2
+    assert capacity["fillable_spare_capacity"] == 2
+    assert [item["id"] for item in capacity["safe_candidates"]] == [
+        "HAD-1169",
+        "HAD-1170",
+    ]
+    assert capacity["safeguard_exclusion_counts"] == {
+        "ignored_project": 1,
+        "owner_human": 1,
+        "duplicate": 1,
+        "repo_unresolved": 1,
+    }
+    excluded = {
+        item["id"]: item["exclusion_reasons"]
+        for item in capacity["excluded_candidates"]
+    }
+    assert excluded["HAD-1171"] == ["ignored_project"]
+    assert excluded["HAD-1172"] == ["owner_human"]
+    assert excluded["HAD-1173"] == ["duplicate"]
+    assert excluded["HAD-1174"] == ["repo_unresolved"]
+    assert excluded["HAD-1168"] == ["selected_work"]
+    assert "fill 2 spare capacity slot(s)" in execution["metrics"]["next_throughput_action"]
+    assert "selected PR/review-held work remains separate" in execution["detail"]
+
+    drift = benchmark["checks"]["leading_indicator_drift"]
+    remediation = drift["metrics"]["execution_throughput_remediation"]
+    assert remediation["capacity_saturation"]["fillable_spare_capacity"] == 2
+    assert remediation["actions"][0].startswith("fill 2 spare capacity slot(s)")
+
+    issue_selection = benchmark["issue_selection"]
+    assert issue_selection["recommended_focus"] == "parallel safe repo-backed execution"
+    assert issue_selection["execution_throughput"]["capacity_saturation"][
+        "selected_state_separate"
+    ] is True
+    assert "selected PR/review-held work remains separate" in issue_selection["detail"]
+
+    summary_markdown = self_improvement_tool._format_pipeline_summary(
+        benchmark=benchmark,
+        top_candidate=None,
+    )
+    assert "- execution_throughput_action=fill 2 spare capacity slot(s)" in summary_markdown
+
+
 def test_operator_value_report_preserves_decision_support_evidence(tmp_path):
     now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

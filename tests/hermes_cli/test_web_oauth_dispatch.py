@@ -489,6 +489,50 @@ def test_xai_loopback_worker_fails_on_state_mismatch(monkeypatch):
         ws._oauth_sessions.pop(session_id, None)
 
 
+def test_xai_loopback_worker_skips_persist_when_cancelled(monkeypatch):
+    """If the session is cancelled while waiting, the worker must not persist."""
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    session_id = "xai-loopback-cancel-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "loopback",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "server": object(),
+        "thread": object(),
+        "callback_result": {},
+        "redirect_uri": "http://127.0.0.1:56121/callback",
+        "verifier": "verifier",
+        "challenge": "challenge",
+        "state": "st",
+        "token_endpoint": "https://auth.x.ai/oauth2/token",
+        "discovery": {},
+    }
+
+    def _wait_then_cancel(*args, **kwargs):
+        # Simulate the user cancelling (DELETE /sessions/{id}) while we were
+        # blocked on the callback: the session vanishes, then a valid code
+        # arrives. The worker must notice and bail before persisting.
+        ws._oauth_sessions.pop(session_id, None)
+        return {"code": "auth-code", "state": "st"}
+
+    monkeypatch.setattr(auth_mod, "_xai_wait_for_callback", _wait_then_cancel)
+
+    def _must_not_persist(*args, **kwargs):
+        raise AssertionError("tokens must not be persisted for a cancelled session")
+
+    monkeypatch.setattr(auth_mod, "_save_xai_oauth_tokens", _must_not_persist)
+    monkeypatch.setattr(ws, "_add_xai_oauth_pool_entry", _must_not_persist)
+
+    # Should return cleanly without raising and without persisting.
+    ws._xai_loopback_worker(session_id)
+    assert session_id not in ws._oauth_sessions
+
+
 def test_unknown_pkce_provider_rejected_cleanly():
     """A future PKCE provider without an explicit branch must NOT silently route to Anthropic.
 

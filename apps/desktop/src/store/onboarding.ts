@@ -411,6 +411,18 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   return false
 }
 
+// Open a sign-in URL via the desktop bridge, falling back to window.open
+// when the bridge isn't present (e.g. the web dashboard / dev preview) so
+// the flow never silently stalls in a waiting state. Mirrors the pattern in
+// apps/desktop/src/app/artifacts/index.tsx.
+async function openSignInUrl(url: string) {
+  if (window.hermesDesktop?.openExternal) {
+    await window.hermesDesktop.openExternal(url)
+  } else {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
   clearPoll()
 
@@ -425,7 +437,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   try {
     const start = await startOAuthLogin(provider.id)
     const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
-    await window.hermesDesktop?.openExternal(browserUrl)
+    await openSignInUrl(browserUrl)
 
     if (start.flow === 'pkce') {
       setFlow({ status: 'awaiting_user', provider, start, code: '' })

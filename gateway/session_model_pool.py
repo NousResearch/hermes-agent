@@ -172,7 +172,8 @@ class SessionModelPool:
             if _key in _seen_keys:
                 logger.warning(
                     "session_model_pool: duplicate pool_key '%s' (%s and %s). "
-                    "Only the last entry will be used for slot tracking.",
+                    "Both entries are retained but slot tracking uses the "
+                    "first match found — behavior may be unpredictable.",
                     _key, _seen_keys[_key], _entry.model,
                 )
             _seen_keys[_key] = _entry.model

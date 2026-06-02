@@ -2100,6 +2100,25 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 # Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
 # =============================================================================
 
+def _save_google_gemini_cli_tokens(creds: Dict[str, Any]) -> None:
+    """Persist Google Gemini CLI OAuth state to auth.json and set active_provider.
+
+    The actual tokens live in the Google OAuth credential file managed by
+    agent.google_oauth; this call only records the provider-state singleton and
+    sets active_provider so get_active_provider() and _model_section_has_credentials()
+    detect the provider (setup wizard, status checks).
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "google-gemini-cli") or {}
+        state["access_token"] = creds.get("access_token", "")
+        state["refresh_token"] = creds.get("refresh_token") or ""
+        if creds.get("email"):
+            state["email"] = creds["email"]
+        _save_provider_state(auth_store, "google-gemini-cli", state)
+        _save_auth_store(auth_store)
+
+
 def resolve_gemini_oauth_runtime_credentials(
     *,
     force_refresh: bool = False,

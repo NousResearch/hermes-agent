@@ -104,6 +104,10 @@ class AgentSpec:
     permission: PermissionMode = PermissionMode.ASK
     can_delegate: bool = False
     capabilities: tuple[str, ...] = ()
+    not_recommended_for: tuple[str, ...] = ()
+    risk_limit: str | None = None
+    preferred_phase: tuple[str, ...] = ()
+    requires_review_after: tuple[str, ...] = ()
     risk_allowed: frozenset[RiskLevel] = field(default_factory=lambda: frozenset({RiskLevel.R0}))
     status: AgentStatus = AgentStatus.ACTIVE
     source: str | None = None
@@ -233,6 +237,10 @@ def _parse_yaml_agent(raw: Mapping[str, Any], *, source_path: Path | None) -> Ag
     permission = PermissionMode.from_raw(raw.get("permission"))
     can_delegate = bool(raw.get("can_delegate", False))
     capabilities = _normalize_str_list(raw.get("capabilities"))
+    not_recommended_for = _normalize_str_list(raw.get("not_recommended_for"))
+    risk_limit = str(raw.get("risk_limit") or "").strip().upper() or None
+    preferred_phase = _normalize_str_list(raw.get("preferred_phase"))
+    requires_review_after = _normalize_str_list(raw.get("requires_review_after"))
     aliases = _normalize_str_list(raw.get("aliases"))
     role_summary = str(raw.get("role_summary") or "").strip()
     model_ref = str(raw.get("model_ref") or "").strip()
@@ -255,6 +263,10 @@ def _parse_yaml_agent(raw: Mapping[str, Any], *, source_path: Path | None) -> Ag
         permission=permission,
         can_delegate=can_delegate,
         capabilities=capabilities,
+        not_recommended_for=not_recommended_for,
+        risk_limit=risk_limit,
+        preferred_phase=preferred_phase,
+        requires_review_after=requires_review_after,
         risk_allowed=risk_allowed,
         status=status,
         source=str(source_path) if source_path else None,

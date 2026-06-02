@@ -120,6 +120,10 @@ class CapabilityProfile:
     model_tier: str
     failure_policy: str
     risk_allowed: tuple[str, ...]
+    not_recommended_for: tuple[str, ...] = field(default_factory=tuple)
+    risk_limit: str | None = None
+    preferred_phase: tuple[str, ...] = field(default_factory=tuple)
+    requires_review_after: tuple[str, ...] = field(default_factory=tuple)
     strengths: tuple[str, ...] = field(default_factory=tuple)
     weak_spots: tuple[str, ...] = field(default_factory=tuple)
 
@@ -134,6 +138,10 @@ class CapabilityProfile:
             "model_tier": self.model_tier,
             "failure_policy": self.failure_policy,
             "risk_allowed": list(self.risk_allowed),
+            "not_recommended_for": list(self.not_recommended_for),
+            "risk_limit": self.risk_limit,
+            "preferred_phase": list(self.preferred_phase),
+            "requires_review_after": list(self.requires_review_after),
             "strengths": list(self.strengths),
             "weak_spots": list(self.weak_spots),
         }
@@ -221,6 +229,10 @@ def build_capability_profile(agent: AgentSpec) -> CapabilityProfile:
         model_tier=_model_tier(agent, task_types),
         failure_policy=DEFAULT_FAILURE_POLICIES[profile_class],
         risk_allowed=tuple(sorted(level.value for level in agent.risk_allowed)),
+        not_recommended_for=tuple(agent.not_recommended_for),
+        risk_limit=agent.risk_limit,
+        preferred_phase=tuple(agent.preferred_phase),
+        requires_review_after=tuple(agent.requires_review_after),
         strengths=_strengths(agent, task_types),
         weak_spots=_weak_spots(agent),
     )

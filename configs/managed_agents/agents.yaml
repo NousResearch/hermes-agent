@@ -108,6 +108,16 @@ agents:
   - R1
   - R2
   - R3
+  not_recommended_for:
+  - fast-small-fix
+  risk_limit: R3
+  preferred_phase:
+  - implementation
+  - refactor
+  - architecture
+  requires_review_after:
+  - code_change
+  - migration
 - agent_id: deepseek-tui
   name: DeepSeek 低成本快工
   role: fast_worker
@@ -162,6 +172,18 @@ agents:
   - R0
   - R1
   - R2
+  not_recommended_for:
+  - high-risk
+  - migration
+  - architecture
+  risk_limit: R1
+  preferred_phase:
+  - fast_fix
+  - investigation
+  - smoke
+  requires_review_after:
+  - code_change
+  - implementation
 - agent_id: opencode
   name: OpenCode 协作执行员
   role: external_collaboration_worker
@@ -197,6 +219,17 @@ agents:
   - R0
   - R1
   - R2
+  not_recommended_for:
+  - high-risk
+  - migration
+  - implementation
+  risk_limit: R1
+  preferred_phase:
+  - investigation
+  - smoke
+  - review
+  requires_review_after:
+  - code_change
 - agent_id: codex
   name: Codex 代码审查官
   role: principal_engineer
@@ -241,6 +274,14 @@ agents:
   - R2
   - R3
   - R4
+  not_recommended_for:
+  - fast-small-fix
+  - implementation
+  risk_limit: R2
+  preferred_phase:
+  - review
+  - architecture
+  requires_review_after: []
 - agent_id: intelligence
   name: Intelligence 情报研究员
   role: research_analyst

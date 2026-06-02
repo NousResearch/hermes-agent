@@ -418,3 +418,57 @@ def test_router_explanation_advisory_only_flag():
     result = build_router_explanation(["claude"], primary="claude")
     assert result.advisory_only is True
     assert result.manual_override_available is True
+
+
+# ---------------------------------------------------------------------------
+# Agent Capability Contract tests
+# ---------------------------------------------------------------------------
+
+def test_registry_parses_not_recommended_for():
+    from agent.managed_agents.registry import load_agent_registry
+    from pathlib import Path
+    path = Path("configs/managed_agents/agents.yaml")
+    registry = load_agent_registry(path)
+    claude = registry.get("claude")
+    assert claude is not None
+    assert "fast-small-fix" in claude.not_recommended_for
+
+
+def test_registry_parses_risk_limit():
+    from agent.managed_agents.registry import load_agent_registry
+    from pathlib import Path
+    registry = load_agent_registry(Path("configs/managed_agents/agents.yaml"))
+    deepseek = registry.get("deepseek-tui")
+    assert deepseek is not None
+    assert deepseek.risk_limit == "R1"
+
+
+def test_registry_parses_preferred_phase():
+    from agent.managed_agents.registry import load_agent_registry
+    from pathlib import Path
+    registry = load_agent_registry(Path("configs/managed_agents/agents.yaml"))
+    claude = registry.get("claude")
+    assert "implementation" in claude.preferred_phase
+
+
+def test_registry_parses_requires_review_after():
+    from agent.managed_agents.registry import load_agent_registry
+    from pathlib import Path
+    registry = load_agent_registry(Path("configs/managed_agents/agents.yaml"))
+    claude = registry.get("claude")
+    assert "code_change" in claude.requires_review_after
+
+
+def test_capability_profile_includes_contract_fields():
+    from agent.managed_agents.registry import load_agent_registry
+    from agent.managed_agents.capability_matrix import build_capability_profile
+    from pathlib import Path
+    registry = load_agent_registry(Path("configs/managed_agents/agents.yaml"))
+    claude = registry.get("claude")
+    profile = build_capability_profile(claude)
+    d = profile.to_dict()
+    assert "not_recommended_for" in d
+    assert "risk_limit" in d
+    assert "preferred_phase" in d
+    assert "requires_review_after" in d
+    assert isinstance(d["not_recommended_for"], list)

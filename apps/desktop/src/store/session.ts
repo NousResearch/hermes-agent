@@ -16,6 +16,12 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
   store.set(typeof next === 'function' ? (next as (current: T) => T)(store.get()) : next)
 }
 
+/** Durable id for pinning. Auto-compression rotates a conversation's session
+ *  id (root -> continuation tip), so pins keyed on the live id evaporate. The
+ *  lineage root is stable across every compression, so we pin on that. */
+export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
+  session._lineage_root_id ?? session.id
+
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])

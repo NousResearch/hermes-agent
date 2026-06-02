@@ -1363,6 +1363,7 @@ async def get_sessions(
     offset: int = 0,
     min_messages: int = 0,
     archived: str = "exclude",
+    order: str = "created",
 ):
     """List sessions.
 
@@ -1370,11 +1371,21 @@ async def get_sessions(
     ``exclude`` (default) hides them, ``only`` returns just the archived ones
     (used by the desktop "Archived sessions" settings panel), and ``include``
     returns both.
+
+    ``order`` controls pagination order: ``created`` (default, by original
+    start time) or ``recent`` (by latest activity across the compression
+    chain). ``recent`` keeps a long-running conversation on the first page
+    after it auto-compresses into a fresh continuation id.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
             status_code=400,
             detail="archived must be one of: exclude, only, include",
+        )
+    if order not in ("created", "recent"):
+        raise HTTPException(
+            status_code=400,
+            detail="order must be one of: created, recent",
         )
     try:
         from hermes_state import SessionDB
@@ -1389,6 +1400,7 @@ async def get_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
+                order_by_last_active=order == "recent",
             )
             total = db.session_count(
                 min_message_count=min_message_count,

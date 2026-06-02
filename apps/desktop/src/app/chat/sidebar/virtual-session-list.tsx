@@ -5,6 +5,7 @@ import { type FC, useCallback, useMemo, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { cn } from '@/lib/utils'
+import { sessionPinId } from '@/store/session'
 
 import { SidebarSessionRow } from './session-row'
 
@@ -77,7 +78,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
-      onPin: () => onTogglePin(session.id),
+      onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id)
     }
 

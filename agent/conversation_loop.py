@@ -454,6 +454,13 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Revert any turn-scoped model_switch from the previous turn before this
+    # one runs, so scope='turn' switches apply for exactly one turn (#16525).
+    try:
+        from tools.model_switch_tool import revert_turn_model_switch
+        revert_turn_model_switch(agent)
+    except Exception:
+        pass
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send

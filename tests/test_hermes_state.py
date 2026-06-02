@@ -1309,6 +1309,83 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_session_count_with_compression_projection(self, db):
+        """session_count(project_compression_tips=True) must match the
+        number of rows list_sessions_rich surfaces after projection, so the
+        /api/sessions ``total`` field doesn't lie about how many sessions
+        the sidebar can actually load. Without the flag, raw row count
+        includes compression roots that get projected away by the list.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+
+        db.create_session("root1", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+        db.append_message("root1", "user", "first message")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 100, "compression", "root1"),
+        )
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t0 + 101, "tip1"),
+        )
+        db.append_message("tip1", "user", "continuation")
+
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        assert db.session_count() == 3
+        assert db.session_count(project_compression_tips=True) == 2
+        surfaced = len(db.list_sessions_rich(source="cli", limit=20))
+        assert db.session_count(project_compression_tips=True) == surfaced
+
+    def test_session_count_with_projection_handles_missing_tip(self, db):
+        """If a compression root's tip was deleted, the root is kept (matching
+        list_sessions_rich's behavior) and the projected count must reflect
+        that, not underflow.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("root1", "cli")
+        db.append_message("root1", "user", "first")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 100, "compression", "root1"),
+        )
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t0 + 101, "tip1"),
+        )
+        db.append_message("tip1", "user", "continuation")
+        db.delete_session("tip1")
+        db._conn.commit()
+
+        assert db.session_count() == 1
+        assert db.session_count(project_compression_tips=True) == 1
+
+    def test_session_count_excludes_subagent_children(self, db):
+        """session_count(include_children=False) must match the row count
+        list_sessions_rich surfaces — subagent children and non-branch
+        continuations are hidden from the sidebar and must not inflate the
+        ``total`` field the frontend uses to render the "Load more" button.
+        """
+        db.create_session("root1", "cli")
+        db.append_message("root1", "user", "parent")
+        db.create_session("sub1", "cli", parent_session_id="root1")
+        db.append_message("sub1", "user", "delegate task")
+        db.create_session("root2", "cli")
+        db.append_message("root2", "user", "unrelated")
+        db._conn.commit()
+
+        assert db.session_count() == 3
+        assert db.session_count(include_children=False) == 2
+        surfaced = len(db.list_sessions_rich(source="cli", limit=20))
+        assert db.session_count(include_children=False) == surfaced
+
     def test_message_count_total(self, db):
         assert db.message_count() == 0
         db.create_session(session_id="s1", source="cli")

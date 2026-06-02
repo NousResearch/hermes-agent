@@ -115,16 +115,19 @@ export async function listSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
-  order: 'created' | 'recent' = 'recent'
+  order: 'created' | 'recent' = 'recent',
+  offset = 0
 ): Promise<PaginatedSessions> {
+  const safeOffset = Math.max(0, offset)
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
+    path: `/api/sessions?limit=${limit}&offset=${safeOffset}&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
   })
 
   return {
     ...result,
     sessions: result.sessions.slice(0, limit),
-    offset: 0
+    offset: safeOffset
   }
 }
 

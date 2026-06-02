@@ -92,7 +92,8 @@
     "unified": "^11.0.5",
     "unist-util-visit-parents": "^6.0.2",
     "vfile": "^6.0.3",
-    "web-haptics": "^0.0.6"
+    "web-haptics": "^0.0.6",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

@@ -201,12 +201,60 @@ export function DesktopController() {
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
-      const result = await listSessions(limit, 1)
+      const result = await listSessions(limit, 1, 'exclude', 'recent', 0)
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(result.sessions)
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
       }
+    } catch (err) {
+      console.error('[sessions] refresh failed', err)
+    } finally {
+      if (refreshSessionsRequestRef.current === requestId) {
+        setSessionsLoading(false)
+      }
+    }
+  }, [])
+
+  const appendMoreSessions = useCallback(async () => {
+    const requestId = refreshSessionsRequestRef.current + 1
+    refreshSessionsRequestRef.current = requestId
+    setSessionsLoading(true)
+
+    try {
+      const limit = $sessionsLimit.get()
+      const current = $sessions.get()
+      const result = await listSessions(limit, 1, 'exclude', 'recent', current.length)
+
+      if (refreshSessionsRequestRef.current === requestId) {
+        // Dedupe by id before appending: a compression-continuation root and
+        // its tip can both surface in the same page after a refresh.
+        const seen = new Set<string>(current.map(s => s.id))
+        const appended: typeof result.sessions = []
+
+        for (const s of result.sessions) {
+          if (!seen.has(s.id)) {
+            seen.add(s.id)
+            appended.push(s)
+          }
+        }
+
+        if (appended.length > 0) {
+          setSessions(prev => [...prev, ...appended])
+        }
+
+        const backendTotal = typeof result.total === 'number' ? result.total : result.sessions.length
+
+        if (appended.length === 0) {
+          // Nothing came back — we've exhausted the list. Align total with
+          // the displayed count so the "Load more" button hides.
+          setSessionsTotal(prev => Math.min(prev, current.length))
+        } else {
+          setSessionsTotal(prev => Math.max(prev, backendTotal))
+        }
+      }
+    } catch (err) {
+      console.error('[sessions] load more failed', err)
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {
         setSessionsLoading(false)
@@ -216,8 +264,8 @@ export function DesktopController() {
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
-    void refreshSessions()
-  }, [refreshSessions])
+    void appendMoreSessions()
+  }, [appendMoreSessions])
 
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()

@@ -3056,10 +3056,33 @@ class SessionDB:
         min_message_count: int = 0,
         include_archived: bool = False,
         archived_only: bool = False,
+        project_compression_tips: bool = False,
+        include_children: bool = True,
     ) -> int:
-        """Count sessions, optionally filtered by source."""
+        """Count sessions, optionally filtered by source.
+
+        When ``project_compression_tips=True``, applies the same compression
+        projection as :meth:`list_sessions_rich` so the count matches what
+        the sidebar actually renders: roots are replaced by their continuation
+        tips, deduplicating compression chains.
+
+        When ``include_children=False``, applies the same parent_session_id
+        filter as :meth:`list_sessions_rich` so the count excludes subagent
+        runs and non-branch children — matching the rows the list would
+        actually surface. Default ``True`` preserves historical behavior for
+        callers that want the raw row count.
+        """
         where_clauses = []
         params = []
+
+        if not include_children:
+            where_clauses.append(
+                "(parent_session_id IS NULL"
+                " OR EXISTS (SELECT 1 FROM sessions p"
+                "            WHERE p.id = sessions.parent_session_id"
+                "            AND p.end_reason = 'branched'"
+                "            AND sessions.started_at >= p.ended_at))"
+            )
 
         if source:
             where_clauses.append("source = ?")
@@ -3075,8 +3098,35 @@ class SessionDB:
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
         with self._lock:
-            cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions{where_sql}", params)
-            return cursor.fetchone()[0]
+            if not project_compression_tips:
+                cursor = self._conn.execute(
+                    f"SELECT COUNT(*) FROM sessions{where_sql}", params
+                )
+                return cursor.fetchone()[0]
+
+            cursor = self._conn.execute(
+                f"SELECT id, end_reason FROM sessions{where_sql}", params
+            )
+            rows = cursor.fetchall()
+
+        if not rows:
+            return 0
+
+        all_ids = {r["id"] for r in rows}
+        projected: set = set()
+        for r in rows:
+            if r["end_reason"] != "compression":
+                projected.add(r["id"])
+                continue
+            try:
+                tip = self.get_compression_tip(r["id"])
+            except Exception:
+                tip = r["id"]
+            if tip and tip != r["id"] and tip in all_ids:
+                projected.add(tip)
+            else:
+                projected.add(r["id"])
+        return len(projected)
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""

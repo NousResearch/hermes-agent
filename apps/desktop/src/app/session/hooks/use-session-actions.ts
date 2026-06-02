@@ -33,6 +33,7 @@ import {
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
+  setSessionsTotal,
   setTurnStartedAt
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
@@ -687,6 +688,9 @@ export function useSessionActions({
       const previousPinned = $pinnedSessionIds.get()
 
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+      // Mirror the backend's non-archived count so the "n/n" sidebar label
+      // doesn't lag after a delete (n-1/n instead of n-1/n-1).
+      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -709,6 +713,7 @@ export function useSessionActions({
       } catch (err) {
         if (removed) {
           setSessions(prev => [removed, ...prev])
+          setSessionsTotal(prev => prev + 1)
         }
 
         $pinnedSessionIds.set(previousPinned)
@@ -761,6 +766,9 @@ export function useSessionActions({
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+      // Archive drops the row out of the non-archived count — keep
+      // $sessionsTotal in lockstep so the "n/n" label stays consistent.
+      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
 
       if (wasSelected) {
@@ -773,6 +781,7 @@ export function useSessionActions({
       } catch (err) {
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
+          setSessionsTotal(prev => prev + 1)
         }
 
         $pinnedSessionIds.set(previousPinned)

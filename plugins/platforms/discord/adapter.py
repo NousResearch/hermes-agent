@@ -146,9 +146,12 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
-    Lazy-installs discord.py via ``tools.lazy_deps.ensure("platform.discord")``
-    on first call if not present. After successful install, re-binds module
-    globals so ``DISCORD_AVAILABLE`` becomes True.
+    Lazy-installs the Discord text-messaging SDK via
+    ``tools.lazy_deps.ensure("platform.discord")`` on first call if not
+    present. The lazy install intentionally does not include the
+    ``discord.py[voice]`` extra because discord.py 2.7.1 still caps PyNaCl
+    below the patched line. After successful install, re-binds module globals
+    so ``DISCORD_AVAILABLE`` becomes True.
     """
     global DISCORD_AVAILABLE, discord, DiscordMessage, Intents, commands
     if DISCORD_AVAILABLE:

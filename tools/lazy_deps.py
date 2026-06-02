@@ -127,7 +127,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
     # uploaded to the Discord gateway fails to decode at att.read() with
     # "Can not decode content-encoding: br" — see #12511 / #15744.
-    "platform.discord": ("discord.py[voice]==2.7.1", "brotlicffi==1.2.0.1"),
+    #
+    # Do not install discord.py[voice] here. discord.py 2.7.1 constrains
+    # PyNaCl to <1.6, while the patched PyNaCl line is 1.6.2; keeping the
+    # voice extra in the default Discord platform install makes the
+    # dependency graph unsatisfiable for Dependabot and drags a known
+    # vulnerable PyNaCl into users who only need Discord text messaging.
+    "platform.discord": ("discord.py==2.7.1", "brotlicffi==1.2.0.1"),
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",

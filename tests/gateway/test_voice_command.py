@@ -889,6 +889,8 @@ class TestVoiceChannelCommands:
 
         assert "voice dependencies are missing" in result.lower()
         assert "PyNaCl" in result
+        assert "patched discord.py voice stack" in result
+        assert "pip install PyNaCl" not in result
 
     # -- _handle_voice_channel_leave --
 

@@ -10,6 +10,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import shutil
 from pathlib import Path
@@ -28,6 +29,16 @@ WARN = "\033[93m!\033[0m"
 
 # Track whether discord.py is available for later sections
 _discord_available = False
+PYNACL_PATCHED_FLOOR = (1, 6, 2)
+
+
+def _version_at_least(value: str, floor: tuple[int, int, int]) -> bool:
+    parts = [int(part) for part in re.findall(r"\d+", value)[:3]]
+    if not parts:
+        return False
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts) >= floor
 
 
 def mask(value):
@@ -69,22 +80,27 @@ def check_packages():
         _discord_available = True
         check("discord.py", True, f"v{discord.__version__}")
     except ImportError:
-        check("discord.py", False, "pip install discord.py[voice]")
+        check("discord.py", False, "pip install discord.py")
         ok = False
 
     # PyNaCl
     try:
         import nacl
         ver = getattr(nacl, "__version__", "unknown")
-        try:
-            import nacl.secret
-            nacl.secret.Aead(bytes(32))
-            check("PyNaCl", True, f"v{ver}")
-        except (AttributeError, Exception):
-            check("PyNaCl (Aead)", False, f"v{ver} — need >=1.5.0")
+        floor = ".".join(str(part) for part in PYNACL_PATCHED_FLOOR)
+        if not _version_at_least(ver, PYNACL_PATCHED_FLOOR):
+            check("PyNaCl", False, f"v{ver} - need >={floor}")
             ok = False
+        else:
+            try:
+                import nacl.secret
+                nacl.secret.Aead(bytes(32))
+                check("PyNaCl", True, f"v{ver}")
+            except (AttributeError, Exception):
+                check("PyNaCl (Aead)", False, f"v{ver} - Aead support unavailable")
+                ok = False
     except ImportError:
-        check("PyNaCl", False, "pip install PyNaCl>=1.5.0")
+        check("PyNaCl", False, "install a patched discord.py voice stack when available")
         ok = False
 
     # davey (DAVE E2EE)
@@ -92,7 +108,7 @@ def check_packages():
         import davey
         check("davey (DAVE E2EE)", True, f"v{getattr(davey, '__version__', '?')}")
     except ImportError:
-        check("davey (DAVE E2EE)", False, "pip install davey")
+        check("davey (DAVE E2EE)", False, "install a patched discord.py voice stack when available")
         ok = False
 
     # Optional: local STT

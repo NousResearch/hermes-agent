@@ -203,6 +203,22 @@ def test_messaging_extra_includes_qrcode_for_weixin_setup():
     assert any(dep.startswith("qrcode") for dep in messaging_extra)
 
 
+def test_messaging_extra_does_not_eager_install_discord_voice_stack():
+    """Discord text messaging must not pull vulnerable voice-only deps.
+
+    discord.py 2.7.1 requires PyNaCl<1.6 for its voice extra, while the
+    patched PyNaCl line is 1.6.2. Keep the default [messaging] extra on the
+    text SDK so users who only run Discord messaging do not inherit a
+    voice-only vulnerable dependency.
+    """
+    optional_dependencies = _load_optional_dependencies()
+
+    messaging_extra = optional_dependencies["messaging"]
+    assert "discord.py==2.7.1" in messaging_extra
+    assert not any("discord.py[voice]" in dep for dep in messaging_extra)
+    assert not any(dep.lower().startswith("pynacl") for dep in messaging_extra)
+
+
 def test_dingtalk_extra_includes_qrcode_for_qr_auth():
     """DingTalk's QR-code device-flow auth (hermes_cli/dingtalk_auth.py)
     needs the qrcode package."""

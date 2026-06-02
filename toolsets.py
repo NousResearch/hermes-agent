@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Hermes runtime introspection
+    "hermes_fetch",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -152,6 +154,12 @@ TOOLSETS = {
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
+        "includes": []
+    },
+
+    "hermes": {
+        "description": "Hermes Agent runtime introspection tools",
+        "tools": ["hermes_fetch"],
         "includes": []
     },
     

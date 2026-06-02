@@ -16,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -1380,12 +1380,27 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    context_source = source
+    if session_entry and session_entry.origin:
+        origin = session_entry.origin
+        # The persisted origin is the stable routing lane for this session.
+        # Keep per-turn sender/message fields from the current event so shared
+        # sessions still attribute the active user correctly.
+        context_source = replace(
+            origin,
+            user_id=source.user_id,
+            user_name=source.user_name,
+            user_id_alt=source.user_id_alt,
+            is_bot=source.is_bot,
+            message_id=source.message_id,
+        )
+
     context = SessionContext(
-        source=source,
+        source=context_source,
         connected_platforms=connected,
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
-            source,
+            context_source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),

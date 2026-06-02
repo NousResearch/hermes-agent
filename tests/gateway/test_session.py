@@ -2,10 +2,12 @@
 import json
 import pytest
 from pathlib import Path
+from datetime import datetime
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
+    SessionEntry,
     SessionSource,
     SessionStore,
     build_session_context,
@@ -279,6 +281,60 @@ class TestBuildSessionContextPrompt:
 
         assert "Discord" in prompt
         assert "**Channel Topic:** Planning and coordination for Project X" in prompt
+
+    def test_discord_context_prefers_persisted_thread_origin_after_resume(self):
+        """Persisted thread metadata should drive the prompt after resume."""
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    token="fake-discord-token",
+                ),
+            },
+        )
+        original = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="1488119232100175973",
+            chat_name="Hermes Agent discussion",
+            chat_type="thread",
+            user_id="alice",
+            user_name="Alice",
+            thread_id="1488119232100175973",
+            chat_topic="Hermes Agent discussion",
+            guild_id="guild-1",
+            parent_chat_id="parent-1",
+        )
+        stale_current = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="wrong-thread",
+            chat_name="Claude Code discussion",
+            chat_type="thread",
+            user_id="bob",
+            user_name="Bob",
+            thread_id="wrong-thread",
+            chat_topic="Claude Code discussion",
+            guild_id="guild-2",
+            parent_chat_id="parent-2",
+        )
+        now = datetime.now()
+        entry = SessionEntry(
+            session_key="agent:main:discord:thread:1488119232100175973:1488119232100175973",
+            session_id="compressed-child",
+            created_at=now,
+            updated_at=now,
+            origin=original,
+            platform=Platform.DISCORD,
+            chat_type="thread",
+        )
+
+        ctx = build_session_context(stale_current, config, entry)
+        prompt = build_session_context_prompt(ctx)
+
+        assert ctx.source.thread_id == "1488119232100175973"
+        assert ctx.source.parent_chat_id == "parent-1"
+        assert ctx.source.user_name == "Bob"
+        assert "Hermes Agent discussion" in prompt
+        assert "Claude Code discussion" not in prompt
 
     def test_prompt_omits_channel_topic_when_none(self):
         """Channel Topic line should NOT appear when chat_topic is None."""

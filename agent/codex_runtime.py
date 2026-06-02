@@ -712,16 +712,20 @@ def run_codex_websocket(
         open_timeout=open_timeout,
     )
 
+    send_state = {"used_continuation": False}
+
     def _send_once(
         active_session: _CodexResponsesWebSocketSession,
         *,
         force_full: bool = False,
     ) -> tuple[SimpleNamespace, bool]:
         agent._codex_responses_websocket_output_committed = False
+        send_state["used_continuation"] = False
         payload, full_input, used_continuation = active_session.build_payload(
             api_kwargs,
             force_full_input=force_full,
         )
+        send_state["used_continuation"] = used_continuation
         websocket = active_session.open()
         websocket.send(json.dumps(payload))
 
@@ -750,11 +754,24 @@ def run_codex_websocket(
         return final_response, used_continuation
 
     try:
-        final, _used_continuation = _send_once(session, force_full=force_full_input)
+        final, used_continuation = _send_once(session, force_full=force_full_input)
     except Exception:
         exc = _current_exception()
         close_codex_responses_websocket_session(agent)
         if _is_previous_response_missing_error(exc):
+            recovery_session = _get_codex_responses_websocket_session(
+                agent,
+                uri=websocket_url,
+                headers=headers,
+                open_timeout=open_timeout,
+            )
+            final, _used_continuation = _send_once(recovery_session, force_full=True)
+            return final
+        if (
+            not force_full_input
+            and send_state["used_continuation"]
+            and should_fallback_codex_responses_websocket_to_http(agent, exc)
+        ):
             recovery_session = _get_codex_responses_websocket_session(
                 agent,
                 uri=websocket_url,

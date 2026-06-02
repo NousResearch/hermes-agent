@@ -987,3 +987,114 @@ def test_run_conversation_codex_responses_websocket_recovers_with_full_input_whe
     assert "First turn" in recovered_input
     assert "first-ok" in recovered_input
     assert "Second turn" in recovered_input
+
+
+class _StaleThenReopenedResponsesWebSocket:
+    def __init__(self, connection):
+        self.connection = connection
+        self.events = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.connection["closed"] = True
+        return False
+
+    def close(self):
+        self.connection["closed"] = True
+
+    def send(self, payload):
+        sent = json.loads(payload)
+        if self.connection.get("fail_send"):
+            self.connection["sends"].append({"sent": sent, "failed": True})
+            raise ConnectionError("stale websocket send failed")
+
+        response_id = f"{self.connection['name']}_resp_{len(self.connection['sends']) + 1}"
+        self.connection["sends"].append({"id": response_id, "sent": sent})
+        input_text = json.dumps(sent.get("input", []), ensure_ascii=False)
+        response_text = "second-ok" if "Second turn" in input_text else "first-ok"
+        self.events = [
+            {"type": "response.created", "response": {"id": response_id, "status": "in_progress"}},
+            {"type": "response.output_text.delta", "delta": response_text},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": response_text}],
+                },
+            },
+            {"type": "response.completed", "response": {"id": response_id, "status": "completed"}},
+        ]
+
+    def recv(self, timeout=None):
+        if not self.events:
+            raise AssertionError("Hermes consumed past terminal WebSocket event")
+        return json.dumps(self.events.pop(0))
+
+
+def test_run_conversation_codex_responses_websocket_reopens_stale_socket_before_http_fallback(
+    monkeypatch,
+):
+    connections = []
+
+    def fake_connect(uri, **kwargs):
+        connection = {
+            "name": f"conn{len(connections) + 1}",
+            "uri": uri,
+            "headers": kwargs.get("additional_headers") or {},
+            "sends": [],
+            "fail_send": len(connections) == 0 and len(connections[0]["sends"]) == 1 if connections else False,
+        }
+        connections.append(connection)
+        return _StaleThenReopenedResponsesWebSocket(connection)
+
+    monkeypatch.setattr(codex_runtime, "_connect_responses_websocket", fake_connect)
+
+    http_calls = []
+
+    class _HTTPResponses:
+        def create(self, **kwargs):
+            http_calls.append(kwargs)
+            raise AssertionError("stale websocket should reopen once before HTTP fallback")
+
+    class _HTTPOpenAIClient:
+        responses = _HTTPResponses()
+
+        def close(self):
+            pass
+
+    agent = _make_codex_responses_ws_agent("codex-responses-ws-stale-reopen", max_iterations=2)
+    agent._create_request_openai_client = lambda *args, **kwargs: _HTTPOpenAIClient()
+
+    first = agent.run_conversation("First turn. Reply first-ok.")
+    assert first["completed"] is True
+    assert first["final_response"] == "first-ok"
+
+    # Simulate a provider/proxy that closed the persistent socket after the
+    # first request. The next turn should reopen WebSocket and retry full input.
+    connections[0]["fail_send"] = True
+
+    second = agent.run_conversation(
+        "Second turn. Reply second-ok.",
+        conversation_history=first["messages"],
+    )
+
+    assert second["completed"] is True
+    assert second["final_response"] == "second-ok"
+    assert http_calls == []
+    assert len(connections) == 2
+    assert connections[0].get("closed") is True
+
+    stale_attempt = connections[0]["sends"][1]["sent"]
+    assert stale_attempt["previous_response_id"] == "conn1_resp_1"
+    assert "First turn" not in json.dumps(stale_attempt["input"], ensure_ascii=False)
+
+    reopened_payload = connections[1]["sends"][0]["sent"]
+    reopened_input = json.dumps(reopened_payload["input"], ensure_ascii=False)
+    assert "previous_response_id" not in reopened_payload
+    assert "First turn" in reopened_input
+    assert "first-ok" in reopened_input
+    assert "Second turn" in reopened_input

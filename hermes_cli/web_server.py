@@ -2923,17 +2923,6 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": None,  # dispatched via auth.get_qwen_auth_status
     },
     {
-        "id": "xai-oauth",
-        "name": "xAI Grok OAuth (SuperGrok / Premium+)",
-        # Loopback PKCE: the desktop's local backend binds a 127.0.0.1
-        # callback server, the client opens the browser, and the redirect
-        # lands back on the loopback listener — no code to copy/paste.
-        "flow": "loopback",
-        "cli_command": "hermes auth add xai-oauth",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
-        "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
-    },
-    {
         "id": "minimax-oauth",
         "name": "MiniMax (OAuth)",
         # MiniMax's flow is structurally device-code (verification URI +
@@ -2945,6 +2934,17 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "hermes auth add minimax-oauth",
         "docs_url": "https://www.minimax.io",
         "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
+    },
+    {
+        "id": "xai-oauth",
+        "name": "xAI Grok OAuth (SuperGrok / Premium+)",
+        # Loopback PKCE: the desktop's local backend binds a 127.0.0.1
+        # callback server, the client opens the browser, and the redirect
+        # lands back on the loopback listener — no code to copy/paste.
+        "flow": "loopback",
+        "cli_command": "hermes auth add xai-oauth",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
+        "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
     },
 )
 

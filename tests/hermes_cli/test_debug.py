@@ -1,10 +1,8 @@
 """Tests for ``hermes debug`` CLI command and debug utilities."""
 
 import os
-import sys
 import urllib.error
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -337,7 +335,6 @@ class TestCaptureLogSnapshotRedaction:
         redaction feature ships silently broken for users who opted out of
         runtime redaction (e.g. developers working on the redactor itself).
         """
-        import os
 
         # Force the runtime flag off so we're exercising the force=True path,
         # not the default-on path.
@@ -352,6 +349,40 @@ class TestCaptureLogSnapshotRedaction:
         assert _REDACT_FIXTURE_TOKEN not in snap.tail_text
         assert snap.full_text is not None
         assert _REDACT_FIXTURE_TOKEN not in snap.full_text
+
+    def test_default_redacts_email_addresses_for_public_share(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert "person@example.com" not in snap.tail_text
+        assert "[REDACTED_EMAIL]" in snap.tail_text
+        assert snap.full_text is not None
+        assert "person@example.com" not in snap.full_text
+
+    def test_no_redact_preserves_email_addresses(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
+
+        assert "person@example.com" in snap.tail_text
+        assert "person@example.com" in (snap.full_text or "")
 
     def test_capture_default_log_snapshots_threads_redact(
         self, hermes_home_with_secret

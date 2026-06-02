@@ -127,6 +127,8 @@ export const pt: Translations = {
 
   sessions: {
     title: "Sessões",
+    history: "Histórico",
+    overview: "Visão geral",
     searchPlaceholder: "Pesquisar conteúdo das mensagens...",
     noSessions: "Ainda não há sessões",
     noMatch: "Nenhuma sessão corresponde à pesquisa",
@@ -269,7 +271,7 @@ export const pt: Translations = {
       "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
     inactive: "inativo",
-    installBtn: "Instalar a partir do Git",
+    installBtn: "Instalar",
     installHeading: "Instalar a partir de GitHub / URL Git",
     installHint: "Use a forma curta owner/repo ou um URL completo de clone https:// ou git@.",
     memoryProviderLabel: "Fornecedor de memória",
@@ -367,6 +369,8 @@ export const pt: Translations = {
     description: "Gerir chaves de API e segredos armazenados em",
     hideAdvanced: "Ocultar avançadas",
     showAdvanced: "Mostrar avançadas",
+    showLess: "Mostrar menos",
+    showMore: "Mostrar mais",
     llmProviders: "Fornecedores LLM",
     providersConfigured: "{configured} de {total} fornecedores configurados",
     getKey: "Obter chave",
@@ -392,7 +396,7 @@ export const pt: Translations = {
     disconnect: "Desligar",
     managedExternally: "Gerido externamente",
     copied: "Copiado ✓",
-    cli: "CLI",
+    cli: "Copiar",
     copyCliCommand: "Copiar comando CLI (para externo / fallback)",
     connect: "Ligar",
     sessionExpires: "A sessão expira em {time}",
@@ -419,7 +423,7 @@ export const pt: Translations = {
   },
 
   language: {
-    switchTo: "Mudar para inglês",
+    switchTo: "Mudar idioma",
   },
 
   theme: {
@@ -654,6 +658,7 @@ export const pt: Translations = {
     columnLabels: {
       triage: "Triagem",
       todo: "A fazer",
+      scheduled: "Agendado",
       ready: "Pronto",
       running: "Em curso",
       blocked: "Bloqueado",
@@ -663,6 +668,7 @@ export const pt: Translations = {
     columnHelp: {
       triage: "Ideias em bruto — um specifier vai detalhar a especificação",
       todo: "À espera de dependências ou sem atribuição",
+      scheduled: "À espera de um atraso conhecido ou de um seguimento agendado",
       ready: "Dependências satisfeitas; atribua um perfil para despachar",
       running: "Reivindicado por um worker — em execução",
       blocked: "O worker pediu intervenção humana",

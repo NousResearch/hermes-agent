@@ -19,8 +19,7 @@ import hashlib
 import hmac
 import base64
 import json
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

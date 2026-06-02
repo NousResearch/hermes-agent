@@ -14,19 +14,21 @@ import {
   Code,
   Zap,
   Filter,
+  Download,
+  RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SkillInfo, ToolsetInfo } from "@/lib/api";
-import { useToast } from "@/hooks/useToast";
-import { Toast } from "@/components/Toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { SkillInfo, ToolsetInfo, SkillHubResult } from "@/lib/api";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { cn } from "@/lib/utils";
-import { Input } from "@/components/ui/input";
+import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -98,7 +100,7 @@ export default function SkillsPage() {
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"skills" | "toolsets">("skills");
+  const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const { toast, showToast } = useToast();
@@ -205,7 +207,7 @@ export default function SkillsPage() {
       <div className="relative w-full min-w-0 sm:max-w-xs">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-8 pl-8 pr-7 text-xs"
+          className="h-8 rounded-none pl-8 pr-7 text-xs"
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -256,15 +258,10 @@ export default function SkillsPage() {
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
           <div className="sm:sticky sm:top-0">
-            <div
-              className={`
-                flex flex-col
-                border border-border bg-muted/20
-              `}
-            >
+            <div className="flex flex-col rounded-none border border-border bg-muted/20">
               <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
-                <Filter className="h-3 w-3 text-muted-foreground" />
-                <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
+                <Filter className="h-3 w-3 text-text-tertiary" />
+                <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
                   {t.skills.filters}
                 </span>
               </div>
@@ -289,13 +286,22 @@ export default function SkillsPage() {
                     setSearch("");
                   }}
                 />
+                <PanelItem
+                  icon={Search}
+                  label="Browse hub"
+                  active={view === "hub"}
+                  onClick={() => {
+                    setView("hub");
+                    setSearch("");
+                  }}
+                />
               </div>
 
               {view === "skills" &&
                 !isSearching &&
                 allCategories.length > 0 && (
                   <div className="hidden sm:flex flex-col border-t border-border">
-                    <div className="px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
+                    <div className="px-3 pt-2 pb-1 font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary">
                       {t.skills.categories}
                     </div>
                     <div className="flex flex-col p-2 pt-1 gap-px max-h-[calc(100vh-340px)] overflow-y-auto">
@@ -309,14 +315,14 @@ export default function SkillsPage() {
                             onClick={() =>
                               setActiveCategory(isActive ? null : key)
                             }
-                            className="rounded-sm px-2 py-1 text-[11px]"
+                            className="rounded-none px-2 py-1 text-xs"
                           >
                             <span className="flex-1 truncate">{name}</span>
                             <span
-                              className={`text-[10px] tabular-nums ${
+                              className={`text-xs tabular-nums ${
                                 isActive
-                                  ? "text-foreground/60"
-                                  : "text-muted-foreground/50"
+                                  ? "text-text-secondary"
+                                  : "text-text-tertiary"
                               }`}
                             >
                               {count}
@@ -333,14 +339,14 @@ export default function SkillsPage() {
 
         <div className="flex-1 min-w-0">
           {isSearching ? (
-            <Card>
+            <Card className="rounded-none">
               <CardHeader className="py-3 px-4">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm flex items-center gap-2">
                     <Search className="h-4 w-4" />
                     {t.skills.title}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-xs">
                     {t.skills.resultCount
                       .replace("{count}", String(searchMatchedSkills.length))
                       .replace(
@@ -372,7 +378,7 @@ export default function SkillsPage() {
             </Card>
           ) : view === "skills" ? (
             /* Skills list */
-            <Card>
+            <Card className="rounded-none">
               <CardHeader className="py-3 px-4">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm flex items-center gap-2">
@@ -384,7 +390,7 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-xs">
                     {t.skills.skillCount
                       .replace("{count}", String(activeSkills.length))
                       .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
@@ -413,11 +419,11 @@ export default function SkillsPage() {
                 )}
               </CardContent>
             </Card>
-          ) : (
+          ) : view === "toolsets" ? (
             /* Toolsets grid */
             <>
               {filteredToolsets.length === 0 ? (
-                <Card>
+                <Card className="rounded-none">
                   <CardContent className="py-8 text-center text-sm text-muted-foreground">
                     {t.skills.noToolsetsMatch}
                   </CardContent>
@@ -431,7 +437,7 @@ export default function SkillsPage() {
                       ts.name;
 
                     return (
-                      <Card key={ts.name} className="relative">
+                      <Card key={ts.name} className="relative rounded-none">
                         <CardContent className="py-4">
                           <div className="flex items-start gap-3">
                             <TsIcon className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
@@ -442,18 +448,18 @@ export default function SkillsPage() {
                                 </span>
                                 <Badge
                                   tone={ts.enabled ? "success" : "outline"}
-                                  className="text-[10px]"
+                                  className="text-xs"
                                 >
                                   {ts.enabled
                                     ? t.common.active
                                     : t.common.inactive}
                                 </Badge>
                               </div>
-                              <p className="text-xs text-muted-foreground mb-2">
+                              <p className="text-xs text-text-secondary mb-2">
                                 {ts.description}
                               </p>
                               {ts.enabled && !ts.configured && (
-                                <p className="text-[10px] text-amber-300/80 mb-2">
+                                <p className="text-xs text-amber-300 mb-2">
                                   {t.skills.setupNeeded}
                                 </p>
                               )}
@@ -463,7 +469,7 @@ export default function SkillsPage() {
                                     <Badge
                                       key={tool}
                                       tone="secondary"
-                                      className="text-[10px] font-mono"
+                                      className="text-xs font-mono"
                                     >
                                       {tool}
                                     </Badge>
@@ -471,7 +477,7 @@ export default function SkillsPage() {
                                 </div>
                               )}
                               {ts.tools.length === 0 && (
-                                <span className="text-[10px] text-muted-foreground/60">
+                                <span className="text-xs text-text-tertiary">
                                   {ts.enabled
                                     ? t.skills.toolsetLabel.replace(
                                         "{name}",
@@ -489,6 +495,8 @@ export default function SkillsPage() {
                 </div>
               )}
             </>
+          ) : (
+            <HubBrowser showToast={showToast} />
           )}
         </div>
       </div>
@@ -536,7 +544,7 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
       active={active}
       onClick={onClick}
       className={cn(
-        "rounded-sm whitespace-nowrap px-2.5 py-1.5",
+        "rounded-none whitespace-nowrap px-2.5 py-1.5",
         "font-mondwest text-[0.7rem] tracking-[0.08em] uppercase",
         active && "bg-foreground/90 text-background hover:text-background",
       )}
@@ -559,4 +567,189 @@ interface SkillRowProps {
   onToggle: () => void;
   skill: SkillInfo;
   toggling: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Hub browser — search the skill hub, install by identifier         */
+/* ------------------------------------------------------------------ */
+
+function HubBrowser({
+  showToast,
+}: {
+  showToast: (msg: string, kind: "success" | "error") => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SkillHubResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false);
+  // Live action log for the most recent install/update (tailed via action status).
+  const [action, setAction] = useState<string | null>(null);
+  const [actionLog, setActionLog] = useState<string[]>([]);
+  const [actionRunning, setActionRunning] = useState(false);
+
+  const runSearch = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setSearching(true);
+    setSearched(true);
+    try {
+      const r = await api.searchSkillsHub(q);
+      setResults(r.results);
+    } catch (e) {
+      showToast(`Hub search failed: ${e}`, "error");
+      setResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Poll a spawned action's log until it exits.
+  useEffect(() => {
+    if (!action) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const st = await api.getActionStatus(action, 200);
+        if (cancelled) return;
+        setActionLog(st.lines);
+        setActionRunning(st.running);
+        if (st.running) timer = setTimeout(poll, 1200);
+      } catch {
+        if (!cancelled) setActionRunning(false);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [action]);
+
+  const install = async (identifier: string) => {
+    try {
+      const res = await api.installSkillFromHub(identifier);
+      showToast(`Installing ${identifier}…`, "success");
+      setActionLog([]);
+      setActionRunning(true);
+      setAction(res.name);
+    } catch (e) {
+      showToast(`Install failed: ${e}`, "error");
+    }
+  };
+
+  const updateAll = async () => {
+    try {
+      const res = await api.updateSkillsFromHub();
+      showToast("Updating installed skills…", "success");
+      setActionLog([]);
+      setActionRunning(true);
+      setAction(res.name);
+    } catch (e) {
+      showToast(`Update failed: ${e}`, "error");
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Card className="rounded-none">
+        <CardContent className="py-4 flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                className="h-8 pl-8 text-sm"
+                placeholder="Search the skill hub (GitHub, official, community)…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void runSearch();
+                }}
+              />
+            </div>
+            <Button
+              size="sm"
+              onClick={() => void runSearch()}
+              disabled={searching || !query.trim()}
+              prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
+            >
+              Search
+            </Button>
+            <Button
+              size="sm"
+              outlined
+              onClick={() => void updateAll()}
+              prefix={<RefreshCw className="h-3.5 w-3.5" />}
+            >
+              Update all
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Results come from the same sources as <span className="font-mono">hermes skills search</span>.
+            Installs run in the background; the log streams below.
+          </p>
+        </CardContent>
+      </Card>
+
+      {action && (
+        <Card className="rounded-none">
+          <CardContent className="py-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Download className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="font-mono text-xs">{action}</span>
+              {actionRunning ? (
+                <Badge tone="warning">running</Badge>
+              ) : (
+                <Badge tone="success">done</Badge>
+              )}
+            </div>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-2 text-xs font-mono text-muted-foreground">
+              {actionLog.length ? actionLog.join("\n") : "Starting…"}
+            </pre>
+          </CardContent>
+        </Card>
+      )}
+
+      {searching && (
+        <div className="flex items-center justify-center py-8">
+          <Spinner className="text-xl text-primary" />
+        </div>
+      )}
+
+      {!searching && searched && results.length === 0 && (
+        <Card className="rounded-none">
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No matching skills found in the hub.
+          </CardContent>
+        </Card>
+      )}
+
+      {results.map((r) => (
+        <Card key={r.identifier} className="rounded-none">
+          <CardContent className="py-3 flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="font-mono-ui text-sm">{r.name}</span>
+                <Badge tone="secondary" className="text-xs">{r.source}</Badge>
+                <Badge tone="outline" className="text-xs">{r.trust_level}</Badge>
+              </div>
+              <p className="text-xs text-text-secondary">{r.description}</p>
+              <p className="text-xs font-mono text-text-tertiary truncate mt-0.5">
+                {r.identifier}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              outlined
+              className="shrink-0"
+              onClick={() => void install(r.identifier)}
+              prefix={<Download className="h-3.5 w-3.5" />}
+            >
+              Install
+            </Button>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
 }

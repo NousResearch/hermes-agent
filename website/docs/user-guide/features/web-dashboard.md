@@ -1,12 +1,16 @@
 ---
 sidebar_position: 15
 title: "Web Dashboard"
-description: "Browser-based dashboard for managing configuration, API keys, sessions, logs, analytics, cron jobs, and skills"
+description: "Browser-based administration panel for managing configuration, API keys, MCP servers, messaging pairing, webhooks, the gateway, memory, credentials, sessions, logs, analytics, cron jobs, and skills"
 ---
 
 # Web Dashboard
 
 The web dashboard is a browser-based UI for managing your Hermes Agent installation. Instead of editing YAML files or running CLI commands, you can configure settings, manage API keys, and monitor sessions from a clean web interface.
+
+:::tip
+Hosted-mode auth uses Nous Portal OAuth; if you also want the dashboard to talk to a real backend, `hermes setup --portal` wires up the model and tool gateway too. See [Nous Portal](/integrations/nous-portal).
+:::
 
 ## Quick Start
 
@@ -35,6 +39,9 @@ hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
+
+# Enable the in-browser Chat tab
+hermes dashboard --tui
 ```
 
 ## Prerequisites
@@ -48,6 +55,8 @@ pip install 'hermes-agent[web,pty]'
 The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
+
+The Chat tab is intentionally off for a plain `hermes dashboard` launch. Start the dashboard with `hermes dashboard --tui` or set `HERMES_DASHBOARD_TUI=1` when you want the embedded browser chat pane.
 
 ## Pages
 
@@ -133,9 +142,15 @@ Advanced/rarely-used keys are hidden by default behind a toggle.
 Browse and inspect all agent sessions. Each row shows the session title, source platform icon (CLI, Telegram, Discord, Slack, cron), model name, message count, tool call count, and how long ago it was active. Live sessions are marked with a pulsing badge.
 
 - **Search** — full-text search across all message content using FTS5. Results show highlighted snippets and auto-scroll to the first matching message when expanded.
+- **Stats** — a summary bar shows total sessions, how many are active in the store, archived count, total messages, and a per-source breakdown.
 - **Expand** — click a session to load its full message history. Messages are color-coded by role (user, assistant, system, tool) and rendered as Markdown with syntax highlighting.
 - **Tool calls** — assistant messages with tool calls show collapsible blocks with the function name and JSON arguments.
+- **Rename** — set or clear a session's title inline (pencil icon).
+- **Export** — download a session (metadata + full message history) as JSON (download icon).
+- **Prune** — the header "Prune old sessions" button deletes ended sessions older than N days.
 - **Delete** — remove a session and its message history with the trash icon.
+
+![Sessions admin page — stats bar, prune, and per-row rename / export / delete](/img/dashboard/admin-sessions.png)
 
 ### Logs
 
@@ -164,17 +179,105 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 - **Create** — fill in a name (optional), prompt, cron expression (e.g. `0 9 * * *`), and delivery target (local, Telegram, Discord, Slack, or email)
 - **Job list** — each job shows its name, prompt preview, schedule expression, state badge (enabled/paused/error), delivery target, last run time, and next run time
 - **Pause / Resume** — toggle a job between active and paused states
+- **Edit** — open a pre-filled modal to change a job's prompt, schedule, name, or delivery target
 - **Trigger now** — immediately execute a job outside its normal schedule
 - **Delete** — permanently remove a cron job
 
 ### Skills
 
-Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.hermes/skills/` and grouped by category.
+Browse, search, and toggle installed skills and toolsets, and install new ones from the hub. Skills are loaded from `~/.hermes/skills/` and grouped by category.
 
-- **Search** — filter skills and toolsets by name, description, or category
+- **Search** — filter installed skills and toolsets by name, description, or category
 - **Category filter** — click category pills to narrow the list (e.g. MLOps, MCP, Red Teaming, AI)
 - **Toggle** — enable or disable individual skills with a switch. Changes take effect on the next session.
-- **Toolsets** — a separate section shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
+- **Toolsets** — a separate view shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
+- **Browse hub** — a third view searches the skill hub across all sources (the same as `hermes skills search`), installs any result by identifier with a live install log, and offers an "Update all" button to refresh installed skills.
+
+![Skills admin page — the Browse hub view: search, install, and update](/img/dashboard/admin-skills-hub.png)
+
+### MCP
+
+Manage [MCP](/integrations/mcp) servers without the CLI. The same `mcp_servers`
+block in `config.yaml` that `hermes mcp` reads from.
+
+**Your MCP servers:**
+
+- **Add** — register an HTTP/SSE server (URL) or a stdio server (command + args), with optional `KEY=VALUE` environment variables for stdio servers
+- **Enable / disable** — toggle a server on or off without deleting it. A disabled server stays in config so you can re-enable it later. Takes effect on the next gateway restart.
+- **Test** — connect to a server, list its tools, and disconnect — verifies the connection before the agent depends on it
+- **Remove** — delete a server from the config
+- Secret-shaped env values are redacted in the list view
+
+**Catalog:** browse the Nous-approved MCP servers (the bundled `optional-mcps/`
+catalog) and install any of them with one click. Entries that need API keys
+prompt for them inline; the values go to `.env`. This is the same catalog
+`hermes mcp catalog` / `hermes mcp install` use.
+
+![MCP admin page — your servers with enable/disable toggles, plus the install catalog](/img/dashboard/admin-mcp.png)
+
+### Webhooks
+
+Manage dynamic [webhook subscriptions](/user-guide/messaging/webhooks). The
+webhook platform must be enabled in messaging settings first; the page shows a
+hint when it isn't.
+
+- **Create** — name, description, event filter, delivery target, optional direct-delivery mode, and an agent prompt. On creation the page surfaces the route URL and the one-time HMAC secret to copy.
+- **Enable / disable** — toggle a subscription on or off. Disabled routes stay in the subscriptions file but the gateway rejects their incoming events (403). The gateway hot-reloads the file, so the change takes effect on the next event — no restart needed.
+- **List** — each subscription shows its URL, events, and delivery target
+- **Delete** — remove a subscription
+
+![Webhooks admin page — subscriptions with enable/disable toggles](/img/dashboard/admin-webhooks.png)
+
+### Pairing
+
+Approve and revoke messaging users without the CLI — how a remote admin
+onboards Telegram/Discord/etc. users to a paired gateway. Full parity with
+`hermes pairing`.
+
+- **Pending requests** — each shows platform, code, user, and age, with an Approve button
+- **Approved users** — each shows platform and user, with a Revoke button
+- **Clear pending** — drop all outstanding pairing codes
+
+![Pairing admin page](/img/dashboard/admin-pairing.png)
+
+### Channels
+
+Connect Hermes to any messaging platform from the browser — full parity with
+`hermes setup gateway`. The page lists every supported channel (Telegram,
+Discord, Slack, Matrix, Mattermost, WhatsApp, Signal, BlueBubbles/iMessage,
+Email, SMS/Twilio, DingTalk, Feishu/Lark, WeCom, WeChat, QQ Bot, Yuanbao, plus
+the API server and webhook endpoints) with its live connection status.
+
+- **Configure** — open a per-platform form with exactly the fields that channel needs (bot token, app token, server URL, allowlist, etc.). Secrets render as password inputs and are stored redacted; leaving a field blank keeps the existing value. Required fields are marked and validated. A "Setup guide" link points to the platform's credential docs.
+- **Enable / disable** — toggle a channel on or off. The credential stays on disk; only the active state changes.
+- **Test** — check whether the channel is configured, enabled, and reporting a live connection from the gateway.
+- **Restart gateway** — credentials are written to `~/.hermes/.env` and the enabled flag to `config.yaml`; the gateway connects each enabled channel on its next restart, which you can trigger right from the page.
+
+![Channels admin page — every messaging platform with status, enable toggles, and per-platform setup forms](/img/dashboard/admin-channels.png)
+
+### System
+
+A consolidated administration panel for installation-wide operations:
+
+- **Host** — live system stats: OS / kernel, architecture, hostname, Python and Hermes versions, CPU core count + utilization, memory, disk usage of the Hermes home, uptime, and load average. (CPU/memory/disk come from `psutil` when installed; identity fields are always shown.)
+- **Nous Portal** — login status, the active inference provider, and the Tool Gateway routing table (which tools run via the Portal vs. locally), with a link to manage your subscription. Read-only mirror of `hermes portal`.
+- **Skill curator** — the background skill-maintenance status (active / paused, interval, last run) with pause/resume and a run-now button. Mirrors `hermes curator`.
+- **Gateway** — start, stop, and restart the messaging gateway, with live status (running/stopped, PID, state)
+- **Memory** — pick the external memory provider (or built-in only), and reset the built-in `MEMORY.md` / `USER.md` stores
+- **Credential pool** — add and remove the rotating API keys the agent round-robins through (per provider). Keys are redacted in the list; the raw value only ever reaches the agent.
+- **Operations** — run `doctor`, a security audit, create a backup, restore from a backup archive, update skills, show the system-prompt size breakdown, generate a support dump, or migrate config for retired settings. Each spawns a background action whose live log streams into the page.
+- **Checkpoints** — see the `/rollback` shadow store size and prune it
+- **Shell hooks** — list configured hooks with their consent + executable status, **create** a hook (event, command, matcher, timeout, with an opt-in consent grant), and remove one. Hooks run arbitrary commands, so the create form carries a security warning and the hook only fires after consent is granted.
+
+![System admin page — host stats and Nous Portal status](/img/dashboard/admin-system-top.png)
+
+![System admin page — skill curator, gateway, memory, and credential pool](/img/dashboard/admin-system-curator.png)
+
+![System admin page — operations, checkpoints, and shell hooks](/img/dashboard/admin-system-ops.png)
+
+Creating a shell hook (note the consent checkbox and the run-arbitrary-commands warning):
+
+![New shell hook modal](/img/dashboard/admin-hook-create.png)
 
 :::warning Security
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
@@ -290,6 +393,230 @@ Enables or disables a skill. Body: `{"name": "skill-name", "enabled": true}`.
 ### GET /api/tools/toolsets
 
 Returns all toolsets with their label, description, tools list, and active/configured status.
+
+### Admin endpoints
+
+These power the MCP, Channels, Webhooks, Pairing, and System pages. All sit behind the
+same auth gate as the rest of `/api/`.
+
+| Method & path | Purpose |
+|---------------|---------|
+| `GET /api/mcp/servers` | List configured MCP servers (env values redacted) |
+| `POST /api/mcp/servers` | Add a server. Body: `{name, url?, command?, args?, env?, auth?}` |
+| `POST /api/mcp/servers/{name}/test` | Connect, list tools, disconnect |
+| `PUT /api/mcp/servers/{name}/enabled` | Enable / disable a server |
+| `DELETE /api/mcp/servers/{name}` | Remove a server |
+| `GET /api/mcp/catalog` | Browse the Nous-approved MCP catalog |
+| `POST /api/mcp/catalog/install` | Install a catalog entry (with required env) |
+| `GET /api/messaging/platforms` | List every messaging channel with status + per-platform setup fields |
+| `PUT /api/messaging/platforms/{id}` | Configure a channel. Body: `{enabled?, env?, clear_env?}` (env writes to `.env`, enabled to `config.yaml`) |
+| `POST /api/messaging/platforms/{id}/test` | Report whether a channel is configured, enabled, and connected |
+| `GET /api/pairing` | List pending + approved messaging users |
+| `POST /api/pairing/approve` | Approve a code. Body: `{platform, code}` |
+| `POST /api/pairing/revoke` | Revoke a user. Body: `{platform, user_id}` |
+| `POST /api/pairing/clear-pending` | Drop all pending codes |
+| `GET /api/webhooks` | List subscriptions + platform-enabled status |
+| `POST /api/webhooks` | Create a subscription (returns one-time secret) |
+| `DELETE /api/webhooks/{name}` | Remove a subscription |
+| `GET /api/credentials/pool` | List pooled rotation keys (redacted) |
+| `POST /api/credentials/pool` | Add a key. Body: `{provider, api_key, label?}` |
+| `DELETE /api/credentials/pool/{provider}/{index}` | Remove a key (1-based index) |
+| `GET /api/memory` | Active provider + available providers + built-in file sizes |
+| `PUT /api/memory/provider` | Select a provider (empty = built-in only) |
+| `POST /api/memory/reset` | Reset built-in memory. Body: `{target: all\|memory\|user}` |
+| `POST /api/gateway/start` · `/stop` · `/restart` | Gateway lifecycle (backgrounded) |
+| `POST /api/ops/doctor` · `/security-audit` · `/backup` · `/import` | Diagnostics & maintenance (backgrounded; tail via `/api/actions/{name}/status`) |
+| `GET /api/ops/hooks` | Configured shell hooks + allowlist status |
+| `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
+| `POST /api/ops/hooks` · `DELETE /api/ops/hooks` | Create / remove a shell hook (consent-gated) |
+| `GET /api/system/stats` | Host stats — OS, CPU, memory, disk, uptime |
+| `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
+| `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
+| `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |
+| `PUT /api/webhooks/{name}/enabled` | Enable / disable a webhook route |
+| `POST /api/skills/hub/install` · `/uninstall` · `/update` | Skills hub actions (backgrounded) |
+| `GET /api/skills/hub/search` | Search the skill hub across all sources |
+| `GET /api/sessions/stats` | Session-store statistics |
+| `PATCH /api/sessions/{id}` | Rename / archive a session |
+| `GET /api/sessions/{id}/export` | Export a session (metadata + messages) as JSON |
+| `POST /api/sessions/prune` | Delete ended sessions older than N days |
+| `PUT /api/cron/jobs/{id}` | Edit a cron job's prompt / schedule / name / deliver |
+
+## OAuth Authentication (gated mode)
+
+When the dashboard is bound to a public address — anything other than `127.0.0.1` / `localhost` — Hermes Agent engages an OAuth-based auth gate. Every request must carry a verified session cookie or it's bounced through a full OAuth round-trip via the Nous Portal.
+
+This is intended for hosted deployments (typically Fly.io) where the dashboard is reachable over the public internet. Operator-owned dashboards bound to loopback are unaffected.
+
+### When the gate engages
+
+| Flags | Auth gate | Use case |
+|-------|-----------|----------|
+| `hermes dashboard` (default — binds to `127.0.0.1`) | OFF | Local development |
+| `hermes dashboard --host 0.0.0.0` | **ON** | Production / Fly.io deployment |
+| `hermes dashboard --host 192.168.1.10 --insecure` | OFF | Trusted LAN; user opts into legacy session-token auth |
+
+The gate is on if and only if:
+
+1. The bind host is not `127.0.0.1`, `::1`, `localhost`, or `0.0.0.0` AND
+2. The `--insecure` flag is **not** set.
+
+Setting `--insecure` keeps the existing single-process session-token behaviour — no OAuth dance, no provider plugins required. Use only on networks where you trust every client.
+
+### Fail-closed semantics
+
+If the gate would engage but **no** `DashboardAuthProvider` is registered (no Nous plugin, no custom plugin), `hermes dashboard` refuses to bind with an explicit error message. There is no "default-deny but accept everything" fallback — a misconfigured gated dashboard never starts.
+
+### Default provider: Nous Research
+
+The bundled `plugins/dashboard_auth/nous` plugin is **always installed** and auto-loaded. It auto-registers a `DashboardAuthProvider` named `nous` when a client ID is configured.
+
+#### Configuration
+
+The plugin reads from two surfaces, with the environment variable winning when set non-empty:
+
+**`config.yaml`** — the canonical surface:
+
+```yaml
+dashboard:
+  oauth:
+    client_id: agent:01HXYZ…             # required to engage the gate
+    portal_url: https://portal.nousresearch.com  # optional; defaults to production
+```
+
+**Environment variables** — operator overrides:
+
+| Env var | Overrides | Format | Provisioned by |
+|---------|-----------|--------|----------------|
+| `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | `dashboard.oauth.client_id` | `agent:{instance_id}` | Nous Portal at Fly.io provisioning time |
+| `HERMES_DASHBOARD_PORTAL_URL` | `dashboard.oauth.portal_url` | URL (default: `https://portal.nousresearch.com`) | Portal — override only for staging or a custom deployment |
+
+Per the Hermes Agent convention (`~/.hermes/.env` is for API keys / secrets only), **`config.yaml` is the recommended place to set these values** for local dev, on-prem, and any deployment you control directly. The environment-variable path exists so Fly.io's platform-secret injection can push per-deploy `client_id`s without anyone having to edit `config.yaml` inside the image — that's its primary purpose.
+
+Empty environment values are treated as unset, so a provisioned-but-not-populated Fly secret can't accidentally shadow a valid `config.yaml` entry.
+
+If neither source provides a client_id, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
+
+```
+Refusing to bind dashboard to 0.0.0.0 — the OAuth auth gate engages on
+non-loopback binds, but no auth providers are registered.
+
+Bundled providers reported these issues:
+  • nous: HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set (and
+    dashboard.oauth.client_id in config.yaml is empty). The Nous Portal
+    provisions this env var (shape 'agent:{instance_id}') when it
+    deploys a Hermes Agent instance — set it to your provisioned
+    client id (either as an env var or under dashboard.oauth.client_id
+    in config.yaml), or pass --insecure to skip the OAuth gate entirely.
+
+Or pass --insecure to skip the auth gate (NOT recommended on untrusted
+networks).
+```
+
+### Public URL override
+
+By default, the dashboard reconstructs the OAuth callback URL from the request — `X-Forwarded-Host` + `X-Forwarded-Proto` + `X-Forwarded-Prefix` (when uvicorn is configured with `proxy_headers=True`, which `start_server` enables under the gate). This works out of the box on Fly.io, which sets all three headers correctly.
+
+For deploys behind reverse proxies that don't reliably forward those headers (manual nginx setups, on-prem ingresses, custom-domain Fly deploys with partial proxy chains), set `dashboard.public_url` (or `HERMES_DASHBOARD_PUBLIC_URL`) to the **complete public URL** the dashboard is reached at:
+
+```yaml
+dashboard:
+  public_url: "https://dashboard.example.com/hermes"
+```
+
+When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
+
+Same precedence as the other dashboard settings — env wins over `config.yaml`:
+
+| Surface | Override path | When to use |
+|---------|---------------|-------------|
+| `dashboard.public_url` in `config.yaml` | `HERMES_DASHBOARD_PUBLIC_URL` | Local dev / on-prem (canonical) |
+| `HERMES_DASHBOARD_PUBLIC_URL` env var | — | Fly.io platform secrets / CI |
+| (unset) | — | Default — reconstruct from `X-Forwarded-*` headers |
+
+Validation rejects values without `http://` / `https://` scheme, without a host, or containing quote / angle / whitespace / control characters. A malformed value silently falls through to header reconstruction so the login flow keeps working rather than dispatching the user to a hostile URL.
+
+> **Note:** `public_url` overrides the OAuth callback URL only. The `Secure` cookie flag is still controlled by `request.url.scheme` (X-Forwarded-Proto under proxy_headers), so an `http://` `public_url` on a TLS-terminated public deploy will produce non-Secure cookies. This is an operator footgun — pair `public_url` with proper TLS termination upstream.
+
+### OAuth flow
+
+The provider implements the [Nous Portal OAuth contract v1](https://github.com/NousResearch/nous-account-service/blob/main/docs/agent-dashboard-oauth-contract.md) — authorization-code grant with PKCE (S256):
+
+1. User hits `/` without a session cookie → gate redirects to `/login`.
+2. Login page shows a "Continue with Nous Research" button → `/auth/login?provider=nous`.
+3. Server stashes PKCE state in a short-lived cookie, redirects user to `https://portal.nousresearch.com/oauth/authorize?…`.
+4. User authenticates with Portal, lands at `/auth/callback?code=…&state=…`.
+5. Server exchanges the code for an access token at `POST /api/oauth/token`, verifies the JWT signature against the Portal's JWKS (`/.well-known/jwks.json`), and sets the `hermes_session_at` cookie.
+6. User is redirected to `/` (or to the original deep-link path via the `next=` query parameter).
+
+Access tokens have a 15-minute TTL. **There is no refresh token in contract v1** — when the token expires, the SPA's fetch wrapper detects the 401 envelope and full-page-navigates back to `/login` to re-run the flow.
+
+### Cookies set
+
+| Name | Lifetime | Notes |
+|------|----------|-------|
+| `hermes_session_at` | Token TTL (15 min) | HttpOnly, SameSite=Lax, Secure-when-HTTPS |
+| `hermes_session_pkce` | 10 min | HttpOnly; holds the PKCE verifier + provider hint during the round trip |
+| `hermes_session_rt` | unused in v1 | Reserved for forward-compat; not written when `refresh_token` is empty |
+
+All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from Fly's TLS terminator under `proxy_headers=True`).
+
+### Logout
+
+The sidebar widget shows `Logged in as <user_id…> via nous` with a logout icon. Clicking it POSTs `/auth/logout`, which clears all dashboard-auth cookies and redirects back to `/login`.
+
+### Audit log
+
+Every login start, success, failure, and session-verify failure is written as a JSON line to `$HERMES_HOME/logs/dashboard-auth.log`. Sensitive fields (`access_token`, `refresh_token`, `code`, `code_verifier`, `state`, `Authorization` header) are redacted before logging.
+
+### Custom providers
+
+To plug a non-Nous OAuth provider (e.g. Google, GitHub, custom OIDC), create a plugin that registers a `DashboardAuthProvider`:
+
+```python
+# ~/.hermes/plugins/dashboard-auth-myidp/__init__.py
+from hermes_cli.dashboard_auth import DashboardAuthProvider, Session, LoginStart
+
+class MyIdPProvider(DashboardAuthProvider):
+    name = "myidp"
+    display_name = "My Identity Provider"
+
+    def start_login(self, *, redirect_uri): ...
+    def complete_login(self, *, code, state, code_verifier, redirect_uri): ...
+    def verify_session(self, *, access_token): ...
+    def refresh_session(self, *, refresh_token): ...
+    def revoke_session(self, *, refresh_token): ...
+
+def register(ctx):
+    ctx.register_dashboard_auth_provider(MyIdPProvider())
+```
+
+The login page lists all registered providers; multiple providers can be stacked and the user picks one at `/login`.
+
+### Verifying the gate is on
+
+```bash
+# Quick env-var path (Fly.io shape). HERMES_DASHBOARD_PORTAL_URL is
+# optional — defaults to production.
+HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test \
+  hermes dashboard --host 0.0.0.0
+
+# Or the equivalent via config.yaml (recommended for local dev / on-prem):
+#
+#   dashboard:
+#     oauth:
+#       client_id: agent:test
+#
+# then just:
+hermes dashboard --host 0.0.0.0
+
+# Hit /api/status to see the gate state:
+curl -s http://127.0.0.1:9119/api/status | jq '.auth_required, .auth_providers'
+# true
+# ["nous"]
+```
+
+The dashboard's React StatusPage shows the same fields under "Web server". A sidebar AuthWidget surfaces the current identity once you've signed in.
 
 ## CORS
 

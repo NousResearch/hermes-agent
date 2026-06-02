@@ -16,7 +16,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -237,7 +237,7 @@ class TestKillStaleDashboardPosix:
             sent.append((pid, sig))
             # Simulate stubborn process: probe (sig 0) always succeeds,
             # SIGTERM does nothing, SIGKILL is where it "dies".
-            if sig in (_signal.SIGTERM, 0, _signal.SIGKILL):
+            if sig in {_signal.SIGTERM, 0, _signal.SIGKILL}:
                 return
             # Any other signal — also fine.
 

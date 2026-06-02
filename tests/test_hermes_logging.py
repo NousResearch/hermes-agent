@@ -25,6 +25,8 @@ def _reset_logging_state():
     """
     hermes_logging._logging_initialized = False
     root = logging.getLogger()
+    prev_root_level = root.level
+    root.setLevel(logging.NOTSET)
     # Strip ALL RotatingFileHandlers — not just the ones we added — so that
     # handlers leaked from other test modules in the same xdist worker don't
     # pollute our counts.
@@ -43,6 +45,7 @@ def _reset_logging_state():
         if h not in pre_existing:
             root.removeHandler(h)
             h.close()
+    root.setLevel(prev_root_level)
     hermes_logging._logging_initialized = False
     hermes_logging.clear_session_context()
 
@@ -355,6 +358,50 @@ class TestGatewayMode:
         assert "file msg" in content
 
 
+class TestGuiMode:
+    """setup_logging(mode='gui') creates a filtered gui.log."""
+
+    def test_gui_log_created(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+        root = logging.getLogger()
+
+        gui_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui_handlers) == 1
+
+    def test_gui_log_created_after_cli_init(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+
+        root = logging.getLogger()
+        gui_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gui.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gui_handlers) == 1
+
+    def test_gui_log_receives_only_gui_components(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
+
+        logging.getLogger("hermes_cli.web_server").info("dashboard online")
+        logging.getLogger("tui_gateway.ws").info("ws connected")
+        logging.getLogger("gateway.run").info("gateway event")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        gui_log = hermes_home / "logs" / "gui.log"
+        assert gui_log.exists()
+        content = gui_log.read_text()
+        assert "dashboard online" in content
+        assert "ws connected" in content
+        assert "gateway event" not in content
+
+
 class TestSessionContext:
     """set_session_context / clear_session_context + _SessionFilter."""
 
@@ -538,7 +585,10 @@ class TestComponentPrefixes:
 
     def test_gateway_prefix(self):
         assert "gateway" in hermes_logging.COMPONENT_PREFIXES
-        assert ("gateway",) == hermes_logging.COMPONENT_PREFIXES["gateway"]
+        # The gateway component captures both core gateway logs and the
+        # hermes_plugins facility (plugin-installed gateway adapters log
+        # under that prefix).
+        assert ("gateway", "hermes_plugins") == hermes_logging.COMPONENT_PREFIXES["gateway"]
 
     def test_agent_prefix(self):
         prefixes = hermes_logging.COMPONENT_PREFIXES["agent"]
@@ -556,6 +606,11 @@ class TestComponentPrefixes:
 
     def test_cron_prefix(self):
         assert ("cron",) == hermes_logging.COMPONENT_PREFIXES["cron"]
+
+    def test_gui_prefix(self):
+        prefixes = hermes_logging.COMPONENT_PREFIXES["gui"]
+        assert "hermes_cli.web_server" in prefixes
+        assert "tui_gateway" in prefixes
 
 
 class TestSetupVerboseLogging:
@@ -771,3 +826,174 @@ class TestReadLoggingConfig:
 
         level, max_size, backup = hermes_logging._read_logging_config()
         assert level is None
+
+
+class TestExternalRotationRecovery:
+    """_ManagedRotatingFileHandler recovers from external rotation.
+
+    External rotation = anything that renames, unlinks, or replaces the
+    log file without going through ``doRollover()``: logrotate, manual
+    ``mv``, another process rotating under us, or a transient ``rm``.
+    Before this fix the open file descriptor stayed pinned to the old
+    inode forever, so every subsequent write went to the rotated backup
+    instead of the file the operator expects to read.
+    """
+
+    def _make_handler(self, log_path: Path) -> hermes_logging._ManagedRotatingFileHandler:
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=10 * 1024 * 1024, backupCount=3,
+            encoding="utf-8",
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        return handler
+
+    def _emit(self, handler: logging.Handler, msg: str) -> None:
+        record = logging.LogRecord(
+            name="gateway.run", level=logging.INFO, pathname="", lineno=0,
+            msg=msg, args=(), exc_info=None,
+        )
+        # Match the record factory that hermes_logging installs at import time.
+        record.session_tag = ""
+        handler.emit(record)
+        handler.flush()
+
+    def test_recovers_after_external_rename(self, tmp_path):
+        """logrotate-style external rename: ``mv gateway.log gateway.log.1``.
+
+        Handler's fd was pinned to the renamed inode; new writes used to
+        go to ``gateway.log.1`` forever.  After fix, the handler reopens
+        ``gateway.log`` at the original path.
+        """
+        log_path = tmp_path / "gateway.log"
+        rotated = tmp_path / "gateway.log.1"
+        handler = self._make_handler(log_path)
+        try:
+            self._emit(handler, "before rotation")
+            assert log_path.read_text() == "before rotation\n"
+
+            # External rotation (NOT via handler.doRollover()).
+            os.rename(log_path, rotated)
+            assert not log_path.exists()
+
+            self._emit(handler, "after rotation")
+
+            # The new write should land in a freshly recreated gateway.log,
+            # not appended to the rotated backup.
+            assert log_path.exists(), "handler did not recreate gateway.log"
+            assert log_path.read_text() == "after rotation\n"
+            assert rotated.read_text() == "before rotation\n"
+        finally:
+            handler.close()
+
+    def test_recovers_after_external_unlink(self, tmp_path):
+        """``rm gateway.log`` then keep writing — handler recreates the file."""
+        log_path = tmp_path / "gateway.log"
+        handler = self._make_handler(log_path)
+        try:
+            self._emit(handler, "before unlink")
+            assert log_path.read_text() == "before unlink\n"
+
+            os.unlink(log_path)
+            assert not log_path.exists()
+
+            self._emit(handler, "after unlink")
+            assert log_path.exists()
+            assert log_path.read_text() == "after unlink\n"
+        finally:
+            handler.close()
+
+    def test_external_truncate_does_not_force_reopen(self, tmp_path):
+        """``: > gateway.log`` keeps the same inode — no reopen needed.
+
+        Truncation in place preserves the inode, so subsequent writes
+        continue to the same file descriptor.  We assert the post-truncate
+        content reflects the truncate (size shrinks) and then grows with
+        new writes — i.e. the handler correctly does NOT detect this as
+        an inode change.
+        """
+        log_path = tmp_path / "gateway.log"
+        handler = self._make_handler(log_path)
+        try:
+            self._emit(handler, "AAAA" * 32)
+            assert log_path.stat().st_size > 0
+
+            with open(log_path, "w"):
+                pass  # truncate to zero
+            assert log_path.stat().st_size == 0
+
+            self._emit(handler, "after truncate")
+            assert log_path.read_text() == "after truncate\n"
+        finally:
+            handler.close()
+
+    def test_normal_rollover_still_works(self, tmp_path):
+        """Handler-driven ``doRollover()`` must continue to work normally.
+
+        Regression guard: the inode-snapshot bookkeeping must be refreshed
+        in ``doRollover()`` so the very next emit doesn't mistake our own
+        rollover for an external one and double-reopen.
+        """
+        log_path = tmp_path / "gateway.log"
+        rotated = tmp_path / "gateway.log.1"
+
+        # Tiny maxBytes forces rollover after the first record.
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=1, backupCount=1, encoding="utf-8",
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        try:
+            self._emit(handler, "first record")
+            self._emit(handler, "second record")
+            self._emit(handler, "third record")
+
+            # After rollover we should have BOTH files, with the most
+            # recent record in the live file.
+            assert log_path.exists()
+            assert rotated.exists()
+            assert "third record" in log_path.read_text()
+        finally:
+            handler.close()
+
+    def test_gateway_log_attached_after_external_rotation_then_re_setup(
+        self, hermes_home,
+    ):
+        """End-to-end Allen-reproduction: gateway.log gets externally rotated,
+        ``setup_logging(mode='gateway')`` is re-called, the handler keeps
+        working.
+
+        Reproduces Allen's symptom (gateway.log frozen mid-write, all gateway
+        records leaking to agent.log) when something external rotates the
+        file between setup_logging() calls.
+        """
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+        gw_path = hermes_home / "logs" / "gateway.log"
+        rotated = hermes_home / "logs" / "gateway.log.1"
+
+        logging.getLogger("gateway.run").info("line BEFORE rotation")
+        for h in logging.getLogger().handlers:
+            try: h.flush()
+            except Exception: pass
+        assert "BEFORE rotation" in gw_path.read_text()
+
+        # External actor renames the file out from under us.
+        os.rename(gw_path, rotated)
+        assert not gw_path.exists()
+
+        # Caller (or some restart path) re-enters setup_logging.  This used
+        # to silently no-op due to the per-path dedup check, leaving the
+        # stale fd in place.
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        logging.getLogger("gateway.run").info("line AFTER rotation")
+        for h in logging.getLogger().handlers:
+            try: h.flush()
+            except Exception: pass
+
+        # The new record must reach the live gateway.log, not the rotated
+        # backup.  Allen's logs had everything past the rotation point
+        # going into agent.log only, never gateway.log.
+        assert gw_path.exists(), "gateway.log was never recreated"
+        assert "AFTER rotation" in gw_path.read_text()
+        assert "AFTER rotation" not in rotated.read_text()

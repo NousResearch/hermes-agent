@@ -428,28 +428,47 @@ def load_jobs() -> List[Dict[str, Any]]:
     ensure_dirs()
     if not JOBS_FILE.exists():
         return []
-    
+
+    _strict_retry = False  # track whether we used the strict=False fallback
+
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
+        _strict_retry = True
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
-                if jobs:
-                    # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
-                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
     except IOError as e:
         logger.error("IOError reading jobs.json: %s", e)
         raise RuntimeError(f"Failed to read cron database: {e}") from e
+
+    # Validate the top-level JSON shape: accept a dict (expected) or a bare
+    # list (auto-repair). Anything else (str/number/null) is corruption that
+    # would otherwise raise an uncaught AttributeError on ``.get()`` and take
+    # down the whole cron subsystem.
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+        if _strict_retry and jobs:
+            # Hit control-character corruption — rewrite with proper escaping.
+            save_jobs(jobs)
+            logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+        return jobs
+    if isinstance(data, list):
+        # Bare array — likely saved/edited outside save_jobs(). Wrap it back
+        # into the expected {"jobs": [...]} structure.
+        if data:
+            save_jobs(data)
+            logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
+        return data
+
+    raise RuntimeError(
+        f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}"
+    )
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):

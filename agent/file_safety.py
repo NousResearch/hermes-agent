@@ -109,10 +109,14 @@ def is_write_denied(path: str) -> bool:
     # profile-mode session leaves <root>/auth.json + <root>/config.yaml
     # writable — letting a prompt-injected write_file overwrite the global
     # files that every profile inherits from (same shape as #15981).
+    # Additionally, credential files under INACTIVE profiles
+    # (e.g. <root>/profiles/<name>/auth.json) must also be blocked —
+    # a prompt injection targeting an inactive profile's credentials
+    # would otherwise succeed without any audit or approval gate (#37617).
     control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json")
     mcp_tokens_dir_name = "mcp-tokens"
 
-    hermes_dirs = []
+    hermes_dirs: list[str] = []
     for base in (_hermes_home_path(), _hermes_root_path()):
         try:
             real = os.path.realpath(base)
@@ -120,6 +124,18 @@ def is_write_denied(path: str) -> bool:
                 hermes_dirs.append(real)
         except Exception:
             continue
+
+    # Include all profile directories so their credential files are protected.
+    try:
+        profiles_dir = _hermes_root_path() / "profiles"
+        if profiles_dir.is_dir():
+            for profile_dir in profiles_dir.iterdir():
+                if profile_dir.is_dir():
+                    real = os.path.realpath(profile_dir)
+                    if real not in hermes_dirs:
+                        hermes_dirs.append(real)
+    except Exception:
+        pass
 
     for base_real in hermes_dirs:
         for name in control_file_names:

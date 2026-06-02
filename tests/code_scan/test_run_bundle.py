@@ -537,3 +537,141 @@ class TestPartialFailureManifest:
         assert "target_dirty_before" in data
         assert "target_dirty_after" in data
         assert "target_cleanliness_status" in data
+
+
+# ── UA-P5-001: Manifest Provenance and Artifact Hashes ───────────────────
+
+class TestManifestProvenance:
+    """UA-P5-001: Manifest must include provenance metadata."""
+
+    def _load_manifest(self, tmp_path: Path, extra_args=None) -> dict:
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        rc, stdout, stderr = run_bundle(target, bundle_dir, extra_args=extra_args)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        return json.loads((bundle_dir / "manifest.json").read_text())
+
+    def test_manifest_has_provenance(self, tmp_path: Path):
+        """Manifest must include a provenance dict."""
+        data = self._load_manifest(tmp_path)
+        assert "provenance" in data, "Manifest must include 'provenance' field"
+        assert isinstance(data["provenance"], dict)
+
+    def test_provenance_has_ua_runner(self, tmp_path: Path):
+        """provenance must record the runner script path."""
+        data = self._load_manifest(tmp_path)
+        assert "ua_runner" in data["provenance"]
+        assert isinstance(data["provenance"]["ua_runner"], str)
+        assert "run_bundle" in data["provenance"]["ua_runner"]
+
+    def test_provenance_has_argv(self, tmp_path: Path):
+        """provenance must record argv/command flags."""
+        data = self._load_manifest(tmp_path)
+        assert "argv" in data["provenance"]
+        assert isinstance(data["provenance"]["argv"], list)
+
+    def test_provenance_has_target_git_head(self, tmp_path: Path):
+        """provenance must include target_git_head."""
+        data = self._load_manifest(tmp_path)
+        assert "target_git_head" in data["provenance"]
+        # _make_temp_target creates a git repo with a commit
+        assert data["provenance"]["target_git_head"] is not None
+        assert len(data["provenance"]["target_git_head"]) == 40
+
+    def test_provenance_has_target_git_remote(self, tmp_path: Path):
+        """provenance must include target_git_remote (null when no remote)."""
+        data = self._load_manifest(tmp_path)
+        assert "target_git_remote" in data["provenance"]
+        # No remote configured → should be None
+        assert data["provenance"]["target_git_remote"] is None
+
+    def test_provenance_git_remote_with_remote(self, tmp_path: Path):
+        """provenance must capture remote URL when configured."""
+        target = _make_temp_target(tmp_path)
+        # Add a fake remote
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/example/repo.git"],
+            cwd=target, capture_output=True,
+        )
+        bundle_dir = tmp_path / "bundle"
+        rc, stdout, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        assert data["provenance"]["target_git_remote"] == "https://github.com/example/repo.git"
+
+    def test_provenance_non_git_target(self, tmp_path: Path):
+        """Non-git target must have null provenance git fields with reason."""
+        target = tmp_path / "no_git_target"
+        target.mkdir()
+        (target / "main.py").write_text("x = 1\n")
+        bundle_dir = tmp_path / "bundle"
+        rc, stdout, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        assert "provenance" in data
+        assert data["provenance"]["target_git_head"] is None
+        assert data["provenance"]["target_git_remote"] is None
+        # Must have explicit reason for non-git
+        assert data["provenance"].get("non_git_reason") is not None
+
+
+class TestArtifactIntegrity:
+    """UA-P5-001: Manifest must record artifact byte sizes and SHA-256 hashes."""
+
+    def _load_manifest_and_bundle(self, tmp_path: Path):
+        target = _make_temp_target(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        rc, stdout, stderr = run_bundle(target, bundle_dir)
+        assert rc == 0, f"bundle exited {rc}: {stderr}"
+        return json.loads((bundle_dir / "manifest.json").read_text()), bundle_dir
+
+    def test_manifest_has_artifact_integrity(self, tmp_path: Path):
+        """Manifest must include artifact_integrity dict."""
+        data, _ = self._load_manifest_and_bundle(tmp_path)
+        assert "artifact_integrity" in data
+        assert isinstance(data["artifact_integrity"], dict)
+
+    def test_artifact_integrity_has_required_artifacts(self, tmp_path: Path):
+        """artifact_integrity must cover all required artifacts.
+
+        Note: manifest.json itself cannot provide its own integrity
+        (circular dependency), so it is excluded.
+        """
+        data, _ = self._load_manifest_and_bundle(tmp_path)
+        ai = data["artifact_integrity"]
+        # manifest.json excluded — file doesn't exist when integrity is computed
+        for name in ["scan.json", "imports.json", "summary.json", "REPORT.md"]:
+            assert name in ai, f"artifact_integrity missing '{name}'"
+
+    def test_artifact_integrity_has_bytes_and_sha256(self, tmp_path: Path):
+        """Each artifact_integrity entry must have bytes and sha256.
+
+        manifest.json is skipped because it doesn't exist on disk
+        when integrity is computed (written after manifest build).
+        """
+        data, bundle_dir = self._load_manifest_and_bundle(tmp_path)
+        for name, entry in data["artifact_integrity"].items():
+            if name == "manifest.json":
+                continue  # self-referential, excluded
+            assert "bytes" in entry, f"artifact_integrity['{name}'] missing 'bytes'"
+            assert "sha256" in entry, f"artifact_integrity['{name}'] missing 'sha256'"
+            assert isinstance(entry["bytes"], int)
+            assert isinstance(entry["sha256"], str)
+            assert len(entry["sha256"]) == 64  # SHA-256 hex
+
+    def test_artifact_integrity_hashes_are_correct(self, tmp_path: Path):
+        """sha256 hashes in artifact_integrity must match actual file hashes.
+
+        manifest.json is skipped: it doesn't exist on disk when integrity
+        is computed, and a self-referential hash is inherently impossible.
+        """
+        data, bundle_dir = self._load_manifest_and_bundle(tmp_path)
+        for name, entry in data["artifact_integrity"].items():
+            if name == "manifest.json":
+                continue  # self-referential, excluded
+            fpath = bundle_dir / name
+            if not fpath.exists():
+                continue
+            expected_sha = hashlib.sha256(fpath.read_bytes()).hexdigest()
+            assert entry["sha256"] == expected_sha, f"sha256 mismatch for {name}"
+            assert entry["bytes"] == fpath.stat().st_size, f"bytes mismatch for {name}"

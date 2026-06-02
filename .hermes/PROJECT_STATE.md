@@ -206,3 +206,95 @@ Committed: `24356edcd` | Tests: 80 passed
 - **Approval gate:** JC approved branch-only commit/push for this narrow Phase 4 docs/state sync, staging only `PLAN.md`, `.plans/phase-4-structural-semantic-understanding.md`, `.hermes/PROJECT_STATE.md`, and `.beads/phase4-*.md`; explicitly excluding `tools/skills_sync.py` and `tests/tools/test_skills_sync.py`; not modifying PR #37248; no merge.
 - **Upstream PR status:** PR #37248 checks remain awaiting maintainer/manual approval.
 - **Active bead remains:** `phase4-d1-import-classification`.
+
+## UA Phase 5 Development Hardening — UA-P5-000 Baseline Checkpoint
+- Timestamp: 2026-06-02T17:06:53Z.
+- JC approval received for autonomous swarm execution in `/home/jarrad/work/hermes-agent-ua-local`, using `/home/jarrad/work/plans/ua-phase5-development-hardening`, with guardrails: JIT-only, no dashboard/UI, no auto-injection, no SQLite/vector store, no tree-sitter/WASM/new runtime dependencies, no LLM/provider calls inside scanner scripts, preserve unrelated WIP including `tools/skills_sync.py` and `tests/tools/test_skills_sync.py`, and no commit/push/merge/deploy without separate approval.
+- Executed bead: `UA-P5-000 - Baseline Scope Guard and Swarm Branch Preflight`.
+- Execution branch: `feat/ua-phase5-development-hardening` created from `c1083321f`.
+- Source plan package: `/home/jarrad/work/plans/ua-phase5-development-hardening`.
+- Plan exists: yes; bead count: 11; test convention confirmed: `tests/code_scan`.
+- Pre-branch status: clean. Post-branch status before ledger write: clean.
+- GREEN verification: `python -m pytest tests/code_scan/test_run_ua.py tests/code_scan/test_runtime_readiness.py tests/code_scan/test_triage_orphans.py -q` — PASS, `127 passed in 18.29s`.
+- RED: N/A — baseline/scope bead only.
+- FULL: deferred to implementation beads per Phase 5 package.
+- Reviewer: N/A for T1 baseline; no unexpected dirty state or test failure.
+- Handoff: `.hermes/handoffs/2026-06-02-1706-ua-p5-000-baseline-scope-guard.md`.
+- Active next wave: `ua-p5-001-manifest-provenance-and-hashes`, `ua-p5-002-runtime-readiness-package-manager-classification`, `ua-p5-003-orphan-taxonomy-v2`.
+- Approval gate: no commit, push, merge, deploy, or production mutation performed. Separate JC approval required for commit/push.
+
+## UA Phase 5 Development Hardening — UA-P5-001 Completion Checkpoint
+- Timestamp: 2026-06-02T17:24:54Z.
+- Executed bead: `UA-P5-001 - Manifest Provenance and Artifact Hashes`.
+- Branch: `feat/ua-phase5-development-hardening`.
+- Changed in-scope files:
+  - `scripts/code-scan/run_bundle.py`
+  - `scripts/code-scan/run_ua.py`
+  - `tests/code_scan/test_run_bundle.py`
+  - `tests/code_scan/test_run_ua.py`
+- Existing ledger file also dirty by design: `.hermes/PROJECT_STATE.md`.
+- Coder status: timeout/no-summary after partial implementation; Hermes froze delegation and inspected residue before accepting changes.
+- RED reconstruction: temp HEAD source + current tests in `/tmp/ua-p5-001-red` — expected missing behavior failures, `24 failed, 84 passed in 26.32s`.
+- GREEN focused verification: `python -m pytest tests/code_scan/test_run_bundle.py tests/code_scan/test_run_ua.py -q` — PASS, `108 passed in 31.99s`.
+- FULL code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `894 passed in 123.28s (0:02:03)`.
+- Compile/diff hygiene: `python -m py_compile scripts/code-scan/run_bundle.py scripts/code-scan/run_ua.py` and scoped `git diff --check` — PASS.
+- Artifact smoke: `run_ua.py --mode structure --read-only-target --external-cache-dir` emitted manifest with `status=complete`, provenance keys `argv`, `non_git_reason`, `target_git_head`, `target_git_remote`, `ua_runner`, and `artifact_integrity_count=7`.
+- Added-lines secret scan: PASS, no matches.
+- Diff artifact: `/tmp/ua-p5-001-diff.patch` — 489 lines / 22474 bytes.
+- Reviewer verdict: PASS; non-blocking nits only.
+- Handoff: `.hermes/handoffs/2026-06-02-1724-ua-p5-001-manifest-provenance.md`.
+- Approval gate: no commit, push, merge, deploy, or production mutation performed. Separate JC approval required for commit/push.
+
+## UA Phase 5 Development Hardening — UA-P5-002 Completion Checkpoint
+- Timestamp: 2026-06-02T17:46:44Z.
+- Executed bead: `UA-P5-002 - Runtime Readiness Package-Manager Classification`.
+- Branch: `feat/ua-phase5-development-hardening`.
+- Changed in-scope files:
+  - `scripts/code-scan/runtime_readiness.py`
+  - `tests/code_scan/test_runtime_readiness.py`
+  - `tests/code_scan/test_run_ua.py`
+- Prior uncommitted UA-P5-000/001 changes preserved by design.
+- Coder status: timeout/no-summary after partial implementation; Hermes froze delegation and inspected residue before accepting changes.
+- RED reconstruction: temp copy with baseline `runtime_readiness.py` + current tests in `/tmp/ua-p5-002-red` — expected classification/status failures, `11 failed, 94 passed in 28.16s`.
+- GREEN focused verification: `python -m pytest tests/code_scan/test_runtime_readiness.py tests/code_scan/test_run_ua.py -q` — PASS, `105 passed in 38.87s`.
+- FULL code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `908 passed in 121.34s (0:02:01)`.
+- Compile/diff hygiene: `python -m py_compile scripts/code-scan/runtime_readiness.py scripts/code-scan/run_ua.py` and scoped `git diff --check` — PASS.
+- Artifact smoke for `package-lock.json`: `verification_ready`, node/npm required, pnpm/yarn optional alternatives, `blockers=[]`, markdown includes optional wording.
+- Added-lines secret scan: PASS, no matches.
+- Diff artifact: `/tmp/ua-p5-002-diff.patch` — 869 lines / 38668 bytes.
+- Reviewer verdict: PASS; non-blocking nits only.
+- Handoff: `.hermes/handoffs/2026-06-02-1746-ua-p5-002-runtime-readiness-pm-classification.md`.
+- Approval gate: no commit, push, merge, deploy, or production mutation performed. Separate JC approval required for commit/push.
+
+## UA Phase 5 Development Hardening — UA-P5-003 Completion Checkpoint
+- Timestamp: 2026-06-02T18:14:54Z.
+- Executed bead: `UA-P5-003 - Orphan Taxonomy V2`.
+- Branch: `feat/ua-phase5-development-hardening`.
+- Changed in-scope files:
+  - `scripts/code-scan/triage_orphans.py`
+  - `tests/code_scan/test_triage_orphans.py`
+  - `tests/code_scan/test_report_data.py`
+  - `tests/code_scan/test_render_report.py`
+- Prior uncommitted UA-P5-000/001/002 changes preserved by design.
+- Coder status: initial implementation completed with `exit_reason=max_iterations`; Hermes verified, detected field-shape polish gap, and delegated corrective patch.
+- Corrective patch added `orphan_type` and `confidence_label` while preserving `category` and numeric `confidence`.
+- RED evidence: coder summary reported `30/31` new V2 tests failed before implementation.
+- GREEN focused verification after polish: `python -m pytest tests/code_scan/test_triage_orphans.py tests/code_scan/test_report_data.py tests/code_scan/test_render_report.py -q` — PASS, `185 passed in 2.87s`.
+- FULL code-scan verification after polish: `python -m pytest tests/code_scan -q` — PASS, `954 passed in 123.88s (0:02:03)`.
+- Compile/diff hygiene: `python -m py_compile scripts/code-scan/triage_orphans.py scripts/code-scan/report_data.py scripts/code-scan/render_report.py` and scoped `git diff --check` — PASS.
+- Shape smoke: migration -> `expected_migration/high`; dead source -> `possible_dead_source/medium`; unresolved imports -> `import_resolution_anomaly/medium`.
+- Added-lines secret scan: PASS, no matches.
+- Diff artifact: `/tmp/ua-p5-003-diff.patch` — 1277 lines / 56348 bytes.
+- Reviewer verdict: PASS; advisory non-blockers only.
+- Handoff: `.hermes/handoffs/2026-06-02-1814-ua-p5-003-orphan-taxonomy-v2.md`.
+
+## UA Phase 5 Development Hardening — Wave 1 Checkpoint
+- Timestamp: 2026-06-02T18:14:54Z.
+- Wave 1 beads complete with reviewer PASS:
+  - `UA-P5-001 - Manifest Provenance and Artifact Hashes`
+  - `UA-P5-002 - Runtime Readiness Package-Manager Classification`
+  - `UA-P5-003 - Orphan Taxonomy V2`
+- Current verification high-water mark: `python -m pytest tests/code_scan -q` — PASS, `954 passed in 123.88s (0:02:03)`.
+- Current dirty summary: 11 modified files, 1839 insertions, 124 deletions.
+- Planned next step per Phase 5 PLAN: Wave 1 merge/checkpoint before Wave 1.5 (`UA-P5-004`, `UA-P5-005`, `UA-P5-006`).
+- Approval gate: no commit, push, merge, deploy, or production mutation performed. Separate JC approval required for commit/push or to proceed past the Wave 1 merge/checkpoint with uncommitted stacked changes.

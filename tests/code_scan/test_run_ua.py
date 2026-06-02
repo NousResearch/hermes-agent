@@ -6,6 +6,7 @@ RED: --mode flag unsupported before implementation.
 GREEN: each mode emits expected artifact set and omits expected non-mode artifacts.
 FULL: delta mode covered by focused pytest (requires prior manifest/baseline).
 """
+import hashlib
 import json
 import shutil
 import subprocess
@@ -625,3 +626,152 @@ class TestUAPartialFailureManifest:
         assert "target_dirty_before" in data
         assert "target_dirty_after" in data
         assert "target_cleanliness_status" in data
+
+
+# ── UA-P5-001: Manifest Provenance and Artifact Hashes ───────────────────
+
+_UA_REQUIRED_ARTIFACTS = ["scan.json", "imports.json", "summary.json", "manifest.json"]
+
+
+class TestUAProvenance:
+    """UA-P5-001: UA manifest must include provenance metadata."""
+
+    @pytest.mark.parametrize("mode", ["inventory", "structure"])
+    def test_manifest_has_provenance(self, tmp_path: Path, mode: str):
+        """UA manifest must include a provenance dict."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode=mode)
+        assert rc == 0, f"mode={mode} failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert "provenance" in manifest, "Manifest must include 'provenance' field"
+        assert isinstance(manifest["provenance"], dict)
+
+    @pytest.mark.parametrize("mode", ["inventory", "structure"])
+    def test_provenance_has_ua_runner(self, tmp_path: Path, mode: str):
+        """provenance must record the runner script path."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode=mode)
+        assert rc == 0, f"mode={mode} failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert "ua_runner" in manifest["provenance"]
+        assert isinstance(manifest["provenance"]["ua_runner"], str)
+        assert "run_ua" in manifest["provenance"]["ua_runner"]
+
+    @pytest.mark.parametrize("mode", ["inventory", "structure"])
+    def test_provenance_has_argv(self, tmp_path: Path, mode: str):
+        """provenance must record argv/command flags."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode=mode)
+        assert rc == 0, f"mode={mode} failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert "argv" in manifest["provenance"]
+        assert isinstance(manifest["provenance"]["argv"], list)
+
+    def test_provenance_has_target_git_head(self, tmp_path: Path):
+        """provenance must include target_git_head."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert "target_git_head" in manifest["provenance"]
+        # sample_repo fixture is a git repo → should have a HEAD SHA
+        head = manifest["provenance"]["target_git_head"]
+        if head is not None:
+            assert len(head) == 40
+
+    def test_provenance_has_target_git_remote(self, tmp_path: Path):
+        """provenance must include target_git_remote."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert "target_git_remote" in manifest["provenance"]
+
+    def test_provenance_non_git_target_has_reason(self, tmp_path: Path):
+        """Provenance must always include non_git_reason field (null for git repos)."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert "non_git_reason" in manifest["provenance"]
+        # For git repos, non_git_reason should be None
+        # For non-git repos, it should be a string explanation
+        reason = manifest["provenance"]["non_git_reason"]
+        head = manifest["provenance"]["target_git_head"]
+        if head is None:
+            assert reason is not None, "non-git targets must have explicit reason"
+
+
+class TestUAArtifactIntegrity:
+    """UA-P5-001: UA manifest must record artifact byte sizes and SHA-256 hashes."""
+
+    def test_manifest_has_artifact_integrity(self, tmp_path: Path):
+        """UA manifest must include artifact_integrity dict."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure failed: {stderr}"
+        manifest = _load_manifest(out)
+        assert "artifact_integrity" in manifest
+        assert isinstance(manifest["artifact_integrity"], dict)
+
+    def test_artifact_integrity_has_required_artifacts(self, tmp_path: Path):
+        """artifact_integrity must cover all required artifacts.
+
+        Note: manifest.json itself cannot provide its own integrity
+        (circular dependency), so it is excluded.
+        """
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure failed: {stderr}"
+        manifest = _load_manifest(out)
+        ai = manifest["artifact_integrity"]
+        # manifest.json excluded — it doesn't exist when integrity is computed
+        for name in _UA_REQUIRED_ARTIFACTS:
+            if name == "manifest.json":
+                continue
+            assert name in ai, f"artifact_integrity missing '{name}'"
+
+    def test_artifact_integrity_has_bytes_and_sha256(self, tmp_path: Path):
+        """Each artifact_integrity entry must have bytes and sha256."""
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure failed: {stderr}"
+        manifest = _load_manifest(out)
+        for name, entry in manifest["artifact_integrity"].items():
+            assert "bytes" in entry, f"artifact_integrity['{name}'] missing 'bytes'"
+            assert "sha256" in entry, f"artifact_integrity['{name}'] missing 'sha256'"
+            assert isinstance(entry["bytes"], int)
+            assert isinstance(entry["sha256"], str)
+            assert len(entry["sha256"]) == 64  # SHA-256 hex
+
+    def test_artifact_integrity_hashes_are_correct(self, tmp_path: Path):
+        """sha256 hashes in artifact_integrity must match actual file hashes.
+
+        manifest.json is skipped: it doesn't exist on disk when integrity
+        is computed (written after manifest build), and self-referential
+        hashes are inherently impossible.
+        """
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure failed: {stderr}"
+        manifest = _load_manifest(out)
+        out_path = Path(out)
+        for name, entry in manifest["artifact_integrity"].items():
+            if name == "manifest.json":
+                continue  # self-referential, excluded
+            fpath = out_path / name
+            if not fpath.exists():
+                continue
+            expected_sha = hashlib.sha256(fpath.read_bytes()).hexdigest()
+            assert entry["sha256"] == expected_sha, f"sha256 mismatch for {name}"
+            assert entry["bytes"] == fpath.stat().st_size, f"bytes mismatch for {name}"

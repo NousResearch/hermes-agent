@@ -658,3 +658,74 @@ class TestNoFabrication:
         eps = result["sections"].get("entrypoints")
         # With no entrypoints data, this must be "not_available"
         assert eps == "not_available"
+
+
+# ── UA-P5-003: V2 Taxonomy backward-compat tests ────────────────────────
+
+
+class TestV2TaxonomyBackwardCompat:
+    """UA-P5-003: report_data must consume V2 triage shape or degrade cleanly."""
+
+    def test_v2_triage_counts_work(self):
+        """_build_orphan_triage_section should count categories from V2 triage data."""
+        v2_triage = {
+            "schema_version": "1.0.0",
+            "orphans": {
+                "expected": [
+                    {"node_id": "n1", "category": "expected_doc", "confidence": 0.95,
+                     "reason": "documentation file", "recommended_action": "no_action_needed"},
+                    {"node_id": "n2", "category": "expected_asset", "confidence": 0.95,
+                     "reason": "image file", "recommended_action": "no_action_needed"},
+                ],
+                "entrypoint_candidate": [
+                    {"node_id": "n3", "category": "entrypoint_candidate", "confidence": 0.8,
+                     "reason": "marked as entrypoint", "recommended_action": "review"},
+                ],
+                "suspicious": [
+                    {"node_id": "n4", "category": "possible_dead_source", "confidence": 0.5,
+                     "reason": "unreferenced source", "recommended_action": "verify_import_resolution"},
+                    {"node_id": "n5", "category": "import_resolution_anomaly", "confidence": 0.6,
+                     "reason": "unresolved imports", "recommended_action": "verify_import_resolution"},
+                ],
+                "unknown": [
+                    {"node_id": "n6", "category": "unknown", "confidence": 0.1,
+                     "reason": "missing metadata", "recommended_action": "investigate"},
+                ],
+            },
+            "totals": {
+                "total_orphans": 6,
+                "expected": 2,
+                "entrypoint_candidate": 1,
+                "suspicious": 2,
+                "unknown": 1,
+            },
+        }
+        result = report_data.build_report_data(
+            scan=_load_fixture("scan.json"),
+            orphan_triage=v2_triage,
+        )
+        triage = result["sections"]["orphan_triage"]
+        assert triage["categories"]["expected"] == 2
+        assert triage["categories"]["suspicious"] == 2
+        assert triage["totals"]["total_orphans"] == 6
+
+    def test_v2_triage_degrades_gracefully(self):
+        """Old-format triage data (no V2 fields) should still work."""
+        old_triage = {
+            "schema_version": "1.0.0",
+            "orphans": {
+                "expected": [{"node_id": "n1", "reason": "documentation file"}],
+                "entrypoint_candidate": [],
+                "suspicious": [{"node_id": "n2", "reason": "unreferenced source"}],
+                "unknown": [],
+            },
+            "totals": {"total_orphans": 2, "expected": 1, "suspicious": 1,
+                       "entrypoint_candidate": 0, "unknown": 0},
+        }
+        result = report_data.build_report_data(
+            scan=_load_fixture("scan.json"),
+            orphan_triage=old_triage,
+        )
+        triage = result["sections"]["orphan_triage"]
+        assert triage["categories"]["expected"] == 1
+        assert triage["categories"]["suspicious"] == 1

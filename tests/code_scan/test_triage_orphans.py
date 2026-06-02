@@ -31,6 +31,7 @@ def _import_triage():
         _is_entrypoint_candidate,
         _build_result,
         main,
+        _confidence_label,
     )
     return (
         triage_orphans,
@@ -39,6 +40,7 @@ def _import_triage():
         _is_entrypoint_candidate,
         _build_result,
         main,
+        _confidence_label,
     )
 
 
@@ -188,81 +190,82 @@ class TestExpectedOrphans:
     def test_docs_directory_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:docs/guide.md", "filePath": "docs/guide.md", "language": "markdown"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
         assert "doc" in reason
 
     def test_readme_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:README.md", "filePath": "README.md", "language": "markdown"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
         assert "doc" in reason
 
     def test_changelog_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:CHANGELOG.md", "filePath": "CHANGELOG.md", "language": "markdown"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
 
     def test_config_yaml_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:config.yaml", "filePath": "config.yaml", "language": "yaml"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
         assert "config" in reason
 
     def test_tests_directory_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:tests/test_main.py", "filePath": "tests/test_main.py", "language": "python"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
         assert "test" in reason
 
     def test_fixture_json_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:fixtures/data.json", "filePath": "fixtures/data.json", "language": "json"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
         assert "fixture" in reason
 
     def test_github_workflows_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:.github/workflows/ci.yml", "filePath": ".github/workflows/ci.yml", "language": "yaml"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
-        assert "workflow" in reason
+        # Workflows map to expected_config in V2 taxonomy
+        assert _entry["category"] == "expected_config"
 
     def test_image_file_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:assets/logo.png", "filePath": "assets/logo.png", "language": "unknown"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
         assert "asset" in reason or "image" in reason
 
     def test_template_file_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:templates/index.html", "filePath": "templates/index.html", "language": "html"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
         assert "template" in reason
 
     def test_license_file_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:LICENSE", "filePath": "LICENSE", "language": "unknown"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
 
     def test_toml_config_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:pyproject.toml", "filePath": "pyproject.toml", "language": "toml"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
 
     def test_rst_doc_is_expected(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:docs/api.rst", "filePath": "docs/api.rst", "language": "rst"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "expected"
 
 
@@ -274,38 +277,38 @@ class TestSuspiciousOrphans:
     def test_unreferenced_python_source_is_suspicious(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:src/legacy.py", "filePath": "src/legacy.py", "language": "python"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "suspicious"
         assert "unreferenced" in reason
 
     def test_orphaned_util_module_is_suspicious(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:src/utils.py", "filePath": "src/utils.py", "language": "python"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "suspicious"
 
     def test_orphaned_js_module_is_suspicious(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:lib/helpers.js", "filePath": "lib/helpers.js", "language": "javascript"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "suspicious"
 
     def test_orphaned_go_file_is_suspicious(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:pkg/old.go", "filePath": "pkg/old.go", "language": "go"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "suspicious"
 
     def test_orphaned_rust_file_is_suspicious(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:src/legacy.rs", "filePath": "src/legacy.rs", "language": "rust"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "suspicious"
 
     def test_orphaned_ts_file_is_suspicious(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:src/old.ts", "filePath": "src/old.ts", "language": "typescript"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "suspicious"
 
 
@@ -374,19 +377,19 @@ class TestUnknownOrphans:
     def test_missing_language_is_unknown(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:src/weird.xyz", "filePath": "src/weird.xyz", "language": ""}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "unknown"
 
     def test_unsupported_language_is_unknown(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:src/compiled.dat", "filePath": "src/compiled.dat", "language": "binary"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "unknown"
 
     def test_missing_filePath_is_unknown(self):
         classify = _import_triage()[1]
         node = {"node_id": "file:xyz", "language": "python"}
-        category, reason = classify(node, None)
+        category, reason, _entry = classify(node, None)
         assert category == "unknown"
 
 
@@ -397,7 +400,9 @@ class TestIsExpectedOrphan:
 
     def test_docs_pattern(self):
         is_exp = _import_triage()[2]
-        assert is_exp({"node_id": "file:docs/readme.md", "filePath": "docs/readme.md", "language": "markdown"}) == ("doc", True)
+        result = is_exp({"node_id": "file:docs/readme.md", "filePath": "docs/readme.md", "language": "markdown"})
+        assert result[1] is True
+        assert result[0] == "expected_doc"
 
     def test_config_pattern(self):
         is_exp = _import_triage()[2]
@@ -673,6 +678,496 @@ class TestCLI:
         triage_main = _import_triage()[5]
         exit_code = triage_main()
         assert exit_code != 0
+
+
+class TestV2Taxonomy:
+    """UA-P5-003: Richer orphan categories with confidence, reason, recommended_action.
+
+    V2 taxonomy replaces coarse categories with fine-grained ones:
+      expected_doc, expected_asset, expected_config, expected_test_fixture,
+      expected_migration, expected_static_template,
+      entrypoint_candidate, possible_dead_source, import_resolution_anomaly, unknown.
+
+    Every orphan entry now carries: node_id, category, orphan_type (= category
+    alias), confidence, confidence_label (high/medium/low), reason,
+    recommended_action. The 4 top-level groups (expected, entrypoint_candidate,
+    suspicious, unknown) are preserved for backward compat with report-data.
+    """
+
+    # ── expected_doc ──────────────────────────────────────────────────
+
+    def test_readme_is_expected_doc(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:README.md", "filePath": "README.md", "language": "markdown"}
+        cat, reason, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_doc"
+        assert entry["confidence"] >= 0.9
+        assert "readme" in entry["reason"].lower() or "doc" in entry["reason"].lower()
+        assert entry["recommended_action"] in ("no_action_needed", "review")
+
+    def test_docs_directory_is_expected_doc(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:docs/guide.md", "filePath": "docs/guide.md", "language": "markdown"}
+        cat, reason, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_doc"
+
+    def test_changelog_is_expected_doc(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:CHANGELOG.md", "filePath": "CHANGELOG.md", "language": "markdown"}
+        cat, reason, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_doc"
+
+    def test_rst_doc_is_expected_doc(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:docs/api.rst", "filePath": "docs/api.rst", "language": "rst"}
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_doc"
+
+    # ── expected_asset ────────────────────────────────────────────────
+
+    def test_png_is_expected_asset(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:assets/logo.png", "filePath": "assets/logo.png", "language": "unknown"}
+        cat, _, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_asset"
+        assert entry["confidence"] >= 0.9
+
+    def test_svg_is_expected_asset(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:assets/icon.svg", "filePath": "assets/icon.svg", "language": "unknown"}
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_asset"
+
+    def test_images_directory_is_expected_asset(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:images/banner.jpg", "filePath": "images/banner.jpg", "language": "unknown"}
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_asset"
+
+    # ── expected_config ───────────────────────────────────────────────
+
+    def test_yaml_is_expected_config(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:config.yaml", "filePath": "config.yaml", "language": "yaml"}
+        cat, _, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_config"
+
+    def test_toml_is_expected_config(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:pyproject.toml", "filePath": "pyproject.toml", "language": "toml"}
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_config"
+
+    def test_env_is_expected_config(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:.env", "filePath": ".env", "language": "unknown"}
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_config"
+
+    # ── expected_test_fixture ─────────────────────────────────────────
+
+    def test_test_file_is_expected_test_fixture(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:tests/test_main.py", "filePath": "tests/test_main.py", "language": "python"}
+        cat, _, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_test_fixture"
+        assert entry["confidence"] >= 0.9
+
+    def test_fixture_json_is_expected_test_fixture(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:fixtures/data.json", "filePath": "fixtures/data.json", "language": "json"}
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_test_fixture"
+
+    # ── expected_migration ────────────────────────────────────────────
+
+    def test_sql_migration_is_expected_migration(self):
+        """supabase/migrations/001.sql -> expected_migration, high confidence."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:supabase/migrations/001.sql",
+            "filePath": "supabase/migrations/001.sql",
+            "language": "sql",
+        }
+        cat, _, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_migration"
+        assert entry["confidence"] >= 0.8
+        assert "domain" in entry["recommended_action"].lower() or "review" in entry["recommended_action"].lower()
+
+    def test_migrations_directory_is_expected_migration(self):
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:migrations/002_down.sql",
+            "filePath": "migrations/002_down.sql",
+            "language": "sql",
+        }
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_migration"
+
+    def test_prisma_migration_is_expected_migration(self):
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:prisma/migrations/20240101_init.sql",
+            "filePath": "prisma/migrations/20240101_init.sql",
+            "language": "sql",
+        }
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_migration"
+
+    def test_alembic_migration_is_expected_migration(self):
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:alembic/versions/abc123.py",
+            "filePath": "alembic/versions/abc123.py",
+            "language": "python",
+        }
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_migration"
+
+    # ── expected_static_template ──────────────────────────────────────
+
+    def test_html_template_is_expected_static_template(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:templates/index.html", "filePath": "templates/index.html", "language": "html"}
+        cat, _, entry = classify(node, None)
+        assert cat == "expected"
+        assert entry["category"] == "expected_static_template"
+
+    def test_views_directory_is_expected_static_template(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:views/base.html", "filePath": "views/base.html", "language": "html"}
+        cat, _, entry = classify(node, None)
+        assert entry["category"] == "expected_static_template"
+
+    # ── entrypoint_candidate ──────────────────────────────────────────
+
+    def test_entrypoint_candidate_shape(self):
+        triage = _import_triage()[0]
+        graph = _make_graph(["file:src/cli.py"],
+                            connected_node_ids=["file:src/utils.py"],
+                            edge_sources=["file:src/utils.py"],
+                            edge_targets=["file:src/utils.py"])
+        scan = _make_scan([
+            {"relative_path": "src/cli.py", "language": "python"},
+            {"relative_path": "src/utils.py", "language": "python"},
+        ])
+        entrypoints = _make_entrypoints(["src/cli.py"])
+        result = triage(graph, scan, entrypoints)
+        assert len(result["orphans"]["entrypoint_candidate"]) >= 1
+        ep = result["orphans"]["entrypoint_candidate"][0]
+        assert ep["category"] == "entrypoint_candidate"
+        assert "confidence" in ep
+        assert "reason" in ep
+        assert "recommended_action" in ep
+
+    # ── possible_dead_source ──────────────────────────────────────────
+
+    def test_dead_source_shape(self):
+        """src/lib/offlineQueue.js -> possible_dead_source, medium confidence."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/lib/offlineQueue.js",
+            "filePath": "src/lib/offlineQueue.js",
+            "language": "javascript",
+        }
+        cat, _, entry = classify(node, None)
+        assert cat == "suspicious"
+        assert entry["category"] == "possible_dead_source"
+        assert entry["confidence"] <= 0.7  # medium confidence
+        assert "import" in entry["recommended_action"].lower() or "verify" in entry["recommended_action"].lower()
+
+    def test_unreferenced_python_is_possible_dead_source(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:src/legacy.py", "filePath": "src/legacy.py", "language": "python"}
+        cat, _, entry = classify(node, None)
+        assert cat == "suspicious"
+        assert entry["category"] == "possible_dead_source"
+
+    # ── import_resolution_anomaly ─────────────────────────────────────
+
+    def test_import_resolution_anomaly(self):
+        """A source file whose imports all fail to resolve."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/broken.py",
+            "filePath": "src/broken.py",
+            "language": "python",
+            "unresolved_imports": ["__missing_module__", "@corrupt/import"],
+        }
+        cat, _, entry = classify(node, None)
+        assert cat == "suspicious"
+        assert entry["category"] == "import_resolution_anomaly"
+        assert "import" in entry["reason"].lower() or "resolution" in entry["reason"].lower()
+        assert entry["confidence"] >= 0.3
+
+    # ── unknown ───────────────────────────────────────────────────────
+
+    def test_unknown_shape(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:src/compiled.dat", "filePath": "src/compiled.dat", "language": "binary"}
+        cat, _, entry = classify(node, None)
+        assert cat == "unknown"
+        assert entry["category"] == "unknown"
+        assert "confidence" in entry
+        assert entry["confidence"] <= 0.3
+
+    def test_unknown_missing_metadata_shape(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "module:os", "language": "unknown"}
+        cat, _, entry = classify(node, None)
+        assert cat == "unknown"
+        assert entry["category"] == "unknown"
+
+    # ── Output shape: 4 groups preserved, entries enriched ────────────
+
+    def test_triage_output_has_rich_entries(self):
+        """Full triage result entries should have category, orphan_type, confidence, confidence_label, reason, recommended_action."""
+        triage_func = _import_triage()[0]
+        graph = {
+            "nodes": [
+                {"node_id": "file:connected.py", "filePath": "connected.py", "language": "python"},
+                {"node_id": "file:docs/README.md", "filePath": "docs/README.md", "language": "markdown"},
+                {"node_id": "file:src/orphan.py", "filePath": "src/orphan.py", "language": "python"},
+            ],
+            "edges": [
+                {"source": "file:connected.py", "target": "file:connected.py", "edge_type": "imports"},
+            ],
+        }
+        scan = {"files": [
+            {"relative_path": "docs/README.md", "language": "markdown"},
+            {"relative_path": "src/orphan.py", "language": "python"},
+        ]}
+        result = triage_func(graph, scan, None)
+
+        # Expected orphans should have V2 enriched shape
+        assert len(result["orphans"]["expected"]) >= 1
+        doc_entry = result["orphans"]["expected"][0]
+        assert "category" in doc_entry
+        assert "orphan_type" in doc_entry
+        assert doc_entry["orphan_type"] == doc_entry["category"]
+        assert "confidence" in doc_entry
+        assert "confidence_label" in doc_entry
+        assert "reason" in doc_entry
+        assert "recommended_action" in doc_entry
+        assert doc_entry["category"] == "expected_doc"
+
+        # Suspicious orphans should also have V2 shape
+        assert len(result["orphans"]["suspicious"]) >= 1
+        sus_entry = result["orphans"]["suspicious"][0]
+        assert "category" in sus_entry
+        assert "orphan_type" in sus_entry
+        assert sus_entry["orphan_type"] == sus_entry["category"]
+        assert "confidence_label" in sus_entry
+        assert sus_entry["category"] == "possible_dead_source"
+
+    def test_schema_version_unchanged(self):
+        """Schema version stays at 1.0.0 — V2 is an enrichment, not a schema break."""
+        triage_func = _import_triage()[0]
+        graph = _make_graph([], connected_node_ids=["file:src/main.py"],
+                            edge_sources=["file:src/main.py"],
+                            edge_targets=["file:src/main.py"])
+        scan = _make_scan([{"relative_path": "src/main.py", "language": "python"}])
+        result = triage_func(graph, scan, None)
+        assert result["schema_version"] == "1.0.0"
+
+    # ── Recommended actions ───────────────────────────────────────────
+
+    def test_expected_doc_no_action_needed(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:docs/guide.md", "filePath": "docs/guide.md", "language": "markdown"}
+        _, _, entry = classify(node, None)
+        assert entry["recommended_action"] == "no_action_needed"
+
+    def test_expected_config_no_action_needed(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:config.yaml", "filePath": "config.yaml", "language": "yaml"}
+        _, _, entry = classify(node, None)
+        assert entry["recommended_action"] == "no_action_needed"
+
+    def test_expected_migration_review_action(self):
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:supabase/migrations/001.sql",
+            "filePath": "supabase/migrations/001.sql",
+            "language": "sql",
+        }
+        _, _, entry = classify(node, None)
+        assert entry["recommended_action"] in ("review_via_domain_analyzer", "review")
+
+    def test_possible_dead_source_verify_import(self):
+        classify = _import_triage()[1]
+        node = {"node_id": "file:src/legacy.py", "filePath": "src/legacy.py", "language": "python"}
+        _, _, entry = classify(node, None)
+        assert "import" in entry["recommended_action"].lower() or "verify" in entry["recommended_action"].lower()
+
+    def test_import_resolution_anomaly_action(self):
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/broken.py",
+            "filePath": "src/broken.py",
+            "language": "python",
+            "unresolved_imports": ["missing_module"],
+        }
+        _, _, entry = classify(node, None)
+        assert "import" in entry["recommended_action"].lower() or "resolution" in entry["recommended_action"].lower()
+
+    # ── orphan_type alias ─────────────────────────────────────────────
+
+    def test_migration_orphan_type(self):
+        """Migration entries include orphan_type alias equal to category."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:supabase/migrations/001.sql",
+            "filePath": "supabase/migrations/001.sql",
+            "language": "sql",
+        }
+        _, _, entry = classify(node, None)
+        assert "orphan_type" in entry
+        assert entry["orphan_type"] == entry["category"]
+        assert entry["orphan_type"] == "expected_migration"
+
+    def test_import_anomaly_orphan_type(self):
+        """Import resolution anomaly entries include orphan_type alias equal to category."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/broken.py",
+            "filePath": "src/broken.py",
+            "language": "python",
+            "unresolved_imports": ["missing_module"],
+        }
+        _, _, entry = classify(node, None)
+        assert "orphan_type" in entry
+        assert entry["orphan_type"] == entry["category"]
+        assert entry["orphan_type"] == "import_resolution_anomaly"
+
+    def test_dead_source_orphan_type(self):
+        """Dead source entries include orphan_type alias equal to category."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/legacy.py",
+            "filePath": "src/legacy.py",
+            "language": "python",
+        }
+        _, _, entry = classify(node, None)
+        assert "orphan_type" in entry
+        assert entry["orphan_type"] == "possible_dead_source"
+        assert entry["orphan_type"] == entry["category"]
+
+    # ── confidence_label ──────────────────────────────────────────────
+
+    def test_migration_confidence_label(self):
+        """Migration entries have a human-readable confidence_label."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:supabase/migrations/001.sql",
+            "filePath": "supabase/migrations/001.sql",
+            "language": "sql",
+        }
+        _, _, entry = classify(node, None)
+        assert "confidence_label" in entry
+        assert entry["confidence_label"] == "high"  # 0.85
+
+    def test_import_anomaly_confidence_label(self):
+        """Import resolution anomaly entries have medium confidence_label."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/broken.py",
+            "filePath": "src/broken.py",
+            "language": "python",
+            "unresolved_imports": ["missing_module"],
+        }
+        _, _, entry = classify(node, None)
+        assert "confidence_label" in entry
+        assert entry["confidence_label"] == "medium"  # 0.6
+
+    def test_dead_source_confidence_label(self):
+        """Dead source entries have medium confidence_label (0.5)."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/legacy.py",
+            "filePath": "src/legacy.py",
+            "language": "python",
+        }
+        _, _, entry = classify(node, None)
+        assert "confidence_label" in entry
+        assert entry["confidence_label"] == "medium"  # 0.5
+
+    def test_unknown_confidence_label(self):
+        """Unknown entries have low confidence_label."""
+        classify = _import_triage()[1]
+        node = {
+            "node_id": "file:src/compiled.dat",
+            "filePath": "src/compiled.dat",
+            "language": "binary",
+        }
+        _, _, entry = classify(node, None)
+        assert "confidence_label" in entry
+        assert entry["confidence_label"] == "low"  # 0.1
+
+    def test_orphan_type_and_label_on_full_triage(self):
+        """Full triage result entries include orphan_type and confidence_label."""
+        triage_func = _import_triage()[0]
+        graph = {
+            "nodes": [
+                {"node_id": "file:connected.py", "filePath": "connected.py", "language": "python"},
+                {"node_id": "file:docs/README.md", "filePath": "docs/README.md", "language": "markdown"},
+                {"node_id": "file:src/orphan.py", "filePath": "src/orphan.py", "language": "python"},
+                {"node_id": "file:supabase/migrations/001.sql", "filePath": "supabase/migrations/001.sql", "language": "sql"},
+            ],
+            "edges": [
+                {"source": "file:connected.py", "target": "file:connected.py", "edge_type": "imports"},
+            ],
+        }
+        scan = {"files": [
+            {"relative_path": "docs/README.md", "language": "markdown"},
+            {"relative_path": "src/orphan.py", "language": "python"},
+            {"relative_path": "supabase/migrations/001.sql", "language": "sql"},
+        ]}
+        result = triage_func(graph, scan, None)
+
+        # Check expected entries
+        for e in result["orphans"]["expected"]:
+            assert "orphan_type" in e, "Missing orphan_type on expected entry"
+            assert "confidence_label" in e, "Missing confidence_label on expected entry"
+            assert isinstance(e["confidence_label"], str)
+            assert e["confidence_label"] in ("high", "medium", "low")
+            assert e["orphan_type"] == e["category"]
+
+        # Check suspicious entries
+        for e in result["orphans"]["suspicious"]:
+            assert "orphan_type" in e, "Missing orphan_type on suspicious entry"
+            assert "confidence_label" in e, "Missing confidence_label on suspicious entry"
+            assert e["orphan_type"] == e["category"]
+
+
+class TestConfidenceLabelHelper:
+    """Unit tests for the _confidence_label helper function."""
+
+    def test_high_threshold(self):
+        label = _import_triage()[6]
+        assert label(0.95) == "high"
+        assert label(0.8) == "high"
+        assert label(0.81) == "high"
+
+    def test_medium_threshold(self):
+        label = _import_triage()[6]
+        assert label(0.7) == "medium"
+        assert label(0.5) == "medium"
+        assert label(0.51) == "medium"
+
+    def test_low_threshold(self):
+        label = _import_triage()[6]
+        assert label(0.1) == "low"
+        assert label(0.3) == "low"
+        assert label(0.49) == "low"
+        assert label(0.0) == "low"
 
 
 # ── Fixture-based integration test ──────────────────────────────────────

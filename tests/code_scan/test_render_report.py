@@ -625,3 +625,65 @@ class TestSourcesRendering:
         )
         md = render_report.render_report_data(report)
         assert "Not provided" in md or "not provided" in md
+
+
+# ── UA-P5-003: V2 Taxonomy rendering tests ────────────────────────────────
+
+
+class TestV2TaxonomyRendering:
+    """UA-P5-003: render_report must consume V2 triage shape or degrade cleanly."""
+
+    def test_v2_triage_counts_render(self):
+        """V2 enriched orphan entries should render correctly."""
+        v2_triage = {
+            "categories": {
+                "expected": 2,
+                "entrypoint_candidate": 1,
+                "suspicious": 2,
+                "unknown": 0,
+            },
+            "totals": {"total_orphans": 5},
+        }
+        report = _make_report_data(
+            sections={
+                "scan": {
+                    "project_root": "/tmp/p",
+                    "scanned_at": "",
+                    "total_files": 1,
+                    "total_lines": 10,
+                    "languages": {},
+                    "categories": {},
+                    "frameworks": [],
+                },
+                "orphan_triage": v2_triage,
+            },
+            sources={"scan": "loaded", "orphan_triage": "loaded"},
+        )
+        md = render_report.render_report_data(report)
+        assert "Orphan Triage" in md
+        # Category name from V2 section should appear
+        assert "expected" in md.lower()
+
+    def test_v2_triage_degrades_gracefully(self):
+        """Old orphan_triage format should still render."""
+        old_triage = {
+            "categories": {"expected": 1, "entrypoint_candidate": 0, "suspicious": 1, "unknown": 0},
+            "totals": {"total_orphans": 2},
+        }
+        report = _make_report_data(
+            sections={
+                "scan": {
+                    "project_root": "/tmp/p",
+                    "scanned_at": "",
+                    "total_files": 1,
+                    "total_lines": 10,
+                    "languages": {},
+                    "categories": {},
+                    "frameworks": [],
+                },
+                "orphan_triage": old_triage,
+            },
+            sources={"scan": "loaded", "orphan_triage": "loaded"},
+        )
+        md = render_report.render_report_data(report)
+        assert "Orphan Triage" in md

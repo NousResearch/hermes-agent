@@ -75,6 +75,55 @@ def _get_git_head(target_dir: str) -> Optional[str]:
     return None
 
 
+def _get_git_remote(target_dir: str) -> Optional[str]:
+    """Return the origin remote URL for *target_dir*, or None."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=target_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+def _artifact_integrity(artifact_paths: dict[str, str]) -> dict:
+    """Compute byte sizes and SHA-256 hashes for each artifact."""
+    integrity: dict = {}
+    for name, path in artifact_paths.items():
+        try:
+            stat = os.stat(path)
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    h.update(chunk)
+            integrity[name] = {"bytes": stat.st_size, "sha256": h.hexdigest()}
+        except OSError:
+            integrity[name] = {"bytes": 0, "sha256": "missing"}
+    return integrity
+
+
+def _build_provenance(runner_name: str, command_flags: dict, target_dir: str) -> dict:
+    """Build provenance metadata for the manifest."""
+    git_head = _get_git_head(target_dir)
+    git_remote = _get_git_remote(target_dir)
+    non_git_reason = None
+    if git_head is None:
+        non_git_reason = f"target is not a git repository or git is unavailable: {target_dir}"
+    return {
+        "ua_runner": runner_name,
+        "argv": [sys.argv[0]] + sys.argv[1:],
+        "target_git_head": git_head,
+        "target_git_remote": git_remote,
+        "non_git_reason": non_git_reason,
+    }
+
+
 # ── Helper: target cleanliness ───────────────────────────────────────────────
 
 def _get_git_dirty_files(target_dir: str) -> list[str]:
@@ -363,7 +412,17 @@ class RunBundle:
                 "in_repo_cache": self.in_repo_cache,
                 "external_cache_dir": self.external_cache_dir,
             },
+            "provenance": _build_provenance(
+                "scripts/code-scan/run_bundle.py",
+                {
+                    "no_graph": self.no_graph,
+                    "in_repo_cache": self.in_repo_cache,
+                    "external_cache_dir": self.external_cache_dir,
+                },
+                self.target_dir,
+            ),
             "artifact_paths": dict(self.artifact_paths),
+            "artifact_integrity": _artifact_integrity(self.artifact_paths),
             "script_versions": {
                 "scan_project.py": _script_hash(
                     _SCRIPT_DIR / "scan_project.py"
@@ -493,14 +552,15 @@ class RunBundle:
         report_path = os.path.join(self.bundle_dir, "REPORT.md")
         self.artifact_paths["REPORT.md"] = report_path
 
+        # Write REPORT.md before building the manifest so its integrity
+        # can be captured in the manifest (no circular dependency for REPORT.md)
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(self._build_report())
+
         manifest = self._build_manifest(self._run_id)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
             f.write("\n")
-
-        # Stage 6: Report
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(self._build_report())
 
         return manifest
 

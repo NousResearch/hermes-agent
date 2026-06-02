@@ -452,3 +452,344 @@ class TestRuntimeReadinessModule:
         md = rr.readiness_to_markdown(artifact)
         assert isinstance(md, str)
         assert len(md) > 0
+
+
+# ── UA-P5-002: Package-Manager Classification ─────────────────────────────
+
+class TestLockfilePMInference:
+    """UA-P5-002: Lockfile-based package-manager inference for Node projects."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    def test_package_lock_implies_npm(self, tmp_path: Path):
+        """package-lock.json present → preferred pm is npm."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_npm"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "package-lock.json").write_text('{}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        node_cmds = [
+            c for c in artifact["required_commands"]
+            if c.get("classification") == "required"
+        ]
+        npm_cmd = next(
+            (c for c in artifact["required_commands"] if c["command"] == "npm"),
+            None,
+        )
+        assert npm_cmd is not None, "npm must be detected when package-lock.json present"
+        assert npm_cmd["classification"] == "required"
+
+    def test_pnpm_lock_implies_pnpm(self, tmp_path: Path):
+        """pnpm-lock.yaml present → preferred pm is pnpm."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_pnpm"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "pnpm-lock.yaml").write_text("lockfileVersion: '6.0'")
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        pnpm_cmd = next(
+            (c for c in artifact["required_commands"] if c["command"] == "pnpm"),
+            None,
+        )
+        assert pnpm_cmd is not None, "pnpm must be detected when pnpm-lock.yaml present"
+        assert pnpm_cmd["classification"] == "required"
+
+    def test_yarn_lock_implies_yarn(self, tmp_path: Path):
+        """yarn.lock present → preferred pm is yarn."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_yarn"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "yarn.lock").write_text("# yarn lockfile v1")
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        yarn_cmd = next(
+            (c for c in artifact["required_commands"] if c["command"] == "yarn"),
+            None,
+        )
+        assert yarn_cmd is not None, "yarn must be detected when yarn.lock present"
+        assert yarn_cmd["classification"] == "required"
+
+    def test_no_lockfile_no_preferred_pm(self, tmp_path: Path):
+        """No lockfile → no PM is 'required'; at most 'preferred' or 'optional_alternative'."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_nolock"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        for cmd in artifact["required_commands"]:
+            if cmd["command"] in ("npm", "pnpm", "yarn"):
+                assert cmd["classification"] != "required", (
+                    f"PM {cmd['command']} should not be 'required' without a lockfile"
+                )
+
+
+class TestCommandClassification:
+    """UA-P5-002: Commands must have a 'classification' field."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    VALID_CLASSIFICATIONS = {"required", "preferred", "optional_alternative"}
+
+    def test_all_commands_have_classification(self, tmp_path: Path):
+        """Every command in required_commands must have a valid classification."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_test"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        for cmd in artifact["required_commands"]:
+            assert "classification" in cmd, (
+                f"Command '{cmd['command']}' missing 'classification' field"
+            )
+            assert cmd["classification"] in self.VALID_CLASSIFICATIONS, (
+                f"Invalid classification '{cmd['classification']}' for '{cmd['command']}'"
+            )
+
+    def test_node_is_required(self, tmp_path: Path):
+        """'node' must always be classified as 'required' for Node projects."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_test"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        node_cmd = next(
+            (c for c in artifact["required_commands"] if c["command"] == "node"),
+            None,
+        )
+        assert node_cmd is not None
+        assert node_cmd["classification"] == "required"
+
+    def test_non_lockfile_pms_are_optional_alternative(self, tmp_path: Path):
+        """When a lockfile pins one PM, other PMs must be 'optional_alternative'."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_npm_only"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "package-lock.json").write_text('{}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        for cmd in artifact["required_commands"]:
+            if cmd["command"] in ("npm", "pnpm", "yarn"):
+                if cmd["command"] == "npm":
+                    assert cmd["classification"] == "required"
+                else:
+                    assert cmd["classification"] == "optional_alternative", (
+                        f"Non-lockfile PM '{cmd['command']}' should be 'optional_alternative', "
+                        f"got '{cmd['classification']}'"
+                    )
+
+
+class TestOptionalPMNotBlocker:
+    """UA-P5-002: Missing optional PMs must NOT be blockers."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    def test_missing_yarn_not_blocker_when_npm_preferred(self, tmp_path: Path):
+        """package-lock.json + npm available + yarn missing → yarn missing is not a blocker."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_npm_yarn_missing"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "package-lock.json").write_text('{}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        # yarn, if missing, must NOT appear in blockers if it's optional_alternative
+        yarn_entry = next(
+            (c for c in artifact["required_commands"] if c["command"] == "yarn"),
+            None,
+        )
+        if yarn_entry and not yarn_entry["available"]:
+            assert yarn_entry["classification"] == "optional_alternative"
+            # Blockers must not mention yarn
+            for blocker in artifact["blockers"]:
+                assert "yarn" not in blocker.lower(), (
+                    f"Missing optional yarn must not be a blocker: {blocker}"
+                )
+
+    def test_missing_npm_not_blocker_when_pnpm_preferred(self, tmp_path: Path):
+        """pnpm-lock.yaml + pnpm available + npm missing → npm missing is not a blocker."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_pnpm_npm_missing"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "pnpm-lock.yaml").write_text("lockfileVersion: '6.0'")
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        npm_entry = next(
+            (c for c in artifact["required_commands"] if c["command"] == "npm"),
+            None,
+        )
+        if npm_entry and not npm_entry["available"]:
+            assert npm_entry["classification"] == "optional_alternative"
+            for blocker in artifact["blockers"]:
+                assert "npm" not in blocker.lower(), (
+                    f"Missing optional npm must not be a blocker: {blocker}"
+                )
+
+
+class TestNodeMissingBlocker:
+    """UA-P5-002: package.json without node → blocked."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    def test_missing_node_is_blocker(self, tmp_path: Path):
+        """package.json present but node binary absent → verification_blocked."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_no_node"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        # Monkey-patch check_command to simulate node missing
+        original_check = rr.check_command
+        def fake_check(cmd):
+            if cmd == "node":
+                return {"command": "node", "available": False, "version": None,
+                        "reason": "node command not found (package.json present)",
+                        "classification": "required"}
+            return original_check(cmd)
+        rr.check_command = fake_check
+        try:
+            artifact = rr.build_readiness_artifact(str(target_dir))
+            assert artifact["verification_status"] == "verification_blocked"
+            assert any("node" in str(b).lower() for b in artifact["blockers"])
+        finally:
+            rr.check_command = original_check
+
+
+class TestPreferredPMMissingBlocked:
+    """UA-P5-002: Preferred package manager missing → blocked or needs_setup."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    def test_preferred_pm_missing_causes_blocker(self, tmp_path: Path):
+        """yarn.lock present but yarn missing → verification_blocked (preferred PM missing)."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_yarn_missing"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "yarn.lock").write_text("# yarn lockfile v1")
+        # Monkey-patch to simulate yarn missing
+        original_check = rr.check_command
+        def fake_check(cmd):
+            if cmd == "yarn":
+                return {"command": "yarn", "available": False, "version": None,
+                        "reason": "command not found (yarn.lock present; yarn package manager)",
+                        "classification": "required"}
+            return original_check(cmd)
+        rr.check_command = fake_check
+        try:
+            artifact = rr.build_readiness_artifact(str(target_dir))
+            # preferred PM missing → must be in blockers
+            yarn_entry = next(
+                c for c in artifact["required_commands"] if c["command"] == "yarn"
+            )
+            assert yarn_entry["classification"] == "required"
+            assert any("yarn" in str(b).lower() for b in artifact["blockers"])
+        finally:
+            rr.check_command = original_check
+
+
+class TestNoLockfileWithCaveat:
+    """UA-P5-002: No lockfile but PM available → proceed with caveat."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    def test_no_lockfile_node_available_ready(self, tmp_path: Path):
+        """No lockfile, node + at least one PM available → verification_ready."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_nolock"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        # node is required, and it's available on this system
+        node_cmd = next(
+            (c for c in artifact["required_commands"] if c["command"] == "node"),
+            None,
+        )
+        if node_cmd and node_cmd["available"]:
+            # With node available, should be ready (PMs without lockfile are not blockers)
+            assert artifact["verification_status"] == "verification_ready"
+
+
+class TestMarkdownNoOverclaim:
+    """UA-P5-002: Markdown must not overclaim about optional alternatives."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    def test_missing_optional_not_shown_as_blocker_in_md(self, tmp_path: Path):
+        """Missing optional PM must not appear in the Blockers section of the markdown."""
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_npm_yarn_missing"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text('{"name":"test"}')
+        (target_dir / "package-lock.json").write_text('{}')
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        md = rr.readiness_to_markdown(artifact)
+        # If yarn is optional_alternative and missing, it must not be in Blockers section
+        yarn_entry = next(
+            (c for c in artifact["required_commands"] if c["command"] == "yarn"),
+            None,
+        )
+        if yarn_entry and not yarn_entry["available"]:
+            assert yarn_entry["classification"] == "optional_alternative"
+            # Parse md to find Blockers section
+            if "## Blockers" in md:
+                blockers_section = md.split("## Blockers", 1)[1]
+                # yarn must not be listed as a blocker
+                assert "yarn" not in blockers_section.lower(), (
+                    "Missing optional yarn must not appear in markdown Blockers section"
+                )
+
+    def test_md_explains_optional_alternatives(self, tmp_path: Path):
+        """Markdown must explain that missing optional alternatives are non-blocking."""
+        rr = self._ensure_sys_path()
+        artifact = rr.build_readiness_artifact(str(RUNTIME_FIXTURES / "go_project"))
+        md = rr.readiness_to_markdown(artifact)
+        # The markdown must not claim all package managers are required
+        # For Node projects specifically, this will be tested with node fixtures

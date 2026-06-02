@@ -12,6 +12,12 @@ This script only summarizes which orphan warnings deserve human/agent attention.
 JIT-only, read-only against target repos. No code execution. No new deps.
 No tree-sitter or binary-runtime deps. No SQLite/vector. No LLM/provider strings.
 
+UA-P5-003 (V2 taxonomy): Each orphan entry carries a fine-grained V2 category
+plus confidence, confidence_label (high/medium/low), orphan_type (alias of
+category), reason, and recommended_action. The four top-level groups
+(expected, entrypoint_candidate, suspicious, unknown) are preserved for
+backward compatibility with report-data consumers.
+
 Usage:
     python scripts/code-scan/triage_orphans.py <graph.json> <scan.json> \
         [--entrypoints entrypoints.json] > <orphan-triage.json>
@@ -77,13 +83,85 @@ _EXPECTED_EXTENSIONS = {
     ".csv", ".tsv",  # data
 }
 
+# ── V2 Taxonomy: fine-grained categories ─────────────────────────────────
+
+# Migration directory patterns
+_MIGRATION_DIR_PREFIXES = [
+    "supabase/migrations/",
+    "prisma/migrations/",
+    "migrations/",
+    "alembic/versions/",
+    "db/migrations/",
+    "database/migrations/",
+    "migraciones/",
+]
+
+# Extension-to-V2-category map for expected orphans (when no directory match hit)
+_EXT_TO_V2_CATEGORY = {
+    ".md": "expected_doc",
+    ".rst": "expected_doc",
+    ".txt": "expected_doc",
+    ".text": "expected_doc",
+    ".yaml": "expected_config",
+    ".yml": "expected_config",
+    ".toml": "expected_config",
+    ".ini": "expected_config",
+    ".cfg": "expected_config",
+    ".json": "expected_config",
+    ".xml": "expected_config",
+    ".png": "expected_asset",
+    ".jpg": "expected_asset",
+    ".jpeg": "expected_asset",
+    ".gif": "expected_asset",
+    ".svg": "expected_asset",
+    ".ico": "expected_asset",
+    ".webp": "expected_asset",
+    ".html": "expected_static_template",
+    ".htm": "expected_static_template",
+    ".css": "expected_config",
+    ".scss": "expected_config",
+    ".sass": "expected_config",
+    ".less": "expected_config",
+    ".csv": "expected_config",
+    ".tsv": "expected_config",
+}
+
+# V2 category recommended actions
+_V2_RECOMMENDED_ACTIONS = {
+    "expected_doc": "no_action_needed",
+    "expected_asset": "no_action_needed",
+    "expected_config": "no_action_needed",
+    "expected_test_fixture": "no_action_needed",
+    "expected_migration": "review_via_domain_analyzer",
+    "expected_static_template": "review",
+    "entrypoint_candidate": "review",
+    "possible_dead_source": "verify_import_resolution_and_runtime_usage",
+    "import_resolution_anomaly": "verify_import_resolution",
+    "unknown": "investigate",
+}
+
+# V2 category default confidence
+_V2_DEFAULT_CONFIDENCE = {
+    "expected_doc": 0.95,
+    "expected_asset": 0.95,
+    "expected_config": 0.9,
+    "expected_test_fixture": 0.95,
+    "expected_migration": 0.85,
+    "expected_static_template": 0.9,
+    "entrypoint_candidate": 0.7,
+    "possible_dead_source": 0.5,
+    "import_resolution_anomaly": 0.6,
+    "unknown": 0.1,
+}
+
 
 def _is_expected_orphan(node: dict) -> Tuple[str, bool]:
-    """Check if a node matches expected-orphan heuristics.
+    """Check if a node matches expected-orphan heuristics and return V2 category.
 
-    Returns (reason, is_expected).
-    If matched, reason is one of: doc, config, test, fixture, workflow,
-    asset, template, license.
+    Returns (v2_category, is_expected) where v2_category is one of:
+      expected_doc, expected_asset, expected_config, expected_test_fixture,
+      expected_migration, expected_static_template.
+    If not matched, returns ("", False).
     """
     file_path = node.get("filePath", "") or ""
     node_id = node.get("node_id", "") or ""
@@ -91,82 +169,78 @@ def _is_expected_orphan(node: dict) -> Tuple[str, bool]:
 
     fp_lower = file_path.lower()
     basename = Path(file_path).name.lower() if file_path else Path(node_id).name.lower()
+    ext = Path(file_path).suffix.lower() if file_path else ""
 
     # ── documentation ──
     for prefix in ["docs/", ".docs/", "documentation/"]:
         if fp_lower.startswith(prefix):
-            return ("doc", True)
-
-    for ext in (".md", ".rst", ".txt", ".text"):
-        if basename.endswith(ext):
-            return ("doc", True)
+            return ("expected_doc", True)
 
     for pattern in ("readme", "contributing"):
         if basename.startswith(pattern):
-            return ("doc", True)
+            return ("expected_doc", True)
 
-    # ── license ──
-    for pattern in ("license", "licence"):
-        if basename.startswith(pattern):
-            return ("license", True)
-
-    # ── changelog ──
     for pattern in ("changelog", "changes", "history"):
         if basename.startswith(pattern):
-            return ("doc", True)
+            return ("expected_doc", True)
 
-    # ── tests ──
+    # ── tests & fixtures ──
     for prefix in ["tests/", "test/", "testsuite/", "testing/"]:
         if fp_lower.startswith(prefix):
-            return ("test", True)
+            return ("expected_test_fixture", True)
 
-    # ── fixtures ──
     for prefix in ["fixtures/", "fixture/", "test/fixtures/"]:
         if fp_lower.startswith(prefix):
-            return ("fixture", True)
+            return ("expected_test_fixture", True)
 
     # ── workflows ──
     for prefix in [".github/workflows/", ".gitlab/", "ci/"]:
         if fp_lower.startswith(prefix):
-            return ("workflow", True)
+            # workflow is an expected type — map to config for V2
+            return ("expected_config", True)
+
+    # ── migrations ──
+    for prefix in _MIGRATION_DIR_PREFIXES:
+        if fp_lower.startswith(prefix):
+            return ("expected_migration", True)
+
+    # SQL files in migration-like dirs by extension
+    if ext == ".sql":
+        for prefix in ["migrations/", "db/", "database/"]:
+            if fp_lower.startswith(prefix):
+                return ("expected_migration", True)
 
     # ── assets/images ──
-    for prefix in ["assets/", "images/", "media/", "static/", "img/"]:
+    for prefix in ["assets/", "images/", "media/", "static/"]:
         if fp_lower.startswith(prefix):
-            return ("asset", True)
-
-    for ext in (".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp"):
-        if basename.endswith(ext):
-            return ("image", True)
+            return ("expected_asset", True)
 
     # ── templates ──
     for prefix in ["templates/", "views/"]:
         if fp_lower.startswith(prefix):
-            return ("template", True)
+            return ("expected_static_template", True)
 
-    if basename.endswith((".html", ".htm")):
-        return ("template", True)
+    # ── license ──
+    for pattern in ("license", "licence"):
+        if basename.startswith(pattern):
+            return ("expected_doc", True)
 
-    # ── config ──
+    # ── extension-based mapping ──
+    if ext in _EXT_TO_V2_CATEGORY:
+        return (_EXT_TO_V2_CATEGORY[ext], True)
+
+    # ── config patterns ──
+    for pattern in _EXPECTED_FILE_PATTERNS:
+        if basename == pattern.lower() or basename.startswith(pattern.lower()):
+            return ("expected_config", True)
+
+    # ── dir-prefix fallback ──
     if not file_path or file_path is None:
-        # Fall through — no path, can't classify as expected
         return ("", False)
 
     for prefix in _EXPECTED_DIR_PREFIXES:
         if fp_lower.startswith(prefix):
-            reason = prefix.split("/")[0].strip(".")
-            return (reason or "config", True)
-
-    for pattern in _EXPECTED_FILE_PATTERNS:
-        if basename == pattern.lower() or basename.startswith(pattern.lower()):
-            return ("config", True)
-
-    for ext in _EXPECTED_EXTENSIONS:
-        if basename.endswith(ext):
-            # Only classify as expected if not in a source code directory
-            # and language is not a source language
-            if language not in _SOURCE_LANGUAGES:
-                return ("config", True)
+            return ("expected_config", True)
 
     return ("", False)
 
@@ -190,17 +264,61 @@ def _is_entrypoint_candidate(node: dict, entrypoints_data: Optional[dict]) -> bo
     return file_path in ep_files
 
 
+# ── Confidence label mapping ───────────────────────────────────────────
+
+_CONFIDENCE_THRESHOLDS = [
+    (0.8, "high"),
+    (0.5, "medium"),
+    (0.0, "low"),
+]
+
+
+def _confidence_label(confidence: float) -> str:
+    """Return a human-readable confidence label: high, medium, or low."""
+    for threshold, label in _CONFIDENCE_THRESHOLDS:
+        if confidence >= threshold:
+            return label
+    return "low"
+
+
+def _make_entry(
+    category: str,
+    reason: str,
+    confidence: float = None,
+    recommended_action: str = None,
+    node_id: str = "",
+) -> dict:
+    """Build a V2-enriched orphan entry dict."""
+    conf = confidence if confidence is not None else _V2_DEFAULT_CONFIDENCE.get(category, 0.5)
+    action = recommended_action if recommended_action else _V2_RECOMMENDED_ACTIONS.get(category, "investigate")
+    return {
+        "node_id": node_id,
+        "category": category,
+        "orphan_type": category,
+        "confidence": conf,
+        "confidence_label": _confidence_label(conf),
+        "reason": reason,
+        "recommended_action": action,
+    }
+
+
 def classify_orphan(
     node: dict,
     entrypoints_data: Optional[dict],
-) -> Tuple[str, str]:
-    """Classify a single orphan node into a category.
+) -> Tuple[str, str, dict]:
+    """Classify a single orphan node into a category with V2 enrichments.
 
-    Returns (category, reason) where category is one of:
-    - expected: docs, config, tests, fixtures, workflows, images/assets, templates
-    - entrypoint_candidate: source orphan marked as likely standalone entrypoint
-    - suspicious: source orphan not plausible entrypoint
-    - unknown: missing metadata or unsupported language
+    Returns (group, reason, entry_dict) where:
+      - group is one of the four top-level groups:
+        expected, entrypoint_candidate, suspicious, unknown
+      - reason is a human-readable classification reason
+      - entry_dict is a V2-enriched dict with:
+        node_id, category, orphan_type (= category alias), confidence,
+        confidence_label (high/medium/low), reason, recommended_action
+
+    V2 categories: expected_doc, expected_asset, expected_config,
+      expected_test_fixture, expected_migration, expected_static_template,
+      entrypoint_candidate, possible_dead_source, import_resolution_anomaly, unknown.
     """
     file_path = node.get("filePath") or ""
     node_id = node.get("node_id", "")
@@ -208,10 +326,21 @@ def classify_orphan(
 
     # ── Unknown: missing filePath ──
     if not file_path and not node_id:
-        return ("unknown", "missing metadata")
+        v2 = "unknown"
+        reason = "missing metadata"
+        return ("unknown", reason, _make_entry(v2, reason, node_id=node_id))
 
     if not file_path:
-        return ("unknown", "missing filePath")
+        v2 = "unknown"
+        reason = "missing filePath"
+        return ("unknown", reason, _make_entry(v2, reason, node_id=node_id))
+
+    # ── Check for import resolution anomaly before generic source classification ──
+    unresolved = node.get("unresolved_imports") or node.get("import_errors") or []
+    if language in _SOURCE_LANGUAGES and unresolved:
+        v2 = "import_resolution_anomaly"
+        reason = f"unresolved imports: {', '.join(unresolved[:3])}"
+        return ("suspicious", reason, _make_entry(v2, reason, node_id=node_id))
 
     # ── Unknown: unsupported language with no recognized extension ──
     basename = Path(file_path).name.lower()
@@ -219,35 +348,85 @@ def classify_orphan(
 
     if language and language not in _SOURCE_LANGUAGES:
         # Not a source language — check if it matches expected patterns first
-        reason, is_exp = _is_expected_orphan(node)
+        v2_cat, is_exp = _is_expected_orphan(node)
         if is_exp:
-            return ("expected", reason)
-        return ("unknown", f"unsupported language: {language}")
+            group = "expected"
+            # Derive reason from V2 category
+            reason_map = {
+                "expected_doc": "documentation file",
+                "expected_asset": "asset file",
+                "expected_config": "configuration file",
+                "expected_test_fixture": "test or fixture file",
+                "expected_migration": "migration file",
+                "expected_static_template": "static template file",
+            }
+            reason = reason_map.get(v2_cat, v2_cat)
+            return (group, reason, _make_entry(v2_cat, reason, node_id=node_id))
+        v2 = "unknown"
+        reason = f"unsupported language: {language}"
+        return ("unknown", reason, _make_entry(v2, reason, node_id=node_id))
 
     # No language info at all
     if not language:
         if ext and ext in _EXPECTED_EXTENSIONS:
-            return ("expected", "config by extension")
+            v2_cat, is_exp = _is_expected_orphan(node)
+            if is_exp:
+                reason_map = {
+                    "expected_doc": "documentation file",
+                    "expected_asset": "asset file",
+                    "expected_config": "configuration file",
+                    "expected_test_fixture": "test or fixture file",
+                    "expected_migration": "migration file",
+                    "expected_static_template": "static template file",
+                }
+                reason = reason_map.get(v2_cat, "config by extension")
+                return ("expected", reason, _make_entry(v2_cat, reason, node_id=node_id))
+            return ("expected", "config by extension", _make_entry("expected_config", "config by extension"))
+
         # Unknown language, no recognized extension
-        # Could still be expected if directory-based
         reason, is_exp = _is_expected_orphan(node)
         if is_exp:
-            return ("expected", reason)
-        return ("unknown", "missing metadata")
+            v2_cat = reason
+            reason_map = {
+                "expected_doc": "documentation file",
+                "expected_asset": "asset file",
+                "expected_config": "configuration file",
+                "expected_test_fixture": "test or fixture file",
+                "expected_migration": "migration file",
+                "expected_static_template": "static template file",
+            }
+            reason_str = reason_map.get(v2_cat, v2_cat)
+            return ("expected", reason_str, _make_entry(v2_cat, reason_str, node_id=node_id))
+        return ("unknown", "missing metadata", _make_entry("unknown", "missing metadata", node_id=node_id, confidence=0.1))
 
     # ── Expected: not a source file, matches expected patterns ──
-    reason, is_exp = _is_expected_orphan(node)
+    v2_cat, is_exp = _is_expected_orphan(node)
     if is_exp:
-        return ("expected", reason)
+        reason_map = {
+            "expected_doc": "documentation file",
+            "expected_asset": "asset file",
+            "expected_config": "configuration file",
+            "expected_test_fixture": "test or fixture file",
+            "expected_migration": "migration file",
+            "expected_static_template": "static template file",
+        }
+        reason = reason_map.get(v2_cat, v2_cat)
+        return ("expected", reason, _make_entry(v2_cat, reason, node_id=node_id))
 
-    # ── Source files: entrypoint candidate or suspicious ──
+    # ── Source files: entrypoint candidate or possible_dead_source ──
     if language in _SOURCE_LANGUAGES:
         if _is_entrypoint_candidate(node, entrypoints_data):
-            return ("entrypoint_candidate", "marked as entrypoint")
-        return ("suspicious", "unreferenced source")
+            v2 = "entrypoint_candidate"
+            reason = "marked as entrypoint"
+            return ("entrypoint_candidate", reason, _make_entry(v2, reason, node_id=node_id))
+        v2 = "possible_dead_source"
+        reason = "unreferenced source"
+        return ("suspicious", reason, _make_entry(v2, reason, node_id=node_id))
 
     # Fallback
-    return ("unknown", "unclassified")
+    v2 = "unknown"
+    reason = "unclassified"
+    return ("unknown", reason, _make_entry(v2, reason, node_id=node_id))
 
 
 def triage_orphans(
@@ -287,11 +466,8 @@ def triage_orphans(
     }
 
     for node in orphan_nodes:
-        category, reason = classify_orphan(node, entrypoints_data)
-        result[category].append({
-            "node_id": node.get("node_id", ""),
-            "reason": reason,
-        })
+        group, reason, entry = classify_orphan(node, entrypoints_data)
+        result[group].append(entry)
 
     # Build totals
     totals = {

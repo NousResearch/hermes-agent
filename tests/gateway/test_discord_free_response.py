@@ -125,12 +125,13 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -260,6 +261,24 @@ async def test_discord_can_still_require_mentions_when_enabled(adapter, monkeypa
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_configured_role_mention_satisfies_require_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter.config.extra["mention_roles"] = ["1503224446574395494"]
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="<@&1503224446574395494> 반응하니?",
+        role_mentions=[SimpleNamespace(id=1503224446574395494)],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "반응하니?"
 
 
 @pytest.mark.asyncio

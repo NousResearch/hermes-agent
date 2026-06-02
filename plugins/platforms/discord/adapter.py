@@ -3857,6 +3857,26 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_mention_role_ids(self) -> set[str]:
+        """Return role IDs that should wake the bot like an explicit bot mention."""
+        raw = self.config.extra.get("mention_roles")
+        if raw is None:
+            raw = os.getenv("DISCORD_MENTION_ROLES", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _message_mentions_configured_role(self, message) -> bool:
+        """Return True when a message mentions a configured wake role."""
+        role_ids = self._discord_mention_role_ids()
+        if not role_ids:
+            return False
+        role_mentions = getattr(message, "role_mentions", None) or []
+        return any(str(getattr(role, "id", "")) in role_ids for role in role_mentions)
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -4771,6 +4791,11 @@ class DiscordAdapter(BasePlatformAdapter):
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            message.content = normalized_content
+        if self._message_mentions_configured_role(message):
+            mention_prefix = True
+            for role_id in self._discord_mention_role_ids():
+                normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

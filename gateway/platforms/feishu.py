@@ -1792,7 +1792,10 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type != "post" or (
+                        not _POST_CONTENT_INVALID_RE.search(str(exc))
+                        and "99992402" not in str(exc)
+                    ):
                         raise
                     logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
                     response = await self._feishu_send_with_retry(
@@ -1805,7 +1808,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    and (
+                        _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                        or "99992402" in str(getattr(response, "msg", "") or "")
+                    )
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
@@ -4395,6 +4401,19 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
+            # If we have a thread_id but no reply_to_message_id, look up the
+            # root message of the thread via the Feishu API.
+            # Feishu does NOT support receive_id_type=thread_id on the create
+            # endpoint, so we must resolve thread_id → root message_id first.
+            if not effective_reply_to:
+                _tid = metadata.get("thread_id", "")
+                if _tid.startswith("omt_"):
+                    try:
+                        root_msg_id = await self._resolve_thread_root(_tid)
+                        if root_msg_id:
+                            effective_reply_to = root_msg_id
+                    except Exception as exc:
+                        logger.warning("[Feishu] Failed to resolve thread root for %s: %s", _tid, exc)
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         if effective_reply_to:
             body = self._build_reply_message_body(
@@ -4406,32 +4425,51 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request("thread_id", body)
+        # No thread context — send to chat directly.
+        body = self._build_create_message_body(
+            receive_id=chat_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
+        if chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
         else:
-            body = self._build_create_message_body(
-                receive_id=chat_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
-            if chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
-            else:
-                receive_id_type = "chat_id"
-            request = self._build_create_message_request(receive_id_type, body)
+            receive_id_type = "chat_id"
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
+
+    async def _resolve_thread_root(self, thread_id: str) -> Optional[str]:
+        """Look up the root message_id of a Feishu thread.
+
+        Feishu's ``im.v1.message.list`` with ``container_id_type=thread``
+        returns messages in the thread; the first message (no parent_id) is
+        the root.  We use this root message_id with the reply API to post
+        into the thread.
+        """
+        try:
+            from lark_oapi.api.im.v1 import ListMessageRequest, ListMessageRequestBuilder
+            request = ListMessageRequestBuilder() \
+                .container_id_type("thread") \
+                .container_id(thread_id) \
+                .page_size(5) \
+                .build()
+            response = await asyncio.to_thread(
+                self._client.im.v1.message.list, request
+            )
+            if response and response.success():
+                items = response.data.items if response.data else []
+                for item in items:
+                    # Root message has no parent_id
+                    if not item.parent_id:
+                        return item.message_id
+                # Fallback: first message in the thread
+                if items:
+                    return items[0].message_id
+        except Exception as exc:
+            logger.warning("[Feishu] _resolve_thread_root(%s) failed: %s", thread_id, exc)
+        return None
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
@@ -4599,7 +4637,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                if msg_type == "post" and (
+                    _POST_CONTENT_INVALID_RE.search(str(exc))
+                    or "99992402" in str(exc)
+                ):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise

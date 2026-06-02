@@ -838,6 +838,10 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         popen_kwargs["start_new_session"] = True
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
+    # The child inherits its own duplicated fd for stdout/stderr, so the
+    # parent's handle can be released immediately — otherwise we leak one
+    # fd per spawned action.
+    log_file.close()
     _ACTION_RESULTS.pop(name, None)
     _ACTION_PROCS[name] = proc
     return proc
@@ -1808,6 +1812,11 @@ async def remove_env_var(body: EnvVarDelete):
         return {"ok": True, "key": body.key}
     except HTTPException:
         raise
+    except ValueError as exc:
+        # remove_env_value raises ValueError for invalid key names. Surface
+        # the message to the SPA so the user understands why the delete was
+        # refused instead of seeing an opaque 500. Mirrors PUT /api/env.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         _log.exception("DELETE /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")

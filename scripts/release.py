@@ -64,6 +64,7 @@ AUTHOR_MAP = {
     "524706+Twanislas@users.noreply.github.com": "Twanislas",
     "9592417+adam91holt@users.noreply.github.com": "adam91holt",
     "kchuang1015@users.noreply.github.com": "kchuang1015",
+    "kyssta-exe@users.noreply.github.com": "kyssta-exe",
     "45688690+fujinice@users.noreply.github.com": "fujinice",
     "276689385+carltonawong@users.noreply.github.com": "carltonawong",
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",

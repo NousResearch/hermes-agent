@@ -2035,6 +2035,57 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
 
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_message_tool_passes_directory_reply_target_for_feishu_topic(self):
+        from gateway.config import Platform, PlatformConfig
+        from tools.send_message_tool import _send_to_platform
+
+        captured = {}
+
+        async def _fake_send_feishu(
+            pconfig,
+            chat_id,
+            message,
+            *,
+            media_files=None,
+            thread_id=None,
+            metadata=None,
+        ):
+            captured.update({
+                "chat_id": chat_id,
+                "message": message,
+                "thread_id": thread_id,
+                "metadata": metadata,
+            })
+            return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": "om_sent"}
+
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        entry = platform_registry.get("feishu")
+        original_sender = entry.standalone_sender_fn
+        entry.standalone_sender_fn = _fake_send_feishu
+        try:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    PlatformConfig(enabled=True),
+                    "oc_chat",
+                    "hello topic",
+                    thread_id="omt_topic",
+                    send_metadata={"thread_id": "omt_topic", "reply_to_message_id": "om_root"},
+                )
+            )
+        finally:
+            entry.standalone_sender_fn = original_sender
+
+        self.assertTrue(result["success"])
+        self.assertEqual(captured["chat_id"], "oc_chat")
+        self.assertEqual(captured["thread_id"], "omt_topic")
+        self.assertEqual(captured["metadata"], {"thread_id": "omt_topic", "reply_to_message_id": "om_root"})
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig

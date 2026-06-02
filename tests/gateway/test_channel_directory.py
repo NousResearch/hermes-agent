@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from gateway.channel_directory import (
     build_channel_directory,
     lookup_channel_type,
+    lookup_channel_metadata,
     resolve_channel_name,
     format_directory_for_display,
     load_directory,
@@ -158,6 +159,24 @@ class TestResolveChannelName:
         with self._setup(tmp_path, platforms):
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
 
+    def test_lookup_channel_metadata_returns_feishu_thread_reply_target(self, tmp_path):
+        platforms = {
+            "feishu": [
+                {
+                    "id": "oc_chat:omt_topic",
+                    "name": "Agent 多线程 Main / topic omt_topic",
+                    "type": "group",
+                    "thread_id": "omt_topic",
+                    "message_id": "om_root",
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert lookup_channel_metadata("feishu", "oc_chat:omt_topic") == {
+                "thread_id": "omt_topic",
+                "reply_to_message_id": "om_root",
+            }
+
     def test_id_match_takes_precedence_over_name(self, tmp_path):
         """A raw channel ID resolves to itself, even when a different
         channel happens to be named the same string. Case-sensitive: Slack
@@ -279,6 +298,33 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+
+    def test_build_from_sessions_preserves_feishu_thread_message_id(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "feishu_topic": {
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_chat",
+                    "chat_name": "Agent 多线程 Main",
+                    "thread_id": "omt_topic",
+                    "message_id": "om_root",
+                },
+                "chat_type": "group",
+            },
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("feishu")
+
+        assert entries == [
+            {
+                "id": "oc_chat:omt_topic",
+                "name": "Agent 多线程 Main / topic omt_topic",
+                "type": "group",
+                "thread_id": "omt_topic",
+                "message_id": "om_root",
+            }
+        ]
 
 
 class TestFormatDirectoryForDisplay:

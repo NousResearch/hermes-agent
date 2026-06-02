@@ -123,6 +123,30 @@ export function applyPrintableInsert(
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
 
+export type EditHistoryAction = 'redo' | 'undo'
+
+export function editHistoryActionForKey(
+  input: string,
+  key: Pick<Key, 'shift'>,
+  actionMod: boolean
+): EditHistoryAction | null {
+  if (!actionMod) {
+    return null
+  }
+
+  const ch = input.toLowerCase()
+
+  if (ch === 'y' || (key.shift && ch === 'z')) {
+    return 'redo'
+  }
+
+  if (ch === 'z') {
+    return 'undo'
+  }
+
+  return null
+}
+
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
   if (env.WT_SESSION) {
     return true
@@ -997,12 +1021,14 @@ export function TextInput({
         flushKeyBurst()
       }
 
-      if (mod && inp === 'z') {
-        return swap(undo, redo)
+      const editHistoryAction = editHistoryActionForKey(inp, k, mod)
+
+      if (editHistoryAction === 'redo') {
+        return swap(redo, undo)
       }
 
-      if ((mod && inp === 'y') || (mod && k.shift && inp === 'z')) {
-        return swap(redo, undo)
+      if (editHistoryAction === 'undo') {
+        return swap(undo, redo)
       }
 
       if (isMac && mod && inp === 'a') {

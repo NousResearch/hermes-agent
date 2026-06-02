@@ -22,6 +22,7 @@ def test_chaquopy_build_preinstalls_android_stubs():
 
     assert 'prepareHermesAndroidWheel' in gradle
     assert "normalize_chaquopy_assets.py" in gradle
+    assert 'inputs.file(repoRoot.resolve("scripts/normalize_chaquopy_assets.py"))' in gradle
     assert 'it.name.endsWith("PythonRequirementsAssets")' in gradle
     assert 'it.name.startsWith("merge") && it.name.endsWith("Assets")' in gradle
     assert 'options("--no-deps")' in gradle
@@ -90,7 +91,9 @@ def test_chaquopy_requirements_normalizer_canonicalizes_metadata_newlines(tmp_pa
     normalizer.normalize_requirements_imy(requirements)
 
     with zipfile.ZipFile(requirements) as archive:
+        info = archive.getinfo("demo-1.0.dist-info/METADATA")
         assert archive.read("demo-1.0.dist-info/METADATA") == b"Name: demo\nVersion: 1.0\n"
+        assert info.create_system == 3
 
 
 def test_android_wheel_includes_iteration_limits_module():

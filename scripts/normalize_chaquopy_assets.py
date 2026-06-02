@@ -44,6 +44,7 @@ def normalize_requirements_imy(path: Path) -> None:
             elif name.endswith(".dist-info/METADATA"):
                 payload = payload.replace(b"\r\n", b"\n")
             target_info = zipfile.ZipInfo(name, ZIP_TIMESTAMP)
+            target_info.create_system = 3
             target_info.compress_type = zipfile.ZIP_STORED
             target_info.external_attr = info.external_attr
             target.writestr(target_info, payload)

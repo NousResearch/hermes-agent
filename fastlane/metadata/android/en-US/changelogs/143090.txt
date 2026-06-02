@@ -1,0 +1,5 @@
+Hermes Agent Fork 0.13.130
+
+- Completes F-Droid binary reproducibility for Android release APKs by canonicalizing Chaquopy `.imy` ZIP creator metadata in addition to generated LF newlines.
+- Keeps Hy Memory as the default Hermes memory stack with the packaged Android diagnostics bridge.
+- Keeps the Shizuku, native Linux bridge, and local inference fixes validated in the 0.13.128/0.13.129 release line.

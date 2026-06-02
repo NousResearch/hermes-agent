@@ -382,6 +382,7 @@ fun normalizeChaquopyRequirementsImy(variant: String) {
 
 afterEvaluate {
     tasks.matching { it.name.endsWith("PythonRequirementsAssets") }.configureEach {
+        inputs.file(repoRoot.resolve("scripts/normalize_chaquopy_assets.py"))
         val taskName = name
         doLast {
             normalizeChaquopyRequirementsImy(
@@ -390,6 +391,7 @@ afterEvaluate {
         }
     }
     tasks.matching { it.name.endsWith("PythonBuildAssets") }.configureEach {
+        inputs.file(repoRoot.resolve("scripts/normalize_chaquopy_assets.py"))
         val taskName = name
         doFirst {
             normalizeChaquopyRequirementsImy(
@@ -403,6 +405,7 @@ afterEvaluate {
         }
     }
     tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+        inputs.file(repoRoot.resolve("scripts/normalize_chaquopy_assets.py"))
         val taskName = name
         doFirst {
             normalizeChaquopyBuildJson(

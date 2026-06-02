@@ -23,6 +23,33 @@ interface MicRecorderHandle {
   cancel: () => void
 }
 
+type MicrophoneAccessResult =
+  | Awaited<ReturnType<Window['hermesDesktop']['requestMicrophoneAccess']>>
+  | boolean
+  | undefined
+
+function microphoneAccessGranted(result: MicrophoneAccessResult) {
+  if (result === undefined) {
+    return true
+  }
+
+  if (typeof result === 'boolean') {
+    return result
+  }
+
+  return result.granted
+}
+
+function microphoneAccessDeniedError(result: MicrophoneAccessResult): Error {
+  if (typeof result === 'object' && result?.settingsOpened) {
+    return new Error(
+      'Microphone permission was denied. System Settings was opened at Privacy & Security > Microphone. Enable Hermes, then try again.'
+    )
+  }
+
+  return new Error('Microphone permission was denied.')
+}
+
 function micError(error: unknown): Error {
   const name = error instanceof DOMException ? error.name : ''
 
@@ -161,10 +188,10 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
       throw new Error('This runtime does not support microphone recording.')
     }
 
-    const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
+    const access = await window.hermesDesktop?.requestMicrophoneAccess?.()
 
-    if (permitted === false) {
-      throw new Error('Microphone access denied.')
+    if (!microphoneAccessGranted(access)) {
+      throw microphoneAccessDeniedError(access)
     }
 
     let stream: MediaStream

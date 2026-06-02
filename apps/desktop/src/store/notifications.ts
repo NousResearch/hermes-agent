@@ -72,6 +72,11 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
       'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.'
   },
   {
+    test: msg => /microphone permission/i.test(msg) && /system settings/i.test(msg),
+    summarize: () =>
+      'Microphone permission was denied. System Settings was opened so you can allow Hermes, then try again.'
+  },
+  {
     test: msg => /microphone permission/i.test(msg),
     summarize: () => 'Microphone permission was denied.'
   }

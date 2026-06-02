@@ -11,7 +11,7 @@ declare global {
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
-      requestMicrophoneAccess: () => Promise<boolean>
+      requestMicrophoneAccess: () => Promise<HermesMicrophoneAccessResult>
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
@@ -71,6 +71,14 @@ export interface HermesTerminalSession {
   cwd: string
   id: string
   shell: string
+}
+
+export type HermesMicrophoneAccessStatus = 'denied' | 'granted' | 'not-determined' | 'restricted' | 'unknown'
+
+export interface HermesMicrophoneAccessResult {
+  granted: boolean
+  settingsOpened: boolean
+  status: HermesMicrophoneAccessStatus
 }
 
 export interface HermesTerminalExit {

@@ -34,6 +34,7 @@ const {
   resolveReadableFileForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const { requestMicrophoneAccess } = require('./microphone-permissions.cjs')
 
 let nodePty = null
 
@@ -3465,11 +3466,7 @@ ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
 })
 
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
-  if (!IS_MAC || typeof systemPreferences.askForMediaAccess !== 'function') {
-    return true
-  }
-
-  return systemPreferences.askForMediaAccess('microphone')
+  return requestMicrophoneAccess({ isMac: IS_MAC, rememberLog, shell, systemPreferences })
 })
 
 ipcMain.handle('hermes:api', async (_event, request) => {

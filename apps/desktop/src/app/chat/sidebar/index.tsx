@@ -67,6 +67,12 @@ import { VirtualSessionList } from './virtual-session-list'
 
 const VIRTUALIZE_THRESHOLD = 25
 
+// Render the modifier key the user actually presses on this platform. The
+// global accelerator is bound to both Cmd+N (macOS) and Ctrl+N (everywhere
+// else) in desktop-controller.tsx, but the hint should match muscle memory.
+const NEW_SESSION_KBD: readonly string[] =
+  typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac') ? ['⌘', 'N'] : ['Ctrl', 'N']
+
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
@@ -438,7 +444,7 @@ export function ChatSidebar({
                         <>
                           <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{item.label}</span>
                           {item.id === 'new-session' && (
-                            <KbdGroup className="ml-auto max-[46.25rem]:hidden" keys={['⇧', 'N']} />
+                            <KbdGroup className="ml-auto max-[46.25rem]:hidden" keys={[...NEW_SESSION_KBD]} />
                           )}
                         </>
                       )}
@@ -540,23 +546,28 @@ export function ChatSidebar({
             forceEmptyState={showSessionSkeletons}
             groups={agentsGrouped ? agentGroups : undefined}
             headerAction={
-              <Button
-                aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
-                className={cn(
-                  'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                  agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                )}
-                onClick={event => {
-                  event.stopPropagation()
-                  setSidebarRecentsOpen(true)
-                  setSidebarAgentsGrouped(!agentsGrouped)
-                }}
-                size="icon-xs"
-                title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
-                variant="ghost"
-              >
-                <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-              </Button>
+              // Grouping operates on unpinned recents; if everything is
+              // pinned the toggle does nothing visible, so hide it to avoid
+              // a phantom click target.
+              agentSessions.length > 0 ? (
+                <Button
+                  aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+                  className={cn(
+                    'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                    agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                  )}
+                  onClick={event => {
+                    event.stopPropagation()
+                    setSidebarRecentsOpen(true)
+                    setSidebarAgentsGrouped(!agentsGrouped)
+                  }}
+                  size="icon-xs"
+                  title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
+                  variant="ghost"
+                >
+                  <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                </Button>
+              ) : null
             }
             label="Sessions"
             labelMeta={countLabel(agentSessions.length, knownSessionTotal)}
@@ -633,7 +644,7 @@ function SidebarPinnedEmptyState() {
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
-      <span>Shift click to pin a chat</span>
+      <span>Shift-click a chat to pin · drag to reorder</span>
     </div>
   )
 }

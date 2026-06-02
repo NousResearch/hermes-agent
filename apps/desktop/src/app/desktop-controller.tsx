@@ -372,14 +372,22 @@ export function DesktopController() {
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement
 
-      if (editing || event.defaultPrevented || event.repeat || event.altKey || event.ctrlKey || event.metaKey) {
+      if (event.defaultPrevented || event.repeat || event.altKey || event.code !== 'KeyN') {
         return
       }
 
-      if (event.shiftKey && event.code === 'KeyN') {
-        event.preventDefault()
-        startFreshSessionDraft()
+      // Two accelerators for "new session":
+      //   - Cmd/Ctrl+N (browser-like, works while typing in any input)
+      //   - Shift+N    (single-key, only when no input is focused)
+      const accelerator = event.metaKey || event.ctrlKey
+      const singleKey = !accelerator && !editing && event.shiftKey
+
+      if (!accelerator && !singleKey) {
+        return
       }
+
+      event.preventDefault()
+      startFreshSessionDraft()
     }
 
     window.addEventListener('keydown', onKeyDown)

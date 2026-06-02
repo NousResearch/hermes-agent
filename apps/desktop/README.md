@@ -111,14 +111,27 @@ npm run test:desktop:all
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.
 
+**macOS / Linux:**
+
 ```bash
 # Force a clean first-launch setup
-rm "$HOME/.hermes/hermes-agent/.hermes-bootstrap-complete"   # macOS/Linux
+rm "$HOME/.hermes/hermes-agent/.hermes-bootstrap-complete"
 # Rebuild a broken Python venv
-rm -rf "$HOME/.hermes/hermes-agent/venv"                     # macOS/Linux
-# Reset a stuck macOS microphone prompt
+rm -rf "$HOME/.hermes/hermes-agent/venv"
+# Reset a stuck macOS microphone prompt (macOS only)
 tccutil reset Microphone com.nousresearch.hermes
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+# Force a clean first-launch setup
+Remove-Item "$env:LOCALAPPDATA\hermes\hermes-agent\.hermes-bootstrap-complete"
+# Rebuild a broken Python venv
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes\hermes-agent\venv"
+```
+
+> The default Hermes home on Windows is `%LOCALAPPDATA%\hermes`. Set the `HERMES_HOME` env var if you've relocated it.
 
 ---
 

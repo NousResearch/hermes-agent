@@ -97,6 +97,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     : 'border-r border-(--ui-stroke-quaternary) text-(--ui-text-tertiary) [--tab-bg:var(--ui-sidebar-surface-background)] hover:bg-(--chrome-action-hover) hover:text-foreground'
                 )}
                 key={tab.id}
+                // Middle-click closes the tab, matching browser/IDE muscle
+                // memory. `onMouseDown` swallows the middle-button press so
+                // Chromium doesn't switch into autoscroll mode.
+                onAuxClick={event => {
+                  if (event.button !== 1) return
+                  event.preventDefault()
+                  closeRightRailTab(tab.id)
+                }}
+                onMouseDown={event => {
+                  if (event.button === 1) event.preventDefault()
+                }}
               >
                 {active && (
                   <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />

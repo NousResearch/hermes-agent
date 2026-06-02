@@ -22,8 +22,6 @@ import {
 import { LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
 import type { EnvPatch, EnvRowProps, ProviderGroup, SearchProps } from './types'
 
-const SHOW_ADVANCED_STORAGE_KEY = 'desktop.settings.keys.show_advanced'
-
 interface EnvActionsProps {
   varKey: string
   info: EnvVarInfo
@@ -186,8 +184,11 @@ function EnvProviderGroup({
   group: ProviderGroup
   rowProps: Omit<EnvRowProps, 'varKey' | 'info'>
 }) {
-  const [expanded, setExpanded] = useState(false)
   const setCount = group.entries.filter(([, info]) => info.is_set).length
+  // Default-expand providers that already have at least one key set; the
+  // user is much more likely to be coming back to edit those than to start
+  // configuring a fresh provider from scratch.
+  const [expanded, setExpanded] = useState(setCount > 0)
 
   return (
     <div className="overflow-hidden rounded-xl bg-background/60">
@@ -222,27 +223,17 @@ export function KeysSettings({ query }: SearchProps) {
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
 
-  const [showAdvanced, setShowAdvanced] = useState<boolean>(() => {
-    try {
-      const stored = window.localStorage.getItem(SHOW_ADVANCED_STORAGE_KEY)
-
-      if (stored === null) {
-        return false
-      }
-
-      return stored === 'true'
-    } catch {
-      return false
-    }
-  })
-
+  // We used to hide ~80% of rows behind a global "Show advanced" toggle, but
+  // everything in this view is configuration-level — "advanced" was a poor
+  // distinction. The full list is rendered now and provider groups
+  // default-collapsed-unless-set keep the surface manageable.
   useEffect(() => {
     try {
-      window.localStorage.setItem(SHOW_ADVANCED_STORAGE_KEY, showAdvanced ? 'true' : 'false')
+      window.localStorage.removeItem('desktop.settings.keys.show_advanced')
     } catch {
-      // Ignore persistence failures and keep in-memory preference.
+      // Ignore — old key cleanup is best-effort.
     }
-  }, [showAdvanced])
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -262,28 +253,21 @@ export function KeysSettings({ query }: SearchProps) {
     return () => void (cancelled = true)
   }, [])
 
-  const filterEnv = useCallback(
-    (info: EnvVarInfo, key: string, q: string, cat: string, extra?: string) => {
-      if (asText(info.category) !== cat) {
-        return false
-      }
+  const filterEnv = useCallback((info: EnvVarInfo, key: string, q: string, cat: string, extra?: string) => {
+    if (asText(info.category) !== cat) {
+      return false
+    }
 
-      if (!showAdvanced && Boolean(info.advanced)) {
-        return false
-      }
+    if (!q) {
+      return true
+    }
 
-      if (!q) {
-        return true
-      }
-
-      return (
-        key.toLowerCase().includes(q) ||
-        includesQuery(info.description, q) ||
-        Boolean(extra && extra.toLowerCase().includes(q))
-      )
-    },
-    [showAdvanced]
-  )
+    return (
+      key.toLowerCase().includes(q) ||
+      includesQuery(info.description, q) ||
+      Boolean(extra && extra.toLowerCase().includes(q))
+    )
+  }, [])
 
   const providerGroups = useMemo<ProviderGroup[]>(() => {
     if (!vars) {
@@ -415,12 +399,6 @@ export function KeysSettings({ query }: SearchProps) {
 
   return (
     <SettingsContent>
-      <div className="mb-4 flex justify-end">
-        <Button onClick={() => setShowAdvanced(s => !s)} size="sm" variant="outline">
-          {showAdvanced ? 'Hide advanced' : 'Show advanced'}
-        </Button>
-      </div>
-
       <div className="mb-6">
         <SectionHeading
           icon={Zap}

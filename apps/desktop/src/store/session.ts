@@ -97,6 +97,53 @@ export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, ne
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
 
+// Watchdog tracking — when does a "working" session count as stuck?
+// Long-running tool calls (LLM inference, long shell commands, web fetches)
+// can take a few minutes legitimately. We allow 8 minutes of complete
+// silence on the stream before clearing the working flag; in practice this
+// catches gateway hangs and dropped streams without false-positive-clearing
+// real long turns.
+const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function armSessionWatchdog(sessionId: string) {
+  const existing = sessionWatchdogTimers.get(sessionId)
+
+  if (existing) {
+    clearTimeout(existing)
+  }
+
+  const timer = setTimeout(() => {
+    sessionWatchdogTimers.delete(sessionId)
+    // Re-check the latest state at fire-time. If the user already navigated
+    // away or the session genuinely finished, the timer is a no-op.
+    if ($workingSessionIds.get().includes(sessionId)) {
+      setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+    }
+  }, SESSION_WATCHDOG_TIMEOUT_MS)
+
+  sessionWatchdogTimers.set(sessionId, timer)
+}
+
+function clearSessionWatchdog(sessionId: string) {
+  const existing = sessionWatchdogTimers.get(sessionId)
+
+  if (existing) {
+    clearTimeout(existing)
+    sessionWatchdogTimers.delete(sessionId)
+  }
+}
+
+/** Call when a streaming event for a session lands. Refreshes the watchdog
+ *  so the session keeps its "working" status as long as data keeps coming. */
+export function noteSessionActivity(sessionId: string | null | undefined) {
+  if (!sessionId || !$workingSessionIds.get().includes(sessionId)) {
+    return
+  }
+
+  armSessionWatchdog(sessionId)
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
     return
@@ -111,4 +158,13 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
 
     return alreadyWorking ? current.filter(id => id !== sessionId) : current
   })
+
+  // Bookend the watchdog: arm it whenever a session enters "working",
+  // disarm it whenever it leaves. A subsequent noteSessionActivity() from
+  // a streaming event will refresh the timer.
+  if (working) {
+    armSessionWatchdog(sessionId)
+  } else {
+    clearSessionWatchdog(sessionId)
+  }
 }

@@ -5,6 +5,7 @@ import { useStore } from '@nanostores/react'
 import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react'
 import { useShallow } from 'zustand/shallow'
 
+import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
@@ -344,11 +345,41 @@ function ToolEntry({ part }: ToolEntryProps) {
                   )}
                 </div>
               ) : null
+            ) : view.stdout || view.stderr ? (
+              // Stdout + stderr split: render both as labeled blocks. stderr
+              // is intentionally NOT painted destructive — many CLIs log
+              // informational output there.
+              <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+                {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
+                {view.stdout && (
+                  <div className="space-y-0.5">
+                    {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}
+                    <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
+                      {view.rendersAnsi ? <AnsiText text={view.stdout} /> : view.stdout}
+                    </pre>
+                  </div>
+                )}
+                {view.stderr && (
+                  <div className={cn('space-y-0.5', view.stdout && 'mt-1.5')}>
+                    <p className={TOOL_SECTION_LABEL_CLASS}>stderr</p>
+                    <pre
+                      className={cn(
+                        TOOL_SECTION_PRE_CLASS,
+                        'whitespace-pre-wrap wrap-anywhere text-(--ui-text-tertiary)'
+                      )}
+                    >
+                      {view.rendersAnsi ? <AnsiText text={view.stderr} /> : view.stderr}
+                    </pre>
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
                 {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
                 {renderDetailAsCode ? (
-                  <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>{view.detail}</pre>
+                  <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
+                    {view.rendersAnsi ? <AnsiText text={view.detail} /> : view.detail}
+                  </pre>
                 ) : (
                   <CompactMarkdown className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')} text={view.detail} />
                 )}

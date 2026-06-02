@@ -428,14 +428,6 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
   return (
     <PageSearchShell
       {...props}
-      filters={
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
-            <Codicon name="add" />
-            New cron
-          </Button>
-        </div>
-      }
       onSearchChange={setQuery}
       searchPlaceholder="Search cron jobs..."
       searchTrailingAction={
@@ -457,6 +449,10 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
       {!jobs ? (
         <PageLoader label="Loading cron jobs..." />
       ) : visibleJobs.length === 0 ? (
+        // Empty state owns the primary "create" CTA — we used to also have
+        // one in the filters bar but it was redundant. Only show the button
+        // when there are zero jobs total; the search-empty case ("No
+        // matches") just asks the user to broaden their query.
         <EmptyState
           actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
           description={
@@ -469,6 +465,19 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
         />
       ) : (
         <div className="h-full overflow-y-auto px-4 py-3">
+          {/* Inline header replaces the old top-bar "New cron" button. We
+              still need a single, always-visible affordance to add a job
+              when the list is non-empty (rows themselves only expose
+              edit/pause/trigger/delete). */}
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
+              {enabledCount}/{totalCount} active
+            </span>
+            <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+              <Codicon name="add" />
+              New cron
+            </Button>
+          </div>
           <div className="divide-y divide-border/40 rounded-lg border border-border/40 bg-background/70">
             {visibleJobs.map(job => (
               <CronJobRow
@@ -484,8 +493,6 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
           </div>
         </div>
       )}
-      <div className="hidden">{totalCount === 0 ? 'No scheduled jobs' : `${enabledCount}/${totalCount} active`}</div>
-
       <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
 
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>

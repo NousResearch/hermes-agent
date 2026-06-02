@@ -27,6 +27,11 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      settings: {
+        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
+        setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+      }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>

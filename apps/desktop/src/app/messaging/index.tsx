@@ -21,6 +21,8 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { PlatformAvatar } from './platform-icon'
+
 interface MessagingViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
@@ -37,29 +39,6 @@ const STATE_LABELS: Record<string, string> = {
   pending_restart: 'Restart needed',
   retrying: 'Retrying',
   startup_failed: 'Startup failed'
-}
-
-const PLATFORM_TINTS: Record<string, string> = {
-  telegram: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',
-  discord: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300',
-  slack: 'bg-violet-500/15 text-violet-600 dark:text-violet-300',
-  mattermost: 'bg-blue-500/15 text-blue-600 dark:text-blue-300',
-  matrix: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
-  signal: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-300',
-  whatsapp: 'bg-green-500/15 text-green-600 dark:text-green-300',
-  bluebubbles: 'bg-blue-500/15 text-blue-600 dark:text-blue-300',
-  homeassistant: 'bg-teal-500/15 text-teal-600 dark:text-teal-300',
-  email: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
-  sms: 'bg-rose-500/15 text-rose-600 dark:text-rose-300',
-  dingtalk: 'bg-blue-500/15 text-blue-600 dark:text-blue-300',
-  feishu: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-300',
-  wecom: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
-  wecom_callback: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300',
-  weixin: 'bg-green-500/15 text-green-600 dark:text-green-300',
-  qqbot: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',
-  yuanbao: 'bg-orange-500/15 text-orange-600 dark:text-orange-300',
-  api_server: 'bg-slate-500/15 text-slate-600 dark:text-slate-300',
-  webhook: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-300'
 }
 
 const PILL_TONE: Record<StatusTone, string> = {
@@ -439,19 +418,6 @@ function PlatformRow({
         <StatusDot tone={stateTone(platform)} />
       </span>
     </button>
-  )
-}
-
-function PlatformAvatar({ platformId, platformName }: { platformId: string; platformName: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex size-6 shrink-0 items-center justify-center rounded-md text-[length:var(--conversation-caption-font-size)] font-medium',
-        PLATFORM_TINTS[platformId] || 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)'
-      )}
-    >
-      {platformName.charAt(0).toUpperCase()}
-    </span>
   )
 }
 

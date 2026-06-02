@@ -88,6 +88,15 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
   return 1
 }
 
+// Bounded width of the elapsed-time clock, derived from `fmtDuration` itself so
+// the reservation/budget stays consistent with what actually renders (it emits
+// a space between units, e.g. `59m 59s` / `99h 59m`). Durations beyond this
+// (100h+) are left to clip rather than reserving unbounded width.
+export const MAX_DURATION_WIDTH = Math.max(
+  stringWidth(fmtDuration(59 * 60_000 + 59_000)), // "59m 59s"
+  stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
+)
+
 // Display width to reserve for the busy indicator so its verb + elapsed-time
 // tail can't shove the model off-screen on narrow terminals. Style-aware:
 // `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
@@ -96,9 +105,8 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
   const { showVerb } = renderIndicator(style, 0)
   const verb = showVerb ? 1 + VERB_PAD_LEN : 0
-  // ` · ` plus a bounded clock (e.g. `59m59s`); long-running durations let the
-  // tail clip rather than reserving unbounded width.
-  const duration = hasDuration ? stringWidth(' · ') + 6 : 0
+  // ` · ` plus the bounded clock (e.g. `59m 59s`).
+  const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
   return indicatorFrameWidth(style) + verb + duration
 }
@@ -427,7 +435,7 @@ export function StatusRule({
   const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
-  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + 6)
+  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))

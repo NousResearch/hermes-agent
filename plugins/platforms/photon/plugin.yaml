@@ -1,21 +1,16 @@
 name: photon-platform
-label: Photon iMessage
+label: iMessage (via Photon)
 kind: platform
 version: 0.1.0
 description: >
   Photon Spectrum gateway adapter for Hermes Agent.
-  Connects to iMessage (and other Spectrum interfaces) through Photon's
-  managed Spectrum platform. Inbound messages arrive as signed webhooks
-  on a local aiohttp server; outbound messages are sent via a small
-  supervised Node sidecar that runs the `spectrum-ts` SDK (Photon does
-  not currently expose a public HTTP send endpoint).
+  Connects Hermes to iMessage through Photon's managed Spectrum platform.
+  The Python platform adapter owns Hermes MessageEvent and SendResult mapping
+  and starts a private Node sidecar only to run the `spectrum-ts` SDK.
 
-  The plugin ships with a `hermes photon` CLI for the one-time login
-  + project + user setup, persists Spectrum credentials to
-  ``~/.hermes/auth.json`` under ``credential_pool.photon`` (token) and
-  ``credential_pool.photon_project`` (project id + secret), and exposes
-  Photon's free shared-line model so users can get started without a
-  paid plan.
+  The plugin ships with a `hermes photon` CLI for login, fixed
+  `hermes-agent` project resolution, user reconciliation, and local adapter
+  sidecar setup.
 author: NousResearch
 requires_env:
   - name: PHOTON_PROJECT_ID
@@ -29,29 +24,18 @@ requires_env:
     url: "https://app.photon.codes/"
     password: true
 optional_env:
-  - name: PHOTON_WEBHOOK_SECRET
-    description: "Per-URL HMAC-SHA256 signing secret returned at webhook registration"
-    prompt: "Photon webhook signing secret"
+  - name: PHOTON_DASHBOARD_TOKEN
+    description: "Photon dashboard bearer token (set by `hermes photon login`; used for project listing/creation)"
+    prompt: "Photon dashboard token"
+    url: "https://app.photon.codes/"
     password: true
-  - name: PHOTON_WEBHOOK_PORT
-    description: "Local port the webhook receiver listens on (default 8788)"
-    prompt: "Webhook receiver port"
+  - name: PHOTON_OPERATOR_PHONE
+    description: "E.164 operator phone reconciled by setup"
+    prompt: "Operator phone"
     password: false
-  - name: PHOTON_WEBHOOK_PATH
-    description: "Path the webhook receiver listens on (default /photon/webhook)"
-    prompt: "Webhook receiver path"
-    password: false
-  - name: PHOTON_WEBHOOK_BIND
-    description: "Bind address for the webhook receiver (default 0.0.0.0)"
-    prompt: "Webhook bind address"
-    password: false
-  - name: PHOTON_SIDECAR_PORT
-    description: "Loopback port for the Node sidecar control channel (default 8789)"
-    prompt: "Sidecar control port"
-    password: false
-  - name: PHOTON_SIDECAR_AUTOSTART
-    description: "Spawn the Node sidecar on connect (true/false, default true)"
-    prompt: "Auto-start the sidecar?"
+  - name: PHOTON_ASSIGNED_PHONE_NUMBER
+    description: "Assigned Photon/iMessage number returned by Photon"
+    prompt: "Assigned Photon number"
     password: false
   - name: PHOTON_NODE_BIN
     description: "Path to the node binary (default: shutil.which('node'))"
@@ -66,7 +50,7 @@ optional_env:
     prompt: "Dashboard host"
     password: false
   - name: PHOTON_ALLOWED_USERS
-    description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
+    description: "Comma-separated E.164 phone numbers allowed to talk to the bot; setup seeds --phone"
     prompt: "Allowed users (comma-separated)"
     password: false
   - name: PHOTON_ALLOW_ALL_USERS

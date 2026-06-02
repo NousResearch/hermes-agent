@@ -2,16 +2,24 @@
   "name": "@hermes-agent/photon-sidecar",
   "private": true,
   "version": "0.1.0",
-  "description": "Spectrum-ts bridge for the Hermes Agent Photon platform plugin.",
+  "description": "Private Spectrum SDK sidecar for the Hermes Agent Photon adapter.",
   "type": "module",
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20.18.1"
   },
   "dependencies": {
-    "spectrum-ts": "^0.1.0"
+    "spectrum-ts": "1.17.1"
+  },
+  "overrides": {
+    "@opentelemetry/api-logs": "0.218.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.218.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.218.0",
+    "@opentelemetry/otlp-exporter-base": "0.218.0",
+    "@opentelemetry/otlp-transformer": "0.218.0",
+    "@opentelemetry/sdk-logs": "0.218.0"
   }
 }

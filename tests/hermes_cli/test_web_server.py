@@ -2,6 +2,7 @@
 
 import os
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -12,6 +13,97 @@ from hermes_cli.config import (
     redact_key,
     OPTIONAL_ENV_VARS,
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
+
+
+# Path to the test-only example-dashboard plugin. Lives under
+# tests/fixtures/ so the bundled-plugins directory stays clean — stock
+# installs no longer ship a dummy "Example" sidebar tab. Tests that
+# depend on its routes opt in via the `_install_example_plugin` fixture
+# below.
+_EXAMPLE_PLUGIN_FIXTURE = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "plugins" / "example-dashboard"
+)
+
+
+@pytest.fixture
+def _install_example_plugin(_isolate_hermes_home):
+    """Drop the example-dashboard fixture into the per-test HERMES_HOME
+    user-plugins directory and force the web_server's dashboard plugin
+    cache + API mount to rediscover it.
+
+    The plugin used to live under ``<repo>/plugins/example-dashboard/``
+    and was loaded for every install, putting an "Example" tab in every
+    user's sidebar. It is now a tests-only fixture: any test that needs
+    ``/api/plugins/example/hello`` or ``/dashboard-plugins/example/...``
+    requests this fixture so the plugin appears only for that test's
+    isolated ``HERMES_HOME``.
+
+    The user-plugin source is preferred over a transient
+    ``HERMES_BUNDLED_PLUGINS`` override because the bundled dir is
+    resolved per-call (other tests in the suite implicitly rely on the
+    real bundled plugins — kanban, hermes-achievements, model providers
+    — being available, and globally swapping that root would yank them
+    all). User plugins are first in the discovery search order, so
+    laying down the fixture here is enough.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli import web_server
+
+    user_plugins_dir = get_hermes_home() / "plugins"
+    user_plugins_dir.mkdir(parents=True, exist_ok=True)
+    dst = user_plugins_dir / "example-dashboard"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
+
+    # Snapshot the existing routes BEFORE mounting so we can:
+    #   1. Identify the routes the mount call appends.
+    #   2. Restore the original list on teardown — otherwise leftover
+    #      ``/api/plugins/example/*`` routes leak into subsequent tests
+    #      and start serving requests against a torn-down HERMES_HOME.
+    app = web_server.app
+    original_routes = list(app.router.routes)
+
+    # Bust the module-level cache and re-discover so the example plugin
+    # shows up in `_get_dashboard_plugins()`. `_mount_plugin_api_routes`
+    # imports the plugin's `plugin_api.py` and ``include_router``s its
+    # FastAPI router under ``/api/plugins/example/*``. The static-asset
+    # route at ``/dashboard-plugins/<name>/<path>`` reads the plugins
+    # list dynamically per request, so the rescan alone is enough for
+    # the static-asset tests; the API auth tests additionally need the
+    # route reorder below.
+    web_server._dashboard_plugins_cache = None
+    web_server._get_dashboard_plugins(force_rescan=True)
+    web_server._mount_plugin_api_routes()
+
+    # ``include_router`` appends the new routes to the END of
+    # ``app.router.routes``. That works fine at import time — the SPA
+    # catch-all ``mount_spa(app)`` registers AFTER the initial mount
+    # call — but when we mount mid-flight the catch-all is already in
+    # place, so the new ``/api/plugins/example/*`` route loses the
+    # match-order race and we get a 404. Move the newly-appended routes
+    # to the front of the list so FastAPI matches them first. They're
+    # path-prefixed to ``/api/plugins/example/`` and can't shadow
+    # anything else.
+    new_routes = [r for r in app.router.routes if r not in original_routes]
+    for route in new_routes:
+        app.router.routes.remove(route)
+    for offset, route in enumerate(new_routes):
+        app.router.routes.insert(offset, route)
+
+    try:
+        yield
+    finally:
+        # Restore the original route list — drops the example plugin's
+        # routes so the next test sees a clean app — and clear the
+        # cache for the same reason.
+        app.router.routes[:] = original_routes
+        web_server._dashboard_plugins_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -2551,12 +2643,284 @@ class TestNormaliseThemeExtensions:
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
 
 
+class TestBulkDeleteSessionsEndpoint:
+    """Tests for ``POST /api/sessions/bulk-delete`` — backs the
+    dashboard's "Delete N selected" flow on the sessions page.
+
+    Locks in four things:
+
+    1. Route-ordering: ``/api/sessions/bulk-delete`` must shadow the
+       templated ``/api/sessions/{session_id}`` route below it (see
+       the block comment in ``hermes_cli/web_server.py``).
+    2. Behaviour parity with :meth:`SessionDB.delete_sessions` — real
+       deleted count, archive/active sessions deleted on explicit
+       selection.
+    3. The 500-ID payload cap is enforced.
+    4. Auth gating (issue #19533 contract).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self, ids):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid in ids:
+                db.create_session(session_id=sid, source="cli")
+        finally:
+            db.close()
+
+    def test_requires_auth(self):
+        resp = self.client.post("/api/sessions/bulk-delete", json={"ids": ["x"]})
+        assert resp.status_code == 401
+
+    def test_deletes_listed_sessions_only(self):
+        from hermes_state import SessionDB
+
+        self._seed(["a", "b", "c"])
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": ["a", "b"]}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 2}
+
+        db = SessionDB()
+        try:
+            assert db.get_session("a") is None
+            assert db.get_session("b") is None
+            assert db.get_session("c") is not None
+        finally:
+            db.close()
+
+    def test_unknown_ids_silently_skipped(self):
+        """The endpoint never 404s on a missing ID — it returns the
+        real deleted count so a UI selection that raced against
+        another tab still resolves cleanly."""
+        self._seed(["real"])
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": ["real", "ghost1", "ghost2"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 1}
+
+    def test_empty_list_is_noop(self):
+        """``ids: []`` returns ``deleted: 0`` (200, not 400) — the UI
+        treats an empty selection as a no-op rather than an error."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": []}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 0}
+
+    def test_payload_cap_enforced(self):
+        """501 IDs returns 400 — a hard cap stops a runaway selection
+        from holding the SQLite writer for an extended window."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": [f"s{i}" for i in range(501)]},
+        )
+        assert resp.status_code == 400
+        # 500 exactly still succeeds (no rows actually present, so
+        # deleted=0 — but it's not the cap path).
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": [f"s{i}" for i in range(500)]},
+        )
+        assert resp.status_code == 200
+
+    def test_route_order_not_shadowed_by_session_id(self):
+        """Pin the route-ordering contract: ``POST /api/sessions/bulk-delete``
+        must hit the bulk handler, not be re-interpreted via the
+        templated ``/api/sessions/{session_id}`` family. Concretely the
+        response carries our ``ok`` + ``deleted`` keys."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": []}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "deleted" in body, (
+            "If this assertion fails, /api/sessions/bulk-delete is "
+            "being shadowed by /api/sessions/{session_id} — check "
+            "registration order in hermes_cli/web_server.py."
+        )
+
+
+class TestDeleteEmptySessionsEndpoint:
+    """Tests for ``GET /api/sessions/empty/count`` and
+    ``DELETE /api/sessions/empty`` — the bulk-delete endpoints backing
+    the dashboard's "Delete empty" button.
+
+    Locks in three things the implementation has to get right:
+
+    1. Route-ordering: the literal ``/api/sessions/empty[/count]`` paths
+       must shadow the templated ``/api/sessions/{session_id}`` route
+       above them. A regression here would route ``DELETE /api/sessions/
+       empty`` to the single-session handler with ``session_id="empty"``
+       (which 404s instead of bulk-deleting).
+    2. Behaviour parity with :meth:`SessionDB.delete_empty_sessions`:
+       active sessions and archived sessions are both preserved.
+    3. Auth gating: both routes require the session token like every
+       other ``/api/*`` endpoint (issue #19533 contract).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        # Pin the SessionDB to the isolated HERMES_HOME so each test
+        # starts with a clean state.db.
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self):
+        """Build the standard test corpus:
+
+        * ``empty1`` / ``empty2`` — ended, no messages → should delete
+        * ``hasmsg``  — ended, has one message → must survive
+        * ``live``    — un-ended, empty → must survive (active)
+        * ``archived``— ended, empty, archived → must survive
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="empty1", source="cli")
+            db.end_session("empty1", end_reason="done")
+            db.create_session(session_id="empty2", source="cli")
+            db.end_session("empty2", end_reason="done")
+
+            db.create_session(session_id="hasmsg", source="cli")
+            db.append_message("hasmsg", role="user", content="hello")
+            db.end_session("hasmsg", end_reason="done")
+
+            db.create_session(session_id="live", source="cli")
+
+            db.create_session(session_id="archived", source="cli")
+            db.end_session("archived", end_reason="done")
+            db.set_session_archived("archived", True)
+        finally:
+            db.close()
+
+    def test_count_endpoint_requires_auth(self):
+        """GET /api/sessions/empty/count must 401 without the session token."""
+        resp = self.client.get("/api/sessions/empty/count")
+        assert resp.status_code == 401
+
+    def test_delete_endpoint_requires_auth(self):
+        """DELETE /api/sessions/empty must 401 without the session token.
+
+        Regression guard for issue #19533 — the bulk-delete is a strictly
+        destructive primitive, the middleware must gate it even if a
+        future refactor introduces a non-auth path."""
+        resp = self.client.delete("/api/sessions/empty")
+        assert resp.status_code == 401
+
+    def test_count_returns_only_empty_ended_unarchived(self):
+        """With the standard corpus, the count is exactly 2 — only
+        ``empty1`` and ``empty2`` qualify (``hasmsg`` has a message,
+        ``live`` is active, ``archived`` is archived)."""
+        self._seed()
+        resp = self.auth_client.get("/api/sessions/empty/count")
+        assert resp.status_code == 200
+        assert resp.json() == {"count": 2}
+
+    def test_delete_returns_count_and_removes_only_empties(self):
+        """DELETE returns the deleted count and removes only the
+        empty-ended-unarchived rows — same shape contract as the
+        DB-level method's unit tests."""
+        from hermes_state import SessionDB
+
+        self._seed()
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 2}
+
+        db = SessionDB()
+        try:
+            assert db.get_session("empty1") is None
+            assert db.get_session("empty2") is None
+            # Survivors: hasmsg has a message, live is active, archived
+            # is archived. All three must still be there.
+            assert db.get_session("hasmsg") is not None
+            assert db.get_session("live") is not None
+            assert db.get_session("archived") is not None
+            # And the count endpoint now reports 0.
+            assert db.count_empty_sessions() == 0
+        finally:
+            db.close()
+
+    def test_delete_with_no_empties_returns_zero(self):
+        """No empty sessions → endpoint returns ``deleted: 0`` (200,
+        not 404). The dashboard relies on this no-op path to surface
+        a "Nothing to clean up" toast instead of an error."""
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 0}
+
+    def test_route_order_empty_not_shadowed_by_session_id(self):
+        """Pin the route-ordering contract: ``DELETE /api/sessions/empty``
+        must hit the bulk handler, not the templated single-session
+        handler (which would 404 because no session has id 'empty').
+
+        Concretely: a request against the bulk path on an EMPTY corpus
+        returns ``{ok: True, deleted: 0}``. If the templated route were
+        winning, we'd see 404 ("Session not found") instead.
+        """
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "deleted" in body, (
+            "If this assertion fails, the literal /api/sessions/empty "
+            "route is being shadowed by the templated /api/sessions/"
+            "{session_id} route — check registration order in "
+            "hermes_cli/web_server.py."
+        )
+
+
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
-        """Create a TestClient without the session token header."""
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        """Create a TestClient without the session token header.
+
+        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
+        has the ``/api/plugins/example/hello`` endpoint available — the
+        example plugin is no longer a bundled plugin, so the fixture
+        installs it into the per-test ``HERMES_HOME``.
+        """
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -2581,10 +2945,12 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Use ``/api/plugins/example/hello`` from the example-dashboard plugin —
-        a stable, side-effect-free GET that's always loaded in tests. With a
-        valid token the handler should run (200); without one the middleware
-        should 401 before the handler is reached.
+        Uses ``/api/plugins/example/hello`` from the example-dashboard
+        test fixture (installed into HERMES_HOME by the class-level
+        ``_install_example_plugin`` fixture) — a stable, side-effect-free
+        GET that's only loaded for tests. With a valid token the handler
+        should run (200); without one the middleware should 401 before
+        the handler is reached.
         """
         # Without auth: middleware blocks before reaching the handler.
         resp = self.client.get("/api/plugins/example/hello")
@@ -3136,7 +3502,16 @@ class TestDashboardPluginStaticAssetAllowlist:
     """
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        """Create a TestClient and install the example-dashboard fixture.
+
+        The static-asset allowlist tests need a plugin to point at —
+        they verify that ``/dashboard-plugins/example/manifest.json``
+        is served while ``plugin_api.py`` and ``__pycache__/*.pyc``
+        from the same directory are not. Since the example plugin is
+        no longer bundled, ``_install_example_plugin`` lays it down in
+        the per-test ``HERMES_HOME`` user-plugins dir.
+        """
         try:
             from starlette.testclient import TestClient
         except ImportError:

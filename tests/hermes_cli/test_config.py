@@ -2274,3 +2274,84 @@ class TestIsProviderEnabled:
         assert is_provider_enabled(None) is True
         assert is_provider_enabled([]) is True
         assert is_provider_enabled("oops") is True
+
+
+class TestProviderEnabledRuntimeGate:
+    """Verify ``resolve_runtime_provider`` honours ``enabled: false`` for
+    both custom-defined and built-in provider names. Smoke test only —
+    full runtime resolution has its own fixture-heavy tests; here we
+    only assert the early-exit raises a typed error."""
+
+    def test_disabled_custom_provider_raises_valueerror(self, tmp_path, monkeypatch):
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "my-fork": {
+                    "name": "my-fork",
+                    "base_url": "http://127.0.0.1:9999",
+                    "api_key": "not-needed",
+                    "enabled": False,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Bust the in-process config cache so the override picks up.
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with pytest.raises(ValueError, match="disabled"):
+            resolve_runtime_provider(requested="my-fork")
+
+    def test_disabled_builtin_provider_raises_valueerror(self, tmp_path, monkeypatch):
+        # `openrouter` is a built-in name with its own resolution path —
+        # the gate must fire BEFORE that path runs.
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "openrouter": {
+                    "name": "OpenRouter",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "enabled": False,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with pytest.raises(ValueError, match="disabled"):
+            resolve_runtime_provider(requested="openrouter")
+
+    def test_enabled_provider_does_not_raise(self, tmp_path, monkeypatch):
+        cfg = {
+            "model": {"default": "claude-sonnet-4-6", "provider": "claude-agent-sdk"},
+            "providers": {
+                "claude-agent-sdk": {
+                    "name": "Claude Agent SDK",
+                    "base_url": "http://127.0.0.1:3456",
+                    "api_key": "not-needed",
+                    "enabled": True,
+                },
+            },
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli import config as cfg_mod
+        cfg_mod._cached_config = None  # type: ignore[attr-defined]
+
+        # Don't assert success — built-in resolution needs more state.
+        # We only assert this path doesn't hit the disabled-gate.
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        try:
+            resolve_runtime_provider(requested="claude-agent-sdk")
+        except ValueError as e:
+            assert "disabled" not in str(e).lower()
+        except Exception:
+            pass  # any non-ValueError is fine; we only gate the disabled path

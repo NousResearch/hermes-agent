@@ -1538,6 +1538,27 @@ def resolve_runtime_provider(
     """
     requested_provider = resolve_requested_provider(requested)
 
+    # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
+    # custom providers and the built-in ones (openai / anthropic /
+    # openrouter / gemini / ...). The earlier ``_get_named_custom_provider``
+    # gate only covers custom blocks — built-in resolution paths
+    # (``resolve_provider`` + pool / explicit / generic runtime) walk
+    # their own short-circuits and would otherwise return stale config
+    # for a provider the user explicitly turned off.
+    #
+    # Fail fast with a typed error so the fallback chain can advance to
+    # the next provider instead of using a disabled one.
+    from hermes_cli.config import is_provider_enabled, load_config
+    _full_cfg = load_config()
+    _provs_cfg = _full_cfg.get("providers") if isinstance(_full_cfg, dict) else None
+    if isinstance(_provs_cfg, dict):
+        _block = _provs_cfg.get(requested_provider)
+        if isinstance(_block, dict) and not is_provider_enabled(_block):
+            raise ValueError(
+                f"provider {requested_provider!r} is disabled in config "
+                f"(providers.{requested_provider}.enabled: false)"
+            )
+
     if requested_provider == "moa":
         return {
             "provider": "moa",

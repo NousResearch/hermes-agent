@@ -12508,14 +12508,41 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                # Send media files
+                # Send media files, routing each by type so a TTS clip
+                # arrives as a voice bubble / a clip as a video rather than
+                # a generic document. Mirrors the streaming + kanban paths.
+                from gateway.platforms.base import (
+                    should_send_media_as_audio as _should_send_media_as_audio,
+                )
+                _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
                 for media_path, _is_voice in (media_files or []):
+                    _ext = os.path.splitext(media_path)[1].lower()
                     try:
-                        await adapter.send_document(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                            metadata=_thread_metadata,
-                        )
+                        if _should_send_media_as_audio(source.platform, _ext, _is_voice):
+                            await adapter.send_voice(
+                                chat_id=source.chat_id,
+                                audio_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif _ext in _VIDEO_EXTS:
+                            await adapter.send_video(
+                                chat_id=source.chat_id,
+                                video_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif _ext in _IMAGE_EXTS:
+                            await adapter.send_image_file(
+                                chat_id=source.chat_id,
+                                image_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=media_path,
+                                metadata=_thread_metadata,
+                            )
                     except Exception:
                         pass
             else:

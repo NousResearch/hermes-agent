@@ -430,6 +430,42 @@ def _voice_call_has_ended(call_id: str) -> bool:
         return bool((_VOICE_CALLS.get(call_id) or {}).get("ended_at"))
 
 
+def _voice_read_room_state(call_id: str, since: int = 0, limit: int = 200) -> Dict[str, Any]:
+    path = _voice_transcript_path(call_id)
+    safe_since = max(0, since)
+    safe_limit = max(1, min(limit, 500))
+    participants: Dict[str, Dict[str, Any]] = {}
+    events: list[Dict[str, Any]] = []
+    if not path.exists():
+        return {"ok": True, "call_id": call_id, "cursor": 0, "participants": [], "events": []}
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    for index, line in enumerate(lines, start=1):
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        user = str(record.get("user") or "unknown dashboard user")
+        event_type = str(record.get("event_type") or "")
+        timestamp = record.get("timestamp")
+        if event_type == "call_start":
+            participants[user] = {"user": user, "status": "live", "joined_at": timestamp, "left_at": None}
+        elif event_type == "call_end":
+            state = participants.setdefault(user, {"user": user, "status": "unknown", "joined_at": None, "left_at": None})
+            state["status"] = "left"
+            state["left_at"] = timestamp
+        if index > safe_since and len(events) < safe_limit:
+            record = dict(record)
+            record["index"] = index
+            events.append(record)
+    return {
+        "ok": True,
+        "call_id": call_id,
+        "cursor": len(lines),
+        "participants": sorted(participants.values(), key=lambda row: str(row.get("joined_at") or "")),
+        "events": events,
+    }
+
+
 def _voice_send_post_call_notification(task: VoiceTask) -> bool:
     target = os.getenv("HERMES_VOICE_TELEGRAM_HANDOFF_TARGET", "").strip()
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -1189,6 +1225,14 @@ async def get_voice_task(task_id: str, _request: Request):
 async def save_voice_transcript(payload: VoiceTranscriptEvent, request: Request):
     path = _save_voice_transcript_event(payload, request)
     return {"ok": True, "path": str(path)}
+
+
+@app.get("/api/voice/room")
+async def get_voice_room(call_id: str, since: int = 0, limit: int = 200):
+    safe_call_id = re.sub(r"[^A-Za-z0-9_.-]", "_", call_id).strip("._")
+    if not safe_call_id:
+        raise HTTPException(status_code=400, detail="Missing call_id")
+    return _voice_read_room_state(safe_call_id, since=since, limit=limit)
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks

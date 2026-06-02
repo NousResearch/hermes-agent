@@ -323,6 +323,10 @@ export const api = {
       headers: user ? { "Content-Type": "application/json", "X-Rolly-User": user } : { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  getVoiceRoom: (callId: string, since = 0, limit = 200, user?: string) =>
+    fetchJSON<VoiceRoomResponse>(`/api/voice/room?call_id=${encodeURIComponent(callId)}&since=${since}&limit=${limit}`, {
+      headers: user ? { "X-Rolly-User": user } : undefined,
+    }),
   getAnalytics: (days: number) =>
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
   getModelsAnalytics: (days: number) =>
@@ -770,6 +774,26 @@ export interface VoiceTranscriptEvent {
   sequence?: number;
   elapsed_ms?: number;
   metadata?: Record<string, unknown>;
+}
+
+export interface VoiceRoomParticipant {
+  user: string;
+  status: "live" | "left" | "unknown" | string;
+  joined_at?: string | null;
+  left_at?: string | null;
+}
+
+export interface VoiceRoomEvent extends VoiceTranscriptEvent {
+  index: number;
+  session_id?: string;
+}
+
+export interface VoiceRoomResponse {
+  ok: boolean;
+  call_id: string;
+  cursor: number;
+  participants: VoiceRoomParticipant[];
+  events: VoiceRoomEvent[];
 }
 
 export interface VoiceToolResponse {

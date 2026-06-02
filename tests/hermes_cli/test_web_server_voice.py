@@ -232,6 +232,27 @@ def test_voice_transcript_persists_jsonl(voice_client):
     assert '"source": "test"' in body
 
 
+def test_voice_room_returns_participants_and_incremental_events(voice_client):
+    client, _web_server = voice_client
+    for event in [
+        {"call_id": "room/1", "role": "system", "text": "Call started.", "event_type": "call_start", "user": "deniz", "timestamp": "2026-06-02T00:00:01Z", "sequence": 1},
+        {"call_id": "room/1", "role": "system", "text": "Call started.", "event_type": "call_start", "user": "arman", "timestamp": "2026-06-02T00:00:02Z", "sequence": 1},
+        {"call_id": "room/1", "role": "system", "text": "Call ended.", "event_type": "call_end", "user": "arman", "timestamp": "2026-06-02T00:00:03Z", "sequence": 2},
+    ]:
+        assert client.post("/api/voice/transcript", json=event).status_code == 200
+
+    resp = client.get("/api/voice/room?call_id=room/1&since=1&limit=1")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["call_id"] == "room_1"
+    assert body["cursor"] == 3
+    assert [(event["index"], event["user"], event["event_type"]) for event in body["events"]] == [
+        (2, "arman", "call_start")
+    ]
+    assert {row["user"]: row["status"] for row in body["participants"]} == {"deniz": "live", "arman": "left"}
+
+
 def test_run_voice_research_uses_cli_bridge(monkeypatch, voice_client):
     _client, web_server = voice_client
     calls = []

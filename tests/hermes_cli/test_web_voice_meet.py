@@ -55,7 +55,8 @@ def test_start_meeting_invite_starts_meet_call_path():
     assert "await startCall(\"meet\", true)" in source
     assert "preserveCallId = false" in source
     assert "if (!preserveCallId && !new URLSearchParams(window.location.search).get(\"call_id\"))" in source
-    assert "onClick={startMeetingInvite}" in source
+    assert "hasMeetInvite ? () => void startCall(\"meet\", true) : startMeetingInvite" in source
+    assert "Join meeting" in source
     assert "onClick={() => void startCall()}" in source
 
 

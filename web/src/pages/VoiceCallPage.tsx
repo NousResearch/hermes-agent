@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
-import { api, type VoiceTaskResponse, type VoiceToolRequest } from "@/lib/api";
+import { api, type VoiceRoomEvent, type VoiceRoomParticipant, type VoiceTaskResponse, type VoiceToolRequest } from "@/lib/api";
 import { getRollyUser, getRollyUserSlug } from "@/lib/rollyIdentity";
 import { isRollyWakePhrase } from "@/lib/voiceMeet";
 
@@ -46,6 +46,19 @@ function formatElapsed(ms: number | null): string {
 
 function isRealtimeSpeechEvent(entry: LogEntry): boolean {
   return entry.text === "Realtime API heard speech start." || entry.text === "Realtime API heard speech stop." || entry.text === "Realtime API committed mic audio.";
+}
+
+function sharedRoomLog(event: VoiceRoomEvent, localUser: string): { kind: LogKind; text: string } | null {
+  const eventUser = event.user || "unknown dashboard user";
+  if (eventUser === localUser && event.event_type !== "call_start" && event.event_type !== "call_end") return null;
+  if (event.event_type === "call_start") return { kind: "system", text: `${eventUser} joined the room.` };
+  if (event.event_type === "call_end") return { kind: "system", text: `${eventUser} left the room.` };
+  if (eventUser === localUser) return null;
+  if (event.event_type === "transcript" && event.text.trim()) {
+    if (event.role === "user") return { kind: "user", text: `${eventUser}: ${event.text}` };
+    if (event.role === "rolly" || event.role === "assistant") return { kind: "rolly", text: `Rolly to ${eventUser}: ${event.text}` };
+  }
+  return null;
 }
 
 export default function VoiceCallPage() {
@@ -95,11 +108,14 @@ export default function VoiceCallPage() {
   const [callIdDisplay, setCallIdDisplay] = useState(callIdRef.current);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [invitePending, setInvitePending] = useState(false);
+  const [roomParticipants, setRoomParticipants] = useState<VoiceRoomParticipant[]>([]);
   const [voiceTasks, setVoiceTasks] = useState<VoiceTaskResponse[]>([]);
   const [rollyListenState, setRollyListenState] = useState("Always on");
   const handledToolCallsRef = useRef<Set<string>>(new Set());
   const activeCallModeRef = useRef<"solo" | "meet">("solo");
   const meetInvokedRef = useRef(false);
+  const voiceRoomCursorRef = useRef(0);
+  const seenVoiceRoomEventsRef = useRef<Set<string>>(new Set());
   const userSpeakingRef = useRef(false);
   const responseActiveRef = useRef(false);
 
@@ -832,7 +848,7 @@ export default function VoiceCallPage() {
     }
     setCallIdDisplay(callIdRef.current);
     callStartedAtRef.current = Date.now();
-    eventSeqRef.current = 0;
+    if (!preserveCallId) eventSeqRef.current = 0;
     pendingTranscriptSavesRef.current = [];
     setLastSavePath(null);
     setSaveStatus("Saving call events…");
@@ -1008,6 +1024,42 @@ export default function VoiceCallPage() {
     }
   }, []);
   useEffect(() => {
+    if (mode !== "meet") return;
+    let cancelled = false;
+    const pollRoom = async () => {
+      try {
+        const room = await api.getVoiceRoom(callIdRef.current, voiceRoomCursorRef.current, 200, speaker);
+        if (cancelled) return;
+        voiceRoomCursorRef.current = room.cursor;
+        setRoomParticipants(room.participants);
+        const additions: LogEntry[] = [];
+        for (const event of room.events) {
+          const key = `${event.index}:${event.user ?? ""}:${event.event_type ?? ""}:${event.sequence ?? ""}`;
+          if (seenVoiceRoomEventsRef.current.has(key)) continue;
+          seenVoiceRoomEventsRef.current.add(key);
+          const mapped = sharedRoomLog(event, speaker);
+          if (!mapped) continue;
+          additions.push({
+            id: `room-${key}`,
+            kind: mapped.kind,
+            text: mapped.text,
+            timestamp: event.timestamp || new Date().toISOString(),
+            elapsedMs: event.elapsed_ms ?? null,
+          });
+        }
+        if (additions.length) setLogs((prev) => [...prev, ...additions].slice(-300));
+      } catch {
+        // Keep voice interaction usable if room polling misses a beat.
+      }
+    };
+    void pollRoom();
+    const timer = window.setInterval(() => void pollRoom(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [mode, speaker]);
+  useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === "visible" && status === "live") {
         void requestWakeLock();
@@ -1020,6 +1072,7 @@ export default function VoiceCallPage() {
 
   const live = status === "live";
   const busy = invitePending || status === "requesting" || status === "connecting" || status === "ending";
+  const hasMeetInvite = mode === "meet" && Boolean(inviteUrl);
   const speakerLabel = getRollyUser(speaker)?.label ?? "No dashboard user selected";
   const transcriptLogs = logs.filter((entry) => entry.kind === "user" || entry.kind === "rolly");
   const eventLogs = logs.filter((entry) => entry.kind !== "user" && entry.kind !== "rolly" && (verboseEvents || !isRealtimeSpeechEvent(entry)));
@@ -1038,7 +1091,11 @@ export default function VoiceCallPage() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            {!live && !busy ? <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={startMeetingInvite} disabled={!speaker}>Start meeting / invite</Button> : null}
+            {!live && !busy ? (
+              <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={hasMeetInvite ? () => void startCall("meet", true) : startMeetingInvite} disabled={!speaker}>
+                {hasMeetInvite ? "Join meeting" : "Start meeting / invite"}
+              </Button>
+            ) : null}
             {!live && !busy ? <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={() => void startCall()} disabled={!speaker}>Start call</Button> : null}
             {live ? <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={toggleMute}>{muted ? "Unmute" : "Mute"}</Button> : null}
             <Button className={VOICE_ACTION_BUTTON_CLASS} onClick={() => setVerboseEvents((value) => !value)}>
@@ -1151,6 +1208,9 @@ export default function VoiceCallPage() {
           <div className="mt-3 space-y-3">
             <div>Transcript: {lastSavePath || "not saved yet"}</div>
             <div>Queued tasks: {voiceTasks.length || "none"}</div>
+            <div>
+              Room: {roomParticipants.length ? roomParticipants.map((participant) => `${participant.user} ${participant.status}`).join(", ") : "solo / no peers"}
+            </div>
             <div>Speaking pace: slightly faster style instruction; explicit provider rate unsupported.</div>
           </div>
           <Typography className="mt-5 font-mondwest text-display text-lg uppercase tracking-[0.12em] text-midground">

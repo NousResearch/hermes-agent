@@ -2893,3 +2893,104 @@ def test_resolve_runtime_provider_bedrock_nonclaude_target_model_uses_converse(m
     assert resolved["provider"] == "bedrock"
     assert resolved["api_mode"] == "bedrock_converse"
     assert resolved.get("bedrock_anthropic") is not True
+
+
+# ------------------------------------------------------------------
+# fix #31216 - ANTHROPIC_BASE_URL env var in native anthropic path
+# ------------------------------------------------------------------
+
+
+def _stub_anthropic_token(monkeypatch):
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.resolve_anthropic_token",
+        lambda: "test-anthropic-token",
+    )
+
+
+def test_anthropic_base_url_env_used_when_no_config(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:8317")
+    _stub_anthropic_token(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == "http://127.0.0.1:8317"
+
+
+def test_anthropic_config_base_url_wins_over_env(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {"provider": "anthropic", "base_url": "http://config-proxy:9090"},
+    )
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://env-proxy:8080")
+    _stub_anthropic_token(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == "http://config-proxy:9090"
+
+
+def test_anthropic_default_when_neither_config_nor_env(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    _stub_anthropic_token(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == "https://api.anthropic.com"
+
+
+def test_anthropic_base_url_env_stripped_and_slash_removed(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "  http://127.0.0.1:8317/  ")
+    _stub_anthropic_token(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == "http://127.0.0.1:8317"
+
+
+def test_anthropic_env_used_when_cfg_provider_not_anthropic(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+    monkeypatch.setattr(
+        rp, "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:8317")
+    _stub_anthropic_token(monkeypatch)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == "http://127.0.0.1:8317"

@@ -1660,7 +1660,8 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-        base_url = cfg_base_url or "https://api.anthropic.com"
+        env_base_url = os.getenv("ANTHROPIC_BASE_URL", "").strip().rstrip("/")
+        base_url = cfg_base_url or env_base_url or "https://api.anthropic.com"
 
         # For Microsoft Foundry endpoints, use ANTHROPIC_API_KEY directly —
         # Claude Code OAuth tokens (sk-ant-oat01) are not accepted by Azure.

@@ -7325,7 +7325,31 @@ class HermesCLI:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
         else:
-            _ask()
+            # Windows/MSYS2 ortamlarında prompt_toolkit terminali ham (raw) modda bırakır.
+            # Bu durum arka plandaki thread'den çağrılan input() fonksiyonunu kilitler.
+            # Geçici olarak cooked/cbreak modunu geri yükleyerek kilitlenmeyi önlüyoruz.
+            if sys.platform == "win32":
+                old_settings = None
+                fd = None
+                try:
+                    import termios
+                    fd = sys.stdin.fileno()
+                    old_settings = termios.tcgetattr(fd)
+                    import tty
+                    tty.setcbreak(fd)
+                except Exception:
+                    pass
+
+                try:
+                    _ask()
+                finally:
+                    if old_settings is not None and fd is not None:
+                        try:
+                            termios.tcsetattr(fd, termios.TCSANOW, old_settings)
+                        except Exception:
+                            pass
+            else:
+                _ask()
         return result[0]
 
     def _prompt_text_input_modal(

@@ -3415,7 +3415,7 @@ class TestPtyWebSocket:
             # subscriber registration and the message is dropped.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                if ws_mod._event_channels.get("broadcast-test"):
+                if ws_mod.app.state.event_channels.get("broadcast-test"):
                     break
                 time.sleep(0.01)
             else:

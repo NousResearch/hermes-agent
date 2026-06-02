@@ -3692,8 +3692,9 @@ def parallel_search_sources(
     if not active:
         return all_results, source_counts, timed_out_ids
 
-    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-        futures = {}
+    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    futures = {}
+    try:
         for src in active:
             lim = per_source_limits.get(src.source_id(), 50)
             fut = pool.submit(_search_one_source, src, query, lim)
@@ -3718,6 +3719,12 @@ def parallel_search_sources(
                     "Skills browse timed out waiting for: %s",
                     ", ".join(timed_out_ids),
                 )
+    finally:
+        # Do not let a stalled optional registry keep the CLI inside the
+        # executor context after the overall timeout.  Running calls cannot be
+        # killed by ThreadPoolExecutor, but we can stop waiting here and cancel
+        # any not-yet-started work so completed sources remain usable.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_results, source_counts, timed_out_ids
 

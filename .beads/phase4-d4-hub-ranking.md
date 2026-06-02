@@ -1,7 +1,7 @@
 ---
 id: phase4-d4-hub-ranking
 title: Phase 4 D4 — Architectural Hub Ranking
-status: draft
+status: approved-pending
 executor: delegate-coder
 parallel_safe: false
 allowed_files:

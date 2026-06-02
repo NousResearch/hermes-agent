@@ -1,6 +1,6 @@
 # Phase 4 — Structural/Semantic Understanding Layer
 
-> **Status:** Draft plan for JC approval; no implementation authorized yet.
+> **Status:** Approved plan for execution (JC 2026-06-01T03:05:36Z); D1 active; D2-D7 pending; no commit/push/merge without evidence and approval.
 > **Project:** Hermes Understand-Anything / code-scan Flywheel integration
 > **Prerequisites:** Phase 1 complete; Phase 2 D1-D3 complete; Phase 3 D1-D3 merged; Phase 2/3 D4 skill-integration beads remain deferred unless separately approved.
 > **Source review:** Live UA review on `mcp_agent_mail` plus meta-review of current UA skills.
@@ -214,11 +214,11 @@ PY
 
 ### Gate 0 — Plan Approval
 
-JC reviews this plan and beads. No implementation starts until JC explicitly approves a Phase 4 scope.
+JC approved the Phase 4 plan on 2026-06-01T03:05:36Z:
 
-Suggested approval wording:
+> I approve Phase 4 Understand-Anything Structural/Semantic Understanding for autonomous planning-to-execution on a new branch. Approved scope: D1-D7 as written, with D7 checkpointed if needed. Guardrails: JIT-only, no dashboard/UI, no auto-injection, no SQLite/vector store, no tree-sitter/WASM/new runtime dependencies, no LLM summaries inside scanner scripts, no edits to `tools/skills_sync.py` or `tests/tools/test_skills_sync.py`, and no commit/push/merge without evidence and my approval.
 
-> I approve Phase 4 Understand-Anything Structural/Semantic Understanding for autonomous planning-to-execution on a new branch. Approved scope: D1-D7 as written, with D7 checkpointed if needed. Guardrails: JIT-only, no dashboard/UI, no auto-injection, no SQLite/vector store, no tree-sitter/WASM/new runtime dependencies, no edits to `tools/skills_sync.py` or `tests/tools/test_skills_sync.py`, and no commit/push/merge without evidence and my approval.
+Execution branch: `feat/ua-phase4-structural-semantic`. D1 active; D2-D7 pending. No commit/push/merge without evidence and JC approval.
 
 ### Gate 1 — D1-D3 Foundation
 

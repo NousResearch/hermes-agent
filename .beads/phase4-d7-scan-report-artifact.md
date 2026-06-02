@@ -1,7 +1,7 @@
 ---
 id: phase4-d7-scan-report-artifact
 title: Phase 4 D7 — Scan-to-Report Artifact
-status: draft
+status: approved-pending
 executor: delegate-coder
 parallel_safe: false
 allowed_files:

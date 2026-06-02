@@ -1,7 +1,7 @@
 ---
 id: phase4-d3-orphan-triage
 title: Phase 4 D3 — Orphan Warning Triage
-status: draft
+status: approved-pending
 executor: delegate-coder
 parallel_safe: false
 allowed_files:

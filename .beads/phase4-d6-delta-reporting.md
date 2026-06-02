@@ -1,7 +1,7 @@
 ---
 id: phase4-d6-delta-reporting
 title: Phase 4 D6 — Delta Reporting
-status: draft
+status: approved-pending
 executor: delegate-coder
 parallel_safe: false
 allowed_files:

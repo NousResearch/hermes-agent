@@ -5,8 +5,8 @@
 > **Strategy:** `.plans/ua-incorporation-strategy.md`
 > **Phase 2 plan:** `.plans/phase-2-flywheel-ua-integration.md`
 > **Phase 3 plan:** `.plans/phase-3-incremental-analysis.md`
-> **Phase 4 draft plan:** `.plans/phase-4-structural-semantic-understanding.md`
-> **Execution beads:** Phase 4 D1-D7 draft beads under `.beads/phase4-*.md`; Phase 3 D4 remains deferred.
+> **Phase 4 plan:** `.plans/phase-4-structural-semantic-understanding.md`
+> **Execution beads:** Phase 4 D1-D7 approved execution beads under `.beads/phase4-*.md`; Phase 3 D4 remains deferred.
 
 ## Phase 1 — ✅ COMPLETE
 Committed: `24356edcd` | Tests: 80 passed
@@ -46,8 +46,8 @@ Committed: `24356edcd` | Tests: 80 passed
 - JC approval received 2026-06-01T03:05:36Z:
   > I approve Phase 4 Understand-Anything Structural/Semantic Understanding for autonomous planning-to-execution on a new branch. Approved scope: D1-D7 as written, with D7 checkpointed if needed. Guardrails: JIT-only, no dashboard/UI, no auto-injection, no SQLite/vector store, no tree-sitter/WASM/new runtime dependencies, no LLM summaries inside scanner scripts, no edits to tools/skills_sync.py or tests/tools/test_skills_sync.py, and no commit/push/merge without evidence and my approval.
 - Execution branch: `feat/ua-phase4-structural-semantic` created from local `main` HEAD `dd977f1da`.
-- Draft plan created: `.plans/phase-4-structural-semantic-understanding.md`.
-- Draft beads created:
+- Approved plan: `.plans/phase-4-structural-semantic-understanding.md`.
+- Approved execution beads:
   - `.beads/phase4-d1-import-classification.md`
   - `.beads/phase4-d2-entrypoint-detection.md`
   - `.beads/phase4-d3-orphan-triage.md`
@@ -188,3 +188,21 @@ Committed: `24356edcd` | Tests: 80 passed
 - Reviewer verdict: PASS, no blockers.
 - Handoff: `.hermes/handoffs/2026-06-02-0044-ua-p1-phase-gate.md`.
 - Approval gate: JC pre-approved sequential autonomous commit/push for UA-P1-003/004/005 if all gates pass. No merge, deploy, or production mutation performed.
+
+## Docs-State Sync — Phase 4 Plan/Beads Alignment (2026-06-02T07:36:11Z)
+- **Purpose:** Align PLAN.md, `.plans/phase-4-structural-semantic-understanding.md`, bead frontmatter, and PROJECT_STATE.md headers to reflect JC approval recorded at lines 46-47 above.
+- **Changed files (docs-only):**
+  - `PLAN.md` — Phase 4 section updated to "approved for execution / D1 active"; bead table statuses corrected.
+  - `.plans/phase-4-structural-semantic-understanding.md` — top status changed from draft to approved; Gate 0 updated with exact JC approval quote; no source changes.
+  - `.hermes/PROJECT_STATE.md` — preamble: "draft plan/beads" replaced with "plan/approved execution beads"; this checkpoint appended.
+  - `.beads/phase4-d1-import-classification.md` — status: draft → active.
+  - `.beads/phase4-d2-entrypoint-detection.md` — status: draft → approved-pending.
+  - `.beads/phase4-d3-orphan-triage.md` — status: draft → approved-pending.
+  - `.beads/phase4-d4-hub-ranking.md` — status: draft → approved-pending.
+  - `.beads/phase4-d5-semantic-extraction.md` — status: draft → approved-pending.
+  - `.beads/phase4-d6-delta-reporting.md` — status: draft → approved-pending.
+  - `.beads/phase4-d7-scan-report-artifact.md` — status: draft → approved-pending.
+- **No source/test implementation files changed for this sync.** Existing WIP in `tools/skills_sync.py` and `tests/tools/test_skills_sync.py` preserved untouched.
+- **Approval gate:** JC approved branch-only commit/push for this narrow Phase 4 docs/state sync, staging only `PLAN.md`, `.plans/phase-4-structural-semantic-understanding.md`, `.hermes/PROJECT_STATE.md`, and `.beads/phase4-*.md`; explicitly excluding `tools/skills_sync.py` and `tests/tools/test_skills_sync.py`; not modifying PR #37248; no merge.
+- **Upstream PR status:** PR #37248 checks remain awaiting maintainer/manual approval.
+- **Active bead remains:** `phase4-d1-import-classification`.

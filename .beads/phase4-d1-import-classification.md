@@ -1,7 +1,7 @@
 ---
 id: phase4-d1-import-classification
 title: Phase 4 D1 — Import Classification
-status: draft
+status: active
 executor: delegate-coder
 parallel_safe: false
 allowed_files:

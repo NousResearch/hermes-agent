@@ -1,7 +1,7 @@
 ---
 id: phase4-d5-semantic-extraction
 title: Phase 4 D5 — Non-LLM Semantic Extraction
-status: draft
+status: approved-pending
 executor: delegate-coder
 parallel_safe: false
 allowed_files:

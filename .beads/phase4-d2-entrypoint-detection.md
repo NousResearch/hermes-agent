@@ -1,7 +1,7 @@
 ---
 id: phase4-d2-entrypoint-detection
 title: Phase 4 D2 — Entrypoint Detection
-status: draft
+status: approved-pending
 executor: delegate-coder
 parallel_safe: false
 allowed_files:

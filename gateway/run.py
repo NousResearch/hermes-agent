@@ -18793,6 +18793,21 @@ class GatewayRunner:
                     except Exception:
                         pass
 
+                # Emit agent:start for the drained follow-up turn — the main
+                # dispatch fires this before its _run_agent call, but the
+                # interrupt/queue drain path historically did not, so hooks
+                # that observe turn starts (SessionStart-style integrations,
+                # activity loggers, visualizers) silently missed follow-ups.
+                # Mirror the main-path payload, built from this turn's source
+                # and the final (already-transcribed) next_message.
+                await self.hooks.emit("agent:start", {
+                    "platform": next_source.platform.value if next_source.platform else "",
+                    "user_id": next_source.user_id,
+                    "chat_id": next_source.chat_id or "",
+                    "session_id": session_id,
+                    "message": next_message[:500],
+                })
+
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,

@@ -6194,6 +6194,19 @@ class GatewayRunner:
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
+                        # Disconnect the old adapter (if any) before replacing.
+                        # This releases platform resources such as SQLite
+                        # connections, web servers, network sessions, preventing
+                        # file descriptor leaks on repeated reconnects.
+                        old = self.adapters.get(platform)
+                        if old is not None:
+                            try:
+                                await old.disconnect()
+                            except Exception:
+                                logger.exception(
+                                    "Error disconnecting old %s adapter during reconnect",
+                                    platform.value,
+                                )
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters

@@ -340,8 +340,7 @@ def check_api_server_requirements() -> bool:
 
 
 class ResponseStore:
-    """
-    SQLite-backed LRU store for Responses API state.
+    """SQLite-backed LRU store for Responses API state.
 
     Each stored response includes the full internal conversation history
     (with tool calls and results) so it can be reconstructed on subsequent
@@ -349,6 +348,21 @@ class ResponseStore:
 
     Persists across gateway restarts.  Falls back to in-memory SQLite
     if the on-disk path is unavailable.
+
+    Connection tracking: maintains a class-level registry (``_connections``)
+    mapping db_path → (connection, ResponseStore) so that re-creating a
+    ResponseStore for the same path closes the previous connection first.
+    This prevents file descriptor leaks when adapters are replaced during
+    reconnection cycles.
+    """
+
+    _connections: Dict[str, sqlite3.Connection] = {}
+    """Registry of active SQLite connections keyed by db_path.
+
+    A ResponseStore that re-uses a registered path closes the old
+    connection before opening a new one, and unregisters on close().
+    This keeps fd usage bounded even if old adapter#disconnect() is
+    skipped by the async lifecycle.
     """
 
     def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
@@ -360,11 +374,27 @@ class ResponseStore:
             except Exception:
                 db_path = ":memory:"
         self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
+
+        # ---- Connection dedup: close any stale connection for this path ----
+        if self._db_path and self._db_path in self._connections:
+            stale_conn = self._connections.pop(self._db_path)
+            try:
+                stale_conn.close()
+            except Exception:
+                pass
+
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
+
+        # Register the new connection (best-effort; in-memory won't register)
+        self._registered: bool = False
+        if self._db_path:
+            self._connections[self._db_path] = self._conn
+            self._registered = True
+
         # Use shared WAL-fallback helper so response_store.db degrades
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
@@ -484,11 +514,29 @@ class ResponseStore:
         self._conn.commit()
 
     def close(self) -> None:
-        """Close the database connection."""
+        """Close the database connection and unregister from the class-level tracker."""
         try:
+            # Unregister before closing so a concurrent __init__ doesn't
+            # pick up a connection that's about to go stale.
+            if self._registered and self._db_path:
+                self._connections.pop(self._db_path, None)
+                self._registered = False
             self._conn.close()
         except Exception:
             pass
+
+    def __del__(self) -> None:
+        """Safety net: close the connection on garbage collection."""
+        conn = getattr(self, "_conn", None)
+        if conn is not None:
+            try:
+                # Unregister from the class-level tracker so a concurrent
+                # __init__ doesn't target a dying connection.
+                if getattr(self, "_registered", False) and self._db_path:
+                    self._connections.pop(self._db_path, None)
+                conn.close()
+            except Exception:
+                pass
 
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
@@ -4083,6 +4131,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """Start the aiohttp web server."""
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
+            self._set_fatal_error(
+                "missing_dependency",
+                "aiohttp is not installed. Install it with: pip install aiohttp",
+                retryable=False,
+            )
             return False
 
         try:
@@ -4149,6 +4202,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     "including loopback-only binds on %s.",
                     self.name, self._host,
                 )
+                self._set_fatal_error(
+                    "missing_api_key",
+                    "API_SERVER_KEY is not configured. Set it in config.yaml or the .env file.",
+                    retryable=False,
+                )
                 return False
 
             # Refuse to start network-accessible with a placeholder key.
@@ -4164,6 +4222,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             "before exposing the API server on %s.",
                             self.name, self._host,
                         )
+                        self._set_fatal_error(
+                            "placeholder_api_key",
+                            "API_SERVER_KEY is a placeholder. Generate a real secret.",
+                            retryable=False,
+                        )
                         return False
                 except ImportError:
                     pass
@@ -4174,6 +4237,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     _s.settimeout(1)
                     _s.connect(('127.0.0.1', self._port))
                 logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+                self._set_fatal_error(
+                    "port_conflict",
+                    f"Port {self._port} already in use.",
+                    retryable=False,
+                )
                 return False
             except (ConnectionRefusedError, OSError):
                 pass  # port is free
@@ -4192,10 +4260,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         except Exception as e:
             logger.error("[%s] Failed to start API server: %s", self.name, e)
+            self._set_fatal_error(
+                "connect_failed",
+                f"Failed to start API server: {e}",
+                retryable=False,
+            )
             return False
 
     async def disconnect(self) -> None:
-        """Stop the aiohttp web server."""
+        """Stop the aiohttp web server and release database resources."""
         self._mark_disconnected()
         if self._site:
             await self._site.stop()
@@ -4204,6 +4277,10 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        # Close SQLite connection to prevent fd leak on reconnect/restart.
+        # The response store holds conversation history for Responses API
+        # continuity — not needed once the adapter is shut down.
+        self._response_store.close()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

@@ -9369,6 +9369,18 @@ class GatewayRunner:
             )
             response = _sanitize_gateway_final_response(source.platform, response)
 
+            # Silence narration filter: skip delivery if agent chose not to respond
+            # (e.g. *silent*, 🔇, ".", "no response"). Reuses the built-in
+            # filter from delivery.py so both cron outputs and agent replies
+            # are covered by the same ruleset.
+            from gateway.delivery import _is_silence_narration
+            if _is_silence_narration(response):
+                logger.info(
+                    "Agent returned silence narration for %s — skipping delivery",
+                    session_key,
+                )
+                return None
+
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:

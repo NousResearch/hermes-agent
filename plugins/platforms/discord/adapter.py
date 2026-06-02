@@ -170,6 +170,112 @@ def _build_allowed_mentions():
     )
 
 
+# --- Markdown table detection for Discord code-fence formatting ---
+
+_TABLE_SEPARATOR_RE = re.compile(
+    r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
+)
+
+
+def _split_table_row(line: str) -> list[str]:
+    """Split a GFM pipe-table row into stripped cell strings."""
+    stripped = line.strip()
+    if stripped.startswith('|'):
+        stripped = stripped[1:]
+    if stripped.endswith('|'):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split('|')]
+
+
+def _is_table_row(line: str) -> bool:
+    """Return True if *line* could plausibly be a table data row."""
+    if '|' not in line:
+        return False
+    return len(_split_table_row(line)) >= 2
+
+
+def _format_plaintext_table(table_lines: list[str]) -> list[str]:
+    """Render markdown table lines as aligned plaintext rows."""
+    if len(table_lines) < 2:
+        return table_lines
+
+    rows = [_split_table_row(table_lines[0])]
+    rows.extend(_split_table_row(line) for line in table_lines[2:])
+    column_count = max((len(row) for row in rows), default=0)
+    if column_count < 2:
+        return table_lines
+
+    normalized = [row + [''] * (column_count - len(row)) for row in rows]
+    widths = [
+        max(len(row[index]) for row in normalized)
+        for index in range(column_count)
+    ]
+
+    def render_row(row: list[str]) -> str:
+        return ' | '.join(
+            cell.ljust(widths[index]) for index, cell in enumerate(row)
+        ).rstrip()
+
+    separator = ' | '.join('-' * max(3, width) for width in widths)
+    rendered = [render_row(normalized[0]), separator]
+    rendered.extend(render_row(row) for row in normalized[1:])
+    return rendered
+
+
+def _wrap_tables_in_code_fence(text: str) -> str:
+    """Convert GFM-style pipe tables to aligned code blocks for Discord.
+
+    Discord does not render markdown tables natively. Raw markdown tables
+    are hard to read in proportional chat text, so detected tables are
+    converted to aligned plaintext and wrapped in triple-backtick fences.
+
+    Tables that are already inside fenced code blocks are left alone.
+    """
+    if '|' not in text or '-' not in text:
+        return text
+
+    lines = text.split('\n')
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        # Track existing fenced code blocks, never touch content inside.
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        # Look for a header row immediately followed by a GFM separator row.
+        if (
+            _is_table_row(line)
+            and i + 1 < len(lines)
+            and _TABLE_SEPARATOR_RE.match(lines[i + 1])
+        ):
+            table_block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and _is_table_row(lines[j]):
+                table_block.append(lines[j])
+                j += 1
+            out.append('```')
+            out.extend(_format_plaintext_table(table_block))
+            out.append('```')
+            i = j
+            continue
+
+        out.append(line)
+        i += 1
+
+    return '\n'.join(out)
+
+
 class VoiceReceiver:
     """Captures and decodes voice audio from a Discord voice channel.
 
@@ -2908,10 +3014,10 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         Format message for Discord.
 
-        Discord uses its own markdown variant.
+        Discord uses its own markdown variant. It does not render GFM pipe
+        tables, so convert detected tables to aligned fenced code blocks.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        return _wrap_tables_in_code_fence(content)
 
     async def _run_simple_slash(
         self,

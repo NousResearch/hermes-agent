@@ -1247,3 +1247,139 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# Curated-defaults guard (regression for minimax-m3-free 200K underreport)
+# =========================================================================
+
+class TestCuratedDefaultGuard:
+    """Regression tests for the curated-defaults guard.
+
+    The guard rejects models.dev / OpenRouter / cache values that are known
+    underreports when ``DEFAULT_CONTEXT_LENGTHS`` has a larger curated entry
+    for the same model. Mirrors the Kimi guard (32K → 262K for kimi-k2.x)
+    but generalised so any future curated-vs-live drift self-heals.
+
+    Concrete case (May 2026): models.dev reports ``minimax-m3-free`` on the
+    opencode provider as 200K, but ``DEFAULT_CONTEXT_LENGTHS['minimax-m3']``
+    is 1M. Without this guard, the agent's effective context window is 5×
+    too small and Hermes auto-compresses at 72% of 200K (≈144K) when the
+    model actually accepts ≈720K of input.
+    """
+
+    def test_helper_returns_curated_for_minimax_m3_family(self):
+        """_curated_context_length returns 1M for the full M3 family."""
+        from agent.model_metadata import _curated_context_length
+
+        assert _curated_context_length("minimax-m3-free") == 1_000_000
+        assert _curated_context_length("minimax-m3") == 1_000_000
+        assert _curated_context_length("MiniMax-M3") == 1_000_000
+        assert _curated_context_length("openrouter/minimax-m3") == 1_000_000
+
+    def test_helper_returns_204800_for_m2_5(self):
+        """M2.5 stays at 204,800 — the curated-vs-live guard must not
+        promote it to 1M (substring match would otherwise be a no-op, but
+        guard this explicitly so the fix doesn't regress)."""
+        from agent.model_metadata import _curated_context_length
+
+        assert _curated_context_length("minimax-m2.5") == 204_800
+        assert _curated_context_length("MiniMax-M2.5") == 204_800
+
+    def test_helper_returns_none_for_unknown(self):
+        from agent.model_metadata import _curated_context_length
+
+        assert _curated_context_length("totally-unknown-model") is None
+        assert _curated_context_length("") is None
+
+    @patch("agent.models_dev.lookup_models_dev_context")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_models_dev_underreport_rejected(
+        self, mock_fetch_metadata, mock_lookup_mdev
+    ):
+        """When models.dev reports a SMALLER value than the curated default,
+        the curated value must win. This is the core regression — before
+        the fix, the models.dev 200K short-circuited the resolution and the
+        1M curated default at step 8 was never reached.
+        """
+        mock_fetch_metadata.return_value = {}
+        mock_lookup_mdev.return_value = 200_000  # known underreport
+
+        # Resolve without any config override and without any cache entry.
+        # The curated default at step 8 must win.
+        ctx = get_model_context_length(
+            "minimax-m3-free",
+            base_url="https://opencode.ai/zen/v1",
+            provider="opencode-zen",
+        )
+        assert ctx == 1_000_000, (
+            f"Expected 1M (curated default), got {ctx}. The models.dev "
+            f"underreport guard should reject 200K in favour of the "
+            f"curated DEFAULT_CONTEXT_LENGTHS['minimax-m3'] = 1M."
+        )
+
+    @patch("agent.models_dev.lookup_models_dev_context")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_models_dev_higher_value_accepted(
+        self, mock_fetch_metadata, mock_lookup_mdev
+    ):
+        """When models.dev reports a LARGER value than the curated default,
+        the models.dev value must win (guard only rejects underreports)."""
+        mock_fetch_metadata.return_value = {}
+        mock_lookup_mdev.return_value = 2_000_000  # larger than curated 1M
+
+        ctx = get_model_context_length(
+            "minimax-m3-free",
+            base_url="https://opencode.ai/zen/v1",
+            provider="opencode-zen",
+        )
+        assert ctx == 2_000_000, (
+            f"Expected 2M (models.dev value, larger than curated), got {ctx}. "
+            f"The guard must only reject underreports, not values that are "
+            f"larger than the curated default."
+        )
+
+    @patch("agent.models_dev.lookup_models_dev_context")
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_models_dev_equal_value_accepted(
+        self, mock_fetch_metadata, mock_lookup_mdev
+    ):
+        """When models.dev matches the curated default exactly, accept it
+        (no need to fall through to step 8)."""
+        mock_fetch_metadata.return_value = {}
+        mock_lookup_mdev.return_value = 1_000_000
+
+        ctx = get_model_context_length(
+            "minimax-m3-free",
+            base_url="https://opencode.ai/zen/v1",
+            provider="opencode-zen",
+        )
+        assert ctx == 1_000_000
+
+    def test_opencode_zen_live_resolution_returns_1m(self, tmp_path, monkeypatch):
+        """End-to-end regression for the original bug: with NO config
+        override and NO cache entry, calling get_model_context_length for
+        ``minimax-m3-free`` on the opencode-zen endpoint must resolve to
+        1M (curated default), not 200K (the models.dev underreport that
+        the step-5 guard now rejects).
+        """
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        # No cache entry exists. Force the curated-default path to win
+        # by stubbing models.dev to return the known underreport.
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=200_000):
+            ctx = mm.get_model_context_length(
+                "minimax-m3-free",
+                base_url="https://opencode.ai/zen/v1",
+                provider="opencode-zen",
+            )
+
+        assert ctx == 1_000_000, (
+            f"End-to-end: expected 1M for minimax-m3-free on opencode-zen, "
+            f"got {ctx}. The step-5 guard should have rejected the models.dev "
+            f"200K underreport and fallen through to the curated 1M default."
+        )

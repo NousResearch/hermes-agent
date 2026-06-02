@@ -1139,6 +1139,34 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
     """
     return "minimax-m3" in model.lower()
 
+def _curated_context_length(model: str) -> Optional[int]:
+    """Return the curated hardcoded default context length for a model, if any.
+
+    Mirrors the longest-key-first substring match used by step 8 of
+    ``get_model_context_length``. Returns ``None`` when no curated
+    entry matches.
+
+    Used to validate that models.dev / OpenRouter / cache values are
+    not known underreports: when a curated entry exists AND is larger
+    than a live/probed value, the live value must be rejected in
+    favour of the curated one. Concretely: the models.dev catalog
+    reports ``minimax-m3-free`` (opencode provider) as 200K context,
+    but the curated hardcoded default for ``minimax-m3`` is 1M. The
+    curated entry must win so the agent's effective context window
+    matches reality and Hermes doesn't compress prematurely at 72%
+    of 200K (≈144K) when the model actually accepts ≈720K of input.
+    """
+    if not model:
+        return None
+    model_lower = model.lower()
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if default_model in model_lower:
+            return length
+    return None
+
+
 
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
@@ -1564,6 +1592,7 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
+
             # Nous Portal: the portal /v1/models endpoint is authoritative.
             # Bypass the persistent cache so step 5b can always reconcile
             # against it — this corrects pre-fix entries seeded from the
@@ -1722,7 +1751,29 @@ def get_model_context_length(
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
-            return ctx
+            # Sanity check: if a curated hardcoded default exists for this
+            # model AND is larger than the models.dev value, the models.dev
+            # entry is a known underreport. Reject it and fall through to
+            # step 8 where the curated default will match.
+            #
+            # Concrete case (May 2026): models.dev reports
+            # ``minimax-m3-free`` on the opencode provider as 200K, but
+            # ``DEFAULT_CONTEXT_LENGTHS["minimax-m3"]`` is 1M. Without this
+            # guard, the agent's effective context window is 5× too small
+            # and Hermes auto-compresses at 72% of 200K (≈144K) when the
+            # model actually accepts ≈720K of input. Mirrors the Kimi
+            # guard in the OpenRouter path (step 6 below) — same pattern,
+            # generalised to any curated-vs-live drift.
+            curated = _curated_context_length(model)
+            if curated and curated > ctx:
+                logger.info(
+                    "Rejecting models.dev context=%s for %r@%s (curated hardcoded "
+                    "default is %s, models.dev is a known underreport); "
+                    "falling through to hardcoded defaults",
+                    f"{ctx:,}", model, effective_provider, f"{curated:,}",
+                )
+            else:
+                return ctx
 
     # 6. OpenRouter live API metadata — provider-unaware fallback.
     # Only consulted when the provider is unknown (no effective_provider),

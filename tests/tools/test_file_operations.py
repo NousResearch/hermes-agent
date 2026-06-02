@@ -60,9 +60,12 @@ class TestIsWriteDenied:
         "path",
         [
             "auth.json",
+            "auth.lock",
             "config.yaml",
             "webhook_subscriptions.json",
             ".anthropic_oauth.json",
+            "auth/google_oauth.json",
+            "cache/bws_cache.json",
             "mcp-tokens/token1.json",
             "mcp-tokens/subdir/token2.json",
             "pairing/telegram-approved.json",
@@ -108,7 +111,15 @@ class TestIsWriteDenied:
 
     @pytest.mark.parametrize(
         "name",
-        ["auth.json", "config.yaml", "webhook_subscriptions.json", ".anthropic_oauth.json"],
+        [
+            "auth.json",
+            "auth.lock",
+            "config.yaml",
+            "webhook_subscriptions.json",
+            ".anthropic_oauth.json",
+            "auth/google_oauth.json",
+            "cache/bws_cache.json",
+        ],
     )
     def test_control_files_and_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
         """Under a profile, BOTH <profile>/X and <root>/X must be denied (#15981 shape).
@@ -130,6 +141,28 @@ class TestIsWriteDenied:
         assert _is_write_denied(str(profile / name)) is True
         # Root copy — the gap this widening closes
         assert _is_write_denied(str(root / name)) is True
+
+    def test_read_protected_credential_stores_are_also_write_denied(self, tmp_path, monkeypatch):
+        """Invariant: every per-profile credential store get_read_block_error
+        blocks for READS must also be write-denied. Read-protecting a secret the
+        agent can still overwrite is a half-door (cf. .anthropic_oauth.json paired
+        by 4694524de; google_oauth.json/bws_cache.json/auth.lock were left writable).
+        """
+        from agent.file_safety import get_read_block_error, is_write_denied
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        credential_rel = [
+            "auth.json", "auth.lock", ".anthropic_oauth.json",
+            "webhook_subscriptions.json", "auth/google_oauth.json",
+            "cache/bws_cache.json",
+        ]
+        for rel in credential_rel:
+            for base in (profile, root):
+                p = str(base / rel)
+                assert get_read_block_error(p) is not None, f"read not blocked: {p}"
+                assert is_write_denied(p) is True, f"read-protected but writable: {p}"
 
     def test_mcp_tokens_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
         """mcp-tokens/ under profile AND under root must both be denied."""

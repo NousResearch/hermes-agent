@@ -46,6 +46,21 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Active profile + top-level Google OAuth refresh-token store.
+            # Read-denied by #30972 but the write side was never paired (unlike
+            # .anthropic_oauth.json, which got both via the PKCE write-deny). A
+            # prompt-injected write could swap in an attacker-controlled refresh
+            # token -> Google account takeover on next refresh.
+            str(hermes_home / "auth" / "google_oauth.json"),
+            str(hermes_root / "auth" / "google_oauth.json"),
+            # Bitwarden Secrets Manager plaintext disk cache (#31968). Read-denied
+            # only; overwriting it poisons cached secret values for the session.
+            str(hermes_home / "cache" / "bws_cache.json"),
+            str(hermes_root / "cache" / "bws_cache.json"),
+            # auth.lock guards the auth.json refresh path; read-denied only.
+            # Overwriting it can wedge or race credential refresh.
+            str(hermes_home / "auth.lock"),
+            str(hermes_root / "auth.lock"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),

@@ -343,6 +343,41 @@ class HermesTokenStorage:
         for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             p.unlink(missing_ok=True)
 
+    def poison_client_registration(self) -> bool:
+        """Discard a dead dynamically-registered client so it gets re-created.
+
+        Called when the IdP rejects our cached ``client_id`` with
+        ``invalid_client`` on the token endpoint — proof the server-side
+        registration is gone (IdP redeploy / DB wipe / rebrand). Deleting
+        ``client.json`` makes the MCP SDK's ``async_auth_flow`` take the
+        ``if not client_info`` branch and re-run RFC 7591 dynamic client
+        registration on the next flow. The stale ``meta.json`` is dropped
+        too so discovery re-runs against a freshly fetched document.
+
+        Tokens are intentionally left in place — the subsequent
+        re-authorization overwrites them, and keeping them avoids losing a
+        still-valid refresh token if the re-registration never completes.
+
+        A single ``.bak`` copy of the client file is kept for recovery.
+        Returns True if a client file was present and removed.
+        """
+        client_path = self._client_info_path()
+        if not client_path.exists():
+            return False
+        backup = client_path.with_name(client_path.name + ".bak")
+        try:
+            backup.write_bytes(client_path.read_bytes())
+        except OSError as exc:  # non-fatal — proceed with the removal anyway
+            logger.warning("Could not back up client info at %s: %s", client_path, exc)
+        client_path.unlink(missing_ok=True)
+        self._meta_path().unlink(missing_ok=True)
+        logger.warning(
+            "MCP OAuth '%s': cached client registration rejected as invalid_client; "
+            "removed client.json + meta.json (backup at %s) to force re-registration",
+            self._server_name, backup.name,
+        )
+        return True
+
     def has_cached_tokens(self) -> bool:
         """Return True if we have tokens on disk (may be expired)."""
         return self._tokens_path().exists()

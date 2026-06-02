@@ -827,3 +827,34 @@ class TestWaitForCallbackSkipIntegration:
                 asyncio.run(_wait_for_callback())
         err = capsys.readouterr().err
         assert "skip" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# poison_client_registration (GH#36767)
+# ---------------------------------------------------------------------------
+
+class TestPoisonClientRegistration:
+    def test_poison_backs_up_and_removes_client_and_meta(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "srv.json").write_text('{"access_token": "keep-me"}')
+        (d / "srv.client.json").write_text('{"client_id": "dead"}')
+        (d / "srv.meta.json").write_text('{"token_endpoint": "https://idp/token"}')
+
+        removed = storage.poison_client_registration()
+
+        assert removed is True
+        # Client + metadata gone, forcing re-registration on the next flow.
+        assert not (d / "srv.client.json").exists()
+        assert not (d / "srv.meta.json").exists()
+        # Backup of the client file kept for recovery.
+        assert (d / "srv.client.json.bak").read_text() == '{"client_id": "dead"}'
+        # Tokens are intentionally preserved.
+        assert (d / "srv.json").read_text() == '{"access_token": "keep-me"}'
+
+    def test_poison_noop_when_no_client_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        assert storage.poison_client_registration() is False

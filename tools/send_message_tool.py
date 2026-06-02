@@ -582,11 +582,19 @@ def _describe_media_for_mirror(media_files):
 def _get_cron_auto_delivery_target():
     """Return the cron scheduler's auto-delivery target for the current run, if any."""
     from gateway.session_context import get_session_env
-    platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
-    chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
-    if not platform or not chat_id:
-        return None
-    thread_id = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or None
+
+    env_platform = os.environ.get("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
+    env_chat_id = os.environ.get("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
+    if env_platform and env_chat_id:
+        platform = env_platform
+        chat_id = env_chat_id
+        thread_id = os.environ.get("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or None
+    else:
+        platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip().lower()
+        chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
+        if not platform or not chat_id:
+            return None
+        thread_id = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip() or None
     return {
         "platform": platform,
         "chat_id": chat_id,
@@ -720,7 +728,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, metadata=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits

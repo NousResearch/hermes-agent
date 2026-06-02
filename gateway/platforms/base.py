@@ -947,6 +947,28 @@ MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 # injection from one user could exfiltrate the host's secrets to that same
 # user should set this to true.
 MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
+_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS = 600.0
+_MEDIA_DELIVERY_DENIED_PREFIXES = (
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/root",
+    "/boot",
+    "/var/log",
+    "/var/lib",
+    "/var/run",
+)
+_MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
+    ".ssh",
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".docker",
+    ".gnupg",
+    ".kube",
+    ".netrc",
+)
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,

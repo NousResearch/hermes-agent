@@ -146,6 +146,67 @@ def test_nous_dashboard_device_flow_does_not_retry_legacy_scope_on_invoke_refusa
     assert requested_scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
 
 
+def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch):
+    from hermes_cli import web_server as ws
+    from hermes_cli.auth import get_active_provider
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    access_token = "h.eyJleHAiOjk5OTk5OTk5OTl9.s"
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            if url.endswith("/deviceauth/usercode"):
+                return _Resp(200, {
+                    "device_auth_id": "device-auth-id",
+                    "interval": 3,
+                    "user_code": "CODEX-1234",
+                })
+            if url.endswith("/deviceauth/token"):
+                return _Resp(200, {
+                    "authorization_code": "authorization-code",
+                    "code_verifier": "code-verifier",
+                })
+            return _Resp(200, {
+                "access_token": access_token,
+                "refresh_token": "codex-refresh",
+            })
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(httpx, "Client", _Client)
+    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
+
+    sid, _ = ws._new_oauth_session("openai-codex", "device_code")
+    try:
+        ws._codex_full_login_worker(sid)
+
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+        assert get_active_provider() == "openai-codex"
+
+        runtime = resolve_runtime_provider(requested=None)
+        assert runtime["provider"] == "openai-codex"
+        assert runtime["api_key"] == access_token
+        assert runtime["api_mode"] == "codex_responses"
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
 def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws

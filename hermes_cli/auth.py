@@ -3370,7 +3370,7 @@ def _sync_codex_pool_entries(
         entry["last_error_reset_at"] = None
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
+def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -3380,6 +3380,8 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
+        if label and str(label).strip():
+            state["label"] = str(label).strip()
         _save_provider_state(auth_store, "openai-codex", state)
         _sync_codex_pool_entries(auth_store, tokens, last_refresh)
         _save_auth_store(auth_store)

@@ -203,6 +203,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import json
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -6929,6 +6930,33 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
 
+def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
+    """Configure Electron's Linux SUID sandbox helper when required."""
+    if sys.platform != "linux":
+        return True
+
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    if not sandbox.exists():
+        print(f"✗ Hermes Desktop is missing Electron's Linux sandbox helper: {sandbox}")
+        return False
+
+    sandbox_stat = sandbox.stat()
+    if sandbox_stat.st_uid == 0 and stat.S_IMODE(sandbox_stat.st_mode) == 0o4755:
+        return True
+
+    sudo = shutil.which("sudo")
+    if not sudo:
+        print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
+        return False
+
+    print("→ Configuring Electron Linux sandbox helper (sudo required)...")
+    for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
+        if subprocess.run(command, check=False).returncode != 0:
+            print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
+            return False
+    return True
+
+
 def cmd_gui(args):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
@@ -7036,6 +7064,9 @@ def cmd_gui(args):
     if packaged_executable is None:
         print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
         print("  Expected an unpacked Electron app for the current OS.")
+        sys.exit(1)
+
+    if not _desktop_linux_sandbox_fixup(packaged_executable):
         sys.exit(1)
 
     print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")

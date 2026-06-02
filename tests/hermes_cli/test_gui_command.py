@@ -147,6 +147,26 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
+def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.write_text("", encoding="utf-8")
+    sandbox.chmod(0o755)
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/sudo", "chown", "root:root", str(sandbox)]
+    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/sudo", "chmod", "4755", str(sandbox)]
+    assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
+
+
 def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"

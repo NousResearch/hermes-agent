@@ -2343,10 +2343,10 @@ postinstall_mode() {
     fi
 }
 
-# Build apps/desktop into a launchable Hermes.app. Mirrors install.ps1's
+# Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
-# (electron-builder --dir) which emits release/mac*/Hermes.app. Only invoked
+# (electron-builder --dir) which emits an unpacked app for the current OS. Only invoked
 # via the 'desktop' stage / --include-desktop, which the Electron app's own
 # first-launch bootstrap never requests (it must not rebuild itself).
 install_desktop() {
@@ -2382,7 +2382,7 @@ install_desktop() {
     log_success "Desktop workspace dependencies installed"
 
     # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
-    #    producing an unpacked release/mac*/Hermes.app. We disable signing
+    #    producing an unpacked app for the current OS. We disable signing
     #    auto-discovery so electron-builder falls back to an ad-hoc signature
     #    instead of grabbing an unrelated Developer ID from the keychain; a
     #    real signed/notarized .dmg needs Apple credentials and is a separate
@@ -2395,20 +2395,40 @@ install_desktop() {
     }
 
     local app=""
-    local cand
-    for cand in \
-        "$desktop_dir/release/mac-arm64/Hermes.app" \
-        "$desktop_dir/release/mac/Hermes.app"; do
-        if [ -d "$cand" ]; then
-            app="$cand"
-            break
+    if [ "$OS" = "linux" ]; then
+        if [ -x "$desktop_dir/release/linux-unpacked/Hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/Hermes"
+        elif [ -x "$desktop_dir/release/linux-unpacked/hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/hermes"
         fi
-    done
+    else
+        local cand
+        for cand in \
+            "$desktop_dir/release/mac-arm64/Hermes.app" \
+            "$desktop_dir/release/mac/Hermes.app"; do
+            if [ -d "$cand" ]; then
+                app="$cand"
+                break
+            fi
+        done
+    fi
     if [ -z "$app" ]; then
-        log_error "Desktop build completed but no Hermes.app was found under $desktop_dir/release/"
+        log_error "Desktop build completed but no app was found under $desktop_dir/release/"
         return 1
     fi
     log_success "Desktop app built: $app"
+
+    if [ "$OS" = "linux" ]; then
+        local sandbox="$desktop_dir/release/linux-unpacked/chrome-sandbox"
+        if [ "$(id -u)" -eq 0 ]; then
+            chown root:root "$sandbox" && chmod 4755 "$sandbox"
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo chown root:root "$sandbox" && sudo chmod 4755 "$sandbox"
+        else
+            log_error "Cannot configure Electron sandbox helper without sudo: $sandbox"
+            return 1
+        fi
+    fi
 
     # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
     # self-update. An ad-hoc bundle has no stable Designated Requirement, so a

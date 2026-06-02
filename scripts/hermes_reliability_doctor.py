@@ -231,6 +231,8 @@ def inspect_goal_store(state_db_path: str | Path) -> dict[str, Any]:
         "active_count": 0,
         "done_count": 0,
         "paused_count": 0,
+        "status_counts": {},
+        "field_presence": {},
     }
     if not db_path.exists():
         return result
@@ -249,17 +251,49 @@ def inspect_goal_store(state_db_path: str | Path) -> dict[str, Any]:
             pass
     result["readable"] = True
     result["goal_count"] = len(rows)
+    statuses: Counter[str] = Counter()
+    fields: Counter[str] = Counter()
     for (raw_value,) in rows:
         try:
             payload = json.loads(raw_value or "{}")
         except json.JSONDecodeError:
             payload = {}
-        if payload.get("active"):
+        raw_status = payload.get("status")
+        if raw_status:
+            status = str(raw_status)
+        elif payload.get("done"):
+            status = "done"
+        elif payload.get("active"):
+            status = "active"
+        else:
+            status = "paused"
+        statuses[status] += 1
+        for field in (
+            "goal",
+            "status",
+            "created_at",
+            "updated_at",
+            "last_turn_at",
+            "turns_used",
+            "max_turns",
+            "subgoals",
+            "task_summary",
+            "intended_repo",
+            "intended_branch",
+            "expected_path",
+            "active_task",
+            "final_report",
+        ):
+            if field in payload and payload.get(field) not in (None, "", []):
+                fields[field] += 1
+        if status == "active":
             result["active_count"] += 1
-        if payload.get("done"):
+        if status == "done":
             result["done_count"] += 1
-        if not payload.get("active"):
+        if status == "paused":
             result["paused_count"] += 1
+    result["status_counts"] = dict(sorted(statuses.items()))
+    result["field_presence"] = dict(sorted(fields.items()))
     return result
 
 
@@ -412,6 +446,8 @@ def format_report(report: dict[str, Any]) -> str:
             f"  final report statuses: {stores['active_tasks'].get('final_report_counts')}",
             f"  goal rows: {stores['goals'].get('goal_count')}",
             f"  active goals: {stores['goals'].get('active_count')}",
+            f"  goal statuses: {stores['goals'].get('status_counts')}",
+            f"  goal field presence: {stores['goals'].get('field_presence')}",
             "",
             "Storage:",
             f"  policy markers complete: {storage['policy'].get('all_required_markers_present')}",

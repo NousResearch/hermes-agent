@@ -148,6 +148,7 @@ class GoalState:
     turns_used: int = 0
     max_turns: int = DEFAULT_MAX_TURNS
     created_at: float = 0.0
+    updated_at: float = 0.0
     last_turn_at: float = 0.0
     last_verdict: Optional[str] = None        # "done" | "continue" | "skipped"
     last_reason: Optional[str] = None
@@ -176,6 +177,7 @@ class GoalState:
             turns_used=int(data.get("turns_used", 0) or 0),
             max_turns=int(data.get("max_turns", DEFAULT_MAX_TURNS) or DEFAULT_MAX_TURNS),
             created_at=float(data.get("created_at", 0.0) or 0.0),
+            updated_at=float(data.get("updated_at", data.get("last_turn_at", 0.0)) or 0.0),
             last_turn_at=float(data.get("last_turn_at", 0.0) or 0.0),
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
@@ -270,12 +272,41 @@ def save_goal(session_id: str, state: GoalState) -> None:
         logger.debug("GoalManager: set_meta failed: %s", exc)
 
 
+def render_goal_context_for_prompt(session_id: str) -> str:
+    """Render active goal state for per-turn gateway context prompts."""
+    state = load_goal(session_id)
+    if state is None or state.status not in {"active", "paused"}:
+        return ""
+    lines = [
+        "## Standing Goal",
+        "",
+        f"Status: {state.status}",
+        f"Turns used: {state.turns_used}/{state.max_turns}",
+        "",
+        "Goal:",
+        state.goal,
+    ]
+    if state.subgoals:
+        lines.extend(["", "Additional criteria:"])
+        lines.extend(f"- {text}" for text in state.subgoals)
+    lines.extend(
+        [
+            "",
+            "Treat this as the durable mission contract for this session. "
+            "If it is blocked, missing an intended repo/workdir, or needs "
+            "user input, say that clearly instead of guessing.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def clear_goal(session_id: str) -> None:
     """Mark a goal cleared in the DB (preserved for audit, status=cleared)."""
     state = load_goal(session_id)
     if state is None:
         return
     state.status = "cleared"
+    state.updated_at = time.time()
     save_goal(session_id, state)
 
 
@@ -523,12 +554,14 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        now = time.time()
         state = GoalState(
             goal=goal,
             status="active",
             turns_used=0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
-            created_at=time.time(),
+            created_at=now,
+            updated_at=now,
             last_turn_at=0.0,
         )
         self._state = state
@@ -540,6 +573,7 @@ class GoalManager:
             return None
         self._state.status = "paused"
         self._state.paused_reason = reason
+        self._state.updated_at = time.time()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -550,6 +584,7 @@ class GoalManager:
         self._state.paused_reason = None
         if reset_budget:
             self._state.turns_used = 0
+        self._state.updated_at = time.time()
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -557,6 +592,7 @@ class GoalManager:
         if self._state is None:
             return
         self._state.status = "cleared"
+        self._state.updated_at = time.time()
         save_goal(self.session_id, self._state)
         self._state = None
 
@@ -566,6 +602,7 @@ class GoalManager:
         self._state.status = "done"
         self._state.last_verdict = "done"
         self._state.last_reason = reason
+        self._state.updated_at = time.time()
         save_goal(self.session_id, self._state)
 
     # --- /subgoal user controls ---------------------------------------
@@ -582,6 +619,7 @@ class GoalManager:
         if not text:
             raise ValueError("subgoal text is empty")
         self._state.subgoals.append(text)
+        self._state.updated_at = time.time()
         save_goal(self.session_id, self._state)
         return text
 
@@ -595,6 +633,7 @@ class GoalManager:
                 f"index out of range (1..{len(self._state.subgoals)})"
             )
         removed = self._state.subgoals.pop(idx)
+        self._state.updated_at = time.time()
         save_goal(self.session_id, self._state)
         return removed
 
@@ -604,6 +643,7 @@ class GoalManager:
             raise RuntimeError("no active goal")
         prev = len(self._state.subgoals)
         self._state.subgoals = []
+        self._state.updated_at = time.time()
         save_goal(self.session_id, self._state)
         return prev
 
@@ -651,6 +691,7 @@ class GoalManager:
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
+        state.updated_at = state.last_turn_at
 
         verdict, reason, parse_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None
@@ -758,5 +799,6 @@ __all__ = [
     "load_goal",
     "save_goal",
     "clear_goal",
+    "render_goal_context_for_prompt",
     "judge_goal",
 ]

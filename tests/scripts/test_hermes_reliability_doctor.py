@@ -105,9 +105,46 @@ def test_inspect_goal_store_uses_read_only_counts(tmp_path):
         "goal_count": 2,
         "active_count": 1,
         "done_count": 1,
-        "paused_count": 1,
+        "paused_count": 0,
+        "status_counts": {"active": 1, "done": 1},
+        "field_presence": {},
     }
     assert "session-a" not in json.dumps(result)
+
+
+def test_inspect_goal_store_reports_safe_metadata_without_goal_text(tmp_path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+        (
+            "goal:private-session-id",
+            json.dumps(
+                {
+                    "goal": "private mission body",
+                    "status": "active",
+                    "created_at": 1.0,
+                    "last_turn_at": 2.0,
+                    "turns_used": 3,
+                    "max_turns": 9,
+                    "subgoals": ["private subgoal"],
+                }
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    result = doctor.inspect_goal_store(db_path)
+
+    assert result["status_counts"] == {"active": 1}
+    assert result["field_presence"]["goal"] == 1
+    assert result["field_presence"]["subgoals"] == 1
+    rendered = json.dumps(result)
+    assert "private mission body" not in rendered
+    assert "private subgoal" not in rendered
+    assert "private-session-id" not in rendered
 
 
 def test_check_storage_policy_presence_reads_only_canonical_markers(tmp_path):

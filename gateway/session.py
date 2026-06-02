@@ -418,6 +418,17 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
 
+    if context.session_id:
+        try:
+            from hermes_cli.goals import render_goal_context_for_prompt
+
+            goal_context = render_goal_context_for_prompt(context.session_id)
+        except Exception:
+            goal_context = ""
+        if goal_context:
+            lines.append("")
+            lines.append(goal_context)
+
     return "\n".join(lines)
 
 

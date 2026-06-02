@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
+    SessionEntry,
     SessionSource,
     SessionStore,
     build_session_context,
@@ -428,6 +429,114 @@ class TestBuildSessionContextPrompt:
 
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
+
+    def test_active_goal_is_injected_into_session_context(self, tmp_path, monkeypatch):
+        """Gateway turns should carry the current goal in durable context."""
+        from datetime import datetime
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        goals._DB_CACHE.clear()
+
+        session_id = "sid-goal-context"
+        GoalManager(session_id).set("finish the reliability audit")
+        config = GatewayConfig()
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="thread-1",
+        )
+        entry = SessionEntry(
+            session_key="agent:main:discord:thread:channel-1:thread-1",
+            session_id=session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.DISCORD,
+            chat_type="thread",
+        )
+
+        ctx = build_session_context(source, config, entry)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "## Standing Goal" in prompt
+        assert "finish the reliability audit" in prompt
+        assert "Status: active" in prompt
+        goals._DB_CACHE.clear()
+
+    def test_goal_context_does_not_leak_between_sessions(self, tmp_path, monkeypatch):
+        from datetime import datetime
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        goals._DB_CACHE.clear()
+
+        GoalManager("sid-with-goal").set("private goal text")
+        config = GatewayConfig()
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="thread-1",
+        )
+        entry = SessionEntry(
+            session_key="agent:main:discord:thread:channel-1:thread-1",
+            session_id="sid-without-goal",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.DISCORD,
+            chat_type="thread",
+        )
+
+        ctx = build_session_context(source, config, entry)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Standing Goal" not in prompt
+        assert "private goal text" not in prompt
+        goals._DB_CACHE.clear()
+
+    def test_cleared_goal_is_not_injected_into_session_context(self, tmp_path, monkeypatch):
+        from datetime import datetime
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        goals._DB_CACHE.clear()
+
+        session_id = "sid-cleared-goal"
+        mgr = GoalManager(session_id)
+        mgr.set("old cleared goal")
+        mgr.clear()
+        config = GatewayConfig()
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="thread-1",
+        )
+        entry = SessionEntry(
+            session_key="agent:main:discord:thread:channel-1:thread-1",
+            session_id=session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.DISCORD,
+            chat_type="thread",
+        )
+
+        ctx = build_session_context(source, config, entry)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Standing Goal" not in prompt
+        assert "old cleared goal" not in prompt
+        goals._DB_CACHE.clear()
 
 
 class TestSenderPrefixWithBackfill:

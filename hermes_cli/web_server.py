@@ -2840,6 +2840,30 @@ async def get_mission_control_recent_audit_log():
     return recent_audit_log()
 
 
+@app.get("/api/mission-control/active-envelope")
+async def get_mission_control_active_envelope():
+    return {
+        "exists": False,
+        "active_lane": None,
+        "active_mode": None,
+        "execution_boundary": "no_active_authorization",
+        "allowed_actions": [],
+        "forbidden_actions": [],
+        "checkpoint": None,
+        "repo_state": {
+            "status": "unknown",
+            "source": "not_probed",
+        },
+        "evidence": {
+            "count": 0,
+            "links": [],
+        },
+        "data_source": "no_persisted_envelope",
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+
+
 @app.get("/api/mission-control/artifacts")
 async def get_mission_control_artifacts(kind: str | None = None, status: str | None = None):
     from hermes_cli.mission_control_artifacts import list_artifacts

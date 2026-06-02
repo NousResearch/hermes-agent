@@ -58,6 +58,8 @@ declare global {
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
+      getDesktopSettings: () => Promise<{ zoomFactor: number }>
+      setDesktopZoom: (zoomFactor: number) => Promise<{ zoomFactor: number }>
     }
   }
 }

@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
+import { useEffect, useState } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check, Palette, Plus, RefreshCw, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
@@ -55,6 +56,23 @@ export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(t => t.name === themeName)
+  const [zoomFactor, setZoomFactor] = useState(1.0)
+
+  useEffect(() => {
+    window.hermesDesktop.getDesktopSettings().then(settings => {
+      setZoomFactor(settings?.zoomFactor ?? 1.0)
+    }).catch(() => {
+      // Ignore errors, fallback to 1.0
+    })
+  }, [])
+
+  const handleZoomChange = (newZoom: number) => {
+    const clamped = Math.max(0.5, Math.min(3.0, newZoom))
+    setZoomFactor(clamped)
+    window.hermesDesktop.setDesktopZoom(clamped).catch(() => {
+      // Ignore errors
+    })
+  }
 
   return (
     <SettingsContent>
@@ -111,6 +129,55 @@ export function AppearanceSettings() {
                 </button>
               )
             })}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">Interface Zoom</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Adjust the overall UI scale. Use Ctrl + / Ctrl - as keyboard shortcuts.
+              </div>
+            </div>
+            <Pill>{Math.round(zoomFactor * 100)}%</Pill>
+          </div>
+          <div className="flex items-center gap-3">
+            <button 
+              className="rounded-md p-2 hover:bg-(--chrome-action-hover) text-(--ui-text-secondary)"
+              onClick={() => handleZoomChange(zoomFactor - 0.1)}
+              type="button"
+              aria-label="Zoom out"
+            >
+              <span className="text-lg font-bold leading-none">-</span>
+            </button>
+            <input
+              type="range"
+              min="0.5"
+              max="3.0"
+              step="0.1"
+              value={zoomFactor}
+              onChange={(e) => handleZoomChange(Number(e.target.value))}
+              className="flex-1 accent-primary"
+              aria-label="Interface zoom"
+            />
+            <button 
+              className="rounded-md p-2 hover:bg-(--chrome-action-hover) text-(--ui-text-secondary)"
+              onClick={() => handleZoomChange(zoomFactor + 0.1)}
+              type="button"
+              aria-label="Zoom in"
+            >
+              <Plus className="size-4" />
+            </button>
+            <button 
+              className="rounded-md p-2 hover:bg-(--chrome-action-hover) text-(--ui-text-secondary)"
+              onClick={() => handleZoomChange(1.0)}
+              type="button"
+              title="Reset to 100%"
+              aria-label="Reset zoom"
+            >
+              <RefreshCw className="size-4" />
+            </button>
           </div>
         </section>
 

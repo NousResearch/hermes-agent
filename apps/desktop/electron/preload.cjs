@@ -108,5 +108,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:updates:progress', listener)
       return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
     }
-  }
+  },
+  getDesktopSettings: () => ipcRenderer.invoke('hermes:desktop-settings:get'),
+  setDesktopZoom: zoomFactor => ipcRenderer.invoke('hermes:desktop-settings:set-zoom', zoomFactor)
 })

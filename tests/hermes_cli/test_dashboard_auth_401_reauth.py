@@ -192,6 +192,95 @@ class TestApi401Envelope:
         assert "next=" not in body["login_url"]
 
 
+class TestTransparentRefreshOnAccessTokenEviction:
+    """Regression: an expired access token whose cookie the browser has
+    ALREADY EVICTED must still transparently refresh via the RT cookie —
+    not bounce to /login.
+
+    This is the common-path expiry bug, not an edge case. The access-token
+    cookie is set with ``Max-Age = access_token_expires_in`` (~15 min), so
+    the browser deletes ``hermes_session_at`` the instant the token lapses,
+    while ``hermes_session_rt`` lives for 30 days. From that moment the
+    browser sends ONLY the refresh-token cookie. The original gate bailed at
+    ``if not at: return _unauth_response(...)`` — bouncing the user to
+    /login on every single expiry despite holding a perfectly good refresh
+    token, defeating the entire transparent-refresh feature. The fix lets a
+    request carrying only the RT flow into the refresh path.
+
+    Discrimination: under the pre-fix code, scenario 1 (AT cookie absent,
+    RT present) returned 401/302 to login with NO rotated cookies and NO
+    REFRESH_SUCCESS — the refresh code never ran. With the fix it returns
+    200 and rotates both cookies.
+    """
+
+    def _build_rt_only_app(self):
+        """Gate over the real app with a Stub provider whose RT is live
+        (default_ttl>0 so refresh succeeds). Mint a valid signed RT
+        directly (the stub's refresh_session only checks the RT's
+        signature + exp), then send ONLY that RT cookie.
+        """
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        clear_providers()
+        provider = StubAuthProvider(default_ttl=900)
+        register_provider(provider)
+        valid_rt = _sign(
+            {"sub": "stub-user-1", "kind": "refresh", "exp": int(_t.time()) + 30 * 86400}
+        )
+        return provider, valid_rt
+
+    def test_at_evicted_rt_present_refreshes_transparently(self, gated_app):
+        provider, valid_rt = self._build_rt_only_app()
+        # Browser sends ONLY the RT cookie — the AT cookie has aged out.
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+
+        r = gated_app.get("/api/sessions", follow_redirects=False)
+        # Transparent refresh — request served, NOT bounced.
+        assert r.status_code == 200, (
+            f"expected 200 (transparent refresh) got {r.status_code} "
+            f"— the AT-evicted/RT-present case bounced to login"
+        )
+        # Both cookies rotated onto the response.
+        set_cookies = r.headers.get_list("set-cookie")
+        assert any(
+            c.startswith(SESSION_AT_COOKIE) or f"-{SESSION_AT_COOKIE}" in c
+            for c in set_cookies
+        ), f"no rotated AT cookie in {set_cookies!r}"
+        assert any(
+            c.startswith(SESSION_RT_COOKIE) or f"-{SESSION_RT_COOKIE}" in c
+            for c in set_cookies
+        ), f"no rotated RT cookie in {set_cookies!r}"
+
+    def test_no_cookies_at_all_still_bounces(self, gated_app):
+        """Guard the fix didn't over-reach: a request with NEITHER cookie
+        must still 401 to login (nothing to verify or refresh)."""
+        self._build_rt_only_app()
+        gated_app.cookies.clear()
+        r = gated_app.get("/api/sessions")
+        assert r.status_code == 401
+        assert r.json()["error"] == "unauthenticated"
+
+    def test_dead_rt_only_bounces_to_login(self, gated_app):
+        """An RT-only request whose RT is dead/expired must bounce (the
+        refresh raises RefreshExpiredError → clear + relogin), not 500."""
+        clear_providers()
+        # default_ttl=0 → the stub treats the minted RT as born-expired,
+        # so refresh_session raises RefreshExpiredError.
+        provider = StubAuthProvider(default_ttl=0)
+        register_provider(provider)
+        gated_app.cookies.clear()
+        # A syntactically-real but expired RT (signed with exp<=now).
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+        dead_rt = _sign({"sub": "u", "kind": "refresh", "exp": int(_t.time()) - 1})
+        gated_app.cookies.set(SESSION_RT_COOKIE, dead_rt)
+        r = gated_app.get("/api/sessions")
+        assert r.status_code == 401
+        assert r.json()["error"] == "session_expired"
+
+
 class TestHtmlRedirectNext:
     def test_deep_html_path_redirects_with_next(self, gated_app):
         r = gated_app.get("/sessions", follow_redirects=False)

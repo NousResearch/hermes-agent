@@ -933,8 +933,27 @@ def test_session_create_does_not_persist_empty_row(monkeypatch):
         server._sessions.pop(sid, None)
 
 
-def test_ensure_session_db_row_persists_with_cwd(monkeypatch, tmp_path):
-    """First prompt persists the row (INSERT OR IGNORE) capturing cwd up front."""
+def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
+    """An explicitly chosen workspace is persisted as the session cwd."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
+
+    assert created == [
+        {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(tmp_path)}
+    ]
+
+
+def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
+    """Without an explicit workspace, cwd is left null so the session groups
+    under "No workspace" rather than the gateway's launch directory."""
     created = []
 
     class _FakeDB:
@@ -946,9 +965,7 @@ def test_ensure_session_db_row_persists_with_cwd(monkeypatch, tmp_path):
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
-    assert created == [
-        {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(tmp_path)}
-    ]
+    assert created == [{"key": "k1", "source": "tui", "model": "test-model", "cwd": None}]
 
 
 def test_session_title_clears_pending_after_persist(monkeypatch):

@@ -3540,10 +3540,15 @@ def _start_xai_loopback_flow() -> Dict[str, Any]:
         )
     except Exception:
         # Binding succeeded but URL construction failed — release the socket
-        # so we don't leak a listener on the loopback port.
+        # and join the serving thread so we don't leak a listener (or a
+        # lingering daemon thread) on the loopback port.
         try:
             server.shutdown()
             server.server_close()
+        except Exception:
+            pass
+        try:
+            thread.join(timeout=1.0)
         except Exception:
             pass
         raise
@@ -3589,6 +3594,14 @@ def _xai_loopback_worker(session_id: str) -> None:
                 s["status"] = "error"
                 s["error_message"] = message
 
+    def _cancelled() -> bool:
+        # The session is removed from the registry when the user cancels
+        # (DELETE /sessions/{id}). If that happened while we were blocked on
+        # the callback or token exchange, abort instead of persisting tokens
+        # the user no longer wants.
+        with _oauth_sessions_lock:
+            return session_id not in _oauth_sessions
+
     try:
         callback = hauth._xai_wait_for_callback(
             sess["server"],
@@ -3598,6 +3611,9 @@ def _xai_loopback_worker(session_id: str) -> None:
         )
     except Exception as exc:
         _fail(f"xAI authorization timed out: {exc}")
+        return
+
+    if _cancelled():
         return
 
     if callback.get("error"):
@@ -3638,6 +3654,8 @@ def _xai_loopback_worker(session_id: str) -> None:
             "expires_in": payload.get("expires_in"),
             "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
         }
+        if _cancelled():
+            return
         hauth._save_xai_oauth_tokens(
             tokens,
             discovery=sess.get("discovery"),

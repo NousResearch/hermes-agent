@@ -113,13 +113,21 @@ class MattermostAdapter(BasePlatformAdapter):
         """GET /api/v4/{path}."""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
-        try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors when
+        # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+        async def _do_get():
+            async with self._session.get(url, headers=self._headers()) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        try:
+            return await asyncio.wait_for(_do_get(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error("MM API GET %s timed out after 30s", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
             return {}
@@ -130,16 +138,23 @@ class MattermostAdapter(BasePlatformAdapter):
         """POST /api/v4/{path} with JSON body."""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
-        try:
+        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors when
+        # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+        async def _do_post():
             async with self._session.post(
                 url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        try:
+            return await asyncio.wait_for(_do_post(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error("MM API POST %s timed out after 30s", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API POST %s network error: %s", path, exc)
             return {}
@@ -150,7 +165,10 @@ class MattermostAdapter(BasePlatformAdapter):
         """PUT /api/v4/{path} with JSON body."""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
-        try:
+        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors when
+        # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+        async def _do_put():
             async with self._session.put(
                 url, headers=self._headers(), json=payload
             ) as resp:
@@ -159,6 +177,11 @@ class MattermostAdapter(BasePlatformAdapter):
                     logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
                     return {}
                 return await resp.json()
+        try:
+            return await asyncio.wait_for(_do_put(), timeout=30)
+        except asyncio.TimeoutError:
+            logger.error("MM API PUT %s timed out after 30s", path)
+            return {}
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
@@ -179,14 +202,26 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors when
+        # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+        async def _do_upload():
+            async with self._session.post(url, headers=headers, data=form) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
+        try:
+            return await asyncio.wait_for(_do_upload(), timeout=60)
+        except asyncio.TimeoutError:
+            logger.error("MM file upload timed out after 60s")
+            return None
+        except aiohttp.ClientError as exc:
+            logger.error("MM file upload network error: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -200,9 +235,12 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("Mattermost: URL or token not configured")
             return False
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
+        # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
+        # "Timeout context manager should be used inside a task" errors when
+        # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
+        # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
+        _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
+        self._session = aiohttp.ClientSession(timeout=_no_aiohttp_timeout)
         self._closing = False
 
         # Verify credentials and fetch bot identity.
@@ -438,18 +476,25 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status >= 500 or resp.status == 429:
-                        if attempt < 2:
-                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
-                                         attempt + 1, url[:80], resp.status)
-                            await asyncio.sleep(1.5 * (attempt + 1))
-                            continue
-                    if resp.status >= 400:
-                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
-                    file_data = await resp.read()
-                    ct = resp.content_type or "application/octet-stream"
-                    break
+                # Use asyncio.wait_for() instead of aiohttp ClientTimeout to
+                # avoid "Timeout context manager should be used inside a task"
+                # errors when invoked via asyncio.run_coroutine_threadsafe().
+                async def _do_download():
+                    async with self._session.get(url) as resp:
+                        return resp.status, resp.content_type, await resp.read()
+
+                status, ct_result, raw_data = await asyncio.wait_for(_do_download(), timeout=30)
+                if status >= 500 or status == 429:
+                    if attempt < 2:
+                        logger.debug("Mattermost download retry %d/2 for %s (status %d)",
+                                     attempt + 1, url[:80], status)
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                if status >= 400:
+                    return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                file_data = raw_data
+                ct = ct_result or "application/octet-stream"
+                break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
@@ -568,17 +613,24 @@ class MattermostAdapter(BasePlatformAdapter):
                             logger.warning("Mattermost: blocked unsafe image URL in batch")
                             continue
                         try:
-                            async with self._session.get(
-                                image_url, timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
-                                if resp.status >= 400:
-                                    logger.warning(
-                                        "Mattermost: failed to download image (HTTP %d): %s",
-                                        resp.status, image_url[:80],
-                                    )
-                                    continue
-                                file_data = await resp.read()
-                                ct = resp.content_type or "image/png"
+                            # Use asyncio.wait_for() instead of aiohttp ClientTimeout
+                            # to avoid "Timeout context manager should be used inside a task"
+                            # errors when invoked via asyncio.run_coroutine_threadsafe().
+                            async def _do_fetch_image(u=image_url):
+                                async with self._session.get(u) as r:
+                                    return r.status, r.content_type, await r.read()
+
+                            img_status, img_ct, img_data = await asyncio.wait_for(
+                                _do_fetch_image(), timeout=30
+                            )
+                            if img_status >= 400:
+                                logger.warning(
+                                    "Mattermost: failed to download image (HTTP %d): %s",
+                                    img_status, image_url[:80],
+                                )
+                                continue
+                            file_data = img_data
+                            ct = img_ct or "image/png"
                         except Exception as dl_err:
                             logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
                             continue
@@ -808,29 +860,41 @@ class MattermostAdapter(BasePlatformAdapter):
 
                 import aiohttp
                 dl_url = f"{self._base_url}/api/v4/files/{fid}"
-                async with self._session.get(
-                    dl_url,
-                    headers={"Authorization": f"Bearer {self._token}"},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status < 400:
-                        file_data = await resp.read()
-                        from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
-                        if mime.startswith("image/"):
-                            local_path = cache_image_from_bytes(file_data, ext or ".png")
-                            media_urls.append(local_path)
-                            media_types.append(mime)
-                        elif mime.startswith("audio/"):
-                            from gateway.platforms.base import cache_audio_from_bytes
-                            local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
-                            media_urls.append(local_path)
-                            media_types.append(mime)
-                        else:
-                            local_path = cache_document_from_bytes(file_data, fname)
-                            media_urls.append(local_path)
-                            media_types.append(mime)
-                    else:
-                        logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
+                # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+                # "Timeout context manager should be used inside a task" errors when
+                # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+                async def _do_download_file():
+                    async with self._session.get(
+                        dl_url,
+                        headers={"Authorization": f"Bearer {self._token}"},
+                    ) as resp:
+                        if resp.status < 400:
+                            return await resp.read(), resp.status
+                        return None, resp.status
+
+                try:
+                    file_data_raw, dl_status = await asyncio.wait_for(_do_download_file(), timeout=30)
+                except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+                    logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
+                    continue
+                if dl_status >= 400 or file_data_raw is None:
+                    logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, dl_status)
+                    continue
+                file_data = file_data_raw
+                from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
+                if mime.startswith("image/"):
+                    local_path = cache_image_from_bytes(file_data, ext or ".png")
+                    media_urls.append(local_path)
+                    media_types.append(mime)
+                elif mime.startswith("audio/"):
+                    from gateway.platforms.base import cache_audio_from_bytes
+                    local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
+                    media_urls.append(local_path)
+                    media_types.append(mime)
+                else:
+                    local_path = cache_document_from_bytes(file_data, fname)
+                    media_urls.append(local_path)
+                    media_types.append(mime)
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
 
@@ -939,8 +1003,12 @@ async def _standalone_send(
         _proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
 
+        # Disable aiohttp's built-in ClientTimeout to prevent
+        # "Timeout context manager should be used inside a task" errors.
+        # Timeout is managed externally via asyncio.wait_for().
+        _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60),
+            timeout=_no_aiohttp_timeout,
             **_sess_kw,
         ) as session:
             # 1. Upload media (if any) and collect file_ids.
@@ -959,24 +1027,31 @@ async def _standalone_send(
                         fh.read(),
                         filename=os.path.basename(file_path),
                     )
-                async with session.post(
-                    f"{base_url}/api/v4/files",
-                    data=form,
-                    headers=upload_headers,
-                    **_req_kw,
-                ) as upload_resp:
-                    if upload_resp.status not in {200, 201}:
-                        body = await upload_resp.text()
-                        return {
-                            "error": (
-                                f"Mattermost file upload failed "
-                                f"({upload_resp.status}): {body[:400]}"
-                            )
-                        }
-                    upload_data = await upload_resp.json()
-                    for info in upload_data.get("file_infos", []):
-                        if info.get("id"):
-                            file_ids.append(info["id"])
+                async def _do_standalone_upload():
+                    async with session.post(
+                        f"{base_url}/api/v4/files",
+                        data=form,
+                        headers=upload_headers,
+                        **_req_kw,
+                    ) as upload_resp:
+                        return upload_resp.status, await upload_resp.text(), await upload_resp.json()
+
+                try:
+                    upload_status, upload_body, upload_data = await asyncio.wait_for(
+                        _do_standalone_upload(), timeout=60
+                    )
+                except asyncio.TimeoutError:
+                    return {"error": "Mattermost file upload timed out after 60s"}
+                if upload_status not in {200, 201}:
+                    return {
+                        "error": (
+                            f"Mattermost file upload failed "
+                            f"({upload_status}): {upload_body[:400]}"
+                        )
+                    }
+                for info in upload_data.get("file_infos", []):
+                    if info.get("id"):
+                        file_ids.append(info["id"])
 
             # 2. Post the message (with thread root + attached file_ids).
             payload: Dict[str, Any] = {
@@ -987,21 +1062,28 @@ async def _standalone_send(
                 payload["root_id"] = thread_id
             if file_ids:
                 payload["file_ids"] = file_ids
-            async with session.post(
-                f"{base_url}/api/v4/posts",
-                headers=headers,
-                json=payload,
-                **_req_kw,
-            ) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return {
-                        "error": (
-                            f"Mattermost API error ({resp.status}): "
-                            f"{body[:400]}"
-                        )
-                    }
-                data = await resp.json()
+            async def _do_standalone_post():
+                async with session.post(
+                    f"{base_url}/api/v4/posts",
+                    headers=headers,
+                    json=payload,
+                    **_req_kw,
+                ) as resp:
+                    return resp.status, await resp.text(), await resp.json()
+
+            try:
+                post_status, post_body, data = await asyncio.wait_for(
+                    _do_standalone_post(), timeout=30
+                )
+            except asyncio.TimeoutError:
+                return {"error": "Mattermost API post timed out after 30s"}
+            if post_status not in {200, 201}:
+                return {
+                    "error": (
+                        f"Mattermost API error ({post_status}): "
+                        f"{post_body[:400]}"
+                    )
+                }
             return {
                 "success": True,
                 "platform": "mattermost",

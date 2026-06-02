@@ -21,7 +21,7 @@ def _set_real_user_home(monkeypatch, tmp_path):
     )
 
 
-def _setup_doctor_env(monkeypatch, tmp_path, venv_name="venv"):
+def _setup_doctor_env(monkeypatch, tmp_path, venv_name="venv", create_launcher=True):
     """Create a minimal HERMES_HOME + PROJECT_ROOT for doctor tests."""
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
@@ -30,12 +30,19 @@ def _setup_doctor_env(monkeypatch, tmp_path, venv_name="venv"):
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
 
-    # Create a fake venv entry point
+    # Create a fake launcher entry point
     venv_bin_dir = project / venv_name / "bin"
     venv_bin_dir.mkdir(parents=True, exist_ok=True)
+    python_bin = venv_bin_dir / "python"
+    python_bin.write_text("#!/usr/bin/env python\n# python entry point\n")
+    python_bin.chmod(0o755)
+    monkeypatch.setattr(doctor_mod.sys, "executable", str(python_bin))
+
     hermes_bin = venv_bin_dir / "hermes"
-    hermes_bin.write_text("#!/usr/bin/env python\n# entry point\n")
-    hermes_bin.chmod(0o755)
+    if create_launcher:
+        hermes_bin.write_text("#!/usr/bin/env python\n# entry point\n")
+        hermes_bin.chmod(0o755)
+    monkeypatch.setattr(doctor_mod.sys, "argv", [str(hermes_bin)])
 
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
@@ -167,35 +174,9 @@ class TestDoctorCommandInstallation:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Symlink check is Unix-only")
     def test_missing_venv_entry_point_shows_warn(self, monkeypatch, tmp_path):
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path, create_launcher=False)
 
-        project = tmp_path / "project"
-        project.mkdir(exist_ok=True)
-        # Do NOT create any venv entry point
-
-        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
-        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
         _set_real_user_home(monkeypatch, tmp_path)
-
-        fake_model_tools = types.SimpleNamespace(
-            check_tool_availability=lambda *a, **kw: ([], []),
-            TOOLSET_REQUIREMENTS={},
-        )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
-        try:
-            from hermes_cli import auth as _auth_mod
-            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        except Exception:
-            pass
-        try:
-            import httpx
-            monkeypatch.setattr(httpx, "get", lambda *a, **kw: types.SimpleNamespace(status_code=200))
-        except Exception:
-            pass
 
         out = _run_doctor(fix=False)
         assert "Command Installation" in out

@@ -96,6 +96,37 @@ def _real_user_home() -> Path:
         return Path.home()
 
 
+def _current_launcher_bin() -> Path | None:
+    """Return the active Hermes launcher entry point for this runtime."""
+    launcher_name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    candidates = []
+
+    try:
+        argv0 = Path(sys.argv[0] or "")
+        if argv0.name in {"hermes", "hermes.exe"}:
+            candidates.append(argv0.resolve())
+    except Exception:
+        pass
+
+    try:
+        executable = Path(sys.executable or "").resolve()
+        candidates.append(executable.parent / launcher_name)
+    except Exception:
+        pass
+
+    for _venv_name in ("venv", ".venv"):
+        candidates.append(PROJECT_ROOT / _venv_name / "bin" / launcher_name)
+
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except Exception:
+            continue
+
+    return None
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1139,13 +1170,8 @@ def run_doctor(args):
 
     if sys.platform != "win32":
         _section("Command Installation")
-        # Determine the venv entry point location
-        _venv_bin = None
-        for _venv_name in ("venv", ".venv"):
-            _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
-            if _candidate.exists():
-                _venv_bin = _candidate
-                break
+        # Determine the current launcher entry point for this runtime.
+        _launcher_bin = _current_launcher_bin()
 
         # Determine the expected command link directory (mirrors install.sh logic)
         _prefix = os.environ.get("PREFIX", "")
@@ -1158,21 +1184,26 @@ def run_doctor(args):
             _cmd_link_display = "~/.local/bin"
         _cmd_link = _cmd_link_dir / "hermes"
 
-        if _venv_bin is None:
+        if _launcher_bin is None:
             check_warn(
                 "Venv entry point not found",
-                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+                "(hermes not in current env/bin/ or repo venv/bin/ — reinstall with pip install -e '.[all]')"
             )
             manual_issues.append(
                 f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
             )
         else:
-            check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
+            _launcher_display = str(_launcher_bin)
+            try:
+                _launcher_display = str(_launcher_bin.relative_to(PROJECT_ROOT))
+            except Exception:
+                pass
+            check_ok(f"Venv entry point exists ({_launcher_display})")
 
             # Check the symlink at the command link location
             if _cmd_link.is_symlink():
                 _target = _cmd_link.resolve()
-                _expected = _venv_bin.resolve()
+                _expected = _launcher_bin.resolve()
                 if _target == _expected:
                     check_ok(f"{_cmd_link_display}/hermes → correct target")
                 else:
@@ -1182,8 +1213,8 @@ def run_doctor(args):
                     )
                     if should_fix:
                         _cmd_link.unlink()
-                        _cmd_link.symlink_to(_venv_bin)
-                        check_ok(f"Fixed symlink: {_cmd_link_display}/hermes → {_venv_bin}")
+                        _cmd_link.symlink_to(_launcher_bin)
+                        check_ok(f"Fixed symlink: {_cmd_link_display}/hermes → {_launcher_bin}")
                         fixed_count += 1
                     else:
                         issues.append(f"Broken symlink at {_cmd_link_display}/hermes — run 'hermes doctor --fix'")
@@ -1193,12 +1224,12 @@ def run_doctor(args):
             else:
                 check_fail(
                     f"{_cmd_link_display}/hermes not found",
-                    "(hermes command may not work outside the venv)"
+                    "(hermes command may not work outside the current env)"
                 )
                 if should_fix:
                     _cmd_link_dir.mkdir(parents=True, exist_ok=True)
-                    _cmd_link.symlink_to(_venv_bin)
-                    check_ok(f"Created symlink: {_cmd_link_display}/hermes → {_venv_bin}")
+                    _cmd_link.symlink_to(_launcher_bin)
+                    check_ok(f"Created symlink: {_cmd_link_display}/hermes → {_launcher_bin}")
                     fixed_count += 1
 
                     # Check if the link dir is on PATH

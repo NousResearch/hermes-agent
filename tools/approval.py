@@ -1162,13 +1162,25 @@ def _is_webhook_blocked_terminal_write(command: str) -> bool:
     if not _is_webhook_session() or not _webhook_terminal_readonly_enabled():
         return False
     tokens = _split_webhook_terminal_command(command)
-    if not tokens or os.path.basename(tokens[0]) != "curl":
+    if not tokens:
+        if command.strip():
+            logger.warning(
+                "Webhook command denied: shell control operator present (command: %s)",
+                command[:200],
+            )
+            return True
+        return False
+    if os.path.basename(tokens[0]) != "curl":
         return False
     method, url = _extract_curl_method_and_url(tokens)
     if method != "POST":
         return False
     if url == "https://mellow-mule-232.convex.cloud/api/mutation":
-        return not _is_grant_review_mutation_curl(method, url, tokens)
+        if _is_grant_review_mutation_curl(method, url, tokens):
+            return False
+        logger.warning("Webhook curl POST denied: not allowlisted (url: %s)", url)
+        return True
+    logger.warning("Webhook curl POST denied: not allowlisted (url: %s)", url)
     return True
 
 

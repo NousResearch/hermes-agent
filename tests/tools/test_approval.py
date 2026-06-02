@@ -98,6 +98,19 @@ class TestWebhookReadonlyAllowlist:
         assert result["approved"] is False
         assert result.get("webhook_allowlisted") is not True
 
+    def test_webhook_blocks_operator_bearing_curls_without_prompt(self):
+        commands = [
+            "curl -s https://mellow-mule-232.convex.cloud/api/mutation | jq .",
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation && echo done",
+            "curl -s -X POST https://mellow-mule-232.convex.cloud/api/mutation --data-binary $(cat /tmp/grant_verdict_test.json)",
+        ]
+        with mock_patch.object(approval_module, "prompt_dangerous_approval") as prompt:
+            results = [self._check(command) for command in commands]
+        prompt.assert_not_called()
+        for result in results:
+            assert result["approved"] is False
+            assert result.get("webhook_allowlisted") is not True
+
     def test_webhook_blocks_bare_grant_verdict_update_notes_post(self):
         command = self._curl_mutation_with_data(
             repr(self._grant_update_notes_payload(self._grant_verdict_notes()))

@@ -293,6 +293,49 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/sessions?archived=bogus")
         assert resp.status_code == 400
 
+    def test_get_sessions_rejects_unknown_order_value(self):
+        resp = self.client.get("/api/sessions?order=sideways")
+        assert resp.status_code == 400
+
+    def test_get_sessions_order_recent_surfaces_compression_tip(self):
+        """A long-running conversation that auto-compresses must stay on the
+        first page by recency, listed under its live continuation id."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            old = _time.time() - 86_400
+            # Old conversation that later compresses into a fresh continuation.
+            # The continuation must start at/after the parent's ended_at to be
+            # recognised as a compression tip (not a sub-agent/branch).
+            db.create_session(session_id="root-old", source="cli")
+            db.append_message(session_id="root-old", role="user", content="kickoff")
+            db.end_session("root-old", "compression")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (old, old + 10, "root-old"),
+            )
+            db.create_session(session_id="tip-new", source="cli", parent_session_id="root-old")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (old + 10, "tip-new"))
+            db.append_message(session_id="tip-new", role="user", content="continued just now")
+            # A brand-new unrelated session started after the root but before now.
+            db.create_session(session_id="mid", source="cli")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (_time.time() - 3600, "mid"))
+            db.append_message(session_id="mid", role="user", content="hello")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        rows = self.client.get("/api/sessions?order=recent&limit=5").json()["sessions"]
+        ids = [r["id"] for r in rows]
+        # The compressed conversation surfaces under its live tip id...
+        assert "tip-new" in ids
+        # ...carrying the durable lineage root so the desktop can match pins.
+        tip = next(r for r in rows if r["id"] == "tip-new")
+        assert tip.get("_lineage_root_id") == "root-old"
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 

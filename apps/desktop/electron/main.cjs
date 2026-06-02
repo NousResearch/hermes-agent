@@ -435,6 +435,9 @@ let connectionPromise = null
 // instead of re-running install.ps1 in a hot loop. Cleared explicitly by
 // the renderer's "Reload and retry" path or by quitting the app.
 let bootstrapFailure = null
+// Active first-launch install, so the renderer's Cancel button (and app quit)
+// can abort the in-flight install.sh/ps1 instead of leaving it running.
+let bootstrapAbortController = null
 let connectionConfigCache = null
 const hermesLog = []
 const previewWatchers = new Map()
@@ -1740,12 +1743,15 @@ async function ensureRuntime(backend) {
       })
     } catch {}
 
+    bootstrapAbortController = new AbortController()
+
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
       activeRoot: backend.activeRoot,
       sourceRepoRoot: SOURCE_REPO_ROOT,
       hermesHome: HERMES_HOME,
       logRoot: path.join(HERMES_HOME, 'logs'),
+      abortSignal: bootstrapAbortController.signal,
       onEvent: ev => {
         // Tee every bootstrap event to (a) the desktop log for forensics
         // and (b) the renderer for live progress UI. Either may be absent;
@@ -1760,6 +1766,16 @@ async function ensureRuntime(backend) {
       },
       writeMarker: writeBootstrapMarker
     })
+
+    bootstrapAbortController = null
+
+    if (bootstrapResult.cancelled) {
+      const cancelledError = new Error('Hermes install was cancelled.')
+      cancelledError.isBootstrapFailure = true
+      cancelledError.bootstrapCancelled = true
+      bootstrapFailure = cancelledError
+      throw cancelledError
+    }
 
     if (!bootstrapResult.ok) {
       const bootstrapError = new Error(
@@ -3256,6 +3272,18 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   resetHermesConnection()
   return { ok: true }
 })
+ipcMain.handle('hermes:bootstrap:cancel', async () => {
+  // Renderer's Cancel button during first-launch install. Abort the running
+  // install script (SIGTERM via the runner's abortSignal). runBootstrap
+  // resolves with { cancelled: true }, which surfaces the recovery overlay.
+  if (bootstrapAbortController) {
+    try {
+      bootstrapAbortController.abort()
+    } catch {}
+    return { ok: true, cancelled: true }
+  }
+  return { ok: false, cancelled: false }
+})
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async () => sanitizeDesktopConnectionConfig())
@@ -3726,6 +3754,13 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
+  // Quitting mid-install should stop the installer, not orphan it.
+  if (bootstrapAbortController) {
+    try {
+      bootstrapAbortController.abort()
+    } catch {}
+  }
+
   if (desktopLogFlushTimer) {
     clearTimeout(desktopLogFlushTimer)
     desktopLogFlushTimer = null

@@ -1,9 +1,6 @@
 ---
 name: clinical-scoring
-description: >-
-  Score a biotech company's clinical development program to produce a normalized
-  0-100 clinical score. Encodes the exact rules, thresholds, and lookup tables
-  from Wake Robin's pipeline (Module 4 + PoS Engine).
+description: "Score biotech clinical programs with pipeline rules."
 tags:
   - biotech-screener
   - clinical

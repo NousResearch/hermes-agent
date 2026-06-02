@@ -1,6 +1,6 @@
 ---
 name: biotech-mover-validation
-description: "Use when biotech intraday mover alerts require source verification before escalation or model use."
+description: "Verify biotech mover alerts before escalation."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

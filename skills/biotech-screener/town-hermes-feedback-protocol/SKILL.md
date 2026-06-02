@@ -1,6 +1,6 @@
 ---
 name: town-hermes-feedback-protocol
-description: Use when reconciling Town findings with Hermes operations via bidirectional routing, weekly sync, and conflict escalation.
+description: "Route Town findings into Hermes operations."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

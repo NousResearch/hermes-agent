@@ -12,14 +12,7 @@ triggers:
   - liquidity overlay
   - capital market assumptions
   - cash-flow workbook
-description: >
-  Architecture reference for the Wake Robin Liquidity Architecture — a
-  deterministic, multi-engine modeling stack for a Gen3-Gen5 single-family
-  office. Covers the four-line principle (NAV is not liquidity), seven-layer
-  architecture, quarterly ledger schema and invariants, allocation engines
-  (stub/Riskfolio/cvxportfolio/liquidity overlay), spending rules, PE pacing
-  integration, CMA baseline, and governance rules. NOT a generic asset-allocation
-  framework — every decision is downstream of the four-line principle.
+description: "Apply Wake Robin SFO liquidity architecture."
 ---
 
 # SFO Liquidity Architecture Skill

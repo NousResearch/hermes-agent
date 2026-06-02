@@ -1,9 +1,6 @@
 ---
 name: catalyst-resolution
-description: >-
-  Reference for the catalyst and event resolution pipeline — from multi-source
-  event ingestion through catalyst timing/quality signals used in the screener's
-  production scoring.
+description: "Resolve biotech catalysts and event timing."
 ---
 
 # Catalyst & Event Resolution Skill

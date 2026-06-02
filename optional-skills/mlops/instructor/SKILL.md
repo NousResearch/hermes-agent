@@ -1,6 +1,6 @@
 ---
 name: instructor
-description: Extract structured data from LLM responses with Pydantic validation, retry failed extractions automatically, parse complex JSON with type safety, and stream partial results with Instructor - battle-tested structured output library
+description: "Extract typed structured data with Instructor."
 version: 1.0.0
 author: Orchestra Research
 license: MIT

@@ -1,6 +1,6 @@
 ---
 name: merger-model
-description: Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, financing mix, EPS impact. Pairs with excel-author. Use for M&A pitches, board materials, or deal evaluation.
+description: "Build accretion-dilution merger models."
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0

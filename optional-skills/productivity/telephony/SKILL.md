@@ -1,6 +1,6 @@
 ---
 name: telephony
-description: Give Hermes phone capabilities without core tool changes. Provision and persist a Twilio number, send and receive SMS/MMS, make direct calls, and place AI-driven outbound calls through Bland.ai or Vapi.
+description: "Add SMS, MMS, and calling workflows to Hermes."
 version: 1.0.0
 author: Nous Research
 license: MIT

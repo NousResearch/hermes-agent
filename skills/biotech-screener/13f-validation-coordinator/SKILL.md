@@ -1,6 +1,6 @@
 ---
 name: 13f-validation-coordinator
-description: "Orchestrate the quarterly 13F cohort validation pipeline: filing progress monitoring, pre-refresh readiness, cohort quarantine checks, collapse guards, verdict rendering, observation window management, and IC refresh after clearance."
+description: "Coordinate quarterly 13F validation gates."
 ---
 
 # 13F Validation Coordinator Skill

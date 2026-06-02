@@ -1,6 +1,6 @@
 ---
 name: gitnexus-explorer
-description: Index a codebase with GitNexus and serve an interactive knowledge graph via web UI + Cloudflare tunnel.
+description: "Serve GitNexus codebase knowledge graphs."
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT

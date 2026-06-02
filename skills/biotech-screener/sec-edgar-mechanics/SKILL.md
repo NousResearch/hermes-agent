@@ -1,6 +1,6 @@
 ---
 name: sec-edgar-mechanics
-description: SEC EDGAR API conventions, filing type taxonomy, CIK resolution, XBRL financial data extraction, and filing parsing patterns for the biotech screener's institutional signal pipeline.
+description: "Parse SEC EDGAR filings for biotech signals."
 ---
 
 # SEC EDGAR Mechanics

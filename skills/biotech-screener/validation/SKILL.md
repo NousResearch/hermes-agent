@@ -12,12 +12,7 @@ triggers:
   - IC benchmark
   - pre-run checklist
   - post-run checklist
-description: >
-  Pipeline validation framework for Wake Robin biotech screener. Covers 12 gates
-  (PIT enforcement, staleness windows by data type, data quality hard gates,
-  circuit breakers, score bounds, weight sums, coverage minimums, severity system,
-  pipeline health, IC benchmarks, snapshot collapse guards, expectation coverage),
-  determinism enforcement, governance metadata requirements, and diagnostic field rules.
+description: "Validate Wake Robin biotech screener pipelines."
 ---
 
 # Validation & Governance Skill

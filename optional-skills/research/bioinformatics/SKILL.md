@@ -1,6 +1,6 @@
 ---
 name: bioinformatics
-description: Gateway to 400+ bioinformatics skills from bioSkills and ClawBio. Covers genomics, transcriptomics, single-cell, variant calling, pharmacogenomics, metagenomics, structural biology, and more. Fetches domain-specific reference material on demand.
+description: "Fetch bioinformatics skill references on demand."
 version: 1.0.0
 platforms: [linux, macos]
 metadata:

@@ -1,6 +1,6 @@
 ---
 name: meme-generation
-description: Generate real meme images by picking a template and overlaying text with Pillow. Produces actual .png meme files.
+description: "Generate meme PNGs with templates and text."
 version: 2.0.0
 author: adanaleycio
 license: MIT

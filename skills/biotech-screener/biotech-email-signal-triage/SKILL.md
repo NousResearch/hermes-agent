@@ -1,6 +1,6 @@
 ---
 name: biotech-email-signal-triage
-description: "Use when scanning inbox alerts/digests to extract biotech investment signals into structured watchlists."
+description: "Triage biotech inbox alerts into watchlists."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

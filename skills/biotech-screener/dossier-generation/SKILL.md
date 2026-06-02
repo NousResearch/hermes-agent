@@ -9,11 +9,7 @@ triggers:
   - pipeline output report
   - top holdings report
   - dossier structure
-description: >
-  Generate investment dossiers and IC memos from pipeline output. Defines
-  dossier structure, Tuesday/Wednesday/Thursday cadence, 9-section report
-  template, composite weight sets (V3 Enhanced/Default/Partial/Baker),
-  and enhancement flags E1-E6.
+description: "Generate biotech investment dossiers and IC memos."
 ---
 
 # Dossier Generation Skill

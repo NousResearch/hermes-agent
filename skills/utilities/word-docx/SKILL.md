@@ -9,13 +9,7 @@ triggers:
   - numbering
   - styles
   - OOXML
-description: >
-  Best-practice instructions for AI agents handling Microsoft Word/DOCX
-  documents. Covers OOXML structure (ZIP of XML parts), style preservation
-  over direct formatting, numbering/list system, section-level page layout,
-  track changes and comment anchors, TOC/field handling, round-trip
-  compatibility, 12 common traps, and python-docx quick reference.
-  Source: clawhub.ai/ivangdavila/word-docx
+description: "Handle Word/DOCX documents safely."
 user-invocable: false
 ---
 

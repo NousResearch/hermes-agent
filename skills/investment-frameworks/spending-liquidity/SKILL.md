@@ -13,13 +13,7 @@ triggers:
   - reserve floor
   - distributable income
   - L19 problem
-description: >
-  Spending rule and liquidity management layer for the Wake Robin Liquidity
-  Architecture. Covers three spending rules (flat-real, smoothing, Owl/
-  Guyton-Klinger), the spending base configurable denominator and L19 problem
-  (total NAV overstates spendable resources for this SFO), five-tier liquidity
-  classification, 18-month reserve floor, manager terms diagnostics (redemption
-  notices, lock-ups, gates, side pockets), and workbook integration constraints.
+description: "Model spending rules and liquidity buffers."
 ---
 
 # Spending & Liquidity Skill

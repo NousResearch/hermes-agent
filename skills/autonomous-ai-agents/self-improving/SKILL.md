@@ -8,11 +8,7 @@ triggers:
   - preference storage
   - skill improvement
   - memory tiering
-description: >
-  Structured learning capture with promotion and demotion rules for persistent
-  improvement. Logs corrections, preferences, and self-reflections. Tiered
-  storage (HOT/WARM/COLD) for Town and Hermes environments. Never infers
-  preferences from silence; confirms patterns after 3 occurrences.
+description: "Capture durable lessons for Hermes self-improvement."
 ---
 
 # Self-Improving Skill

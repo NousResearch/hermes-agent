@@ -1,6 +1,6 @@
 ---
 name: siyuan
-description: SiYuan Note API for searching, reading, creating, and managing blocks and documents in a self-hosted knowledge base via curl.
+description: "Manage SiYuan notes through its API."
 version: 1.0.0
 author: FEUAZUR
 license: MIT

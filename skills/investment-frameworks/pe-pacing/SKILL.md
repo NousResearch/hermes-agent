@@ -10,14 +10,7 @@ triggers:
   - workbook reconciliation
   - reconciliation gates
   - PE cash flow
-description: >
-  Private equity pacing model for the Wake Robin Liquidity Architecture.
-  Covers the Takahashi-Alexander deterministic cash-flow projection (default
-  parameters, golden CSV regression test, ledger integration), STAIRS
-  market-coupled adapter, capital call obligation bridge with workbook-wins
-  precedence, four-tier reconciliation gates (advisory/warning/requires_override/
-  hard_fail), PE sleeve policy (25% target), and illiquidity overlay that
-  prevents PE NAV from being treated as spendable liquidity.
+description: "Model private equity pacing and liquidity."
 ---
 
 # PE Pacing Skill

@@ -1,12 +1,6 @@
 ---
 name: biotech-screener-ops-ledger
-description: >
-  Umbrella skill for the biotech screener ops/knowledge layer — held-spec ledger,
-  first-fire validator, contradiction detector, daily/weekly briefs, DE schema gate
-  fixes and data-integrity checks, in-code operator alert patterns (Telegram +
-  Town/email), and TrapOps monitoring. Covers the four-layer
-  capture→normalize→reason→return model, SNAPSHOT_COLUMNS drift fixes, rank-check
-  logic, catalyst-date staleness, two-channel alert design, and Spec 090 Town delivery.
+description: "Maintain biotech screener ops ledgers and gates."
 when_to_use: >
   User asks about spec status, held branches, first-fire validation, ops ledger,
   knowledge layer, contradiction detection, or operator brief generation for the

@@ -1,6 +1,6 @@
 ---
 name: ai-landscape-monitoring
-description: "AI industry landscape intelligence framework for investment and operational decisions. Evaluation framework for distinguishing hype from substance, competitive positioning (Hermes/Town vs alternatives), monitoring domains, claim classification, and Notable Industry Signals Log. Use when evaluating AI claims, assessing competitive positioning, or producing AI landscape digests."
+description: "Evaluate AI landscape claims and competitors."
 version: 1.0.0
 author: Wake Robin
 license: proprietary

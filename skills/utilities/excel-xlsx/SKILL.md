@@ -9,13 +9,7 @@ triggers:
   - workbook
   - formula preservation
   - date serial
-description: >
-  Best-practice instructions for AI agents handling Excel/XLSX spreadsheet
-  operations. Covers workflow selection (pandas vs openpyxl), date serial
-  handling (1900 bug, 1904 epoch), formula preservation, data type protection
-  (long IDs, leading zeros), workbook structure preservation, write-only/read-only
-  modes for large files, 10 common traps, and the pandas↔openpyxl bridge pattern.
-  Source: clawhub.ai/ivangdavila/excel-xlsx
+description: "Handle Excel/XLSX workbooks safely."
 user-invocable: false
 ---
 

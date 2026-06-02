@@ -1,6 +1,6 @@
 ---
 name: browser-automation
-description: Use when controlling web pages with the OpenClaw browser tool, especially multi-step flows, login checks, tab management, or recovery from stale refs/timeouts.
+description: "Control browser flows with OpenClaw tools."
 user-invocable: false
 triggers:
   - browser tool

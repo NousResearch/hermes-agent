@@ -1894,7 +1894,10 @@ def test_on_session_switch_commits_old_session_and_rotates_id():
 
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -1917,7 +1920,10 @@ def test_on_session_switch_commits_pending_tokens_without_turn_count():
     provider.on_session_switch("new-sid")
 
     provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -1970,7 +1976,10 @@ def test_on_session_switch_waits_for_inflight_sync_thread():
     provider.on_session_switch("new-sid")
 
     assert join_calls, "expected on_session_switch to join the in-flight sync thread"
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
 
 
 def test_on_session_switch_noop_on_empty_new_id():
@@ -2125,7 +2134,10 @@ def test_on_session_end_marks_session_clean_after_successful_commit():
 
     provider.on_session_end([])
 
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._turn_count == 0
 
 
@@ -2147,7 +2159,10 @@ def test_on_session_end_commits_pending_tokens_without_turn_count():
     provider.on_session_end([])
 
     provider._client.get.assert_called_once_with("/api/v1/sessions/old-sid")
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
 
 
 def test_end_then_switch_does_not_double_commit():
@@ -2160,7 +2175,10 @@ def test_end_then_switch_does_not_double_commit():
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
     # Exactly one commit call, on the OLD session, fired by on_session_end.
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -2172,7 +2190,10 @@ def test_end_then_switch_with_pending_tokens_does_not_double_commit():
     provider.on_session_end([])
     provider.on_session_switch("new-sid", parent_session_id="old-sid")
 
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     assert provider._session_id == "new-sid"
     assert provider._turn_count == 0
 
@@ -2319,7 +2340,10 @@ def test_on_session_switch_does_not_block_caller_on_slow_drain():
     # Let the finalizer finish so it doesn't leak past the test.
     release_drain.set()
     assert provider._drain_finalizers(timeout=5.0)
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
 
 
 def test_on_session_switch_defers_old_commit_to_finalizer_thread():
@@ -2334,7 +2358,7 @@ def test_on_session_switch_defers_old_commit_to_finalizer_thread():
     committed = threading.Event()
     drain_timeouts = []
 
-    def fake_post(path):
+    def fake_post(path, payload=None):
         committed.set()
         return {}
 
@@ -2352,7 +2376,10 @@ def test_on_session_switch_defers_old_commit_to_finalizer_thread():
     assert provider._turn_count == 0
     # The old-session commit lands on the finalizer thread, not inline.
     assert committed.wait(timeout=5.0), "old session was not finalized off-thread"
-    provider._client.post.assert_called_once_with("/api/v1/sessions/old-sid/commit")
+    provider._client.post.assert_called_once_with(
+        "/api/v1/sessions/old-sid/commit",
+        {"keep_recent_count": 0},
+    )
     # The finalizer drains with the deferred (longer) budget, not inline 10s.
     assert drain_timeouts == [_DEFERRED_COMMIT_TIMEOUT]
 

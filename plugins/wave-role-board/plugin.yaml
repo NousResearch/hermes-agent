@@ -1,0 +1,10 @@
+name: wave-role-board
+version: 1.0.0
+description: "Emit Hermes progress events to a Wave Terminal T2 role board and expose status/restore tools for Coda, Clara, Mira, and Nova panes."
+author: "Hermes Agent"
+kind: standalone
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - on_session_start
+  - on_session_end

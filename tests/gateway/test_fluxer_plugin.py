@@ -519,6 +519,9 @@ async def test_send_exec_approval_posts_native_buttons_and_tracks_pending(monkey
     assert first_call.args == ("POST", "/channels/chan-1/messages")
     payload = first_call.kwargs["json"]
     assert "rm -rf /important" in payload["content"]
+    assert "Command approval required" in payload["content"]
+    assert "⚠️" not in payload["content"]
+    assert "/approve" not in payload["content"]
     buttons = payload["components"][0]["components"]
     assert [button["label"] for button in buttons] == ["Allow once", "Session", "Always", "Deny"]
     assert [button["style"] for button in buttons] == [3, 1, 2, 4]
@@ -780,7 +783,7 @@ async def test_send_slash_confirm_posts_native_buttons(monkeypatch):
     result = await adapter.send_slash_confirm(
         "chan-1",
         "Reload MCP?",
-        "This reload may invalidate caches.",
+        "This reload may invalidate caches.\n\n_Text fallback: reply `/approve`, `/always`, or `/cancel`._",
         "session-1",
         "confirm-1",
     )
@@ -790,6 +793,8 @@ async def test_send_slash_confirm_posts_native_buttons(monkeypatch):
     assert call is not None
     payload = call.kwargs["json"]
     assert "Reload MCP?" in payload["content"]
+    assert "Text fallback" not in payload["content"]
+    assert "/approve" not in payload["content"]
     assert [button["label"] for button in payload["components"][0]["components"]] == ["Approve once", "Always approve", "Cancel"]
     assert {state["kind"] for state in adapter._pending_component_actions.values()} == {"slash_confirm"}
 
@@ -836,7 +841,7 @@ async def test_application_command_interaction_dispatches_slash_text(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_reaction_add_resolves_pending_exec_approval(monkeypatch):
+async def test_reaction_add_does_not_resolve_pending_exec_approval(monkeypatch):
     from gateway.config import PlatformConfig
 
     adapter = FluxerAdapter(
@@ -869,9 +874,9 @@ async def test_reaction_add_resolves_pending_exec_approval(monkeypatch):
         }
     )
 
-    assert resolved == [("session-1", "once")]
-    assert "approval-1" not in adapter._pending_exec_approvals
-    adapter.edit_message.assert_awaited_once()
+    assert resolved == []
+    assert "approval-1" in adapter._pending_exec_approvals
+    adapter.edit_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -951,43 +956,6 @@ async def test_message_delete_for_non_approval_only_clears_seen_id(monkeypatch):
 
     assert resolved == []
     assert "msg-1" not in adapter._seen_message_ids
-
-
-@pytest.mark.asyncio
-async def test_reaction_add_ignores_unauthorized_or_bot_users(monkeypatch):
-    from gateway.config import PlatformConfig
-
-    adapter = FluxerAdapter(
-        PlatformConfig(
-            enabled=True,
-            extra={"base_url": "https://fluxer.example", "bot_token": "app.secret", "allowed_users": "user-1"},
-        )
-    )
-    adapter._pending_exec_approvals["approval-1"] = {"session_key": "session-1", "channel_id": "chan-1", "resolved": False}
-    resolved = []
-    monkeypatch.setattr("tools.approval.resolve_gateway_approval", lambda session_key, choice: resolved.append((session_key, choice)) or 1)
-
-    await adapter._handle_reaction_add(
-        {
-            "message_id": "approval-1",
-            "channel_id": "chan-1",
-            "user_id": "user-2",
-            "emoji": {"name": "❌"},
-            "member": {"user": {"id": "user-2", "bot": False}},
-        }
-    )
-    await adapter._handle_reaction_add(
-        {
-            "message_id": "approval-1",
-            "channel_id": "chan-1",
-            "user_id": "user-1",
-            "emoji": {"name": "❌"},
-            "member": {"user": {"id": "user-1", "bot": True}},
-        }
-    )
-
-    assert resolved == []
-    assert "approval-1" in adapter._pending_exec_approvals
 
 
 @pytest.mark.asyncio

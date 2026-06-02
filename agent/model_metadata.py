@@ -1722,7 +1722,18 @@ def get_model_context_length(
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
-            return ctx
+            # models.dev currently reports MiniMax-M3's max output window
+            # (512K) as context. The provider docs and static fallback define
+            # M3 as 1M context, so reject the underreport and fall through to
+            # DEFAULT_CONTEXT_LENGTHS.
+            if ctx < 1_000_000 and _model_name_suggests_minimax_m3(model):
+                logger.info(
+                    "Rejecting models.dev context=%s for %r "
+                    "(MiniMax-M3 underreport); falling through to hardcoded defaults",
+                    ctx, model,
+                )
+            else:
+                return ctx
 
     # 6. OpenRouter live API metadata — provider-unaware fallback.
     # Only consulted when the provider is unknown (no effective_provider),

@@ -2421,6 +2421,14 @@ DEFAULT_CONFIG = {
     "paste_collapse_char_threshold": 2000,
 
 
+    "smart_model_routing": {
+        "enabled": False,
+        "cheap_model": "deepseek/deepseek-v4-flash",
+        "max_simple_chars": 200,
+        "max_simple_words": 40,
+        "complexity_keywords": ["implement", "debug", "refactor", "diagnose", "migrate", "architect", "explain", "why does", "how does", "broken", "failing"],
+        "simple_keywords": ["status", "show", "check", "list", "restart", "what is", "ping", "health"],
+    },
     # Config schema version - bump this when adding new required fields
     "_config_version": 27,
 }

@@ -611,6 +611,25 @@ def _has_any_provider_configured() -> bool:
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
+
+    # Include key_env from named custom providers so setup detection
+    # recognizes providers that use non-standard env var names.
+    # Without this, users with custom_providers like
+    #   custom_providers: [{key_env: ARK_API_KEY, ...}]
+    # would be told "no provider configured" even though
+    # resolve_runtime_provider() can find usable credentials. (#37296)
+    for section_name in ("providers", "custom_providers"):
+        section = cfg.get(section_name)
+        if not section:
+            continue
+        entries = list(section.values()) if isinstance(section, dict) else section
+        if isinstance(entries, (list, tuple)):
+            for entry in entries:
+                if isinstance(entry, dict):
+                    key_env = str(entry.get("key_env") or "").strip()
+                    if key_env:
+                        provider_env_vars.add(key_env)
+
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 

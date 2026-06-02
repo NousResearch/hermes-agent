@@ -1606,6 +1606,41 @@ class TestSessionSummaryIntegration:
         assert "retain-project" in record.summary_text
         assert raw_tool_log not in record.summary_text
 
+    def test_summary_update_cadence_runs_before_retain_cadence(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            session_summary_enabled=True,
+            session_summary_update_every_n_turns=2,
+            retain_every_n_turns=5,
+            retain_async=False,
+        )
+
+        p.sync_turn("Continue project cadence-project.", "ok")
+        p.sync_turn("Next cadence-project step.", "done")
+
+        p._client.aretain_batch.assert_not_called()
+        assert p._sync_thread is None
+        record = p._get_session_summary_store().get(p._session_summary_key())
+        assert record is not None
+        assert record.turn == 2
+        assert "cadence-project" in record.summary_text
+
+        p.sync_turn("Third cadence-project turn.", "noted")
+        p.sync_turn("Fourth cadence-project turn.", "noted")
+        p.sync_turn("Fifth cadence-project turn.", "noted")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = json.loads(item["content"])
+        flat_content = json.dumps(content)
+        assert len(content) == 5
+        assert "Rolling session summary" not in flat_content
+        assert "cadence-project" in flat_content
+        assert item["metadata"]["turn_index"] == "5"
+        assert item["metadata"]["message_count"] == "10"
+
     def test_on_pre_compress_updates_and_returns_sanitized_summary_block(
         self, provider_with_config
     ):

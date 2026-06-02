@@ -2065,7 +2065,12 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_counter += 1
         self._turn_index = self._turn_counter
 
-        if self._turn_counter % self._retain_every_n_turns != 0:
+        retain_due = self._turn_counter % self._retain_every_n_turns == 0
+        if not retain_due:
+            self._update_session_summary(
+                list(self._session_summary_messages),
+                latest_query=self._latest_summary_query(summary_messages, fallback=user_content),
+            )
             logger.debug("sync_turn: buffered turn %d (will retain at turn %d)",
                          self._turn_counter, self._turn_counter + (self._retain_every_n_turns - self._turn_counter % self._retain_every_n_turns))
             return

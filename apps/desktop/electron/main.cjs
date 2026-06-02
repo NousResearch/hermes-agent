@@ -535,6 +535,39 @@ function openExternalUrl(rawUrl) {
     return false
   }
 
+  // `file://` URLs come from the artifacts panel (the renderer can't open
+  // them itself because Chromium blocks file:// navigation from the app
+  // origin). Hand them to `shell.openPath`, which dispatches to the OS
+  // file association. If the OS can't open it (`error` is a non-empty
+  // string), fall back to revealing the file in the system file manager.
+  if (parsed.protocol === 'file:') {
+    let localPath
+    try {
+      localPath = fileURLToPath(parsed.toString())
+    } catch {
+      return false
+    }
+
+    void shell
+      .openPath(localPath)
+      .then(error => {
+        if (!error) {
+          return
+        }
+
+        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
+
+        try {
+          shell.showItemInFolder(localPath)
+        } catch (revealError) {
+          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
+        }
+      })
+      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
+
+    return true
+  }
+
   if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
     return false
   }
@@ -1526,10 +1559,18 @@ function resolveRendererIndex() {
 }
 
 function resolveHermesCwd() {
+  // In a packaged build, `process.cwd()` resolves to the install root (e.g.
+  // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
+  // on macOS). Sessions spawned there leave files inside the app bundle
+  // and bewilder users when "where did my files go?" is the install dir.
+  // The user-configurable default project directory wins over everything,
+  // followed by env hints (only honored when packaged if they point at a
+  // real directory), then the home dir.
   const candidates = [
+    readDefaultProjectDir(),
     process.env.HERMES_DESKTOP_CWD,
     process.env.INIT_CWD,
-    process.cwd(),
+    IS_PACKAGED ? null : process.cwd(),
     !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
     app.getPath('home')
   ]
@@ -1541,6 +1582,48 @@ function resolveHermesCwd() {
   }
 
   return app.getPath('home')
+}
+
+// Persisted "Default project directory" — surfaced as a setting in the
+// renderer (see app/settings/sessions-settings.tsx). Stored as JSON in
+// userData so it survives self-updates without bleeding into the new
+// install. `null` means "no preference, fall back to the usual chain".
+const DEFAULT_PROJECT_DIR_CONFIG_FILENAME = 'project-dir.json'
+
+function defaultProjectDirConfigPath() {
+  return path.join(app.getPath('userData'), DEFAULT_PROJECT_DIR_CONFIG_FILENAME)
+}
+
+function readDefaultProjectDir() {
+  try {
+    const raw = fs.readFileSync(defaultProjectDirConfigPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+
+    if (parsed && typeof parsed.dir === 'string' && parsed.dir.trim()) {
+      const resolved = path.resolve(parsed.dir)
+
+      if (directoryExists(resolved)) {
+        return resolved
+      }
+    }
+  } catch {
+    // Missing / unreadable / malformed → fall through to the rest of the
+    // candidate chain.
+  }
+
+  return null
+}
+
+function writeDefaultProjectDir(dir) {
+  const target = defaultProjectDirConfigPath()
+  const payload = dir ? JSON.stringify({ dir: path.resolve(dir) }, null, 2) : JSON.stringify({}, null, 2)
+
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, payload, 'utf8')
+  } catch (error) {
+    rememberLog(`[settings] write default project dir failed: ${error.message}`)
+  }
 }
 
 function createPythonBackend(root, label, dashboardArgs, options = {}) {
@@ -2702,6 +2785,28 @@ function installContextMenu(window) {
       )
     }
 
+    // Spell-check suggestions for the misspelled word under the caret.
+    // Chromium surfaces them on `params.dictionarySuggestions`; we offer the
+    // top 5 plus a "Add to dictionary" affordance.
+    const suggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : []
+
+    if (isEditable && params.misspelledWord && suggestions.length > 0) {
+      if (template.length) template.push({ type: 'separator' })
+
+      for (const suggestion of suggestions.slice(0, 5)) {
+        template.push({
+          label: suggestion,
+          click: () => window.webContents.replaceMisspelling(suggestion)
+        })
+      }
+
+      template.push({ type: 'separator' })
+      template.push({
+        label: 'Add to dictionary',
+        click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
+      })
+    }
+
     if (hasSelection || isEditable) {
       if (template.length) template.push({ type: 'separator' })
       if (isEditable) {
@@ -3497,6 +3602,45 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
   }
 })
 
+// User-configurable default project directory. The renderer reads this on
+// settings mount and seeds the value into the picker; writing back persists
+// it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next
+// session spawn (no app restart needed).
+ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
+  dir: readDefaultProjectDir(),
+  defaultLabel: path.join(app.getPath('home'), 'hermes-projects')
+}))
+
+ipcMain.handle('hermes:setting:defaultProjectDir:set', async (_event, dir) => {
+  const next = typeof dir === 'string' && dir.trim() ? dir.trim() : null
+
+  if (next) {
+    try {
+      fs.mkdirSync(next, { recursive: true })
+    } catch (error) {
+      throw new Error(`Could not create directory: ${error.message}`)
+    }
+  }
+
+  writeDefaultProjectDir(next)
+
+  return { dir: next }
+})
+
+ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose default project directory',
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: readDefaultProjectDir() || app.getPath('home')
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true, dir: null }
+  }
+
+  return { canceled: false, dir: result.filePaths[0] }
+})
+
 ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
 
 ipcMain.handle('hermes:logs:reveal', async () => {
@@ -3806,12 +3950,36 @@ app.whenReady().then(() => {
   installMediaPermissions()
   registerMediaProtocol()
   ensureWslWindowsFonts()
+  configureSpellChecker()
   createWindow()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
+
+// Seed Chromium's spellchecker with the system locale (falling back to en-US).
+// On macOS Electron uses the native spellchecker which ignores this list, but
+// on Windows/Linux Chromium downloads Hunspell dictionaries on demand and
+// won't enable any without an explicit language.
+function configureSpellChecker() {
+  try {
+    const defaultSession = session.defaultSession
+
+    if (!defaultSession || typeof defaultSession.setSpellCheckerLanguages !== 'function') {
+      return
+    }
+
+    const available = defaultSession.availableSpellCheckerLanguages || []
+    const locale = (app.getLocale && app.getLocale()) || 'en-US'
+    const candidates = [locale, locale.split('-')[0], 'en-US', 'en']
+    const chosen = candidates.find(lang => available.includes(lang)) || 'en-US'
+
+    defaultSession.setSpellCheckerLanguages([chosen])
+  } catch (error) {
+    rememberLog(`Spellchecker setup failed: ${error.message}`)
+  }
+}
 
 app.on('before-quit', () => {
   // Quitting mid-install should stop the installer, not orphan it.

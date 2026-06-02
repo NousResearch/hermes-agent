@@ -1024,6 +1024,8 @@ export function ChatBar({
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-label="Message"
+        autoCorrect="off"
+        autoCapitalize="off"
         className={cn(
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
@@ -1045,6 +1047,7 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
+        spellCheck="true"
         suppressContentEditableWarning
       />
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree

@@ -1677,6 +1677,21 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
                 return s[: -len(suffix)].rstrip("_-")
         return None
 
+    def _collapse_duplicate_mcp_prefixes(s: str) -> str:
+        """Collapse duplicated leading ``mcp_`` prefixes to one prefix.
+
+        Some MCP tool-call repair paths accidentally prepend the namespace
+        twice (e.g. ``mcp_mcp_server_tool``). That shape is far enough from the
+        canonical tool name that the fuzzy matcher can miss, so normalize it
+        before exact/fuzzy matching.
+        """
+        lowered = s.lower()
+        if not lowered.startswith("mcp_"):
+            return lowered
+        while lowered.startswith("mcp_mcp_"):
+            lowered = lowered.replace("mcp_mcp_", "mcp_", 1)
+        return lowered
+
     # Cheap fast-paths first — these cover the common case.
     lowered = tool_name.lower()
     if lowered in agent.valid_tool_names:
@@ -1684,9 +1699,12 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     normalized = _norm(tool_name)
     if normalized in agent.valid_tool_names:
         return normalized
+    collapsed_mcp = _collapse_duplicate_mcp_prefixes(tool_name)
+    if collapsed_mcp in agent.valid_tool_names:
+        return collapsed_mcp
 
     # Build the full candidate set for class-like emissions.
-    cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
+    cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name), collapsed_mcp}
     # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
     for _ in range(2):
         extra: set[str] = set()

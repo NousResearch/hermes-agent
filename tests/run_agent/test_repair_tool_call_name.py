@@ -25,6 +25,7 @@ VALID = {
     "read_file",
     "write_file",
     "terminal",
+    "mcp_browser_click",
 }
 
 
@@ -94,6 +95,11 @@ class TestClassLikeEmissions:
 
     def test_mixed_separators_and_suffix(self, repair):
         assert repair("write-file_Tool") == "write_file"
+
+    def test_duplicate_mcp_prefix_collapses_before_fuzzy_match(self, repair):
+        # Regression for #37171 — duplicated namespace prefixes should be
+        # normalized to a single leading mcp_ before the fuzzy matcher runs.
+        assert repair("mcp_mcp_browser_click") == "mcp_browser_click"
 
 
 class TestEdgeCases:

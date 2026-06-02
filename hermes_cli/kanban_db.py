@@ -1052,6 +1052,29 @@ CREATE TABLE IF NOT EXISTS task_attachments (
     created_at   INTEGER NOT NULL
 );
 
+-- First-class registry of artifacts a task produced (commit SHAs, files,
+-- URLs, deploy links, message ids). Promoted from the per-run
+-- ``metadata["artifacts"]`` string-list into a typed, queryable form so a
+-- board can answer "what did this task produce, and is it real?".
+-- ``verified`` is a best-effort trust signal stamped out-of-band (a later
+-- ``kanban verify-artifacts`` pass); rows land 'unchecked' at completion.
+CREATE TABLE IF NOT EXISTS task_artifacts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       TEXT NOT NULL,
+    run_id        INTEGER,
+    kind          TEXT NOT NULL,
+    -- kind: file | commit | url | deploy | doc | message | pr
+    ref           TEXT NOT NULL,
+    label         TEXT,
+    verified      TEXT NOT NULL DEFAULT 'unchecked',
+    -- verified: unchecked | verified | unverified | missing
+    verified_at   INTEGER,
+    verify_detail TEXT,
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_task ON task_artifacts(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_verified ON task_artifacts(verified);
+
 -- Subscription from a gateway source (platform + chat + thread) to a
 -- task. The gateway's kanban-notifier watcher tails task_events and
 -- pushes ``completed`` / ``blocked`` / ``spawn_auto_blocked`` events to
@@ -3502,6 +3525,76 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+_VALID_ARTIFACT_KINDS = {"file", "commit", "url", "deploy", "doc", "message", "pr"}
+_MAX_ARTIFACTS_PER_RUN = 50
+_MAX_REF_LEN = 2048
+_MAX_LABEL_LEN = 256
+_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _infer_artifact_kind(ref: str) -> str:
+    """Conservative kind inference for a bare ref. Biased toward file over
+    commit so a misclassified filename degrades to 'missing', never error."""
+    r = ref.strip()
+    low = r.lower()
+    if low.startswith(("http://", "https://")):
+        return "url"
+    if "/" in r or "." in r:
+        return "file"
+    if _COMMIT_RE.match(low):
+        return "commit"
+    return "message"
+
+
+def _normalize_artifacts(raw, metadata):
+    """Parse artifacts (typed {kind,ref,label} or bare strings) from the kwarg
+    AND metadata['artifacts'] into a deduped, validated, capped list of
+    (kind, ref, label). All untrusted input is bounded here."""
+    items = []
+    if isinstance(metadata, dict):
+        md = metadata.get("artifacts")
+        if isinstance(md, (list, tuple)):
+            items.extend(md)
+    if raw is not None:
+        items.extend(raw if isinstance(raw, (list, tuple)) else [raw])
+    out, seen = [], set()
+    for it in items:
+        if isinstance(it, dict):
+            ref = str(it.get("ref", "")).strip()
+            kind = str(it.get("kind", "")).strip().lower() or _infer_artifact_kind(ref)
+            label = it.get("label")
+        else:
+            ref = str(it).strip()
+            kind = _infer_artifact_kind(ref)
+            label = None
+        if not ref or len(ref) > _MAX_REF_LEN:
+            continue
+        ref = "".join(ch for ch in ref if ch == " " or ch.isprintable())
+        if kind not in _VALID_ARTIFACT_KINDS:
+            kind = "message"
+        if label is not None:
+            label = "".join(ch for ch in str(label) if ch == " " or ch.isprintable())[:_MAX_LABEL_LEN] or None
+        key = (kind, ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((kind, ref, label))
+        if len(out) >= _MAX_ARTIFACTS_PER_RUN:
+            break
+    return out
+
+
+def _persist_artifacts(conn, task_id, run_id, artifacts, now):
+    """Insert normalized (kind, ref, label) rows into task_artifacts as
+    'unchecked' (verification is a separate out-of-band pass)."""
+    for kind, ref, label in artifacts:
+        conn.execute(
+            "INSERT INTO task_artifacts (task_id, run_id, kind, ref, label, "
+            "verified, created_at) VALUES (?, ?, ?, ?, ?, 'unchecked', ?)",
+            (task_id, run_id, kind, ref, label, now),
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3510,6 +3603,7 @@ def complete_task(
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
+    artifacts: Optional[Iterable] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
@@ -3651,6 +3745,11 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+        # Promote artifacts (from the kwarg and/or metadata["artifacts"]) into
+        # the first-class task_artifacts registry — typed, queryable, 'unchecked'.
+        _norm_artifacts = _normalize_artifacts(artifacts, metadata)
+        if _norm_artifacts:
+            _persist_artifacts(conn, task_id, run_id, _norm_artifacts, now)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the

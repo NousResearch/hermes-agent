@@ -5,7 +5,7 @@ export const shortCwd = (cwd: string, max = 28) => {
   return p.length <= max ? p : `…${p.slice(-(max - 1))}`
 }
 
-export const fmtCwdBranch = (cwd: string, branch: null | string, max = 28) => {
+export const fmtCwdBranch = (cwd: string, branch: null | string, max = 40) => {
   if (!branch) {
     return shortCwd(cwd, max)
   }

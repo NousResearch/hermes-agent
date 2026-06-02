@@ -113,33 +113,6 @@ def test_invalid_or_missing_token_renders_generic_agent_placeholder(monkeypatch)
     assert "—" not in invalid_response.text
 
 
-def test_invalid_or_missing_token_renders_generic_agent_placeholder(monkeypatch):
-    app = FastAPI()
-    app.include_router(surface.router)
-    client = TestClient(app)
-
-    def fake_one(query, **_kwargs):
-        if "FROM sales.customer_workspaces" in query:
-            return None
-        raise AssertionError(f"unexpected query: {query}")
-
-    monkeypatch.setattr(surface.sql, "one", fake_one)
-
-    invalid_response = client.get("/w/not-a-real-token")
-    missing_response = client.get("/w")
-
-    assert invalid_response.status_code == 200
-    assert missing_response.status_code == 200
-    assert "Espacio para agentes personalizados" in invalid_response.text
-    assert "Personalized agent space" in invalid_response.text
-    assert "ear.app" in invalid_response.text
-    assert "sitiouno.us" in invalid_response.text
-    assert "?lang=en" in invalid_response.text
-    assert "?lang=es" in invalid_response.text
-    assert "placeholder" not in invalid_response.text.lower()
-    assert "—" not in invalid_response.text
-
-
 def test_public_routes_support_comment_and_reject(monkeypatch):
     app = FastAPI()
     app.include_router(surface.router)

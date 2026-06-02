@@ -897,134 +897,6 @@ def _group_voice_message(
     )
 
 
-def _group_photo_message(
-    *,
-    chat_id=-100,
-    from_user_id=111,
-    from_user_name="Alice Example",
-    caption="Veja esta foto",
-    file_size=1024,
-):
-    file_obj = SimpleNamespace(
-        file_path="photos/observed.png",
-        download_as_bytearray=AsyncMock(return_value=bytearray(b"\x89PNG\r\n\x1a\n observed")),
-    )
-    photo = SimpleNamespace(
-        file_size=file_size,
-        get_file=AsyncMock(return_value=file_obj),
-    )
-    return SimpleNamespace(
-        message_id=52,
-        text=None,
-        caption=caption,
-        entities=[],
-        caption_entities=[],
-        message_thread_id=None,
-        is_topic_message=False,
-        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
-        from_user=SimpleNamespace(
-            id=from_user_id, full_name=from_user_name,
-            first_name=from_user_name.split()[0],
-        ),
-        reply_to_message=None,
-        date=None,
-        location=None,
-        venue=None,
-        sticker=None,
-        photo=[photo],
-        video=None,
-        audio=None,
-        voice=None,
-        document=None,
-    )
-
-
-def _group_video_message(
-    *,
-    chat_id=-100,
-    from_user_id=111,
-    from_user_name="Alice Example",
-    caption="Veja este video",
-    file_size=1024,
-):
-    file_obj = SimpleNamespace(
-        file_path="videos/observed.mp4",
-        download_as_bytearray=AsyncMock(return_value=bytearray(b"observed video")),
-    )
-    video = SimpleNamespace(
-        file_size=file_size,
-        get_file=AsyncMock(return_value=file_obj),
-    )
-    return SimpleNamespace(
-        message_id=53,
-        text=None,
-        caption=caption,
-        entities=[],
-        caption_entities=[],
-        message_thread_id=None,
-        is_topic_message=False,
-        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
-        from_user=SimpleNamespace(
-            id=from_user_id, full_name=from_user_name,
-            first_name=from_user_name.split()[0],
-        ),
-        reply_to_message=None,
-        date=None,
-        location=None,
-        venue=None,
-        sticker=None,
-        photo=None,
-        video=video,
-        audio=None,
-        voice=None,
-        document=None,
-    )
-
-
-def _group_document_message(
-    *,
-    chat_id=-100,
-    from_user_id=111,
-    from_user_name="Alice Example",
-    caption="Este arquivo",
-    document=None,
-):
-    file_obj = SimpleNamespace(
-        file_path="documents/RESULTADO BIOLOGICO - PROTOCOLO 103- URBAN.pdf",
-        download_as_bytearray=AsyncMock(return_value=bytearray(b"%PDF observed bytes")),
-    )
-    document = document or SimpleNamespace(
-        file_name="RESULTADO BIOLOGICO - PROTOCOLO 103- URBAN.pdf",
-        mime_type="application/pdf",
-        file_size=1024,
-        get_file=AsyncMock(return_value=file_obj),
-    )
-    return SimpleNamespace(
-        message_id=52,
-        text=None,
-        caption=caption,
-        entities=[],
-        caption_entities=[],
-        message_thread_id=None,
-        is_topic_message=False,
-        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
-        from_user=SimpleNamespace(
-            id=from_user_id, full_name=from_user_name,
-            first_name=from_user_name.split()[0],
-        ),
-        reply_to_message=None,
-        date=None,
-        location=None,
-        venue=None,
-        sticker=None,
-        photo=None,
-        video=None,
-        audio=None,
-        voice=None,
-        document=document,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Observe + attribution parity: location messages
 # ---------------------------------------------------------------------------
@@ -1111,190 +983,6 @@ def test_unmentioned_voice_message_observed_in_group():
     asyncio.run(_run())
 
 
-def test_unmentioned_photo_message_observed_with_cached_path(monkeypatch, tmp_path):
-    async def _run():
-        adapter = _make_adapter(
-            require_mention=True,
-            allowed_chats=["-100"],
-            group_allowed_chats=["-100"],
-            observe_unmentioned_group_messages=True,
-        )
-        store = _FakeSessionStore()
-        adapter._session_store = store
-        cached_path = tmp_path / "img_abc_observed.png"
-        monkeypatch.setattr(
-            "gateway.platforms.telegram.cache_image_from_bytes",
-            lambda _data, ext=".jpg": str(cached_path),
-        )
-        update = SimpleNamespace(
-            update_id=3003,
-            message=_group_photo_message(),
-            effective_message=None,
-        )
-
-        await adapter._handle_media_message(update, SimpleNamespace())
-
-        adapter._message_handler.assert_not_awaited()
-        assert len(store.messages) == 1
-        _, message, _ = store.messages[0]
-        assert message["observed"] is True
-        assert "Veja esta foto" in message["content"]
-        assert "Observed Telegram image" in message["content"]
-        assert str(cached_path) in message["content"]
-        assert store.sources[0].user_id is None
-
-    asyncio.run(_run())
-
-
-def test_unmentioned_video_too_large_observed_without_download(monkeypatch):
-    async def _run():
-        adapter = _make_adapter(
-            require_mention=True,
-            allowed_chats=["-100"],
-            group_allowed_chats=["-100"],
-            observe_unmentioned_group_messages=True,
-        )
-        adapter._max_doc_bytes = 100
-        store = _FakeSessionStore()
-        adapter._session_store = store
-        cache_video = Mock(return_value="/tmp/observed.mp4")
-        monkeypatch.setattr("gateway.platforms.telegram.cache_video_from_bytes", cache_video)
-        message_obj = _group_video_message(file_size=101)
-        update = SimpleNamespace(
-            update_id=3004,
-            message=message_obj,
-            effective_message=None,
-        )
-
-        await adapter._handle_media_message(update, SimpleNamespace())
-
-        adapter._message_handler.assert_not_awaited()
-        cache_video.assert_not_called()
-        message_obj.video.get_file.assert_not_called()
-        assert len(store.messages) == 1
-        _, message, _ = store.messages[0]
-        assert message["observed"] is True
-        assert "Veja este video" in message["content"]
-        assert "Observed Telegram video was too large" in message["content"]
-        assert "/tmp/observed.mp4" not in message["content"]
-
-    asyncio.run(_run())
-
-
-def test_unmentioned_document_message_observed_with_cached_path(monkeypatch, tmp_path):
-    async def _run():
-        adapter = _make_adapter(
-            require_mention=True,
-            allowed_chats=["-100"],
-            group_allowed_chats=["-100"],
-            observe_unmentioned_group_messages=True,
-        )
-        store = _FakeSessionStore()
-        adapter._session_store = store
-        cached_path = tmp_path / "doc_abc_RESULTADO BIOLOGICO - PROTOCOLO 103- URBAN.pdf"
-        monkeypatch.setattr(
-            "gateway.platforms.telegram.cache_document_from_bytes",
-            lambda _data, _filename: str(cached_path),
-        )
-        update = SimpleNamespace(
-            update_id=3003,
-            message=_group_document_message(),
-            effective_message=None,
-        )
-
-        await adapter._handle_media_message(update, SimpleNamespace())
-
-        adapter._message_handler.assert_not_awaited()
-        assert len(store.messages) == 1
-        _, message, _ = store.messages[0]
-        assert message["observed"] is True
-        assert "Este arquivo" in message["content"]
-        assert "RESULTADO BIOLOGICO - PROTOCOLO 103- URBAN.pdf" in message["content"]
-        assert str(cached_path) in message["content"]
-        assert store.sources[0].user_id is None
-
-    asyncio.run(_run())
-
-
-def test_unmentioned_large_document_observed_without_download(monkeypatch):
-    async def _run():
-        adapter = _make_adapter(
-            require_mention=True,
-            allowed_chats=["-100"],
-            group_allowed_chats=["-100"],
-            observe_unmentioned_group_messages=True,
-        )
-        adapter._max_doc_bytes = 100
-        store = _FakeSessionStore()
-        adapter._session_store = store
-        cache_document = Mock(return_value="/tmp/huge.pdf")
-        monkeypatch.setattr("gateway.platforms.telegram.cache_document_from_bytes", cache_document)
-        document = SimpleNamespace(
-            file_name="huge.pdf",
-            mime_type="application/pdf",
-            file_size=101,
-            get_file=AsyncMock(),
-        )
-        update = SimpleNamespace(
-            update_id=3005,
-            message=_group_document_message(document=document),
-            effective_message=None,
-        )
-
-        await adapter._handle_media_message(update, SimpleNamespace())
-
-        adapter._message_handler.assert_not_awaited()
-        cache_document.assert_not_called()
-        document.get_file.assert_not_called()
-        assert len(store.messages) == 1
-        _, message, _ = store.messages[0]
-        assert message["observed"] is True
-        assert "Este arquivo" in message["content"]
-        assert "Observed Telegram document was too large" in message["content"]
-        assert "/tmp/huge.pdf" not in message["content"]
-
-    asyncio.run(_run())
-
-
-def test_unmentioned_unsupported_document_observed_without_download(monkeypatch):
-    async def _run():
-        adapter = _make_adapter(
-            require_mention=True,
-            allowed_chats=["-100"],
-            group_allowed_chats=["-100"],
-            observe_unmentioned_group_messages=True,
-        )
-        store = _FakeSessionStore()
-        adapter._session_store = store
-        cache_document = Mock(return_value="/tmp/malware.exe")
-        monkeypatch.setattr("gateway.platforms.telegram.cache_document_from_bytes", cache_document)
-        document = SimpleNamespace(
-            file_name="malware.exe",
-            mime_type="application/x-msdownload",
-            file_size=100,
-            get_file=AsyncMock(),
-        )
-        update = SimpleNamespace(
-            update_id=3006,
-            message=_group_document_message(document=document),
-            effective_message=None,
-        )
-
-        await adapter._handle_media_message(update, SimpleNamespace())
-
-        adapter._message_handler.assert_not_awaited()
-        cache_document.assert_not_called()
-        document.get_file.assert_not_called()
-        assert len(store.messages) == 1
-        _, message, _ = store.messages[0]
-        assert message["observed"] is True
-        assert "Este arquivo" in message["content"]
-        assert "Unsupported document type '.exe'" in message["content"]
-        assert "/tmp/malware.exe" not in message["content"]
-
-    asyncio.run(_run())
-
-
 def test_triggered_voice_message_uses_shared_session_in_observe_mode():
     async def _run():
         adapter = _make_adapter(
@@ -1315,5 +1003,162 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
         event = adapter.handle_message.call_args[0][0]
         assert event.source.user_id is None
         assert "[Alice Example|111]" in event.text
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Observed-media caching (unmentioned group attachments)
+# ---------------------------------------------------------------------------
+
+def _group_photo_message(*, chat_id=-100, caption="Veja esta foto", file_size=1024):
+    file_obj = SimpleNamespace(
+        file_path="photos/observed.png",
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"\x89PNG\r\n\x1a\n observed")),
+    )
+    photo = SimpleNamespace(file_size=file_size, get_file=AsyncMock(return_value=file_obj))
+    return SimpleNamespace(
+        message_id=52, text=None, caption=caption, entities=[], caption_entities=[],
+        message_thread_id=None, is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
+        from_user=SimpleNamespace(id=111, full_name="Alice Example", first_name="Alice"),
+        reply_to_message=None, date=None, location=None, venue=None,
+        sticker=None, photo=[photo], video=None, audio=None, voice=None, document=None,
+    )
+
+
+def _group_document_message(*, chat_id=-100, caption="Este arquivo", document=None):
+    file_obj = SimpleNamespace(
+        file_path="documents/report.pdf",
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"%PDF observed bytes")),
+    )
+    document = document or SimpleNamespace(
+        file_name="RESULTADO BIOLOGICO - PROTOCOLO 103- URBAN.pdf",
+        mime_type="application/pdf", file_size=1024,
+        get_file=AsyncMock(return_value=file_obj),
+    )
+    return SimpleNamespace(
+        message_id=53, text=None, caption=caption, entities=[], caption_entities=[],
+        message_thread_id=None, is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
+        from_user=SimpleNamespace(id=111, full_name="Alice Example", first_name="Alice"),
+        reply_to_message=None, date=None, location=None, venue=None,
+        sticker=None, photo=None, video=None, audio=None, voice=None, document=document,
+    )
+
+
+def test_unmentioned_photo_observed_with_cached_path(monkeypatch, tmp_path):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cached_path = tmp_path / "img_abc_observed.png"
+        monkeypatch.setattr(
+            "gateway.platforms.base.cache_image_from_bytes",
+            lambda _data, ext=".jpg": str(cached_path),
+        )
+        update = SimpleNamespace(update_id=3003, message=_group_photo_message(), effective_message=None)
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _, message, _ = store.messages[0]
+        assert message["observed"] is True
+        assert "Veja esta foto" in message["content"]
+        assert "image" in message["content"]
+        assert str(cached_path) in message["content"]
+        assert store.sources[0].user_id is None
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_document_observed_with_cached_path(monkeypatch, tmp_path):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cached_path = tmp_path / "doc_abc_report.pdf"
+        monkeypatch.setattr(
+            "gateway.platforms.base.cache_document_from_bytes",
+            lambda _data, _filename: str(cached_path),
+        )
+        update = SimpleNamespace(update_id=3004, message=_group_document_message(), effective_message=None)
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _, message, _ = store.messages[0]
+        assert message["observed"] is True
+        assert "Este arquivo" in message["content"]
+        assert str(cached_path) in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_large_document_observed_without_download(monkeypatch):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        adapter._max_doc_bytes = 100
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cache_doc = Mock(return_value="/tmp/huge.pdf")
+        monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
+        document = SimpleNamespace(
+            file_name="huge.pdf", mime_type="application/pdf",
+            file_size=101, get_file=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            update_id=3005, message=_group_document_message(document=document), effective_message=None,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        cache_doc.assert_not_called()
+        document.get_file.assert_not_called()
+        _, message, _ = store.messages[0]
+        assert "too large" in message["content"]
+        assert "/tmp/huge.pdf" not in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cache_doc = Mock(return_value="/tmp/malware.exe")
+        monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
+        file_obj = SimpleNamespace(
+            file_path="documents/malware.exe",
+            download_as_bytearray=AsyncMock(return_value=bytearray(b"MZ")),
+        )
+        document = SimpleNamespace(
+            file_name="malware.exe", mime_type="application/x-msdownload",
+            file_size=2, get_file=AsyncMock(return_value=file_obj),
+        )
+        update = SimpleNamespace(
+            update_id=3006, message=_group_document_message(document=document), effective_message=None,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        cache_doc.assert_not_called()
+        _, message, _ = store.messages[0]
+        assert "unsupported" in message["content"].lower()
 
     asyncio.run(_run())

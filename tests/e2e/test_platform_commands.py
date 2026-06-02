@@ -11,6 +11,7 @@ Tests are parametrized over platforms via the ``platform`` fixture in conftest.
 """
 
 import asyncio
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -113,6 +114,43 @@ class TestSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert response_text == "agent-handled"
         runner.request_restart.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plaintext_restart_gateway_uses_service_path_under_launchd(self, adapter, runner, platform, monkeypatch):
+        if platform != Platform.TELEGRAM:
+            pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
+
+        # macOS launchd sets XPC_SERVICE_NAME (not INVOCATION_ID).  The gateway
+        # must take the service-restart path (exit 75) so KeepAlive relaunches
+        # it; the detached path would exit 0 and the job would stay dead.
+        # (NousResearch/hermes-agent #29180 / #9659 / #35043)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway-test")
+        runner.request_restart = MagicMock(return_value=True)
+
+        send = await send_and_capture(adapter, "restart gateway", platform)
+
+        send.assert_called_once()
+        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+    @pytest.mark.asyncio
+    async def test_plaintext_restart_gateway_bare_process_uses_detached_path(self, adapter, runner, platform, monkeypatch):
+        if platform != Platform.TELEGRAM:
+            pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
+
+        # No service manager: a shell-launched macOS process reports
+        # XPC_SERVICE_NAME="0" and no INVOCATION_ID, so the detached
+        # self-restart path must be kept (nothing else would relaunch it).
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+        runner.request_restart = MagicMock(return_value=True)
+
+        send = await send_and_capture(adapter, "restart gateway", platform)
+
+        send.assert_called_once()
+        runner.request_restart.assert_called_once_with(detached=True, via_service=False)
 
     @pytest.mark.asyncio
     async def test_personality_lists_options(self, adapter, platform):

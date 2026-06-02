@@ -10623,8 +10623,17 @@ class GatewayRunner:
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # launchd doesn't set INVOCATION_ID; it sets XPC_SERVICE_NAME to the job
+        # label (e.g. "ai.hermes.gateway-alex") for managed jobs, and "0" for
+        # shell-launched processes.  Without this, macOS LaunchAgents take the
+        # detached self-restart path, exit 0, and KeepAlive{SuccessfulExit=false}
+        # never relaunches them — the gateway stays dead until manual recovery.
+        # (NousResearch/hermes-agent #29180 / #9659 / #35043)
+        _under_launchd = sys.platform == "darwin" and os.environ.get(
+            "XPC_SERVICE_NAME", "0"
+        ) not in ("", "0")
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        if _under_service or _under_launchd or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

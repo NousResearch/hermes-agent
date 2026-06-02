@@ -122,6 +122,19 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
 
+    def test_strips_trailing_v1_from_base_url(self):
+        """SDK appends its own /v1, so a configured /v1 suffix must not double up."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x", base_url="https://api.anthropic.com/v1")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://api.anthropic.com"
+
+    def test_strips_trailing_v1_with_slash_from_base_url(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x", base_url="https://proxy.example.com/anthropic/v1/")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(

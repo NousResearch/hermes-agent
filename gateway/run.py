@@ -10671,14 +10671,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+        reply_ctx_text = getattr(event, "reply_to_text", None)
+        if not reply_ctx_text and event.reply_to_message_id:
+            # Media-only replies carry an id without quoted text; recover the
+            # persisted transcript content when that platform id is available.
+            _target_id = str(event.reply_to_message_id)
+            for _entry in reversed(history):
+                if str(_entry.get("message_id") or "") == _target_id:
+                    _entry_content = _entry.get("content")
+                    if isinstance(_entry_content, str) and _entry_content.strip():
+                        reply_ctx_text = _entry_content.strip()
+                    break
+        if reply_ctx_text and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
             # already appears in history. The prefix isn't deduplication, it's
             # disambiguation: it tells the agent *which* prior message the user
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            reply_snippet = reply_ctx_text[:500]
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

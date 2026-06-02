@@ -938,6 +938,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name == "Workflow":
+            # Caduceus Loom — needs the orchestrating agent to spawn worker
+            # leaves, so dispatch with parent_agent=self (like delegate_task).
+            spinner = None
+            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
+                face = random.choice(KawaiiSpinner.get_waiting_faces())
+                spinner = KawaiiSpinner(f"{face} ⚕ weaving workflow · (Caduceus)", spinner_type='dots', print_fn=agent._print_fn)
+                spinner.start()
+            _wf_result = None
+            try:
+                function_result = agent._dispatch_workflow(function_args, effective_task_id)
+                _wf_result = function_result
+            finally:
+                tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl('Workflow', function_args, tool_duration, result=_wf_result)
+                if spinner:
+                    spinner.stop(cute_msg)
+                elif agent._should_emit_quiet_tool_messages():
+                    agent._vprint(f"  {cute_msg}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

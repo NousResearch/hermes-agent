@@ -4809,6 +4809,25 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _dispatch_workflow(self, function_args: dict, task_id: str = None) -> str:
+        """Single call site for the Workflow (Caduceus Loom) tool dispatch.
+
+        Like delegate_task, the Workflow tool needs the orchestrating agent
+        (to spawn worker leaves on the worker tier), so it is dispatched here
+        with ``parent_agent=self`` rather than through the generic registry
+        path (which does not supply the agent context).
+        """
+        from tools.workflow_tool import workflow_tool as _workflow_tool
+        return _workflow_tool(
+            script=function_args.get("script"),
+            name=function_args.get("name"),
+            args=function_args.get("args"),
+            script_path=function_args.get("scriptPath"),
+            resume_from_run_id=function_args.get("resumeFromRunId"),
+            parent_agent=self,
+            task_id=task_id,
+        )
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:

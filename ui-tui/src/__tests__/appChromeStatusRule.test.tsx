@@ -81,4 +81,33 @@ describe('StatusRule session count click target', () => {
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
     expect(openSwitcher).toHaveBeenCalledOnce()
   })
+
+  it('keeps status + model and drops the low-value tail on a narrow terminal', () => {
+    const element = StatusRule({
+      bgCount: 0,
+      busy: false,
+      cols: 44,
+      cwdLabel: '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)',
+      liveSessionCount: 3,
+      model: 'opus-4.8',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: Date.now() - 60_000,
+      showCost: true,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
+      voiceLabel: 'voice off'
+    })
+
+    const rendered = textContent(element)
+
+    // Must-keep essentials survive intact …
+    expect(rendered).toContain('ready')
+    expect(rendered).toContain('opus 4.8')
+    // … while the low-value tail (session count, cost) is dropped, not truncated.
+    expect(rendered).not.toContain('3 sessions')
+    expect(rendered).not.toContain('$0.5000')
+  })
 })

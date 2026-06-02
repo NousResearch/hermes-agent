@@ -720,6 +720,11 @@ class AIAgent:
         self.session_cache_write_tokens = 0
         self.session_reasoning_tokens = 0
         self.session_api_calls = 0
+        # Snapshot of the most recent successful provider call, normalized into
+        # Hermes' canonical usage shape. Session counters above are cumulative;
+        # this per-call record lets status/usage surfaces show the last turn's
+        # cached-vs-uncached split without re-parsing logs or provider payloads.
+        self.last_turn_usage: Optional[Dict[str, int]] = None
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"

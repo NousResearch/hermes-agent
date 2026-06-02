@@ -2152,6 +2152,20 @@ def run_conversation(
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+                    # Keep the final successful provider-call usage available for
+                    # `/context` / `/usage` style surfaces. The session_* counters
+                    # above are cumulative; this snapshot preserves the last turn's
+                    # cache split without provider-specific payload parsing later.
+                    agent.last_turn_usage = {
+                        "input_tokens": canonical_usage.input_tokens,
+                        "output_tokens": canonical_usage.output_tokens,
+                        "cache_read_tokens": canonical_usage.cache_read_tokens,
+                        "cache_write_tokens": canonical_usage.cache_write_tokens,
+                        "reasoning_tokens": canonical_usage.reasoning_tokens,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                    }
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""

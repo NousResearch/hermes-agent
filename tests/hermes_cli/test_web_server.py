@@ -385,6 +385,49 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/sessions?archived=bogus")
         assert resp.status_code == 400
 
+    def test_get_sessions_rejects_unknown_order_value(self):
+        resp = self.client.get("/api/sessions?order=sideways")
+        assert resp.status_code == 400
+
+    def test_get_sessions_order_recent_surfaces_compression_tip(self):
+        """A long-running conversation that auto-compresses must stay on the
+        first page by recency, listed under its live continuation id."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            old = _time.time() - 86_400
+            # Old conversation that later compresses into a fresh continuation.
+            # The continuation must start at/after the parent's ended_at to be
+            # recognised as a compression tip (not a sub-agent/branch).
+            db.create_session(session_id="root-old", source="cli")
+            db.append_message(session_id="root-old", role="user", content="kickoff")
+            db.end_session("root-old", "compression")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (old, old + 10, "root-old"),
+            )
+            db.create_session(session_id="tip-new", source="cli", parent_session_id="root-old")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (old + 10, "tip-new"))
+            db.append_message(session_id="tip-new", role="user", content="continued just now")
+            # A brand-new unrelated session started after the root but before now.
+            db.create_session(session_id="mid", source="cli")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (_time.time() - 3600, "mid"))
+            db.append_message(session_id="mid", role="user", content="hello")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        rows = self.client.get("/api/sessions?order=recent&limit=5").json()["sessions"]
+        ids = [r["id"] for r in rows]
+        # The compressed conversation surfaces under its live tip id...
+        assert "tip-new" in ids
+        # ...carrying the durable lineage root so the desktop can match pins.
+        tip = next(r for r in rows if r["id"] == "tip-new")
+        assert tip.get("_lineage_root_id") == "root-old"
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 
@@ -1615,13 +1658,52 @@ class TestNewEndpoints:
         assert data["has_category"] is True
         assert isinstance(data["providers"], list)
         assert data["providers"], "tts always has at least the built-in providers"
+        # active_provider is part of the contract so the GUI can highlight the
+        # provider actually written to config (else it falls back to the first
+        # keyless one). It's either None or the name of one listed provider.
+        assert "active_provider" in data
+        names = {p["name"] for p in data["providers"]}
+        assert data["active_provider"] is None or data["active_provider"] in names
         for prov in data["providers"]:
             assert "name" in prov
+            assert "is_active" in prov
             assert "env_vars" in prov
             assert isinstance(prov["env_vars"], list)
             for ev in prov["env_vars"]:
                 assert "key" in ev
                 assert "is_set" in ev
+        # active_provider summarizes the first provider flagged is_active
+        # (some catalogs list two rows backed by the same config value, e.g.
+        # Firecrawl cloud + self-hosted both map to web.backend=firecrawl).
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        if active:
+            assert data["active_provider"] == active[0]
+        else:
+            assert data["active_provider"] is None
+
+    def test_get_toolset_config_reflects_selected_provider(self):
+        """Selecting a provider is reflected in the next /config read.
+
+        Regression: the GUI's provider panel highlighted the first keyless
+        provider on relaunch because /config never reported which provider was
+        actually active. After selecting one, is_active / active_provider must
+        point at it.
+        """
+        sel = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert sel.status_code == 200
+
+        resp = self.client.get("/api/tools/toolsets/web/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active_provider"] == "Firecrawl Self-Hosted"
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        # The first active row is what the GUI highlights; it must be the
+        # selected provider.
+        assert active, "expected at least one provider flagged active"
+        assert active[0] == "Firecrawl Self-Hosted"
 
     def test_get_toolset_config_no_category_toolset(self):
         """A toolset without a TOOL_CATEGORIES entry returns has_category False."""

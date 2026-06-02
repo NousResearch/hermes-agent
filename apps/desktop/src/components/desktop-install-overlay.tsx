@@ -62,9 +62,7 @@ function formatStageName(name: string): string {
   if (name.length <= 3) return name
   return name
     .split('-')
-    .map((word, i) =>
-      i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word
-    )
+    .map((word, i) => (i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
     .join(' ')
 }
 
@@ -116,17 +114,10 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
         state === 'failed' && 'bg-destructive/10'
       )}
     >
-      <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center">
-        {icon}
-      </div>
+      <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center">{icon}</div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span
-            className={cn(
-              'truncate text-sm font-medium',
-              state === 'pending' && 'text-muted-foreground'
-            )}
-          >
+          <span className={cn('truncate text-sm font-medium', state === 'pending' && 'text-muted-foreground')}>
             {formatStageName(descriptor.name)}
           </span>
           <span className="flex-shrink-0 text-xs tabular-nums text-muted-foreground">
@@ -135,9 +126,7 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
             {state === 'failed' ? STATE_LABEL[state] : null}
           </span>
         </div>
-        {reason && state !== 'pending' && (
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">{reason}</p>
-        )}
+        {reason && state !== 'pending' && <p className="mt-0.5 truncate text-xs text-muted-foreground">{reason}</p>}
       </div>
     </li>
   )
@@ -180,7 +169,7 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
           durationMs: ev.durationMs ?? null,
           // Stamp the start time on the running transition so the UI can show
           // a live elapsed timer; preserve it across repeated running events.
-          startedAt: ev.state === 'running' ? prev?.startedAt ?? Date.now() : prev?.startedAt ?? null,
+          startedAt: ev.state === 'running' ? (prev?.startedAt ?? Date.now()) : (prev?.startedAt ?? null),
           json: ev.json ?? null,
           error: ev.error ?? null
         }
@@ -217,6 +206,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const [state, setState] = useState<DesktopBootstrapState>(EMPTY_STATE)
   const [logOpen, setLogOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -293,8 +283,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
         <div className="w-full max-w-xl rounded-xl border bg-card p-8 shadow-xl">
           <h2 className="text-2xl font-semibold tracking-tight">Hermes needs a one-time install</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Automated first-launch install isn{'\u2019'}t available on {platformLabel} yet. Open Terminal and
-            run the command below, then relaunch this app. Subsequent launches will skip this step.
+            Automated first-launch install isn{'\u2019'}t available on {platformLabel} yet. Open Terminal and run the
+            command below, then relaunch this app. Subsequent launches will skip this step.
           </p>
 
           <div className="mt-4">
@@ -328,11 +318,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             <span className="text-xs text-muted-foreground">
               Will install to <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">{ups.activeRoot}</code>
             </span>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => window.location.reload()}
-            >
+            <Button variant="default" size="sm" onClick={() => window.location.reload()}>
               I{'\u2019'}ve run it -- retry
             </Button>
           </div>
@@ -382,10 +368,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                 <div
-                  className={cn(
-                    'h-full transition-all duration-300',
-                    failed ? 'bg-destructive' : 'bg-primary'
-                  )}
+                  className={cn('h-full transition-all duration-300', failed ? 'bg-destructive' : 'bg-primary')}
                   style={{ width: `${progressPct}%` }}
                 />
               </div>
@@ -431,14 +414,18 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             >
               {logOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               <span>{logOpen ? 'Hide installer output' : 'Show installer output'}</span>
-              <span className="ml-1 tabular-nums">({state.log.length} line{state.log.length === 1 ? '' : 's'})</span>
+              <span className="ml-1 tabular-nums">
+                ({state.log.length} line{state.log.length === 1 ? '' : 's'})
+              </span>
             </button>
 
             {logOpen && (
-              <div className={cn(
-                'mt-2 overflow-auto rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed',
-                failed ? 'max-h-96' : 'max-h-64'
-              )}>
+              <div
+                className={cn(
+                  'mt-2 overflow-auto rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed',
+                  failed ? 'max-h-96' : 'max-h-64'
+                )}
+              >
                 {state.log.length === 0 ? (
                   <div className="text-muted-foreground">No output yet.</div>
                 ) : (
@@ -457,12 +444,38 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           </div>
         </div>
 
+        {/* Active footer: let the user actually cancel a running install. */}
+        {state.active && !failed && (
+          <div className="flex-shrink-0 border-t bg-card p-4">
+            <div className="flex items-center justify-end">
+              <Button
+                disabled={cancelling}
+                onClick={async () => {
+                  setCancelling(true)
+
+                  try {
+                    await window.hermesDesktop?.cancelBootstrap?.()
+                  } catch {
+                    // ignore -- the failed/cancelled event will surface the result
+                  }
+                }}
+                size="sm"
+                variant="ghost"
+              >
+                {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {cancelling ? 'Cancelling...' : 'Cancel install'}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Footer -- always visible, never scrolls; only renders on failure */}
         {failed && (
           <div className="flex-shrink-0 border-t bg-card p-4">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
-                Full transcript saved to <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">%LOCALAPPDATA%\hermes\logs\</code>
+                Full transcript saved to{' '}
+                <code className="rounded bg-muted/50 px-1 py-0.5 font-mono">%LOCALAPPDATA%\hermes\logs\</code>
               </span>
               <div className="flex gap-2">
                 <Button

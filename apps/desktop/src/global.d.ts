@@ -48,6 +48,7 @@ declare global {
       getBootstrapState: () => Promise<DesktopBootstrapState>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
+      cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
       updates: {
@@ -194,12 +195,7 @@ export interface DesktopBootstrapStageDescriptor {
   needs_user_input?: boolean
 }
 
-export type DesktopBootstrapStageState =
-  | 'pending'
-  | 'running'
-  | 'succeeded'
-  | 'skipped'
-  | 'failed'
+export type DesktopBootstrapStageState = 'pending' | 'running' | 'succeeded' | 'skipped' | 'failed'
 
 export interface DesktopBootstrapStageResult {
   state: DesktopBootstrapStageState
@@ -247,7 +243,6 @@ export type DesktopBootstrapEvent =
       installCommand: string
       docsUrl: string
     }
-
 
 export interface HermesApiRequest {
   path: string

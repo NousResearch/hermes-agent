@@ -708,8 +708,14 @@ def _ensure_session_db_row(session: dict) -> None:
     Called from prompt.submit so a row only exists once the user actually sends
     a message — abandoned drafts never leave an empty "Untitled" session behind.
     Uses INSERT OR IGNORE under the hood, so re-calls (and the AIAgent's own
-    lazy create) are no-ops. Captures cwd up front so workspace grouping works
-    without waiting for a separate cwd update.
+    lazy create) are no-ops.
+
+    Only an *explicitly chosen* workspace is persisted as the session's cwd.
+    The agent still runs in the auto-detected directory (session["cwd"]), but
+    we don't stamp that onto the row — otherwise every session the user never
+    picked a folder for gets grouped under whatever directory the desktop
+    happened to launch in (e.g. "desktop"). Leaving it null groups them under
+    "No workspace", which is the desired default.
     """
     key = session.get("session_key")
     if not key:
@@ -722,7 +728,7 @@ def _ensure_session_db_row(session: dict) -> None:
             key,
             source="tui",
             model=_resolve_model(),
-            cwd=_session_cwd(session),
+            cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
@@ -733,6 +739,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
     session["cwd"] = resolved
+    # An explicit user choice — persist it as the workspace (and let a later
+    # lazy row creation persist it too, not the launch-dir fallback).
+    session["explicit_cwd"] = True
     _register_session_cwd(session)
     db = _get_db()
     if db is not None:
@@ -2746,6 +2755,15 @@ def _(rid, params: dict) -> dict:
     cols = int(params.get("cols", 80))
     history = _coerce_seed_history(params.get("messages"))
     title = str(params.get("title") or "").strip()
+    # Did the client pick a workspace, or are we falling back to the gateway's
+    # launch directory? Only an explicit choice is persisted as the session's
+    # workspace (see _ensure_session_db_row); otherwise it lands in "No
+    # workspace" instead of whatever folder the desktop launched in.
+    raw_cwd = str(params.get("cwd") or "").strip()
+    try:
+        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    except Exception:
+        explicit_cwd = False
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2759,6 +2777,7 @@ def _(rid, params: dict) -> dict:
         "cols": cols,
         "created_at": now,
         "edit_snapshots": {},
+        "explicit_cwd": explicit_cwd,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,

@@ -239,6 +239,8 @@ _MANAGED_SYSTEM_NAMES = {
     "homebrew": "Homebrew",
     "nix": "NixOS",
     "nixos": "NixOS",
+    "snap": "Snap",
+    "snapcraft": "Snap",
 }
 
 
@@ -267,6 +269,17 @@ def is_managed() -> bool:
     return get_managed_system() is not None
 
 
+def is_config_managed() -> bool:
+    """Return True when user configuration is managed declaratively.
+
+    NixOS owns both the package and generated config, so interactive config
+    writers must refuse mutations. Package managers like Homebrew and Snap own
+    the install tree only; users still configure Hermes in their writable
+    HERMES_HOME.
+    """
+    return get_managed_system() == "NixOS"
+
+
 _NIX_UPDATE_MSG = "Update your Nix flake input and rebuild (e.g. nix flake update, nixos-rebuild, or home-manager switch)"
 
 
@@ -275,6 +288,8 @@ def get_managed_update_command() -> Optional[str]:
     managed_system = get_managed_system()
     if managed_system == "Homebrew":
         return "brew upgrade hermes-agent"
+    if managed_system == "Snap":
+        return "snap refresh hermes-agent"
     if managed_system == "NixOS":
         return _NIX_UPDATE_MSG
     return None
@@ -364,6 +379,8 @@ def recommended_update_command_for_method(method: str) -> str:
         return _NIX_UPDATE_MSG
     if method == "homebrew":
         return "brew upgrade hermes-agent"
+    if method == "snap":
+        return "snap refresh hermes-agent"
     if method == "docker":
         return "docker pull nousresearch/hermes-agent:latest"
     if method == "pip":
@@ -458,6 +475,15 @@ def format_managed_message(action: str = "modify this Hermes installation") -> s
             f"(HERMES_MANAGED={env_hint}).\n"
             "Use:\n"
             "  brew upgrade hermes-agent"
+        )
+
+    if managed_system == "Snap":
+        env_hint = raw or "snap"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by Snap "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Use:\n"
+            "  snap refresh hermes-agent"
         )
 
     return (
@@ -616,7 +642,7 @@ def _secure_dir(path):
     created at runtime by kanban workers don't land as root:root and block
     subsequent uid-mapped workers).
     """
-    if is_managed():
+    if is_config_managed():
         return
     try:
         mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
@@ -664,7 +690,7 @@ def _secure_file(path):
     Skipped in containers — Docker/Podman volume mounts often need broader
     permissions.  Set HERMES_SKIP_CHMOD=1 to force-skip on other systems.
     """
-    if is_managed() or _is_container():
+    if is_config_managed() or _is_container():
         return
     try:
         if os.path.exists(str(path)):
@@ -685,12 +711,12 @@ def _ensure_default_soul_md(home: Path) -> None:
 def ensure_hermes_home():
     """Ensure ~/.hermes directory structure exists with secure permissions.
 
-    In managed mode (NixOS), dirs are created by the activation script with
+    In config-managed mode (NixOS), dirs are created by the activation script with
     setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
     any files created (e.g. SOUL.md) are group-writable (0660).
     """
     home = get_hermes_home()
-    if is_managed():
+    if is_config_managed():
         old_umask = os.umask(0o007)
         try:
             _ensure_hermes_home_managed(home)
@@ -5014,7 +5040,7 @@ _COMMENTED_SECTIONS = """
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
     with _CONFIG_LOCK:
-        if is_managed():
+        if is_config_managed():
             managed_error("save configuration")
             return
         from utils import atomic_yaml_write
@@ -5280,7 +5306,7 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
 
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
-    if is_managed():
+    if is_config_managed():
         managed_error(f"set {key}")
         return
     if not _ENV_VAR_NAME_RE.match(key):
@@ -5355,7 +5381,7 @@ def remove_env_value(key: str) -> bool:
 
     Returns True if the key was found and removed, False otherwise.
     """
-    if is_managed():
+    if is_config_managed():
         managed_error(f"remove {key}")
         return False
     if not _ENV_VAR_NAME_RE.match(key):
@@ -5654,7 +5680,7 @@ def show_config():
 
 def edit_config():
     """Open config file in user's editor."""
-    if is_managed():
+    if is_config_managed():
         managed_error("edit configuration")
         return
     config_path = get_config_path()
@@ -5694,7 +5720,7 @@ def edit_config():
 
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
-    if is_managed():
+    if is_config_managed():
         managed_error("set configuration values")
         return
     # Check if it's an API key (goes to .env)

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import stat
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -39,7 +40,7 @@ def _clean_env(monkeypatch):
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
         "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
-        "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_REFLECT_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_LLM_PROVIDER", "HINDSIGHT_LLM_MODEL", "HINDSIGHT_LLM_BASE_URL",
         "HINDSIGHT_API_LLM_PROVIDER", "HINDSIGHT_API_LLM_MODEL",
         "HINDSIGHT_API_LLM_API_KEY", "HINDSIGHT_API_LLM_BASE_URL",
@@ -281,6 +282,18 @@ class TestConfig:
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
 
+    def test_env_reflect_timeout_defaults_to_at_least_request_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home",
+            lambda: tmp_path / "nonexistent",
+        )
+        monkeypatch.setenv("HINDSIGHT_TIMEOUT", "240")
+
+        cfg = _load_config()
+
+        assert cfg["timeout"] == 240
+        assert cfg["reflect_timeout"] == 240
+
     def test_embedded_profile_env_includes_idle_timeout_from_config(self):
         env = _build_embedded_profile_env({
             "llm_provider": "openai",
@@ -350,6 +363,7 @@ class TestPostSetup:
         env_text = (hermes_home / ".env").read_text()
         assert "HINDSIGHT_LLM_API_KEY=sk-local-test\n" in env_text
         assert "HINDSIGHT_TIMEOUT=120\n" in env_text
+        assert "HINDSIGHT_REFLECT_TIMEOUT=180\n" in env_text
         assert "HINDSIGHT_IDLE_TIMEOUT=300\n" in env_text
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
@@ -431,6 +445,7 @@ class TestPostSetup:
             "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT": "0",
             "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE": "1",
             "timeout": 120,
+            "reflect_timeout": 240,
         }
         provider = HindsightMemoryProvider()
         provider.save_config(existing_config, str(hermes_home))
@@ -457,6 +472,7 @@ class TestPostSetup:
         assert saved["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
         assert saved["HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"] == "1"
         assert saved["timeout"] == 120
+        assert saved["reflect_timeout"] == 240
 
 
 
@@ -555,6 +571,8 @@ class TestToolHandlers:
         assert "error" not in result
         assert "Hindsight reflection failed" in result["result"]
         assert "Reflect error type: RuntimeError" in result["result"]
+        assert "Reflect error message: llm unavailable" in result["result"]
+        assert "Reflect timeout: 180s" in result["result"]
         assert "1. Memory 1" in result["result"]
         assert "2. Memory 2" in result["result"]
         provider._client.arecall.assert_called_once()
@@ -568,6 +586,37 @@ class TestToolHandlers:
         assert "error" not in result
         assert "recall found no relevant memories" in result["result"]
         assert "Reflect error type: RuntimeError" in result["result"]
+
+    def test_reflect_timeout_explains_possible_server_side_progress(self, provider):
+        provider._client.areflect.side_effect = FutureTimeoutError()
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize"}
+        ))
+        assert "error" not in result
+        assert "Reflect error type: TimeoutError" in result["result"]
+        assert "Reflect timeout: 180s" in result["result"]
+        assert "may still complete the operation" in result["result"]
+
+    def test_reflect_error_reports_operation_id_when_available(self, provider):
+        exc = RuntimeError({"operation_id": "op-123"})
+        provider._client.areflect.side_effect = exc
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize"}
+        ))
+        assert "Hindsight operation id: op-123" in result["result"]
+
+    def test_reflect_uses_reflect_timeout_config(self, provider_with_config):
+        p = provider_with_config(reflect_timeout=240)
+        calls = []
+        def fake_run(operation, *, timeout=None):
+            calls.append(timeout)
+            return SimpleNamespace(text="ok")
+        p._run_hindsight_operation = fake_run
+        result = json.loads(p.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize"}
+        ))
+        assert result["result"] == "ok"
+        assert calls == [240]
 
     def test_reflect_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(

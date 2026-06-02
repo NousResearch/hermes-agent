@@ -73,7 +73,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
   },
-  { id: 'skills', label: 'Skills', icon: props => <Codicon name="symbol-misc" {...props} />, route: SKILLS_ROUTE },
+  { id: 'skills', label: 'Skills & Tools', icon: props => <Codicon name="symbol-misc" {...props} />, route: SKILLS_ROUTE },
   { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]

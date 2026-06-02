@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
-import { getSkills, getToolsets, toggleSkill } from '@/hermes'
+import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -14,6 +14,7 @@ import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
 import { asText, includesQuery, prettyName, toolNames } from '../settings/helpers'
+import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 const SKILLS_MODES = ['skills', 'toolsets'] as const
@@ -73,6 +74,8 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [savingSkill, setSavingSkill] = useState<string | null>(null)
+  const [savingToolset, setSavingToolset] = useState<string | null>(null)
+  const [expandedToolset, setExpandedToolset] = useState<string | null>(null)
 
   const refreshCapabilities = useCallback(async () => {
     setRefreshing(true)
@@ -86,6 +89,12 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     } finally {
       setRefreshing(false)
     }
+  }, [])
+
+  const refreshToolsets = useCallback(() => {
+    getToolsets()
+      .then(setToolsets)
+      .catch(err => notifyError(err, 'Toolsets failed to refresh'))
   }, [])
 
   useEffect(() => {
@@ -145,6 +154,26 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       notifyError(err, `Failed to update ${skill.name}`)
     } finally {
       setSavingSkill(null)
+    }
+  }
+
+  async function handleToggleToolset(toolset: ToolsetInfo, enabled: boolean) {
+    setSavingToolset(toolset.name)
+
+    try {
+      await toggleToolset(toolset.name, enabled)
+      setToolsets(current =>
+        current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
+      )
+      notify({
+        kind: 'success',
+        title: enabled ? 'Toolset enabled' : 'Toolset disabled',
+        message: `${asText(toolset.label || toolset.name)} applies to new sessions.`
+      })
+    } catch (err) {
+      notifyError(err, `Failed to update ${asText(toolset.label || toolset.name)}`)
+    } finally {
+      setSavingToolset(null)
     }
   }
 
@@ -248,16 +277,30 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 {visibleToolsets.map(toolset => {
                   const tools = toolNames(toolset)
                   const label = asText(toolset.label || toolset.name)
+                  const expanded = expandedToolset === toolset.name
 
                   return (
                     <div className="px-0 py-2.5" key={toolset.name}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="truncate text-sm font-medium">{label}</div>
-                        <div className="flex items-center gap-1.5">
-                          <StatusPill active={toolset.enabled}>{toolset.enabled ? 'Enabled' : 'Disabled'}</StatusPill>
-                          <StatusPill active={toolset.configured}>
-                            {toolset.configured ? 'Configured' : 'Needs keys'}
-                          </StatusPill>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            aria-expanded={expanded}
+                            aria-label={`Configure ${label}`}
+                            className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                            onClick={() => setExpandedToolset(current => (current === toolset.name ? null : toolset.name))}
+                            type="button"
+                          >
+                            <StatusPill active={toolset.configured}>
+                              {toolset.configured ? 'Configured' : 'Needs keys'}
+                            </StatusPill>
+                          </button>
+                          <Switch
+                            aria-label={`Toggle ${label} toolset`}
+                            checked={toolset.enabled}
+                            disabled={savingToolset === toolset.name}
+                            onCheckedChange={checked => void handleToggleToolset(toolset, checked)}
+                          />
                         </div>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -275,6 +318,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                           ))}
                         </div>
                       )}
+                      {expanded && <ToolsetConfigPanel onConfiguredChange={refreshToolsets} toolset={toolset.name} />}
                     </div>
                   )
                 })}

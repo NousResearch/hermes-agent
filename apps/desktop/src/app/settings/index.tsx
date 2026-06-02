@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Package, Wrench } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Wrench } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -20,7 +20,6 @@ import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
 import { SessionsSettings } from './sessions-settings'
-import { ToolsSettings } from './tools-settings'
 import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
@@ -29,7 +28,6 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'keys',
   'mcp',
   'sessions',
-  'tools',
   'about'
 ]
 
@@ -42,8 +40,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
     gateway: '',
     keys: '',
     mcp: '',
-    sessions: '',
-    tools: ''
+    sessions: ''
   })
 
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -141,12 +138,6 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
-            active={activeView === 'tools'}
-            icon={Package}
-            label="Skills & Tools"
-            onClick={() => setActiveView('tools')}
-          />
-          <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
             label="MCP"
@@ -209,10 +200,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
             <KeysSettings query={queries.keys} />
           ) : activeView === 'mcp' ? (
             <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} query={queries.mcp} />
-          ) : activeView === 'sessions' ? (
-            <SessionsSettings query={queries.sessions} />
           ) : (
-            <ToolsSettings query={queries.tools} />
+            <SessionsSettings query={queries.sessions} />
           )}
         </OverlayMain>
       </OverlaySplitLayout>

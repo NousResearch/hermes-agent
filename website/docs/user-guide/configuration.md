@@ -77,6 +77,26 @@ Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a refer
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
+### Smart Model Routing
+
+Gateway sessions can keep a cheaper default model for routine turns while automatically promoting hard turns to a stronger model. This is opt-in and only affects live gateway turns; CLI `--model`, `/model` session overrides, cron job model pins, and explicit non-base session models are respected.
+
+```yaml
+model:
+  default: gpt-5.4-mini
+  provider: openai-api
+
+model_routing:
+  enabled: true
+  strategy: smart_heuristic
+  base_model: gpt-5.4-mini
+  premium_model: gpt-5.5
+```
+
+With `strategy: smart_heuristic`, Hermes promotes a turn when the user explicitly asks for the stronger model (`use 5.5`, `think harder`, `best model`) or when the message looks like debugging/root-cause work, implementation/refactoring, architecture/planning, security/risky operations, or a long ambiguous strategy question. Routine messages stay on `base_model`. Explicit cheap-model requests such as `use mini` prevent promotion for that turn.
+
+Changing `model_routing` in a running gateway takes effect on the next message. A promoted turn rebuilds the cached agent for that session because the effective model is part of the gateway agent-cache signature.
+
 ### Provider Timeouts
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.

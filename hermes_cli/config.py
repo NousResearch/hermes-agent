@@ -739,6 +739,15 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # Optional gateway-only per-turn model promotion. Disabled by default;
+    # when enabled, turns matching the smart heuristic route from base_model
+    # to premium_model while routine turns keep using the session model.
+    "model_routing": {
+        "enabled": False,
+        "strategy": "smart_heuristic",
+        "base_model": "",
+        "premium_model": "",
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {

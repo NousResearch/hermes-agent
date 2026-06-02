@@ -2624,12 +2624,19 @@ class GatewayRunner:
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        By default this uses the session's primary model/provider.  When
+        ``model_routing.enabled`` is set in config.yaml, lightweight heuristics
+        can promote an individual turn from the configured base model to a
+        premium model without making every routine message pay the premium-model
+        tax.
+
+        If `/fast` is enabled and the effective model supports Priority
+        Processing / Anthropic fast mode, attach `request_overrides` so the API
+        call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        effective_model = self._route_model_for_turn(user_message, model)
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -2641,10 +2648,10 @@ class GatewayRunner:
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
         route = {
-            "model": model,
+            "model": effective_model,
             "runtime": runtime,
             "signature": (
-                model,
+                effective_model,
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
@@ -2664,6 +2671,78 @@ class GatewayRunner:
             overrides = None
         route["request_overrides"] = overrides or {}
         return route
+
+    @staticmethod
+    def _model_routing_match_reason(message: str) -> Optional[str]:
+        """Return the smart-routing reason for a premium-model turn, if any."""
+        import re
+
+        text = (message or "").lower()
+        if not text.strip():
+            return None
+
+        # Explicit cheap-model / no-premium requests win over heuristics.
+        cheap_or_no_premium = (
+            r"\b(use|stay on|keep|force)\s+(the\s+)?(mini|cheap|cheap(er)? model|base model|default model|gpt-5\.4-mini)\b",
+            r"\b(do not|don't|dont|avoid|skip|no)\s+(use\s+)?(the\s+)?(premium|expensive|best|strongest|gpt-5\.5|5\.5)\b",
+        )
+        if any(re.search(pattern, text) for pattern in cheap_or_no_premium):
+            return None
+
+        explicit_premium = (
+            "use 5.5", "use gpt-5.5", "gpt-5.5", "best model",
+            "strongest model", "think harder", "deep work", "deep reasoning",
+        )
+        if any(marker in text for marker in explicit_premium):
+            return "explicit premium-model request"
+
+        # Tasks where the cost of a bad answer exceeds the premium-model tax.
+        hard_patterns = [
+            ("debugging/root-cause work", r"\b(debug|root cause|root-cause|rca|traceback|stack trace|failing tests?|test failure|regression|bisect)\b"),
+            ("implementation/coding work", r"\b(implement|refactor|code review|review pr|pull request|patch|write tests?|fix bug|ship|ci|migration)\b"),
+            ("architecture/planning work", r"\b(architecture|design doc|system design|technical plan|implementation plan|multi-step plan|decompose|roadmap)\b"),
+            ("security/risky operations", r"\b(security|auth|oauth|token|secret|credential|production|backup|restore|delete|destructive|launchd|cron|gateway|\.env)\b"),
+        ]
+        for reason, pattern in hard_patterns:
+            if re.search(pattern, text):
+                return reason
+
+        # Long, ambiguous asks often benefit from the stronger model even when
+        # they don't contain the exact trigger words above.
+        word_count = len(re.findall(r"\w+", text))
+        ambiguity_markers = ("what should", "recommend", "tradeoff", "trade-off", "pros and cons", "decide", "strategy")
+        if word_count >= 80 and any(marker in text for marker in ambiguity_markers):
+            return "long ambiguous strategy request"
+
+        return None
+
+    def _route_model_for_turn(self, user_message: str, model: str) -> str:
+        """Optionally promote a turn to the configured premium model."""
+        try:
+            cfg = _load_gateway_runtime_config()
+            routing = cfg.get("model_routing") if isinstance(cfg, dict) else None
+            if not isinstance(routing, dict) or not routing.get("enabled"):
+                return model
+
+            base_model = str(routing.get("base_model") or "").strip()
+            premium_model = str(routing.get("premium_model") or "").strip()
+            if not premium_model or model == premium_model:
+                return model
+            if base_model and model != base_model:
+                return model
+
+            reason = self._model_routing_match_reason(user_message)
+            if not reason:
+                return model
+
+            logger.info(
+                "Smart model routing: %s -> %s for this turn (%s)",
+                model, premium_model, reason,
+            )
+            return premium_model
+        except Exception as exc:
+            logger.debug("Smart model routing skipped after error: %s", exc)
+            return model
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.

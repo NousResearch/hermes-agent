@@ -3599,6 +3599,12 @@ class GatewayRunner:
             output = (process_snapshot.get("output_preview") or process_snapshot.get("output") or "").strip()
             if output:
                 lines.extend(["Output tail:", output[-1200:]])
+        else:
+            if getattr(record, "exit_code", None) is not None:
+                lines.append(f"Exit code: {getattr(record, 'exit_code')}")
+            output = (getattr(record, "output_tail", None) or "").strip()
+            if output:
+                lines.extend(["Output tail:", output[-1200:]])
 
         expected_commit = getattr(record, "expected_commit", None)
         if expected_commit:
@@ -3656,12 +3662,25 @@ class GatewayRunner:
             return False
         if getattr(record, "mode", None) not in {"background_process", "approved_execute"}:
             return False
-        if getattr(record, "status", None) != "active":
+        record_status = getattr(record, "status", None)
+        terminal_statuses = {"succeeded", "failed", "lost", "recovered"}
+        if record_status not in {"active", "running", *terminal_statuses}:
             return False
-        if not (getattr(record, "process_session_id", None) or getattr(record, "pid", None)):
+        if (
+            record_status not in terminal_statuses
+            and not (getattr(record, "process_session_id", None) or getattr(record, "pid", None))
+        ):
             return False
 
-        process_state, process_snapshot = self._inspect_active_execute_process_state(record)
+        if record_status in terminal_statuses:
+            process_state = getattr(record, "last_observed_process_state", None) or "exited"
+            process_snapshot = {
+                "status": process_state,
+                "exit_code": getattr(record, "exit_code", None),
+                "output_preview": getattr(record, "output_tail", None) or "",
+            }
+        else:
+            process_state, process_snapshot = self._inspect_active_execute_process_state(record)
         if process_state == "running":
             try:
                 store.upsert(

@@ -103,6 +103,45 @@ class TestCompletionQueue:
         assert completion["exit_code"] == 0
         assert "build succeeded" in completion["output"]
 
+    def test_move_to_finished_persists_active_task_result_before_notify(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """Process exit result must survive even if notification delivery is lost."""
+        monkeypatch.setattr("gateway.active_task.get_hermes_home", lambda: tmp_path)
+        from gateway.active_task import ActiveTaskStore
+
+        store = ActiveTaskStore()
+        store.upsert(
+            session_key="sk1",
+            mode="background_process",
+            status="running",
+            command="python -m pytest tests/unit",
+            process_session_id="proc_1",
+            final_report_status="pending",
+        )
+        s = _make_session(
+            sid="proc_1",
+            notify_on_complete=True,
+            output="2 passed\n",
+            exit_code=0,
+        )
+        s.session_key = "sk1"
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        record = store.get("sk1")
+        assert record is not None
+        assert record.status == "succeeded"
+        assert record.exit_code == 0
+        assert record.completed_at
+        assert record.last_observed_process_state == "exited"
+        assert "2 passed" in (record.output_tail or "")
+        assert registry.completion_queue.get_nowait()["session_key"] == "sk1"
+
     def test_move_to_finished_nonzero_exit(self, registry):
         """Nonzero exit codes are captured correctly."""
         s = _make_session(

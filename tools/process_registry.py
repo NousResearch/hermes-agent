@@ -854,6 +854,36 @@ class ProcessRegistry:
             self._finished[session.id] = session
         self._write_checkpoint()
 
+        if was_running and session.session_key:
+            try:
+                from datetime import datetime, timezone
+                from tools.ansi_strip import strip_ansi
+                from gateway.active_task import ActiveTaskStore
+
+                exit_code = session.exit_code
+                if exit_code == 0:
+                    status = "succeeded"
+                elif exit_code is None:
+                    status = "lost"
+                else:
+                    status = "failed"
+                ActiveTaskStore().upsert(
+                    session_key=session.session_key,
+                    execution_id=session.id,
+                    process_session_id=session.id,
+                    pid=session.pid,
+                    status=status,
+                    exit_code=exit_code,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    last_heartbeat_time=str(time.time()),
+                    last_observed_process_state="exited",
+                    output_tail=strip_ansi(session.output_buffer[-4000:])
+                    if session.output_buffer
+                    else "",
+                )
+            except Exception:
+                logger.debug("Failed to persist background process result", exc_info=True)
+
         # Only enqueue completion notification on the FIRST move.  Without
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
@@ -863,9 +893,16 @@ class ProcessRegistry:
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
+                "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,
+                "platform": session.watcher_platform,
+                "chat_id": session.watcher_chat_id,
+                "user_id": session.watcher_user_id,
+                "user_name": session.watcher_user_name,
+                "thread_id": session.watcher_thread_id,
+                "message_id": session.watcher_message_id,
             })
 
     # ----- Query Methods -----

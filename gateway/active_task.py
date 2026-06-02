@@ -19,7 +19,17 @@ from utils import atomic_json_write
 
 DEFAULT_ACTIVE_TASK_TTL_SECONDS = 48 * 60 * 60
 FOREGROUND_SESSION_TTL_SECONDS = 6 * 60 * 60
-ACTIVE_TASK_STATUSES = {"active", "interrupted", "detached", "unknown"}
+ACTIVE_TASK_STATUSES = {
+    "active",
+    "running",
+    "interrupted",
+    "detached",
+    "succeeded",
+    "failed",
+    "lost",
+    "recovered",
+    "unknown",
+}
 FINAL_REPORT_STATUSES = {"pending", "sent", "recovered", "failed"}
 FOREGROUND_SESSION_FIELDS = (
     "session_key",
@@ -59,6 +69,7 @@ def _clean_optional_str(value: Any) -> Optional[str]:
 @dataclass
 class ActiveTaskRecord:
     session_key: str
+    execution_id: Optional[str] = None
     session_id: Optional[str] = None
     platform: Optional[str] = None
     chat_id: Optional[str] = None
@@ -67,11 +78,16 @@ class ActiveTaskRecord:
     branch: Optional[str] = None
     head: Optional[str] = None
     mode: Optional[str] = None
+    command_label: Optional[str] = None
     command: Optional[str] = None
     task_summary: Optional[str] = None
     status: str = "unknown"
     pid: Optional[int] = None
     process_session_id: Optional[str] = None
+    exit_code: Optional[int] = None
+    completed_at: Optional[str] = None
+    output_tail: Optional[str] = None
+    output_path: Optional[str] = None
     latest_log_path: Optional[str] = None
     latest_summary_path: Optional[str] = None
     start_time: Optional[str] = None
@@ -210,7 +226,7 @@ class ActiveTaskStore:
             for key, value in fields.items():
                 if key not in ActiveTaskRecord.__dataclass_fields__:
                     continue
-                if key in {"pid"}:
+                if key in {"pid", "exit_code"}:
                     payload[key] = int(value) if value is not None else None
                 elif key == "status":
                     payload[key] = _clean_optional_str(value) or "unknown"

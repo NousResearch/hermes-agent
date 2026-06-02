@@ -1441,6 +1441,37 @@ def test_leading_indicator_drift_fails_when_operator_value_regresses(tmp_path):
     assert benchmark["trend"] == "regressing"
 
 
+def test_leading_indicator_drift_reads_legacy_top_level_history_fields():
+    history = {
+        "version": 1,
+        "evaluations": [
+            {
+                "operator_value_score": score,
+                "operator_value_alignment": {"score": score, "status": "pass"},
+                "reliability_gate": 0.95,
+                "anti_make_work": 0.95,
+            }
+            for score in [0.98, 0.9, 0.887, 0.884]
+        ],
+    }
+    operator_value = {"score": 0.883, "status": "pass", "metrics": {}}
+
+    drift = self_improvement_tool._evaluate_leading_indicator_drift_check(
+        operator_value,
+        history,
+        {
+            "reliability_gate": {"score": 0.95, "status": "pass"},
+            "anti_make_work_check": {"score": 0.95, "status": "pass"},
+            "operator_value_alignment": operator_value,
+        },
+    )
+
+    assert drift["metrics"]["previous_operator_value_score"] == 0.884
+    assert drift["metrics"]["series_sample_count"] == 5
+    assert drift["metrics"]["triggered_harbingers"] == ["critical_slowing_down"]
+    assert drift["report"]["harbingers"]["critical_slowing_down"]["triggered"] is True
+
+
 def test_leading_indicator_drift_reports_exact_degraded_plateau_hold():
     scores = [0.878, 0.878, 0.878, 0.878, 0.878, 0.4292, 0.4292, 0.4292]
     history = {
@@ -1550,8 +1581,17 @@ def test_leading_indicator_drift_flags_critical_slowing_down(tmp_path):
 
     drift = benchmark["checks"]["leading_indicator_drift"]
     scorecard = drift["metrics"]["harbinger_scorecard"]
+    report = benchmark["leading_indicators"]
     assert drift["status"] == "fail"
     assert drift["metrics"]["triggered_harbingers"] == ["critical_slowing_down"]
+    assert report["triggered_harbingers"] == ["critical_slowing_down"]
+    assert set(report["harbingers"]) == {
+        "critical_slowing_down",
+        "variance_explosion",
+        "flickering",
+        "correlation_explosion",
+    }
+    assert report["harbingers"]["critical_slowing_down"]["reporting_detail"]
     assert scorecard["critical_slowing_down"]["triggered"] is True
     assert scorecard["critical_slowing_down"]["evidence"]["recovery_gap"] > 0.09
     assert scorecard["critical_slowing_down"]["next_action"]
@@ -1734,17 +1774,28 @@ def test_leading_indicator_scorecard_reports_evidence_and_mitigation_for_all_har
         "correlation_explosion",
     }
     scorecard = drift["metrics"]["harbinger_scorecard"]
+    report = drift["report"]
     assert set(drift["metrics"]["triggered_harbingers"]) == expected_harbingers
+    assert report["contract_version"] == (
+        self_improvement_tool.LEADING_INDICATOR_REPORT_CONTRACT_VERSION
+    )
+    assert set(report["harbingers"]) == expected_harbingers
     assert {item["harbinger"] for item in drift["metrics"]["recommended_mitigations"]} == (
         expected_harbingers
     )
     for harbinger in expected_harbingers:
         card = scorecard[harbinger]
+        report_card = report["harbingers"][harbinger]
         assert card["triggered"] is True
         assert card["evidence"]
         assert card["evidence_summary"]
         assert card["mitigation"]
         assert card["next_action"]
+        assert report_card["triggered"] is True
+        assert report_card["evidence_summary"]
+        assert report_card["mitigation"]
+        assert report_card["next_action"]
+        assert report_card["reporting_detail"]
         assert harbinger in drift["detail"]
 
 
@@ -1788,7 +1839,10 @@ def test_benchmark_history_persists_leading_indicator_scorecard_snapshot(tmp_pat
     history = json.loads(history_path.read_text(encoding="utf-8"))
     drift_snapshot = history["runs"][-1]["checks"]["leading_indicator_drift"]
     critical = drift_snapshot["harbinger_scorecard"]["critical_slowing_down"]
+    report = drift_snapshot["leading_indicator_report"]
     assert drift_snapshot["triggered_harbingers"] == ["critical_slowing_down"]
+    assert report["triggered_harbingers"] == ["critical_slowing_down"]
+    assert report["harbingers"]["critical_slowing_down"]["mitigation"]
     assert drift_snapshot["recommended_mitigations"][0]["evidence_summary"]
     assert critical["evidence_summary"]
     assert critical["mitigation"]
@@ -1831,8 +1885,12 @@ def test_pipeline_summary_surfaces_leading_indicator_harbinger_mitigation():
     compact = self_improvement_tool._pipeline_benchmark_summary(benchmark)
 
     assert "- leading_indicator_harbingers=critical_slowing_down" in summary
+    assert "- leading_indicator_watchlist=critical_slowing_down:triggered" in summary
     assert "- leading_indicator_critical_slowing_down: evidence=" in summary
     assert "mitigation=Stop expanding self-improvement scope" in summary
+    assert compact["leading_indicator_drift"]["harbinger_report"]["harbingers"][
+        "critical_slowing_down"
+    ]["reporting_detail"]
     assert compact["leading_indicator_drift"]["triggered_harbingers"] == [
         "critical_slowing_down"
     ]
@@ -2118,6 +2176,12 @@ def test_pipeline_uses_core_benchmark_contract_without_persisting(tmp_path):
     drift = benchmark["checks"]["leading_indicator_drift"]
 
     assert pipeline["runtime_surface"] == "hermes-agent-core"
+    assert set(pipeline["leading_indicators"]["harbingers"]) == {
+        "critical_slowing_down",
+        "variance_explosion",
+        "flickering",
+        "correlation_explosion",
+    }
     assert pipeline["linear"]["available"] is False
     assert "Linear writeback is not part" in pipeline["linear"]["error"]
     assert benchmark["contract_version"] == self_improvement_tool.BENCHMARK_CONTRACT_VERSION
@@ -2128,6 +2192,139 @@ def test_pipeline_uses_core_benchmark_contract_without_persisting(tmp_path):
     assert drift["status"] in {"pass", "warn", "fail"}
     assert history_path.exists() is False
     assert "reliability_gate=1.0 pass" in pipeline["summary_markdown"]
+
+
+def test_pipeline_fills_spare_capacity_with_safe_repo_backed_candidates(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    history_path = tmp_path / "history.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "selected-review-evidence",
+                    "occurredAt": recent,
+                    "summary": "Implemented a repo-backed benchmark fix.",
+                    "changedFiles": ["tools/self_improvement_tool.py"],
+                    "tests": ["pytest tests/tools/test_self_improvement_tool.py passed"],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_selected": {
+                    "run_id": "codex_selected",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "exit_code": 0,
+                    "final_message": (
+                        "CHANGED_FILES\n- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n- pytest tests/tools/test_self_improvement_tool.py passed"
+                    ),
+                }
+            }
+        },
+    )
+    _write_json(
+        ctx_path,
+        {"sessions": {"ctx_1": {"session_id": "ctx_1", "active": False, "updated_at": recent}}},
+    )
+
+    pipeline = self_improvement_tool.evaluate_self_improvement_pipeline(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=history_path,
+        now=now,
+        persist=False,
+        candidate_limit=3,
+        selected_candidate_ids=["HAD-1199"],
+        backlog_candidates=[
+            {
+                "id": "HAD-1199",
+                "title": "Already selected review item",
+                "repo": "taboularasa/hermes-agent",
+                "project": {"name": "Hermes Self-Improvement", "state": "started"},
+                "priority": 0,
+            },
+            {
+                "id": "HAD-1200",
+                "title": "Add execution-loop capacity reporting",
+                "repo": "taboularasa/hermes-agent",
+                "project": {"name": "Hermes Self-Improvement", "state": "started"},
+                "priority": 2,
+            },
+            {
+                "id": "HAD-1201",
+                "title": "Tighten workspace executor tests",
+                "repository": {"name": "hermes-agent", "owner": "taboularasa"},
+                "project": {"name": "Hermes Self-Improvement", "state": "started"},
+                "priority": 1,
+            },
+            {
+                "id": "HAD-1202",
+                "title": "Human-owned candidate stays out of automation",
+                "repo": "taboularasa/hermes-agent",
+                "labels": ["owner:human"],
+                "project": {"name": "Hermes Self-Improvement", "state": "started"},
+            },
+            {
+                "id": "HAD-1203",
+                "title": "Duplicate candidate stays out of automation",
+                "repo": "taboularasa/hermes-agent",
+                "status": "Duplicate",
+                "project": {"name": "Hermes Self-Improvement", "state": "started"},
+            },
+            {
+                "id": "HAD-1204",
+                "title": "Ignored project candidate stays out of automation",
+                "repo": "taboularasa/hermes-agent",
+                "project": {"name": "Hermes Self-Improvement", "state": "ignored"},
+            },
+            {
+                "id": "HAD-1205",
+                "title": "Repo-unresolved candidate stays out of automation",
+                "labels": ["repo-unresolved"],
+                "project": {"name": "Hermes Self-Improvement", "state": "started"},
+            },
+        ],
+    )
+
+    benchmark = pipeline["benchmark"]
+    issue_selection = benchmark["issue_selection"]
+    capacity = pipeline["capacity"]
+
+    assert pipeline["top_candidate"]["candidate_id"] == "operator_value_alignment"
+    assert issue_selection["quantity_guardrail_active"] is True
+    assert issue_selection["parallel_repo_backed_selection_allowed"] is True
+    assert issue_selection["parallel_repo_backed_selection_blocker"] is None
+    assert capacity["available_capacity"] == 2
+    assert capacity["selected_candidate_ids"] == ["HAD-1199"]
+    assert capacity["saturation_state"] == "spare_capacity_filled"
+    assert [item["candidate_id"] for item in pipeline["parallel_candidates"]] == [
+        "HAD-1201",
+        "HAD-1200",
+    ]
+    assert capacity["filtered_reasons"] == {
+        "duplicate": 1,
+        "ignored_project": 1,
+        "owner_human": 1,
+        "repo_unresolved": 1,
+        "selected_or_active": 1,
+    }
+    assert "top_candidate=operator_value_alignment" in pipeline["summary_markdown"]
+    assert "parallel_candidates=2/2 state=spare_capacity_filled" in pipeline["summary_markdown"]
 
 
 def test_benchmark_exposes_journal_reporting_contract_from_focus_schema(tmp_path):

@@ -460,6 +460,24 @@ export const api = {
     );
   },
 
+  // Messaging platforms (gateway channels)
+  getMessagingPlatforms: () =>
+    fetchJSON<{ platforms: MessagingPlatform[] }>("/api/messaging/platforms"),
+  updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
+    fetchJSON<{ ok: boolean; platform: string }>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  testMessagingPlatform: (id: string) =>
+    fetchJSON<MessagingPlatformTestResult>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
+
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
@@ -836,6 +854,50 @@ export interface McpTestResult {
   ok: boolean;
   error?: string;
   tools: Array<{ name: string; description: string }>;
+}
+
+export interface MessagingPlatformEnvVar {
+  key: string;
+  required: boolean;
+  is_set: boolean;
+  redacted_value: string | null;
+  description: string;
+  prompt: string;
+  url: string | null;
+  is_password: boolean;
+  advanced: boolean;
+}
+
+export interface MessagingPlatform {
+  id: string;
+  name: string;
+  description: string;
+  docs_url: string;
+  enabled: boolean;
+  configured: boolean;
+  gateway_running: boolean;
+  /**
+   * "connected" | "disabled" | "not_configured" | "pending_restart" |
+   * "gateway_stopped" | "disconnected" | "fatal" | string
+   */
+  state: string;
+  error_code: string | null;
+  error_message: string | null;
+  updated_at: string | null;
+  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  env_vars: MessagingPlatformEnvVar[];
+}
+
+export interface MessagingPlatformUpdate {
+  enabled?: boolean;
+  env?: Record<string, string>;
+  clear_env?: string[];
+}
+
+export interface MessagingPlatformTestResult {
+  ok: boolean;
+  state: string;
+  message: string;
 }
 
 export interface PairingUser {

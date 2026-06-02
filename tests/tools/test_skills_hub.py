@@ -1,6 +1,12 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import httpx
@@ -21,6 +27,7 @@ from tools.skills_hub import (
     bundle_content_hash,
     check_for_skill_updates,
     create_source_router,
+    parallel_search_sources,
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
@@ -1600,6 +1607,84 @@ class TestUnifiedSearchDedup:
         ])
         results = unified_search("query", [failing, ok])
         assert len(results) == 1
+
+
+class TestParallelSearchSources:
+    def _make_source(self, source_id, search_impl):
+        src = MagicMock()
+        src.source_id.return_value = source_id
+        src.search.side_effect = search_impl
+        return src
+
+    def test_timeout_returns_without_waiting_for_stuck_source(self):
+        release_stuck_source = threading.Event()
+        fast_result = SkillMeta(
+            name="habr-digest",
+            description="from tap",
+            source="github",
+            identifier="Pro100x3mal/hermes-skill-habr-digest/skills/habr-digest",
+            trust_level="community",
+        )
+
+        def wait_for_release(_query, limit=50):
+            release_stuck_source.wait(timeout=0.5)
+            return []
+
+        fast = self._make_source("github", lambda _query, limit=50: [fast_result])
+        stuck = self._make_source(
+            "clawhub",
+            wait_for_release,
+        )
+
+        start = time.perf_counter()
+        try:
+            results, source_counts, timed_out = parallel_search_sources(
+                [fast, stuck],
+                query="habr-digest",
+                overall_timeout=0.05,
+            )
+        finally:
+            release_stuck_source.set()
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 0.25
+        assert results == [fast_result]
+        assert source_counts == {"github": 1}
+        assert timed_out == ["clawhub"]
+
+    def test_timed_out_source_does_not_keep_process_alive(self):
+        script = textwrap.dedent(
+            """
+            import threading
+            from unittest.mock import MagicMock
+
+            from tools.skills_hub import parallel_search_sources
+
+            stuck = MagicMock()
+            stuck.source_id.return_value = "clawhub"
+            stuck.search.side_effect = lambda _query, limit=50: threading.Event().wait()
+            results, source_counts, timed_out = parallel_search_sources(
+                [stuck],
+                query="habr-digest",
+                overall_timeout=0.05,
+            )
+            assert results == []
+            assert source_counts == {}
+            assert timed_out == ["clawhub"]
+            print("returned")
+            """
+        )
+
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[2],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+
+        assert "returned" in completed.stdout
 
 
 # ---------------------------------------------------------------------------

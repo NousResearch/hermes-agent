@@ -16,10 +16,8 @@ PYC_UNCHECKED_HASH_HEADER = (1).to_bytes(4, "little") + (b"\0" * 8)
 
 def normalize_build_json(path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
-    path.write_text(
-        json.dumps(data, indent=4, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    payload = json.dumps(data, indent=4, sort_keys=True) + "\n"
+    path.write_bytes(payload.encode("utf-8"))
 
 
 def normalize_pyc(payload: bytes) -> bytes:
@@ -43,6 +41,8 @@ def normalize_requirements_imy(path: Path) -> None:
             payload = source.read(name)
             if name.endswith(".pyc"):
                 payload = normalize_pyc(payload)
+            elif name.endswith(".dist-info/METADATA"):
+                payload = payload.replace(b"\r\n", b"\n")
             target_info = zipfile.ZipInfo(name, ZIP_TIMESTAMP)
             target_info.compress_type = zipfile.ZIP_STORED
             target_info.external_attr = info.external_attr

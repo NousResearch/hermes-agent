@@ -7,6 +7,7 @@ from pathlib import Path
 import scripts.prepare_android_linux_assets as linux_asset_script
 from hermes_android.linux_assets import TermuxPackageRecord
 from hermes_android.linux_assets import serializable_manifest
+from hermes_android.linux_assets import write_manifest
 from scripts.prepare_android_linux_assets import (
     create_bionic_llama_server_launcher,
     locked_packages,
@@ -27,6 +28,8 @@ def test_prepare_android_linux_assets_script_exists_and_is_wired_into_gradle():
     assert "resolve_dependency_closure" in script
     assert "prepareHermesAndroidLinuxAssets" in gradle
     assert "prepareHermesAndroidNativeLibs" in gradle
+    assert 'inputs.file(repoRoot.resolve("scripts/prepare_android_linux_assets.py"))' in gradle
+    assert 'inputs.file(repoRoot.resolve("hermes_android/linux_assets.py"))' in gradle
     assert "generated/hermes-linux-assets" in gradle
     assert "generated/hermes-native-libs" in gradle
     assert "termux_linux_assets.lock.json" in gradle
@@ -111,6 +114,21 @@ def test_prepare_android_linux_asset_lock_round_trips_packages(tmp_path):
             depends=("libandroid-support",),
         )
     ]
+
+
+def test_android_linux_asset_json_writers_use_lf_newlines(tmp_path):
+    lock_file = tmp_path / "termux.lock.json"
+    manifest_file = tmp_path / "manifest.json"
+    payload = {
+        "version": 1,
+        "architectures": {},
+    }
+
+    write_lock_file(lock_file, payload)
+    write_manifest(manifest_file, {"android_abi": "x86_64", "packages": []})
+
+    assert b"\r\n" not in lock_file.read_bytes()
+    assert b"\r\n" not in manifest_file.read_bytes()
 
 
 def test_linux_asset_manifest_normalizes_windows_link_targets():

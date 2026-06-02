@@ -254,4 +254,4 @@ def serializable_manifest(android_abi: str, packages: Iterable[TermuxPackageReco
 def write_manifest(path: str | Path, payload: dict) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_bytes((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))

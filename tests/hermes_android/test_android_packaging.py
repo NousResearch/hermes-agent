@@ -2,6 +2,7 @@ import importlib.util
 import marshal
 from pathlib import Path
 import tomllib
+import zipfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -66,6 +67,30 @@ def test_chaquopy_pyc_normalizer_rewrites_invalidation_header():
     assert normalized_timestamp[:4] == magic
     assert normalized_timestamp[4:8] == (1).to_bytes(4, "little")
     assert normalized_timestamp[8:16] == b"\0" * 8
+
+
+def test_chaquopy_normalizer_writes_build_json_with_lf_newlines(tmp_path):
+    normalizer = _load_chaquopy_normalizer()
+    build_json = tmp_path / "build.json"
+    build_json.write_text('{"b": 1, "a": 2}\n', encoding="utf-8")
+
+    normalizer.normalize_build_json(build_json)
+
+    payload = build_json.read_bytes()
+    assert b"\r\n" not in payload
+    assert payload == b'{\n    "a": 2,\n    "b": 1\n}\n'
+
+
+def test_chaquopy_requirements_normalizer_canonicalizes_metadata_newlines(tmp_path):
+    normalizer = _load_chaquopy_normalizer()
+    requirements = tmp_path / "requirements-common.imy"
+    with zipfile.ZipFile(requirements, "w") as archive:
+        archive.writestr("demo-1.0.dist-info/METADATA", b"Name: demo\r\nVersion: 1.0\r\n")
+
+    normalizer.normalize_requirements_imy(requirements)
+
+    with zipfile.ZipFile(requirements) as archive:
+        assert archive.read("demo-1.0.dist-info/METADATA") == b"Name: demo\nVersion: 1.0\n"
 
 
 def test_android_wheel_includes_iteration_limits_module():

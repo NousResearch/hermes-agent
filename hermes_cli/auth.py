@@ -2100,6 +2100,24 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 # Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
 # =============================================================================
 
+def _mark_google_gemini_cli_active(creds: Dict[str, Any]) -> None:
+    """Set active_provider to google-gemini-cli in auth.json.
+
+    The actual OAuth tokens live in the Google credential file managed by
+    agent.google_oauth. This function only writes a minimal provider-state
+    entry (email for display) and sets active_provider so that
+    get_active_provider() and _model_section_has_credentials() detect the
+    provider for the setup wizard and status commands.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state: Dict[str, Any] = {}
+        if creds.get("email"):
+            state["email"] = str(creds["email"])
+        _save_provider_state(auth_store, "google-gemini-cli", state)
+        _save_auth_store(auth_store)
+
+
 def resolve_gemini_oauth_runtime_credentials(
     *,
     force_refresh: bool = False,

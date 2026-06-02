@@ -1,0 +1,7 @@
+name: web-openai-codex
+version: 1.0.0
+description: "OpenAI Codex OAuth Web — search the web and open pages via ChatGPT/Codex hosted web_search tooling. Requires OpenAI Codex OAuth via `hermes auth add openai-codex`."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - openai-codex

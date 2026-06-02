@@ -126,6 +126,7 @@ _LEGACY_PREFERENCE = (
     "exa",
     "searxng",
     "brave-free",
+    "openai-codex",
     "ddgs",
 )
 

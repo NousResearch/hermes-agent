@@ -445,6 +445,113 @@ class TestPlaceholderKeyDetection:
         )
 
 
+class _FakeRootSpan:
+    def __init__(self):
+        self.trace_io = {}
+        self.updates = []
+        self.ended = False
+
+    def set_trace_io(self, **kwargs):
+        self.trace_io.update(kwargs)
+
+    def update(self, **kwargs):
+        self.updates.append(kwargs)
+
+    def start_observation(self, **kwargs):
+        return object()
+
+    def end(self):
+        self.ended = True
+
+
+class _FakeObservationContext:
+    def __init__(self, span):
+        self.span = span
+
+    def __enter__(self):
+        return self.span
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeTraceClient:
+    def __init__(self):
+        self.started = []
+        self.root_span = _FakeRootSpan()
+
+    def create_trace_id(self, *, seed):
+        self.seed = seed
+        return "trace-123"
+
+    def start_as_current_observation(self, **kwargs):
+        self.started.append(kwargs)
+        return _FakeObservationContext(self.root_span)
+
+
+class _FakePropagateContext:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class TestMyahSessionMetadata:
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_root_trace_uses_gateway_session_context_for_myah_correlation_metadata(self, monkeypatch):
+        mod = self._make_mod()
+        propagated = {}
+
+        def fake_propagate_attributes(**kwargs):
+            propagated.update(kwargs)
+            return _FakePropagateContext()
+
+        monkeypatch.setattr(mod, "propagate_attributes", fake_propagate_attributes, raising=False)
+
+        from gateway.session_context import set_session_vars
+
+        tokens = set_session_vars(
+            platform="myah",
+            chat_id="myah-chat-123",
+            user_id="myah-user-456",
+            user_name="Ada",
+            session_key="must-not-leak",
+            message_id="myah-message-789",
+        )
+        try:
+            client = _FakeTraceClient()
+            mod._start_root_trace(
+                "task-key",
+                task_id="task-1",
+                session_id="hermes-session-1",
+                platform="myah",
+                provider="openrouter",
+                model="deepseek/deepseek-v4-pro",
+                api_mode="chat_completions",
+                messages=[{"role": "user", "content": "hello"}],
+                client=client,
+            )
+        finally:
+            for token in reversed(tokens):
+                token.var.reset(token)
+
+        started = client.started[0]
+        metadata = started["metadata"]
+
+        assert metadata["myah_user_id"] == "myah-user-456"
+        assert metadata["myah_chat_id"] == "myah-chat-123"
+        assert metadata["myah_message_id"] == "myah-message-789"
+        assert propagated["user_id"] == "myah-user-456"
+        assert propagated["session_id"] == "myah-chat-123"
+        assert propagated["metadata"]["myah_message_id"] == "myah-message-789"
+        assert "myah_session_key" not in metadata
+        assert "HERMES_SESSION_KEY" not in metadata
+
+
 class TestRequestMessageCoercion:
     def test_prefers_request_messages_then_messages_then_history_then_user_message(self):
         sys.modules.pop("plugins.observability.langfuse", None)

@@ -227,6 +227,50 @@ def _trace_key(task_id: str, session_id: str) -> str:
     return f"thread:{threading.get_ident()}"
 
 
+def _myah_session_context(*, platform: str, session_id: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Return Langfuse metadata and propagated trace attrs from Myah gateway session vars.
+
+    The Myah platform sends stable user/chat/message IDs through
+    ``SessionSource``. The gateway mirrors that source into
+    ``HERMES_SESSION_*`` contextvars so tool and plugin code can consume it
+    without the LLM hook signature having to carry platform-specific kwargs.
+
+    Only attach this correlation metadata for Myah. Other gateway platforms may
+    carry provider-native user/chat identifiers that are not part of the Myah
+    observability contract and can be more sensitive.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:  # pragma: no cover - plugin should fail open
+        return {}, {}
+
+    session_platform = get_session_env("HERMES_SESSION_PLATFORM", "") or platform
+    if session_platform != "myah":
+        return {}, {}
+
+    myah_user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+    myah_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    myah_message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "")
+
+    metadata: dict[str, str] = {}
+    if myah_user_id:
+        metadata["myah_user_id"] = myah_user_id
+    if myah_chat_id:
+        metadata["myah_chat_id"] = myah_chat_id
+    if myah_message_id:
+        metadata["myah_message_id"] = myah_message_id
+    if session_id and myah_chat_id and session_id != myah_chat_id:
+        metadata["hermes_session_id"] = session_id
+
+    trace_attributes: dict[str, str] = {}
+    if myah_user_id:
+        trace_attributes["user_id"] = myah_user_id
+    if myah_chat_id:
+        trace_attributes["session_id"] = myah_chat_id
+
+    return metadata, trace_attributes
+
+
 def _truncate_text(value: str, max_chars: int) -> str:
     if len(value) <= max_chars:
         return value
@@ -552,15 +596,27 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
         "api_mode": api_mode,
     }
 
+    myah_metadata, myah_trace_attributes = _myah_session_context(
+        platform=platform,
+        session_id=session_id,
+    )
+    metadata.update(myah_metadata)
+
     # session_id must be passed in trace_context for Langfuse session grouping.
     trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
     if session_id:
         trace_ctx["session_id"] = session_id
 
+    effective_trace_session_id = str(
+        myah_trace_attributes.get("session_id") or session_id or task_key
+    )
+
     if propagate_attributes is not None:
         try:
             with propagate_attributes(
-                session_id=session_id or task_key,
+                user_id=myah_trace_attributes.get("user_id") or None,
+                session_id=effective_trace_session_id,
+                metadata=myah_metadata or None,
                 trace_name="Hermes turn",
                 tags=["hermes", "langfuse"],
             ):

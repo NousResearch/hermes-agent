@@ -484,6 +484,44 @@ def test_default_slot_autostarts_when_root_state_running(tmp_path: Path) -> None
     assert not (scandir / "gateway-default" / "down").exists()
 
 
+def test_default_slot_autostarts_on_first_boot_when_autostart_env_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh HERMES_HOME + HERMES_GATEWAY_AUTOSTART=1 starts the default
+    gateway on first boot."""
+    monkeypatch.setenv("HERMES_GATEWAY_AUTOSTART", "1")
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    default_action = next(a for a in actions if a.profile == "default")
+    assert default_action.prior_state is None
+    assert default_action.action == "started"
+    assert not (scandir / "gateway-default" / "down").exists()
+
+
+def test_autostart_env_does_not_override_explicit_stopped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit prior "stopped" state still wins over HERMES_GATEWAY_AUTOSTART."""
+    monkeypatch.setenv("HERMES_GATEWAY_AUTOSTART", "1")
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _seed_default_root(tmp_path, state="stopped")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    default_action = next(a for a in actions if a.profile == "default")
+    assert default_action.prior_state == "stopped"
+    assert default_action.action == "registered"
+    assert (scandir / "gateway-default" / "down").exists()
+
+
 @pytest.mark.parametrize(
     "container_argv",
     [

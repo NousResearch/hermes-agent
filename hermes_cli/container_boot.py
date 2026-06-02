@@ -35,6 +35,18 @@ log = logging.getLogger(__name__)
 # `docker restart` cycles.
 _AUTOSTART_STATES = frozenset({"running"})
 
+# Opt-in: start the default gateway on first boot (no prior state). Set by
+# managed deploys (e.g. the Nous VPS); off by default.
+_GATEWAY_AUTOSTART_ENV = "HERMES_GATEWAY_AUTOSTART"
+
+
+def _first_boot_autostart_requested() -> bool:
+    return os.environ.get(_GATEWAY_AUTOSTART_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
 # Stale runtime files we sweep before recreating service slots. These
 # all hold container-namespaced state (PIDs, process tables) that's
 # garbage post-restart — a numerically-equal PID in the new container
@@ -105,7 +117,10 @@ def reconcile_profile_gateways(
         dry_run=dry_run,
     )
     default_prior_state = legacy_default_state or _read_prior_state(hermes_home)
-    default_should_start = default_prior_state in _AUTOSTART_STATES
+    # First boot only; an explicit prior state still wins.
+    default_should_start = default_prior_state in _AUTOSTART_STATES or (
+        default_prior_state is None and _first_boot_autostart_requested()
+    )
     if not dry_run:
         _cleanup_stale_runtime_files(hermes_home)
         _register_service(scandir, "default", start=default_should_start)

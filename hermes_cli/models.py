@@ -241,6 +241,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "google-gemini-cli": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
+        # Code Assist serves two flash slugs with different access gates
+        # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
+        # that subscription/free-tier OAuth users actually reach, while
+        # gemini-3.5-flash is GA-channel-gated. Offer both so non-GA users
+        # aren't stuck with a slug cloudcode-pa 404s for them.
+        "gemini-3-flash-preview",
         "gemini-3.5-flash",
     ],
     "zai": [

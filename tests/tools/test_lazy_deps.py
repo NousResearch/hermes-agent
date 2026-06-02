@@ -135,6 +135,33 @@ class TestSecurityGating:
         )
         assert ld._allow_lazy_installs() is True
 
+    @pytest.mark.parametrize("value", ["false", "False", " 0 ", "no", "off"])
+    def test_quoted_falsey_config_disables(self, monkeypatch, value):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"allow_lazy_installs": value}},
+        )
+        assert ld._allow_lazy_installs() is False
+
+    @pytest.mark.parametrize("value", [False, 0, None])
+    def test_falsey_scalar_config_disables(self, monkeypatch, value):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"allow_lazy_installs": value}},
+        )
+        assert ld._allow_lazy_installs() is False
+
+    @pytest.mark.parametrize("value", [True, "true", "1", "yes", "on"])
+    def test_truthy_config_allows(self, monkeypatch, value):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"allow_lazy_installs": value}},
+        )
+        assert ld._allow_lazy_installs() is True
+
     def test_config_failure_fails_open(self, monkeypatch):
         # If config can't be read at all, we ALLOW installs rather than
         # blocking the user out of their own backends.

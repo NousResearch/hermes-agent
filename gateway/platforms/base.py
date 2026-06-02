@@ -1265,6 +1265,107 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Unified media caching
+#
+# One entry point for "I have raw attachment bytes from a platform — cache them
+# and tell me what I got." Classifies by extension/MIME against the shared
+# registries above, routes to the right cache_*_from_bytes helper, and returns
+# a small result the caller can store and/or describe in a transcript. Used by
+# both the addressed-message path and the observed-group-context path, on any
+# platform — not Telegram-specific.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CachedMedia:
+    """Result of caching one attachment's bytes."""
+
+    path: str                 # absolute cache path, agent-visible (sandbox-translated)
+    media_type: str           # MIME type recorded on the MessageEvent
+    kind: str                 # "image" | "video" | "audio" | "document"
+    display_name: str         # human-readable name for transcript notes
+
+    def context_note(self) -> str:
+        """One-line transcript annotation pointing the agent at the file."""
+        return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
+
+
+def _resolve_media_ext(filename: str, mime_type: str) -> str:
+    """Best-effort file extension from filename, then MIME fallback."""
+    if filename:
+        ext = os.path.splitext(filename)[1].lower()
+        if ext:
+            return ext
+    mime = (mime_type or "").lower()
+    if not mime:
+        return ""
+    for table in (
+        SUPPORTED_IMAGE_DOCUMENT_TYPES,
+        SUPPORTED_VIDEO_TYPES,
+        SUPPORTED_DOCUMENT_TYPES,
+    ):
+        for ext, m in table.items():
+            if m == mime:
+                return ext
+    return ""
+
+
+def cache_media_bytes(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Classify and cache raw attachment bytes; return a CachedMedia or None.
+
+    ``default_kind`` ("image"/"video"/"audio"/"document") biases classification
+    when the extension/MIME are ambiguous — e.g. a Telegram native photo whose
+    file has no usable name. Unsupported document types return None so the
+    caller can record an "unsupported" note. Images that fail validation
+    (``cache_image_from_bytes`` raises ValueError) also return None.
+    """
+    from tools.credential_files import to_agent_visible_cache_path
+
+    ext = _resolve_media_ext(filename, mime_type)
+    mime = (mime_type or "").lower()
+    display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
+
+    is_image = (
+        mime.startswith("image/")
+        or ext in SUPPORTED_IMAGE_DOCUMENT_TYPES
+        or default_kind == "image"
+    )
+    is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
+    is_audio = mime.startswith("audio/") or default_kind == "audio"
+
+    if is_image:
+        img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
+        try:
+            path = cache_image_from_bytes(data, ext=img_ext)
+        except ValueError:
+            return None
+        out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "image", display)
+
+    if is_video:
+        vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
+        path = cache_video_from_bytes(data, ext=vid_ext)
+        return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
+
+    if is_audio:
+        aud_ext = ext if ext in {".ogg", ".mp3", ".wav", ".m4a", ".opus", ".flac"} else ".ogg"
+        path = cache_audio_from_bytes(data, ext=aud_ext)
+        out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
+
+    if ext not in SUPPORTED_DOCUMENT_TYPES:
+        return None
+
+    path = cache_document_from_bytes(data, filename or f"document{ext}")
+    return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_DOCUMENT_TYPES[ext], "document", display or f"document{ext}")
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"

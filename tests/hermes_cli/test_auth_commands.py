@@ -142,6 +142,55 @@ def test_auth_add_google_gemini_cli_sets_active_provider(tmp_path, monkeypatch):
     assert entry["access_token"] == "ya29.test-token"
 
 
+def test_auth_add_qwen_oauth_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add qwen-oauth must set active_provider in auth.json.
+
+    Tokens are managed by the Qwen CLI credential file via
+    resolve_qwen_runtime_credentials(). The auth.json entry must record
+    active_provider — without storing tokens that would become stale.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _fake_creds = {
+        "provider": "qwen-oauth",
+        "base_url": "https://portal.qwen.ai/v1",
+        "api_key": "qwen-test-token",
+        "source": "qwen-cli",
+        "expires_at_ms": None,
+        "auth_file": "/home/user/.qwen/oauth_creds.json",
+    }
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kw: _fake_creds,
+    )
+    # Prevent _seed_from_singletons from calling the real Qwen CLI file path
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "qwen-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "qwen-oauth"
+    state = payload["providers"]["qwen-oauth"]
+    # Only base_url stored — no api_key (that lives in the Qwen CLI file).
+    assert state.get("base_url") == "https://portal.qwen.ai/v1"
+    assert "api_key" not in state
+    # pool entry from pool.add_entry() still present for hermes auth list
+    entries = payload["credential_pool"]["qwen-oauth"]
+    entry = next(item for item in entries if item["source"] == "manual:qwen_cli")
+    assert entry["access_token"] == "qwen-test-token"
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})

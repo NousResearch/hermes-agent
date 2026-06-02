@@ -17,7 +17,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -33,7 +33,7 @@ import {
   SidebarMenuItem
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { SessionInfo } from '@/hermes'
+import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { cn } from '@/lib/utils'
 import {
   $pinnedSessionIds,
@@ -126,6 +126,31 @@ const baseName = (path: string) =>
     .filter(Boolean)
     .pop()
 
+// FTS results cover sessions that aren't in the loaded page; synthesize a
+// minimal SessionInfo so they render in the same row component (resume works
+// by id; the snippet stands in for the preview).
+function searchResultToSession(result: SessionSearchResult): SessionInfo {
+  const ts = result.session_started ?? Date.now() / 1000
+
+  return {
+    archived: false,
+    cwd: null,
+    ended_at: null,
+    id: result.session_id,
+    input_tokens: 0,
+    is_active: false,
+    last_active: ts,
+    message_count: 0,
+    model: result.model ?? null,
+    output_tokens: 0,
+    preview: result.snippet?.trim() || null,
+    source: result.source ?? null,
+    started_at: ts,
+    title: null,
+    tool_call_count: 0
+  }
+}
+
 function workspaceGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[] {
   const groups = new Map<string, SidebarSessionGroup>()
 
@@ -193,6 +218,9 @@ export function ChatSidebar({
   const workingSessionIds = useStore($workingSessionIds)
   const [agentOrderIds, setAgentOrderIds] = useState<string[]>([])
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const trimmedQuery = searchQuery.trim()
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
 
@@ -238,6 +266,60 @@ export function ChatSidebar({
   }, [pinnedSessionIds, sessionByAnyId])
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
+
+  // Full-text search across *all* sessions (not just the loaded page) so 699
+  // sessions stay findable. Debounced; loaded sessions are matched instantly
+  // client-side and merged ahead of the server hits.
+  useEffect(() => {
+    if (!trimmedQuery) {
+      setServerMatches([])
+
+      return
+    }
+
+    let cancelled = false
+
+    const id = window.setTimeout(() => {
+      void searchSessions(trimmedQuery)
+        .then(res => {
+          if (!cancelled) {
+            setServerMatches(res.results)
+          }
+        })
+        .catch(() => undefined)
+    }, 200)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(id)
+    }
+  }, [trimmedQuery])
+
+  const searchResults = useMemo(() => {
+    if (!trimmedQuery) {
+      return []
+    }
+
+    const needle = trimmedQuery.toLowerCase()
+    const out = new Map<string, SessionInfo>()
+
+    for (const s of sortedSessions) {
+      if (`${s.title ?? ''} ${s.preview ?? ''} ${s.cwd ?? ''}`.toLowerCase().includes(needle)) {
+        out.set(s.id, s)
+      }
+    }
+
+    for (const match of serverMatches) {
+      if (out.has(match.session_id)) {
+        continue
+      }
+
+      const loaded = sessionByAnyId.get(match.session_id)
+      out.set(match.session_id, loaded ?? searchResultToSession(match))
+    }
+
+    return [...out.values()]
+  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
@@ -369,6 +451,56 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {sidebarOpen && showSessionSections && (
+          <div className="shrink-0 pb-1 pt-1">
+            <div className="flex items-center gap-1.5 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-hover-background) px-2 focus-within:border-(--ui-stroke-secondary)">
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="search" size="0.75rem" />
+              <input
+                aria-label="Search sessions"
+                className="h-6 min-w-0 flex-1 bg-transparent text-[0.8125rem] text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
+                onChange={event => setSearchQuery(event.target.value)}
+                placeholder="Search sessions…"
+                type="text"
+                value={searchQuery}
+              />
+              {searchQuery && (
+                <button
+                  aria-label="Clear search"
+                  className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
+                  onClick={() => setSearchQuery('')}
+                  type="button"
+                >
+                  <Codicon name="close" size="0.75rem" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {sidebarOpen && showSessionSections && trimmedQuery && (
+          <SidebarSessionsSection
+            activeSessionId={activeSidebarSessionId}
+            contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+            emptyState={
+              <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
+                No sessions match “{trimmedQuery}”.
+              </div>
+            }
+            label="Results"
+            labelMeta={String(searchResults.length)}
+            onArchiveSession={onArchiveSession}
+            onDeleteSession={onDeleteSession}
+            onResumeSession={onResumeSession}
+            onToggle={() => undefined}
+            onTogglePin={pinSession}
+            open
+            pinned={false}
+            rootClassName="min-h-0 flex-1 p-0"
+            sessions={searchResults}
+            workingSessionIdSet={workingSessionIdSet}
+          />
+        )}
+
+        {sidebarOpen && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
@@ -390,7 +522,7 @@ export function ChatSidebar({
           />
         )}
 
-        {sidebarOpen && showSessionSections && (
+        {sidebarOpen && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"

@@ -198,6 +198,14 @@ Cron deliveries are NOT mirrored into gateway session conversation history. They
 
 When `cron.notify_session` is enabled (the default), deliveries are additionally buffered (`~/.hermes/cron/pending_notices.json`, keyed by `platform:chat_id`) and folded into the system prompt of the target chat's next turn as a `[System note: ...]` block, then drained. This gives the agent awareness of its own cron output while keeping the message history (and thus alternation) untouched.
 
+`cron.notify_session` normalizes to three modes via `normalize_notify_mode` (the legacy `true`/`false` map to `auto`/`off`):
+
+- `auto` buffers each entry as injectable, so the next turn's drain folds it in automatically.
+- `button` buffers the entry as held (`inject=False`) and, on a live adapter that sets `SUPPORTS_CRON_BUTTONS` (currently Telegram), sends an accept/dismiss prompt via `send_cron_notice`. Tapping **Add to context** calls `pending_notices.mark_accepted` (flipping the entry to injectable); **Dismiss** calls `pending_notices.dismiss`. Because the on-disk buffer is the source of truth, the buttons survive a gateway restart. Platforms without button support (or the standalone no-adapter delivery path) fall back to `auto`.
+- `off` skips buffering entirely.
+
+The drain in `gateway/run.py` stays mode-agnostic: it returns only entries with `inject` truthy and leaves held ones in place, so the gating decision lives entirely at record/accept time.
+
 ## Recursion Guard
 
 Cron-run sessions have the `cronjob` toolset disabled. This prevents:

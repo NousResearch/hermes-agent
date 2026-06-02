@@ -4968,7 +4968,25 @@ def call_llm(
 
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
+    #
+    # Session Model Pool: acquire an auxiliary slot before making the call
+    # so the pool can throttle concurrent auxiliary requests to the same model.
+    _pool_aux_acquired = False
     try:
+        try:
+            from gateway.session_model_pool import get_session_model_pool as _get_pool
+            _pool_cfg = {}
+            try:
+                from hermes_cli.config import read_raw_config
+                _pool_cfg = read_raw_config()
+            except Exception:
+                pass
+            _pool = _get_pool(_pool_cfg)
+            if _pool and _pool.enabled:
+                _pool_aux_acquired = _pool.acquire_auxiliary_slot(final_model or "", resolved_provider or "")
+        except Exception:
+            pass
+
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
@@ -5261,6 +5279,23 @@ def call_llm(
                 logger.debug("Auxiliary: cache eviction after connection error failed",
                              exc_info=True)
         raise
+    finally:
+        # Session Model Pool: release auxiliary slot after the call
+        # completes (success, error, or fallback).
+        if _pool_aux_acquired:
+            try:
+                from gateway.session_model_pool import get_session_model_pool as _get_pool_fin
+                _pool_cfg = {}
+                try:
+                    from hermes_cli.config import read_raw_config
+                    _pool_cfg = read_raw_config()
+                except Exception:
+                    pass
+                _pool_fin = _get_pool_fin(_pool_cfg)
+                if _pool_fin and _pool_fin.enabled:
+                    _pool_fin.release_auxiliary_slot(final_model or "", resolved_provider or "")
+            except Exception:
+                pass
 
 
 def extract_content_or_reasoning(response) -> str:

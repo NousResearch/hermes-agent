@@ -1797,6 +1797,9 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session pending skill-level model swap (skill-level model routing).
+        # Key: session_key, Value: model slug to swap in for the next skill turn.
+        self._pending_skill_model_swap: Dict[str, str] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -7998,6 +8001,7 @@ class GatewayRunner:
                 from agent.skill_commands import (
                     get_skill_commands,
                     build_skill_invocation_message,
+                    get_skill_model_for_command,
                     resolve_skill_command_key,
                 )
                 skill_cmds = get_skill_commands()
@@ -8017,11 +8021,24 @@ class GatewayRunner:
                                 f"Enable it with: `hermes skills config`"
                             )
                     user_instruction = event.get_command_args().strip()
+                    # Skill-level model routing: resolve per-skill model
+                    # preference (config override > SKILL.md frontmatter).
+                    _skill_cfg_overrides = (
+                        (self.config or {}).get("skills", {}).get("model_overrides", {})
+                        if isinstance(self.config, dict) else {}
+                    )
+                    _skill_model = get_skill_model_for_command(cmd_key, _skill_cfg_overrides)
                     msg = build_skill_invocation_message(
                         cmd_key, user_instruction, task_id=_quick_key
                     )
                     if msg:
                         event.text = msg
+                        # Record the pending swap; applied/reverted around the
+                        # agent run in _run_agent (keyed by session_key == _quick_key).
+                        if _skill_model:
+                            if not hasattr(self, "_pending_skill_model_swap"):
+                                self._pending_skill_model_swap = {}
+                            self._pending_skill_model_swap[_quick_key] = _skill_model
                         # Fall through to normal message processing with skill content
                 else:
                     # Not an active skill — check if it's a known-but-disabled or
@@ -17531,6 +17548,20 @@ class GatewayRunner:
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            # Skill-level model routing: apply a lightweight transient model swap
+            # if a skill dispatched this turn declared a model preference. The
+            # swap is recorded in _handle_message under _pending_skill_model_swap
+            # and reverted in the finally block below.
+            _skill_swap_snapshot = None
+            try:
+                _pending_skill_swap = getattr(self, "_pending_skill_model_swap", None)
+                if _pending_skill_swap and session_key in _pending_skill_swap:
+                    _swap_model = _pending_skill_swap.pop(session_key, None)
+                    if _swap_model and agent is not None:
+                        from agent.skill_utils import skill_model_swap
+                        _skill_swap_snapshot = skill_model_swap(agent, _swap_model)
+            except Exception as _swap_exc:
+                logger.debug("skill model swap skipped: %s", _swap_exc)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -17585,6 +17616,14 @@ class GatewayRunner:
                 except Exception:
                     pass
                 reset_current_session_key(_approval_session_token)
+                # Skill-level model routing revert: restore the model the skill
+                # turn swapped out (lightweight — see skill_model_restore).
+                try:
+                    if _skill_swap_snapshot:
+                        from agent.skill_utils import skill_model_restore
+                        skill_model_restore(agent, _skill_swap_snapshot)
+                except Exception as _skill_rev_exc:
+                    logger.debug("skill model turn-revert skipped: %s", _skill_rev_exc)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

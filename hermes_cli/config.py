@@ -1553,6 +1553,12 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Per-skill model overrides for skill-level model routing.
+        # Map of {"skill-name": "model-slug"}.  Takes precedence over a
+        # skill's own metadata.hermes.model frontmatter recommendation; the
+        # override applies as a lightweight transient model swap for that
+        # skill's turn and reverts afterward.  Empty = honor frontmatter only.
+        "model_overrides": {},
     },
 
     # Curator — background skill maintenance.

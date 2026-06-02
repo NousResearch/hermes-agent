@@ -33,6 +33,7 @@ import logging
 import os
 from typing import Any, Optional
 
+from gateway.session_context import get_session_env
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,7 @@ def _stamp_worker_session_metadata(
     """Add trusted worker session id metadata for this worker's own task."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return metadata
-    session_id = os.environ.get("HERMES_SESSION_ID")
+    session_id = get_session_env("HERMES_SESSION_ID")
     if not session_id:
         return metadata
     stamped = dict(metadata or {})
@@ -738,10 +739,10 @@ def _handle_create(args: dict, **kw) -> str:
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
-    # Stamp the originating session id when the agent loop runs under
-    # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
-    # CLI / dashboard paths and on legacy hosts that don't set the env.
-    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    # Stamp the originating session id from the active agent context. Gateway
+    # workers expose it through ContextVars; CLI/ACP paths still fall back to
+    # HERMES_SESSION_ID in the process environment for compatibility.
+    session_id = args.get("session_id") or get_session_env("HERMES_SESSION_ID")
     priority = args.get("priority")
     # Resolve workspace. If the caller passed one explicitly, honor it.
     # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)

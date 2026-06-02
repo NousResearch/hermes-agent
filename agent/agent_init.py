@@ -975,14 +975,15 @@ def init_agent(
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
-    # coordination, and logging. Keep the ContextVar and os.environ
-    # fallback synchronized because different tool paths still read both.
+    # coordination, and logging.  In gateway workers this is ContextVar-only;
+    # CLI-style entrypoints may mirror to env via set_current_session_id's
+    # non-gateway default.
     try:
         from gateway.session_context import set_current_session_id
 
         set_current_session_id(agent.session_id)
-    except Exception:
-        os.environ["HERMES_SESSION_ID"] = agent.session_id
+    except Exception as exc:
+        logger.debug("Could not set session ContextVar: %s", exc)
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()

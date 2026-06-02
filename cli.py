@@ -826,7 +826,7 @@ def _sync_process_session_id(session_id: str) -> None:
     """Keep process-local session-id consumers aligned after CLI switches."""
     from gateway.session_context import set_current_session_id
 
-    set_current_session_id(session_id)
+    set_current_session_id(session_id, sync_process_env=True)
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
 def get_job(*args, **kwargs):

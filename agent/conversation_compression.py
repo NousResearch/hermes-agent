@@ -511,8 +511,8 @@ def compress_context(
                 from gateway.session_context import set_current_session_id
 
                 set_current_session_id(agent.session_id)
-            except Exception:
-                os.environ["HERMES_SESSION_ID"] = agent.session_id
+            except Exception as exc:
+                logger.debug("Could not set compression session ContextVar: %s", exc)
             agent._session_db_created = False
             agent._session_db.create_session(
                 session_id=agent.session_id,

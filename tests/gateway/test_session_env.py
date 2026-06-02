@@ -10,6 +10,7 @@ from gateway.session_context import (
     get_session_env,
     set_session_vars,
     clear_session_vars,
+    set_current_session_id,
     _VAR_MAP,
     _UNSET,
 )
@@ -50,7 +51,9 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
 
+    context.session_id = "session-abc123"
     tokens = runner._set_session_env(context)
 
     # Values should be readable via get_session_env (contextvar path)
@@ -60,10 +63,12 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("HERMES_SESSION_ID") == "session-abc123"
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
+    assert os.getenv("HERMES_SESSION_ID") is None
 
     # Clean up
     runner._clear_session_env(tokens)
@@ -104,6 +109,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
     assert get_session_env("HERMES_SESSION_USER_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+    assert get_session_env("HERMES_SESSION_ID") == ""
 
 
 def test_get_session_env_falls_back_to_os_environ(monkeypatch):
@@ -130,6 +136,23 @@ def test_get_session_env_default_when_nothing_set(monkeypatch):
 
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
+
+
+def test_omitted_session_id_keeps_env_fallback_for_acp(monkeypatch):
+    """ACP sets session vars for routing but bridges SESSION_ID through env."""
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    tokens = set_session_vars(session_key="acp-session-id")
+    try:
+        monkeypatch.setenv("HERMES_SESSION_ID", "acp-session-id")
+        assert get_session_env("HERMES_SESSION_KEY") == "acp-session-id"
+        assert get_session_env("HERMES_SESSION_ID") == "acp-session-id"
+    finally:
+        clear_session_vars(tokens)
+
+    # After an explicit clear, stale env fallback is suppressed inside this
+    # context until the next task/test starts with fresh ContextVars.
+    assert get_session_env("HERMES_SESSION_ID") == ""
 
 
 def test_set_session_env_handles_missing_optional_fields():
@@ -277,6 +300,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         connected_platforms=[],
         home_channels={},
         session_key="agent:main:telegram:dm:2144471399",
+        session_id="20260602_120000_gatewayabc",
     )
 
     tokens = runner._set_session_env(context)
@@ -287,6 +311,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
                 "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
                 "user_id": get_session_env("HERMES_SESSION_USER_ID"),
                 "session_key": get_session_env("HERMES_SESSION_KEY"),
+                "session_id": get_session_env("HERMES_SESSION_ID"),
             }
         )
     finally:
@@ -297,7 +322,60 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         "chat_id": "2144471399",
         "user_id": "123456",
         "session_key": "agent:main:telegram:dm:2144471399",
+        "session_id": "20260602_120000_gatewayabc",
     }
+
+
+@pytest.mark.asyncio
+async def test_repeated_gateway_turns_copy_active_session_id_into_executor(monkeypatch):
+    """Cached-agent gateway turns should still expose the active session id."""
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-global")
+
+    async def run_turn(session_id: str) -> str:
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="2144471399",
+            chat_type="dm",
+        )
+        context = SessionContext(
+            source=source,
+            connected_platforms=[],
+            home_channels={},
+            session_key="agent:main:telegram:dm:2144471399",
+            session_id=session_id,
+        )
+        tokens = runner._set_session_env(context)
+        try:
+            return await runner._run_in_executor_with_context(
+                lambda: get_session_env("HERMES_SESSION_ID")
+            )
+        finally:
+            runner._clear_session_env(tokens)
+
+    assert await run_turn("session-one") == "session-one"
+    assert await run_turn("session-two") == "session-two"
+    assert os.environ["HERMES_SESSION_ID"] == "stale-global"
+
+
+def test_kanban_worker_metadata_uses_context_session_id(monkeypatch):
+    """Kanban tools should read gateway session id from ContextVars, not env."""
+    from tools.kanban_tools import _stamp_worker_session_metadata
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-global")
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="chat-1",
+        session_key="telegram:chat-1",
+        session_id="ctx-session-id",
+    )
+    try:
+        stamped = _stamp_worker_session_metadata("task-1", {"existing": True})
+    finally:
+        clear_session_vars(tokens)
+
+    assert stamped == {"existing": True, "worker_session_id": "ctx-session-id"}
 
 
 @pytest.mark.asyncio
@@ -312,13 +390,59 @@ async def test_run_in_executor_with_context_forwards_args():
     assert result == 10
 
 
+def test_gateway_session_id_contextvar_does_not_clobber_process_env(monkeypatch):
+    """Gateway-mode session ID rotation is ContextVar-only, never global env."""
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-global")
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="chat-1",
+        session_key="telegram:chat-1",
+    )
+    try:
+        set_current_session_id("gateway-session-1")
+
+        assert get_session_env("HERMES_SESSION_ID") == "gateway-session-1"
+        assert os.environ["HERMES_SESSION_ID"] == "stale-global"
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_cli_session_id_sync_can_explicitly_update_process_env(monkeypatch):
+    """Single-session CLI paths still have an explicit env-sync escape hatch."""
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    set_current_session_id("cli-session-1", sync_process_env=True)
+
+    assert get_session_env("HERMES_SESSION_ID") == "cli-session-1"
+    assert os.environ["HERMES_SESSION_ID"] == "cli-session-1"
+
+
 @pytest.mark.asyncio
 async def test_run_in_executor_with_context_propagates_exceptions():
     """Exceptions inside the executor should propagate to the caller."""
     runner = object.__new__(GatewayRunner)
 
-    def blow_up():
-        raise ValueError("boom")
+    def boom():
+        raise RuntimeError("boom")
 
-    with pytest.raises(ValueError, match="boom"):
-        await runner._run_in_executor_with_context(blow_up)
+    with pytest.raises(RuntimeError, match="boom"):
+        await runner._run_in_executor_with_context(boom)
+
+
+def test_gateway_run_does_not_write_session_key_to_global_env():
+    """Gateway workers must not mirror per-message session keys into os.environ.
+
+    The gateway handles concurrent sessions in one process, so per-message
+    HERMES_SESSION_KEY belongs in gateway.session_context ContextVars only.
+    CLI/cron/ACP compatibility may still use env fallback outside gateway/run.py.
+    """
+    from pathlib import Path
+
+    gateway_run = (Path(__file__).parent.parent.parent / "gateway" / "run.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'os.environ["HERMES_SESSION_KEY"]' not in gateway_run
+    assert "os.environ['HERMES_SESSION_KEY']" not in gateway_run
+    assert 'os.environ["HERMES_SESSION_ID"]' not in gateway_run
+    assert "os.environ['HERMES_SESSION_ID']" not in gateway_run

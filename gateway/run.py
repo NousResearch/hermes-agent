@@ -18010,6 +18010,26 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
+            if not _run_still_current():
+                logger.info(
+                    "Dropping stale agent result for %s — generation %s is no longer current",
+                    session_key or "?",
+                    run_generation,
+                )
+                if _stream_consumer is not None:
+                    _stream_consumer.finish()
+                return {
+                    "final_response": "",
+                    "messages": agent_history,
+                    "api_calls": result.get("api_calls", 0),
+                    "completed": result.get("completed"),
+                    "interrupted": True,
+                    "interrupt_message": None,
+                    "tools": tools_holder[0] or [],
+                    "history_offset": len(agent_history),
+                    "stale_generation": True,
+                }
+
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()

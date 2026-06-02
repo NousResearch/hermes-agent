@@ -26,6 +26,7 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
   return {
     name: 'tts',
     has_category: true,
+    active_provider: null,
     providers: [
       {
         name: 'Microsoft Edge TTS',
@@ -33,7 +34,8 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
         tag: 'No API key needed',
         env_vars: [],
         post_setup: null,
-        requires_nous_auth: false
+        requires_nous_auth: false,
+        is_active: false
       },
       {
         name: 'ElevenLabs',
@@ -43,7 +45,8 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
           { key: 'ELEVENLABS_API_KEY', prompt: 'ElevenLabs API key', url: 'https://x', default: null, is_set: false }
         ],
         post_setup: null,
-        requires_nous_auth: false
+        requires_nous_auth: false,
+        is_active: false
       }
     ],
     ...overrides
@@ -98,5 +101,55 @@ describe('ToolsetConfigPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('ELEVENLABS_API_KEY', 'sk-test-123'))
+  })
+
+  it('expands the active provider on load, not just the first configured one', async () => {
+    // ElevenLabs is the active provider per config, even though the keyless
+    // Edge TTS provider sorts first and is also "configured". The panel must
+    // honor is_active and expand ElevenLabs (so its API-key field renders)
+    // rather than defaulting to the first keyless provider. Regression test
+    // for the GUI showing the wrong provider selected after relaunch.
+    getToolsetConfig.mockResolvedValue(
+      config({
+        active_provider: 'ElevenLabs',
+        providers: [
+          {
+            name: 'Microsoft Edge TTS',
+            badge: 'free',
+            tag: 'No API key needed',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: false
+          },
+          {
+            name: 'ElevenLabs',
+            badge: 'paid',
+            tag: 'Most natural voices',
+            env_vars: [
+              {
+                key: 'ELEVENLABS_API_KEY',
+                prompt: 'ElevenLabs API key',
+                url: 'https://x',
+                default: null,
+                is_set: true
+              }
+            ],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true
+          }
+        ]
+      })
+    )
+
+    const { ToolsetConfigPanel } = await import('./toolset-config-panel')
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="tts" />)
+
+    // The active provider's env-var field only renders when it's the expanded
+    // one — so finding it proves ElevenLabs (not Edge TTS) was auto-expanded.
+    expect(await screen.findByText('ELEVENLABS_API_KEY')).toBeTruthy()
+    // No provider selection was triggered — this is purely reflecting state.
+    expect(selectToolsetProvider).not.toHaveBeenCalled()
   })
 })

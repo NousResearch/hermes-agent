@@ -93,12 +93,28 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['switch'],
-    help: 'switch between live TUI sessions',
+    aliases: ['switch', 'session', 'resume'],
+    help: 'browse, switch, or resume sessions',
     name: 'sessions',
     run: (arg, ctx) => {
-      if (arg.trim().toLowerCase() === 'new') {
+      const trimmed = arg.trim()
+
+      // A new *live* session keeps the current one running in the background
+      // (it doesn't close it), so fanning out while busy is allowed — that's
+      // the whole point of multiple live sessions.
+      if (trimmed.toLowerCase() === 'new') {
         return ctx.session.newLiveSession()
+      }
+
+      // `/resume <id|title>` (and `/sessions <id>`) load a cold session and
+      // CLOSE the current one, so guard it while a turn is in-flight to avoid
+      // corrupting streaming/busy state. Bare opens the overlay to browse.
+      if (trimmed) {
+        if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+          return
+        }
+
+        return ctx.session.resumeById(trimmed)
       }
 
       patchOverlayState({ sessions: true })

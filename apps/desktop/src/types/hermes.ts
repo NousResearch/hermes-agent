@@ -240,6 +240,7 @@ export interface SessionCreateResponse {
 }
 
 export interface SessionInfo {
+  archived?: boolean
   cwd?: null | string
   ended_at: null | number
   id: string
@@ -470,12 +471,17 @@ export interface ToolProvider {
   env_vars: ToolEnvVar[]
   post_setup: string | null
   requires_nous_auth: boolean
+  /** True when this is the provider currently written to config (mirrors the
+   *  CLI `hermes tools` active-provider detection). */
+  is_active: boolean
 }
 
 export interface ToolsetConfig {
   name: string
   has_category: boolean
   providers: ToolProvider[]
+  /** Name of the currently active provider, or null if none is configured. */
+  active_provider: string | null
 }
 
 export interface SessionSearchResult {

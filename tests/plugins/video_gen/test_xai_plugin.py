@@ -25,6 +25,43 @@ def test_xai_provider_registers():
     assert provider.default_model() == "grok-imagine-video"
 
 
+def test_xai_provider_lists_text_and_current_image_video_models():
+    from plugins.video_gen.xai import XAIVideoGenProvider
+
+    models = XAIVideoGenProvider().list_models()
+    ids = [model["id"] for model in models]
+
+    assert ids[0] == "grok-imagine-video"
+    assert ids[1] == "grok-imagine-video-1.5-preview"
+    assert models[1]["modalities"] == ["image"]
+    assert models[1]["aliases"] == ["grok-imagine-video-1.5-2026-05-30"]
+
+
+def test_xai_routes_default_models_by_modality():
+    from plugins.video_gen.xai import _resolve_model_for_modality
+
+    assert _resolve_model_for_modality(
+        "grok-imagine-video",
+        modality="text",
+        explicit_model=False,
+    ) == "grok-imagine-video"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video",
+        modality="image",
+        explicit_model=False,
+    ) == "grok-imagine-video-1.5-preview"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video-1.5-preview",
+        modality="text",
+        explicit_model=False,
+    ) == "grok-imagine-video"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video-1.5-preview",
+        modality="text",
+        explicit_model=True,
+    ) == "grok-imagine-video-1.5-preview"
+
+
 def test_xai_capabilities_text_and_image_only():
     """xAI was previously advertised with edit/extend operations. The
     simplified surface only exposes text-to-video and image-to-video —

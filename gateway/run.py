@@ -5121,6 +5121,30 @@ class GatewayRunner:
         cross boards, so delivery semantics are unchanged — this is
         purely a fan-out of the single-DB poll.
         """
+        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
+        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
+        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
+        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning("kanban notifier: config loader unavailable; disabled")
+            return
+        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
+        if env_override in {"0", "false", "no", "off"}:
+            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
+            return
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
+            return
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not kanban_cfg.get("dispatch_in_gateway", True):
+            logger.info(
+                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
+            )
+            return
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -6820,8 +6844,8 @@ class GatewayRunner:
         """Whether the adapter for *platform* gates access at intake itself.
 
         Mirrors ``BasePlatformAdapter.enforces_own_access_policy``. Adapters
-        such as WeCom, Weixin, Yuanbao, and QQBot evaluate their documented
-        ``dm_policy`` / ``group_policy`` / ``allow_from`` config before a
+        such as WeCom, Weixin, Yuanbao, QQBot, and WhatsApp evaluate their
+        documented ``dm_policy`` / ``group_policy`` / ``allow_from`` config before a
         message is dispatched to the gateway, so a message that reaches
         ``_is_user_authorized`` has already been authorized by the adapter.
         Defaults to ``False`` when the adapter is unknown or doesn't expose
@@ -12484,14 +12508,41 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                # Send media files
+                # Send media files, routing each by type so a TTS clip
+                # arrives as a voice bubble / a clip as a video rather than
+                # a generic document. Mirrors the streaming + kanban paths.
+                from gateway.platforms.base import (
+                    should_send_media_as_audio as _should_send_media_as_audio,
+                )
+                _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
                 for media_path, _is_voice in (media_files or []):
+                    _ext = os.path.splitext(media_path)[1].lower()
                     try:
-                        await adapter.send_document(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                            metadata=_thread_metadata,
-                        )
+                        if _should_send_media_as_audio(source.platform, _ext, _is_voice):
+                            await adapter.send_voice(
+                                chat_id=source.chat_id,
+                                audio_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif _ext in _VIDEO_EXTS:
+                            await adapter.send_video(
+                                chat_id=source.chat_id,
+                                video_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif _ext in _IMAGE_EXTS:
+                            await adapter.send_image_file(
+                                chat_id=source.chat_id,
+                                image_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=media_path,
+                                metadata=_thread_metadata,
+                            )
                     except Exception:
                         pass
             else:

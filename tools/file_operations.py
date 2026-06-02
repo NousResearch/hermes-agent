@@ -353,6 +353,16 @@ class FileOperations(ABC):
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
 
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Default implementation delegates to ``delete_file``
+        for the non-recursive case; backends with native recursive support
+        should override.
+        """
+        if recursive:
+            return WriteResult(error="Recursive delete not implemented for this backend")
+        return self.delete_file(path)
+
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
         """Move/rename a file from src to dst. Returns WriteResult with .error set on failure."""
@@ -1065,13 +1075,64 @@ class ShellFileOperations(FileOperations):
         )
 
     def delete_file(self, path: str) -> WriteResult:
-        """Delete a file via rm."""
+        """Delete a single file.
+
+        Cross-platform: runs via ``python -c`` against the terminal env's
+        Python so it works on Windows shells (``cmd.exe``/PowerShell) that
+        don't ship ``rm``. Directories are rejected here — use
+        ``delete_path(recursive=True)`` for trees.
+        """
+        return self._python_delete(path, recursive=False)
+
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Always preferred over emitting ``rm -rf`` /
+        ``Remove-Item -Recurse`` directly so the same tool call works on
+        every backend (local / docker / ssh / Windows).
+        """
+        return self._python_delete(path, recursive=recursive)
+
+    def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
         if _is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
-        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+
+        # We can't shell out to ``rm`` here — it doesn't exist on Windows
+        # ``cmd.exe`` or PowerShell, so this code path is what's left when
+        # the backend's terminal is a Windows shell. Path is baked into the
+        # snippet via ``repr()`` so quoting is correct on every shell.
+        snippet = (
+            "import shutil, pathlib, sys\n"
+            f"p = pathlib.Path({path!r})\n"
+            f"recursive = {bool(recursive)!r}\n"
+            "try:\n"
+            "    if p.is_dir() and not p.is_symlink():\n"
+            "        if recursive:\n"
+            "            shutil.rmtree(p)\n"
+            "        else:\n"
+            "            print('is a directory: ' + str(p), file=sys.stderr); sys.exit(2)\n"
+            "    else:\n"
+            # NOTE: avoid ``unlink(missing_ok=True)`` — that kwarg lands in
+            # Python 3.8 and the remote interpreter (docker/ssh) may still
+            # be 3.7 on older distros. The FileNotFoundError handler below
+            # covers the same case and works back to 3.4.
+            "        p.unlink()\n"
+            "except FileNotFoundError:\n"
+            "    pass\n"
+            "except Exception as exc:\n"
+            "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+        )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+
+        # Fall back to ``python`` (Windows / older systems where there's no
+        # ``python3`` symlink but a ``python`` binary is on PATH).
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
         if result.exit_code != 0:
-            return WriteResult(error=f"Failed to delete {path}: {result.stdout}")
+            return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
+
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:

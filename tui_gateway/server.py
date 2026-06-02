@@ -702,11 +702,46 @@ def _register_session_cwd(session: dict | None) -> None:
         pass
 
 
+def _ensure_session_db_row(session: dict) -> None:
+    """Idempotently persist the session's DB row on first real activity.
+
+    Called from prompt.submit so a row only exists once the user actually sends
+    a message — abandoned drafts never leave an empty "Untitled" session behind.
+    Uses INSERT OR IGNORE under the hood, so re-calls (and the AIAgent's own
+    lazy create) are no-ops.
+
+    Only an *explicitly chosen* workspace is persisted as the session's cwd.
+    The agent still runs in the auto-detected directory (session["cwd"]), but
+    we don't stamp that onto the row — otherwise every session the user never
+    picked a folder for gets grouped under whatever directory the desktop
+    happened to launch in (e.g. "desktop"). Leaving it null groups them under
+    "No workspace", which is the desired default.
+    """
+    key = session.get("session_key")
+    if not key:
+        return
+    db = _get_db()
+    if db is None:
+        return
+    try:
+        db.create_session(
+            key,
+            source="tui",
+            model=_resolve_model(),
+            cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
+        )
+    except Exception:
+        logger.debug("failed to persist desktop session row", exc_info=True)
+
+
 def _set_session_cwd(session: dict, cwd: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(str(cwd)))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
     session["cwd"] = resolved
+    # An explicit user choice — persist it as the workspace (and let a later
+    # lazy row creation persist it too, not the launch-dir fallback).
+    session["explicit_cwd"] = True
     _register_session_cwd(session)
     db = _get_db()
     if db is not None:
@@ -774,11 +809,31 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = None
 
 
-def _set_session_context(session_key: str) -> list:
+def _cwd_for_session_key(session_key: str) -> str:
+    """Reverse-map session_key to the session's logical cwd.
+
+    Snapshots ``_sessions`` first: concurrent RPC handlers mutate it from the
+    thread pool, so iterating the live view risks ``RuntimeError: dictionary
+    changed size during iteration``.
+    """
+    if not session_key:
+        return ""
+    for sess in list(_sessions.values()):
+        if sess.get("session_key") == session_key:
+            return str(sess.get("cwd") or "")
+    return ""
+
+
+def _set_session_context(session_key: str, cwd: str | None = None) -> list:
     try:
         from gateway.session_context import set_session_vars
 
-        return set_session_vars(session_key=session_key)
+        # Ephemeral task IDs (background, preview) aren't in `_sessions`, so the
+        # reverse-map returns "" and would clear the cwd override. Callers that
+        # know the parent workspace pass it explicitly so spawned agents inherit
+        # it instead of falling back to the gateway launch dir.
+        resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
+        return set_session_vars(session_key=session_key, cwd=resolved)
     except Exception:
         return []
 
@@ -2720,6 +2775,16 @@ def _(rid, params: dict) -> dict:
     cols = int(params.get("cols", 80))
     history = _coerce_seed_history(params.get("messages"))
     title = str(params.get("title") or "").strip()
+    # Did the client pick a workspace, or are we falling back to the gateway's
+    # launch directory? Only an explicit choice is persisted as the session's
+    # workspace (see _ensure_session_db_row); otherwise it lands in "No
+    # workspace" instead of whatever folder the desktop launched in.
+    raw_cwd = str(params.get("cwd") or "").strip()
+    try:
+        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    except Exception:
+        explicit_cwd = False
+    resolved_cwd = _completion_cwd(params)
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2733,11 +2798,12 @@ def _(rid, params: dict) -> dict:
         "cols": cols,
         "created_at": now,
         "edit_snapshots": {},
+        "explicit_cwd": explicit_cwd,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
-        "cwd": _completion_cwd(params),
+        "cwd": resolved_cwd,
         "inflight_turn": None,
         "last_active": now,
         "pending_title": title or None,
@@ -2750,17 +2816,12 @@ def _(rid, params: dict) -> dict:
         "transport": current_transport() or _stdio_transport,
     }
     _register_session_cwd(_sessions[sid])
-    db = _get_db()
-    if db is not None:
-        try:
-            db.create_session(
-                key,
-                source="tui",
-                model=_resolve_model(),
-                cwd=_sessions[sid]["cwd"],
-            )
-        except Exception:
-            logger.debug("failed to pre-create desktop session row", exc_info=True)
+    # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
+    # launch (and every "New agent" / draft) opens a session here just to paint
+    # the composer, so eagerly creating a row left an "Untitled" empty session
+    # behind for every launch the user never typed into. The row is now created
+    # lazily on the first prompt (see _ensure_session_db_row + prompt.submit),
+    # and the AIAgent's own INSERT-OR-IGNORE persists it on the first turn too.
 
     # Return the lightweight session immediately so Ink can paint the composer
     # + skeleton panel, then build the real AIAgent just after this response is
@@ -3841,6 +3902,8 @@ def _(rid, params: dict) -> dict:
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
+    # Persist the DB row lazily, now that the user has actually sent a message.
+    _ensure_session_db_row(session)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -3865,6 +3928,35 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
+    """True if ``evt`` is owned by a *different* live session.
+
+    Background-process events carry the ``session_key`` of the session that
+    started the process. Since all desktop sessions share one process-wide
+    completion queue, each poller must skip events it doesn't own so a
+    background job's completion surfaces in the session that launched it — not
+    whichever poller happened to dequeue first. Orphaned events (owner gone)
+    and global/system events (empty ``session_key``) return False so the
+    current poller still handles them rather than losing them.
+    """
+    evt_key = str(evt.get("session_key") or "")
+    if not evt_key:
+        return False
+    if evt_key == str(session.get("session_key") or ""):
+        return False
+    try:
+        snapshot = list(_sessions.values())
+    except Exception:
+        # If we can't safely enumerate live sessions, fail open so we don't
+        # crash the poller thread or drop the event.
+        return False
+
+    return any(
+        s is not session and str(s.get("session_key") or "") == evt_key
+        for s in snapshot
+    )
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -3885,6 +3977,16 @@ def _notification_poller_loop(
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
+            continue
+
+        # Multiple desktop sessions share this one process-wide queue. Only
+        # consume events that belong to *this* session — otherwise a background
+        # process started in session A would surface its completion in whichever
+        # session's poller happened to wake first (Ben's "reported in a
+        # different session" bug). Leave foreign events for their owner.
+        if _notification_event_belongs_elsewhere(session, evt):
+            process_registry.completion_queue.put(evt)
+            time.sleep(0.1)
             continue
 
         _evt_sid = evt.get("session_id", "")
@@ -3917,12 +4019,17 @@ def _notification_poller_loop(
                 session["running"] = False
 
     # Drain any remaining events after stop signal (process all pending
-    # before exiting so nothing is lost on shutdown).
+    # before exiting so nothing is lost on shutdown). Events owned by other
+    # live sessions are set aside and re-queued so their poller still sees them.
+    deferred: list = []
     while not process_registry.completion_queue.empty():
         try:
             evt = process_registry.completion_queue.get_nowait()
         except Exception:
             break
+        if _notification_event_belongs_elsewhere(session, evt):
+            deferred.append(evt)
+            continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
             continue
@@ -3950,6 +4057,10 @@ def _notification_poller_loop(
             )
             with session["history_lock"]:
                 session["running"] = False
+
+    # Hand any other sessions' events back to the shared queue.
+    for evt in deferred:
+        process_registry.completion_queue.put(evt)
 
 
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
@@ -4534,7 +4645,7 @@ def _(rid, params: dict) -> dict:
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
 
     def run():
-        session_tokens = _set_session_context(task_id)
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
         try:
             from run_agent import AIAgent
 
@@ -4619,14 +4730,25 @@ def _(rid, params: dict) -> dict:
         if line
     )
 
+    # Normalize defensively: a malformed client path (embedded NUL, etc.) must
+    # not blow up the whole restart — treat it as "no validated cwd".
+    try:
+        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
+        if preview_cwd and not os.path.isdir(preview_cwd):
+            preview_cwd = ""
+    except Exception:
+        preview_cwd = ""
+
     def run():
-        session_tokens = _set_session_context(task_id)
+        # Pin the validated preview cwd, else the parent workspace — never an
+        # invalid client path, which would silently fall back to the launch dir.
+        session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
         try:
             from run_agent import AIAgent
             from tools.terminal_tool import register_task_env_overrides
 
-            if cwd and os.path.isdir(os.path.abspath(os.path.expanduser(cwd))):
-                register_task_env_overrides(task_id, {"cwd": os.path.abspath(os.path.expanduser(cwd))})
+            if preview_cwd:
+                register_task_env_overrides(task_id, {"cwd": preview_cwd})
 
             history_note = (
                 f" (with {len(parent_history)} parent-session messages of context)"

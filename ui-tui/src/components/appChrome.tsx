@@ -75,13 +75,18 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
+// `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
+// module load instead of rescanning on every status render.
+const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+
 const indicatorFrameWidth = (style: IndicatorStyle): number => {
   if (style === 'kaomoji') {
-    return FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+    return KAOMOJI_FRAME_WIDTH
   }
 
   if (style === 'emoji') {
-    return EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+    return EMOJI_FRAME_WIDTH
   }
 
   // 'ascii' and 'unicode' are single-column glyphs.
@@ -416,8 +421,9 @@ export function StatusRule({
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // priority order. No mid-segment truncation, and the low-value tail (incl.
-  // the session count) drops first instead of crushing status/model/context.
+  // descending priority order — bar, duration, compressions, voice, session
+  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
   const fits = (w: number) => {
@@ -499,7 +505,6 @@ export function StatusRule({
             </Text>
           </Text>
         ) : null}
-        <SpawnHud t={t} />
         {showVoice ? (
           <Text
             color={
@@ -524,6 +529,10 @@ export function StatusRule({
             {costText}
           </Text>
         ) : null}
+        {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
+            renders last — any overflow truncates the HUD itself rather than the
+            budgeted segments before it. It self-hides when no delegation runs. */}
+        <SpawnHud t={t} />
       </Box>
 
       {rightWidth > 0 ? (

@@ -4,6 +4,7 @@ import json
 import logging
 import subprocess
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from gateway.active_task import (
@@ -401,6 +402,40 @@ def test_gateway_workspace_resolver_does_not_overwrite_valid_repo_with_home_fall
     assert "foreground active-task recovery record used" in caplog.text
 
 
+def test_gateway_workspace_resolver_ignores_stale_foreground_record(
+    tmp_path, monkeypatch, caplog
+):
+    stale_repo = tmp_path / "stale-project"
+    fallback_repo = tmp_path / "runtime-checkout"
+    _init_git_repo(stale_repo)
+    _init_git_repo(fallback_repo)
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    store.replace_foreground_session(
+        session_key=session_key,
+        repo_path=str(stale_repo),
+        branch="main",
+        head="stale-head",
+    )
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    raw[session_key]["updated_at"] = (
+        datetime.now(timezone.utc) - timedelta(hours=8)
+    ).isoformat()
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    runner = object.__new__(GatewayRunner)
+    runner.active_task_store = store
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        resolved = runner._resolve_agent_working_directory(
+            session_key,
+            fallback_cwd=str(fallback_repo),
+        )
+
+    assert resolved == str(fallback_repo)
+    assert "active-task recovery record stale" in caplog.text
+
+
 def test_foreground_persistence_normalizes_nested_git_cwd(tmp_path, monkeypatch):
     repo_path = tmp_path / "project"
     expected_head = _init_git_repo(repo_path)
@@ -654,6 +689,27 @@ def test_resume_recovery_logs_session_key_hit_with_foreground_record(tmp_path, c
     assert "used=True" in caplog.text
     assert "thread-parent" not in caplog.text
     assert "thread-1" not in caplog.text
+
+
+def test_resume_recovery_note_for_foreground_record_refuses_task_inference(tmp_path):
+    repo_path = tmp_path / "project"
+    expected_head = _init_git_repo(repo_path)
+    session_key = "agent:main:discord:thread:thread-parent:thread-1"
+    store = ActiveTaskStore(tmp_path / "active_tasks.json")
+    store.replace_foreground_session(
+        session_key=session_key,
+        repo_path=str(repo_path),
+        branch="main",
+        head=expected_head,
+    )
+
+    note = build_active_task_recovery_note(store.get(session_key), "restart_interrupted")
+
+    assert "Previous active task: unknown" in note
+    assert "Exact interrupted session record: found" in note
+    assert "workspace-only foreground record" in note
+    assert "Do not infer the task from unrelated logs, dirty checkout files" in note
+    assert "ask the user" in note
 
 
 def test_resume_pending_note_includes_active_task_facts(tmp_path):

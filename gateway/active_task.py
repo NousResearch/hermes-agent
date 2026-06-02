@@ -18,6 +18,7 @@ from utils import atomic_json_write
 
 
 DEFAULT_ACTIVE_TASK_TTL_SECONDS = 48 * 60 * 60
+FOREGROUND_SESSION_TTL_SECONDS = 6 * 60 * 60
 ACTIVE_TASK_STATUSES = {"active", "interrupted", "detached", "unknown"}
 FINAL_REPORT_STATUSES = {"pending", "sent", "recovered", "failed"}
 FOREGROUND_SESSION_FIELDS = (
@@ -107,6 +108,11 @@ class ActiveTaskRecord:
             return False
         age = datetime.now(timezone.utc) - updated
         return age.total_seconds() <= ttl_seconds
+
+    def freshness_ttl_seconds(self) -> int:
+        if self.mode == "foreground_session":
+            return FOREGROUND_SESSION_TTL_SECONDS
+        return DEFAULT_ACTIVE_TASK_TTL_SECONDS
 
     def has_usable_workspace(self) -> bool:
         if self.status not in ACTIVE_TASK_STATUSES:
@@ -384,6 +390,7 @@ def build_active_task_recovery_note(
             "project commands.]"
         )
 
+    task_known = bool(record.task_summary or record.command)
     task = record.task_summary or record.command or "unknown"
     lines = [
         base,
@@ -394,6 +401,16 @@ def build_active_task_recovery_note(
         f"Previous command: {record.command or 'unknown'}",
         f"Process status: {record.status or 'unknown'}",
     ]
+    if record.mode == "foreground_session" and not task_known:
+        lines.append("Exact interrupted session record: found")
+        lines.append(
+            "Recovery task body: unknown; this is a workspace-only foreground "
+            "record, not a persisted task record."
+        )
+        lines.append(
+            "Do not infer the task from unrelated logs, dirty checkout files, "
+            "or broad history searches; ask the user before continuing."
+        )
     if record.process_session_id or record.pid is not None:
         process_ref = record.process_session_id or f"pid:{record.pid}"
         lines.append(f"Process/session id: {process_ref}")

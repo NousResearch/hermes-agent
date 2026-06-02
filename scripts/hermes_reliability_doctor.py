@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ DEFAULT_HERMES_HOME = "/home/jenny/.hermes"
 DEFAULT_AI_OPS_BRAIN = "/home/jenny/ai-ops-brain"
 DEFAULT_GATEWAY_VENV_PYTHON = "/home/jenny/.hermes/hermes-agent-backup/venv/bin/python"
 DEFAULT_SERVICE = "hermes-gateway.service"
+STALE_ACTIVE_FOREGROUND_SECONDS = 6 * 60 * 60
 
 
 def _run_command(args: list[str], timeout: float = 3.0, cwd: str | None = None) -> dict[str, Any]:
@@ -192,6 +194,9 @@ def inspect_active_task_store(path: str | Path) -> dict[str, Any]:
         "status_counts": {},
         "mode_counts": {},
         "final_report_counts": {},
+        "foreground_missing_task_count": 0,
+        "stale_active_foreground_count": 0,
+        "updated_at_age_buckets": {},
     }
     if not store_path.exists():
         return result
@@ -219,6 +224,31 @@ def inspect_active_task_store(path: str | Path) -> dict[str, Any]:
         if record.get("final_report_status")
     ]
     result["final_report_counts"] = dict(sorted(Counter(final_statuses).items()))
+    now = datetime.now(timezone.utc)
+    age_buckets: Counter[str] = Counter()
+    for record in records:
+        is_foreground = record.get("mode") == "foreground_session"
+        is_active = str(record.get("status") or "") == "active"
+        if is_foreground and not (record.get("task_summary") or record.get("command")):
+            result["foreground_missing_task_count"] += 1
+        raw_updated_at = str(record.get("updated_at") or "")
+        try:
+            updated_at = datetime.fromisoformat(raw_updated_at)
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            age_seconds = (now - updated_at).total_seconds()
+        except ValueError:
+            age_buckets["bad_or_missing"] += 1
+            if is_foreground and is_active:
+                result["stale_active_foreground_count"] += 1
+            continue
+        if age_seconds > STALE_ACTIVE_FOREGROUND_SECONDS:
+            age_buckets["stale"] += 1
+            if is_foreground and is_active:
+                result["stale_active_foreground_count"] += 1
+        else:
+            age_buckets["fresh"] += 1
+    result["updated_at_age_buckets"] = dict(sorted(age_buckets.items()))
     return result
 
 
@@ -485,6 +515,8 @@ def format_report(report: dict[str, Any]) -> str:
             "Stores:",
             f"  active task records: {stores['active_tasks'].get('record_count')}",
             f"  foreground records: {stores['active_tasks'].get('foreground_count')}",
+            f"  foreground records missing task body: {stores['active_tasks'].get('foreground_missing_task_count')}",
+            f"  stale active foreground records: {stores['active_tasks'].get('stale_active_foreground_count')}",
             f"  final report statuses: {stores['active_tasks'].get('final_report_counts')}",
             f"  goal rows: {stores['goals'].get('goal_count')}",
             f"  active goals: {stores['goals'].get('active_count')}",

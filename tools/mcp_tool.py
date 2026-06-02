@@ -518,6 +518,21 @@ class InvalidMcpUrlError(ValueError):
     """
 
 
+class NonMcpEndpointError(ConnectionError):
+    """Raised when an HTTP MCP URL serves a non-MCP response.
+
+    A genuine MCP Streamable-HTTP endpoint answers with ``application/json``
+    or ``text/event-stream``.  Anything else on a 2xx response (typically
+    ``text/html`` from a web-app root) means the configured ``url`` points at
+    the wrong place.  This is non-retryable: every attempt returns the same
+    page, so the reconnect-backoff loop is skipped and the server is reported
+    failed immediately with an actionable message.
+
+    Subclasses :class:`ConnectionError` so callers that only catch the broad
+    class still treat it as a connection problem.
+    """
+
+
 def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     """Return the URL as a string if it's a valid http(s) remote MCP URL.
 
@@ -1457,53 +1472,85 @@ class MCPServerTask:
                             # PID-reuse can't surface stale pgroup state later.
                             _stdio_pgids.pop(pid, None)
 
-    @staticmethod
+    # Content types a real MCP Streamable-HTTP endpoint may return on the
+    # initial POST/GET. Anything else on a 2xx response means the URL is not
+    # an MCP endpoint.
+    _MCP_CONTENT_TYPES = ("application/json", "text/event-stream")
+
     async def _preflight_content_type(
+        self,
         url: str,
         *,
         headers: Optional[dict] = None,
         ssl_verify: bool = True,
+        client_cert=None,
         timeout: float = 5.0,
     ) -> None:
-        """Quick content-type probe before handing *url* to the MCP SDK.
+        """Probe *url* for an MCP-shaped response before the SDK connects.
 
-        A misconfigured ``mcp_servers.<name>.url`` that points at a plain web
-        app (returning ``text/html``) causes the MCP SDK to sit on the
-        connection for the full ``connect_timeout`` (default 60 s) before
-        surfacing ``CancelledError``.  A cheap HEAD request lets us detect
-        this in ≤ 5 s and raise immediately with an actionable message.
+        A misconfigured ``mcp_servers.<name>.url`` pointed at a plain web app
+        returns HTML (or some other non-MCP body). The MCP SDK then sits on
+        the connection for the full ``connect_timeout`` (default 60 s) before
+        surfacing an opaque ``CancelledError``. A cheap, short-timeout probe
+        here catches that in ≤ ``timeout`` seconds and raises
+        :class:`NonMcpEndpointError` with an actionable message.
 
-        Non-HTML responses (``application/json``, missing header, network
-        errors) silently pass through so the normal MCP handshake proceeds.
+        Detection is allow-list based: a 2xx response is rejected only when it
+        carries a definite content type that is NOT one an MCP endpoint uses
+        (``application/json`` / ``text/event-stream``). A missing or empty
+        content type, non-2xx status, or any network/transport error passes
+        through silently — the probe is strictly best-effort, and the real
+        handshake remains the source of truth for everything except the
+        unambiguous "this is a web page, not MCP" case.
+
+        Runs on its own httpx client OUTSIDE the SDK's anyio task group, so the
+        raised error propagates as itself rather than being wrapped in an
+        ``ExceptionGroup`` (which is what defeats hooks installed inside the
+        SDK transport).
         """
         try:
             import httpx as _httpx
+        except ImportError:
+            return  # No httpx → skip probe; SDK import would have failed first.
 
-            probe_headers = dict(headers) if headers else {}
-            # HEAD is idempotent and lightweight; fall back to GET if the
-            # server rejects HEAD (405 Method Not Allowed).
-            async with _httpx.AsyncClient(
-                verify=ssl_verify,
-                follow_redirects=True,
-                timeout=_httpx.Timeout(timeout),
-            ) as client:
+        client_kwargs: dict = {
+            "verify": ssl_verify,
+            "follow_redirects": True,
+            "timeout": _httpx.Timeout(timeout),
+        }
+        if client_cert is not None:
+            client_kwargs["cert"] = client_cert
+
+        probe_headers = dict(headers) if headers else {}
+        try:
+            async with _httpx.AsyncClient(**client_kwargs) as client:
+                # HEAD is cheapest; fall back to GET if the server doesn't
+                # implement it (405 Method Not Allowed / 501 Not Implemented).
                 resp = await client.head(url, headers=probe_headers)
-                if resp.status_code == 405:
+                if resp.status_code in (405, 501):
                     resp = await client.get(url, headers=probe_headers)
-            ct = resp.headers.get("content-type", "")
-            if "text/html" in ct.lower():
-                raise ConnectionError(
-                    f"MCP server '{url}' returned Content-Type: {ct}. "
-                    "This looks like a regular web page, not an MCP endpoint. "
-                    "Verify the URL points to an MCP Streamable HTTP or SSE "
-                    "endpoint (e.g. https://host/mcp, not https://host/)."
-                )
-        except ConnectionError:
-            raise
-        except Exception:
-            # Network errors, timeouts, etc. — let the real MCP handshake
-            # deal with them; this is just a best-effort early check.
-            pass
+        except _httpx.HTTPError:
+            return  # DNS/connect/timeout/transport error — let the SDK try.
+
+        # Only judge successful responses. A 4xx/5xx may be an auth challenge
+        # or a transient error the real handshake handles correctly.
+        if not (200 <= resp.status_code < 300):
+            return
+
+        ct_base = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not ct_base:
+            return  # No content type advertised — don't second-guess the SDK.
+        if ct_base in self._MCP_CONTENT_TYPES:
+            return  # Looks like a real MCP endpoint.
+
+        raise NonMcpEndpointError(
+            f"MCP server '{self.name}' at {url} returned Content-Type "
+            f"'{ct_base}', not an MCP response (expected one of: "
+            f"{', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
+            "points at a web page rather than an MCP endpoint — check it "
+            "resolves to a Streamable HTTP / SSE endpoint "
+            "(e.g. https://host/mcp, not https://host/)."
+        )
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -1515,14 +1562,6 @@ class MCPServerTask:
             )
 
         url = config["url"]
-        # Pre-flight: reject obvious non-MCP endpoints (e.g. a web app
-        # returning HTML) in seconds instead of waiting the full
-        # connect_timeout (default 60 s).
-        await self._preflight_content_type(
-            url,
-            headers=dict(config.get("headers") or {}),
-            ssl_verify=config.get("ssl_verify", True),
-        )
         headers = dict(config.get("headers") or {})
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
@@ -1753,6 +1792,28 @@ class MCPServerTask:
                 self._error = exc
                 self._ready.set()
                 return
+
+            # Pre-flight content-type probe (Streamable HTTP only; SSE is
+            # exercised by its own client and legitimately serves
+            # text/event-stream). A URL pointed at a web-app root returns
+            # HTML, which makes the SDK hang for the full connect_timeout
+            # before surfacing an opaque CancelledError. Probing here — once,
+            # outside the SDK task group — fails fast and non-retryably with
+            # an actionable message, mirroring the URL-validation path above.
+            if config.get("transport") != "sse":
+                try:
+                    _probe_headers = dict(config.get("headers") or {})
+                    await self._preflight_content_type(
+                        config["url"],
+                        headers=_probe_headers,
+                        ssl_verify=config.get("ssl_verify", True),
+                        client_cert=_resolve_client_cert(self.name, config),
+                    )
+                except NonMcpEndpointError as exc:
+                    logger.warning("%s", exc)
+                    self._error = exc
+                    self._ready.set()
+                    return
 
         retries = 0
         initial_retries = 0

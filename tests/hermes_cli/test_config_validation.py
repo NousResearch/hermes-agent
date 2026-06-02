@@ -192,6 +192,44 @@ class TestMissingModelSection:
         assert not any("no 'model' section" in i.message for i in issues)
 
 
+class TestFallbackProvidersValidation:
+    """fallback_providers entries must resolve to a (provider, model) pair."""
+
+    def test_bare_known_provider_string_is_ok(self):
+        # "deepseek" expands to a default model — no warning expected.
+        issues = validate_config_structure({"fallback_providers": ["deepseek"]})
+        assert not any("fallback_providers[0]" in i.message for i in issues)
+
+    def test_unknown_bare_provider_warns(self):
+        issues = validate_config_structure(
+            {"fallback_providers": ["totally-unknown-xyz"]}
+        )
+        assert any(
+            "fallback_providers[0]" in i.message and "default model" in i.message
+            for i in issues
+        )
+
+    def test_dict_missing_provider_warns(self):
+        issues = validate_config_structure(
+            {"fallback_providers": [{"model": "deepseek-v4-pro"}]}
+        )
+        assert any(
+            "fallback_providers[0]" in i.message and "provider" in i.message
+            for i in issues
+        )
+
+    def test_non_list_warns(self):
+        issues = validate_config_structure({"fallback_providers": 42})
+        assert any(
+            "fallback_providers" in i.message and "list" in i.message
+            for i in issues
+        )
+
+    def test_wrong_element_type_warns(self):
+        issues = validate_config_structure({"fallback_providers": [123]})
+        assert any("fallback_providers[0]" in i.message for i in issues)
+
+
 class TestConfigIssueDataclass:
     """ConfigIssue should be a proper dataclass."""
 

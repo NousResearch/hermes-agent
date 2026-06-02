@@ -139,6 +139,14 @@ function workspaceGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[] {
     groups.set(id, group)
   }
 
+  // Groups keep recency order (Map insertion = first-seen in the recency-sorted
+  // input, so an active project floats up), but rows *within* a group sort by
+  // creation time so they don't reshuffle every time a message lands — keeps
+  // muscle memory intact.
+  for (const group of groups.values()) {
+    group.sessions.sort((a, b) => b.started_at - a.started_at)
+  }
+
   return [...groups.values()]
 }
 

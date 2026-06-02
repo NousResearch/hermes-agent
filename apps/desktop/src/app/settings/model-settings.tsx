@@ -29,7 +29,6 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'vision', label: 'Vision', hint: 'Image analysis' },
   { key: 'web_extract', label: 'Web extract', hint: 'Page summarization' },
   { key: 'compression', label: 'Compression', hint: 'Context compaction' },
-  { key: 'session_search', label: 'Session search', hint: 'Recall queries' },
   { key: 'skills_hub', label: 'Skills hub', hint: 'Skill search' },
   { key: 'approval', label: 'Approval', hint: 'Smart auto-approve' },
   { key: 'mcp', label: 'MCP', hint: 'MCP tool routing' },

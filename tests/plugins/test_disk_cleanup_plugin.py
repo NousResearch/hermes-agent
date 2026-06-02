@@ -223,6 +223,54 @@ class TestTrackForgetQuick:
         for d in ("logs", "memories", "sessions", "cron", "cache"):
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
 
+    def test_quick_skips_stale_cron_output_entry_for_jobs_json(self, _isolate_env):
+        """Regression for #37721: stale tracked.json marking cron/jobs.json
+        as cron-output must NOT cause quick() to delete the scheduler registry."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        jobs = cron_dir / "jobs.json"
+        jobs.write_text('{"jobs": []}')
+
+        # Simulate a stale tracked.json entry from before #34840
+        from datetime import datetime, timezone, timedelta
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True)
+        stale_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        tracked_file.write_text(json.dumps([{
+            "path": str(jobs),
+            "timestamp": stale_ts,
+            "category": "cron-output",
+            "size": jobs.stat().st_size,
+        }]))
+
+        summary = dg.quick()
+        assert summary["deleted"] == 0, "cron/jobs.json must not be deleted"
+        assert jobs.exists(), "cron/jobs.json must still exist"
+
+    def test_quick_deletes_legitimate_cron_output(self, _isolate_env):
+        """Files genuinely under cron/output/ should still be cleaned up."""
+        dg = _load_lib()
+        output_dir = _isolate_env / "cron" / "output" / "job_123"
+        output_dir.mkdir(parents=True)
+        run_log = output_dir / "run.md"
+        run_log.write_text("run output")
+
+        from datetime import datetime, timezone, timedelta
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True)
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        tracked_file.write_text(json.dumps([{
+            "path": str(run_log),
+            "timestamp": old_ts,
+            "category": "cron-output",
+            "size": run_log.stat().st_size,
+        }]))
+
+        summary = dg.quick()
+        assert summary["deleted"] == 1, "legitimate cron/output/ file should be deleted"
+        assert not run_log.exists()
+
 
 class TestStatus:
     def test_empty_status(self, _isolate_env):
@@ -256,6 +304,29 @@ class TestDryRun:
         auto, prompt = dg.dry_run()
         # test → auto, other → neither (doesn't hit any rule)
         assert any(i["path"] == str(test_f) for i in auto)
+
+    def test_dry_run_skips_stale_cron_output_entry(self, _isolate_env):
+        """Regression for #37721: dry_run must not list stale cron-output entries."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        jobs = cron_dir / "jobs.json"
+        jobs.write_text('{"jobs": []}')
+
+        from datetime import datetime, timezone, timedelta
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True)
+        stale_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        tracked_file.write_text(json.dumps([{
+            "path": str(jobs),
+            "timestamp": stale_ts,
+            "category": "cron-output",
+            "size": jobs.stat().st_size,
+        }]))
+
+        auto, prompt = dg.dry_run()
+        assert not any(i["path"] == str(jobs) for i in auto), \
+            "stale cron-output entry must not appear in auto-delete list"
 
 
 # ---------------------------------------------------------------------------

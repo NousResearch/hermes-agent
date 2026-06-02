@@ -206,6 +206,25 @@ def forget(path_str: str) -> int:
     return removed
 
 
+def _is_under_cron_output(path: Path) -> bool:
+    """Return True if *path* is under ``$HERMES_HOME/cron/output/``.
+
+    Stale ``tracked.json`` entries from before #34840 may label control-plane
+    files (e.g. ``cron/jobs.json``) as ``cron-output``.  Both :func:`quick`
+    and :func:`dry_run` must revalidate before treating a path as disposable.
+    See #37721.
+    """
+    try:
+        rel = path.resolve().relative_to(get_hermes_home())
+        return (
+            len(rel.parts) >= 2
+            and rel.parts[0] == "cron"
+            and rel.parts[1] == "output"
+        )
+    except (ValueError, OSError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Dry run
 # ---------------------------------------------------------------------------
@@ -230,7 +249,7 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
             auto.append(item)
         elif cat == "temp" and age > 7:
             auto.append(item)
-        elif cat == "cron-output" and age > 14:
+        elif cat == "cron-output" and age > 14 and _is_under_cron_output(p):
             auto.append(item)
         elif cat == "research" and age > 30:
             prompt.append(item)
@@ -268,6 +287,19 @@ def quick() -> Dict[str, Any]:
             continue
 
         age = (now - datetime.fromisoformat(item["timestamp"])).days
+
+        # Revalidate cron-output paths: only files still under
+        # ``cron/output/`` are disposable.  Stale ``tracked.json``
+        # entries from before #34840 may mark control-plane state
+        # (e.g. ``cron/jobs.json``) as ``cron-output`` — deleting
+        # those wipes the live scheduler registry.  See #37721.
+        if cat == "cron-output" and not _is_under_cron_output(p):
+            _log(
+                f"SKIP: {p} (stale cron-output entry — "
+                f"path no longer under cron/output/)"
+            )
+            new_tracked.append(item)
+            continue
 
         should_delete = (
             cat == "test"

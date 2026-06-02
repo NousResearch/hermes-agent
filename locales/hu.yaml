@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ Új munkamenet elindítva: {title}"
     title_rejected:        "\n⚠️ Cím elutasítva: {error}"
     title_error_untitled:  "\n⚠️ {error} — a munkamenet cím nélkül indult."
-    title_unavailable:     "A címet nem sikerült alkalmazni."
     title_empty_untitled:  "\n⚠️ Tisztítás után a cím üres — a munkamenet cím nélkül indult."
     tip:                   "\n✦ Tipp: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "A munkamenet-adatbázis nem érhető el."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ Tisztítás után a cím üres. Használj nyomtatható karaktereket."
-    unavailable:           "A címet nem sikerült alkalmazni."
     set_to:                "✏️ Munkamenet címe beállítva: **{title}**"
     not_found:             "A munkamenet nem található az adatbázisban."
     current_with_title:    "📌 Munkamenet: `{session_id}`\nCím: **{title}**"

@@ -874,19 +874,18 @@ telegram:
     "-1001234567890": |
       You are a research assistant. Focus on academic sources,
       citations, and concise synthesis.
-    "-1001234567890:42":  |
+    "42":  |
       This topic is for creative writing feedback. Be warm and
       constructive.
 ```
 
-Keys are chat IDs (groups/supergroups) or chat-scoped forum topic keys in the form `<chat_id>:<topic_id>`. Topic-level prompts override the group-level prompt only within their own group:
+Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, topic-level prompts override the group-level prompt:
 
-- Message in topic `42` inside group `-1001234567890` → uses `-1001234567890:42`'s prompt
+- Message in topic `42` inside group `-1001234567890` → uses topic `42`'s prompt
 - Message in topic `99` (no explicit entry) → falls back to group `-1001234567890`'s prompt
-- Message in topic `42` inside another group → does not use `-1001234567890:42`'s prompt
 - Message in a group with no entry → no channel prompt applied
 
-Numeric YAML keys are automatically normalized to strings for chat-level entries. Quote composite topic keys so YAML keeps them as strings.
+Numeric YAML keys are automatically normalized to strings.
 
 ## Troubleshooting
 

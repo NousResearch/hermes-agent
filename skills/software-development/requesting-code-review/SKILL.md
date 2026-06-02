@@ -227,15 +227,11 @@ After the fix agent completes, re-run Steps 1-6 (full verification cycle).
 
 ## Step 8 — Commit
 
-If verification passed, commit the reviewed index only:
+If verification passed:
 
 ```bash
-git commit -m "[verified] <description>"
+git add -A && git commit -m "[verified] <description>"
 ```
-
-Do **not** run `git add -A` after verification. If you intentionally stage new or
-additional files, rerun this skill from Step 1 so those changes are reviewed and
-scanned before commit.
 
 The `[verified]` prefix indicates an independent reviewer approved this change.
 

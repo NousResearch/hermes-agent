@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shlex
 import subprocess
 import threading
@@ -26,6 +27,8 @@ from agent.redact import redact_sensitive_text
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+_TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
 
 def _resolve_command() -> str:
@@ -207,12 +210,76 @@ def _render_message_content(content: Any) -> str:
 
 
 def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
-    if not isinstance(text, str):
+    if not isinstance(text, str) or not text.strip():
         return [], ""
-    # ACP currently provides only free-form assistant text. Treating text as a
-    # trusted tool-call transport is unsafe because quoted/untrusted content can
-    # be promoted into executable tool calls.
-    return [], text
+
+    extracted: list[SimpleNamespace] = []
+    consumed_spans: list[tuple[int, int]] = []
+
+    def _try_add_tool_call(raw_json: str) -> None:
+        try:
+            obj = json.loads(raw_json)
+        except Exception:
+            return
+        if not isinstance(obj, dict):
+            return
+        fn = obj.get("function")
+        if not isinstance(fn, dict):
+            return
+        fn_name = fn.get("name")
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            return
+        fn_args = fn.get("arguments", "{}")
+        if not isinstance(fn_args, str):
+            fn_args = json.dumps(fn_args, ensure_ascii=False)
+        call_id = obj.get("id")
+        if not isinstance(call_id, str) or not call_id.strip():
+            call_id = f"acp_call_{len(extracted)+1}"
+
+        extracted.append(
+            SimpleNamespace(
+                id=call_id,
+                call_id=call_id,
+                response_item_id=None,
+                type="function",
+                function=SimpleNamespace(name=fn_name.strip(), arguments=fn_args),
+            )
+        )
+
+    for m in _TOOL_CALL_BLOCK_RE.finditer(text):
+        raw = m.group(1)
+        _try_add_tool_call(raw)
+        consumed_spans.append((m.start(), m.end()))
+
+    # Only try bare-JSON fallback when no XML blocks were found.
+    if not extracted:
+        for m in _TOOL_CALL_JSON_RE.finditer(text):
+            raw = m.group(0)
+            _try_add_tool_call(raw)
+            consumed_spans.append((m.start(), m.end()))
+
+    if not consumed_spans:
+        return extracted, text.strip()
+
+    consumed_spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in consumed_spans:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        if cursor < start:
+            parts.append(text[cursor:start])
+        cursor = max(cursor, end)
+    if cursor < len(text):
+        parts.append(text[cursor:])
+
+    cleaned = "\n".join(p.strip() for p in parts if p and p.strip()).strip()
+    return extracted, cleaned
 
 
 

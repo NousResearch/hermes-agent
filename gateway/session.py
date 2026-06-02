@@ -887,11 +887,9 @@ class SessionStore:
                     # the NEXT successful turn completes (not here), which
                     # means a re-interrupted retry keeps trying — the
                     # stuck-loop counter handles terminal escalation.
-                    reset_reason = self._should_reset(entry, source)
-                    if not reset_reason:
-                        entry.updated_at = now
-                        self._save()
-                        return entry
+                    entry.updated_at = now
+                    self._save()
+                    return entry
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:

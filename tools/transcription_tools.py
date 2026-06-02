@@ -495,13 +495,27 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
-            command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
-            )
-            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            command_list = []
+
+            # Use shlex.split to parse the template, which might contain multiple words like 'whisper --device cuda'
+            try:
+                base_command = shlex.split(command_template)
+            except ValueError as e:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": f"Failed to parse local STT command template: {e}",
+                }
+
+            for part in base_command:
+                # Basic substitution for our known variables
+                part = part.replace("{input_path}", prepared_input)
+                part = part.replace("{output_dir}", output_dir)
+                part = part.replace("{language}", language)
+                part = part.replace("{model}", normalized_model)
+                command_list.append(part)
+
+            subprocess.run(command_list, shell=False, check=True, capture_output=True, text=True)
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

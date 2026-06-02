@@ -878,7 +878,6 @@ class HonchoSessionManager:
         self,
         peer_id: str,
         search_query: str | None = None,
-        max_tokens: int | None = None,
         *,
         target: str | None = None,
     ) -> dict[str, Any]:
@@ -893,8 +892,6 @@ class HonchoSessionManager:
                 context_kwargs["target"] = target
             if search_query is not None:
                 context_kwargs["search_query"] = search_query
-            if max_tokens is not None:
-                context_kwargs["tokens"] = max_tokens
             ctx = peer.context(**context_kwargs) if context_kwargs else peer.context()
             representation = (
                 getattr(ctx, "representation", None)
@@ -1076,7 +1073,6 @@ class HonchoSessionManager:
             ctx = self._fetch_peer_context(
                 observer_peer_id,
                 search_query=query,
-                max_tokens=max_tokens,
                 target=target,
             )
             parts = []

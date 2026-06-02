@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ Новый сеанс запущен: {title}"
     title_rejected:        "\n⚠️ Название отклонено: {error}"
     title_error_untitled:  "\n⚠️ {error} — сеанс запущен без названия."
-    title_unavailable:     "Не удалось применить название."
     title_empty_untitled:  "\n⚠️ После очистки название пусто — сеанс запущен без названия."
     tip:                   "\n✦ Совет: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "База данных сеансов недоступна."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ После очистки название пусто. Используйте печатные символы."
-    unavailable:           "Не удалось применить название."
     set_to:                "✏️ Название сеанса установлено: **{title}**"
     not_found:             "Сеанс не найден в базе данных."
     current_with_title:    "📌 Сеанс: `{session_id}`\nНазвание: **{title}**"

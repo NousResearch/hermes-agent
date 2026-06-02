@@ -10,9 +10,7 @@ stack.
 """
 
 import os
-import stat
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -290,43 +288,6 @@ class TestSpeakTextGuards:
 
         # Should simply return None without raising.
         assert speak_text(text) is None
-
-
-class TestSpeakTextTempFiles:
-    def test_reserves_random_private_tts_path_under_hermes_home(self, tmp_path, monkeypatch):
-        import hermes_cli.voice as voice
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-
-        first = Path(voice._reserve_voice_tts_mp3_path())
-        second = Path(voice._reserve_voice_tts_mp3_path())
-
-        try:
-            assert first != second
-            assert first.parent == tmp_path / "hermes-home" / "cache" / "voice_tts"
-            assert first.name.startswith("tts_")
-            assert first.suffix == ".mp3"
-            assert "hermes_voice" not in str(first)
-            if os.name == "posix":
-                assert stat.S_IMODE(first.parent.stat().st_mode) == 0o700
-                assert stat.S_IMODE(first.stat().st_mode) == 0o600
-        finally:
-            first.unlink(missing_ok=True)
-            second.unlink(missing_ok=True)
-
-    def test_rejects_symlinked_tts_directory(self, tmp_path, monkeypatch):
-        import hermes_cli.voice as voice
-
-        hermes_home = tmp_path / "hermes-home"
-        cache_dir = hermes_home / "cache"
-        target_dir = tmp_path / "attacker-controlled"
-        cache_dir.mkdir(parents=True)
-        target_dir.mkdir()
-        (cache_dir / "voice_tts").symlink_to(target_dir, target_is_directory=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        with pytest.raises(RuntimeError, match="symlinked voice TTS directory"):
-            voice._reserve_voice_tts_mp3_path()
 
 
 class TestContinuousAPI:

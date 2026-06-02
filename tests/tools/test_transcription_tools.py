@@ -389,10 +389,14 @@ class TestTranscribeLocalCommand:
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list):
-                output_path = cmd[-1]
-                with open(output_path, "wb") as handle:
-                    handle.write(b"RIFF....WAVEfmt ")
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                if cmd[0].endswith("ffmpeg"):
+                    output_path = cmd[-1]
+                    with open(output_path, "wb") as handle:
+                        handle.write(b"RIFF....WAVEfmt ")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                else:
+                    (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")

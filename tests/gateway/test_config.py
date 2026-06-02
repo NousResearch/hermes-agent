@@ -382,7 +382,7 @@ class TestLoadGatewayConfig:
             "telegram:\n"
             "  channel_prompts:\n"
             '    "-1001234567": Research assistant\n'
-            '    "-1001234567:789": Creative writing\n',
+            "    789: Creative writing\n",
             encoding="utf-8",
         )
 
@@ -392,7 +392,7 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["channel_prompts"] == {
             "-1001234567": "Research assistant",
-            "-1001234567:789": "Creative writing",
+            "789": "Creative writing",
         }
 
     def test_bridges_slack_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):

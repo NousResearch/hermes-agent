@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 from collections import deque
+from hashlib import sha1
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 try:
@@ -335,7 +336,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         notification: Dict[str, Any],
         receipt_key: Optional[str],
     ) -> MessageEvent:
-        message_id = receipt_key or ""
+        message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
         source = self.build_source(
             chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}",
             chat_name="msgraph/webhook",

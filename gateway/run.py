@@ -3479,6 +3479,8 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            if hasattr(adapter, "set_interaction_authorizer"):
+                adapter.set_interaction_authorizer(self._is_user_authorized)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -4760,6 +4762,8 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    if hasattr(adapter, "set_interaction_authorizer"):
+                        adapter.set_interaction_authorizer(self._is_user_authorized)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -5226,9 +5230,7 @@ class GatewayRunner:
             if not check_signal_requirements():
                 logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
                 return None
-            adapter = SignalAdapter(config)
-            adapter.gateway_runner = self
-            return adapter
+            return SignalAdapter(config)
 
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
@@ -5373,7 +5375,6 @@ class GatewayRunner:
         user_id = source.user_id
         if not user_id:
             return False
-        team_id = (source.guild_id or "").strip() if source.platform == Platform.SLACK else ""
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
@@ -5421,9 +5422,8 @@ class GatewayRunner:
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
-        # Only platforms with explicit gateway-level bot bypass semantics
-        # should be listed here.
         platform_allow_bots_map = {
+            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
         }
 
@@ -5467,10 +5467,7 @@ class GatewayRunner:
         auth_user_id = user_id
         if source.platform == Platform.WECOM_CALLBACK and source.chat_id:
             auth_user_id = source.chat_id
-        pairing_check_ids = [auth_user_id]
-        if team_id:
-            pairing_check_ids.insert(0, f"{team_id}:{auth_user_id}")
-        if any(self.pairing_store.is_approved(platform_name, uid) for uid in pairing_check_ids):
+        if self.pairing_store.is_approved(platform_name, auth_user_id):
             return True
 
         # Check platform-specific and global allowlists
@@ -5544,8 +5541,6 @@ class GatewayRunner:
             return True
 
         check_ids = {auth_user_id}
-        if team_id:
-            check_ids.add(f"{team_id}:{auth_user_id}")
         if "@" in auth_user_id:
             check_ids.add(auth_user_id.split("@")[0])
 
@@ -6716,6 +6711,18 @@ class GatewayRunner:
                 if hasattr(self, "_busy_ack_ts"):
                     self._busy_ack_ts.pop(_quick_key, None)
 
+    @staticmethod
+    def _allowed_context_reference_kinds(enabled_toolsets: set[str]) -> set[str]:
+        """Map enabled gateway toolsets to safe inline @ reference types."""
+        allowed: set[str] = set()
+        if "file" in enabled_toolsets:
+            allowed.update({"file", "folder"})
+        if "terminal" in enabled_toolsets:
+            allowed.update({"diff", "staged", "git"})
+        if "web" in enabled_toolsets:
+            allowed.add("url")
+        return allowed
+
     async def _prepare_inbound_message_text(
         self,
         *,
@@ -6900,11 +6907,20 @@ class GatewayRunner:
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
                 )
+                from hermes_cli.tools_config import _get_platform_tools
+
+                _msg_platform_key = _platform_config_key(source.platform)
+                _msg_enabled_toolsets = _get_platform_tools(
+                    _load_gateway_config(), _msg_platform_key
+                )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
                     cwd=_msg_cwd,
                     context_length=_msg_ctx_len,
                     allowed_root=_msg_cwd,
+                    allowed_kinds=self._allowed_context_reference_kinds(
+                        _msg_enabled_toolsets
+                    ),
                 )
                 if _ctx_result.blocked:
                     _adapter = self.adapters.get(source.platform)
@@ -8194,11 +8210,8 @@ class GatewayRunner:
                 try:
                     self._session_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
-                except ValueError:
-                    _title_note = t(
-                        "gateway.reset.title_error_untitled",
-                        error=t("gateway.reset.title_unavailable"),
-                    )
+                except ValueError as e:
+                    _title_note = t("gateway.reset.title_error_untitled", error=str(e))
                 except Exception:
                     pass
             elif not _title_note:
@@ -8374,13 +8387,7 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        if text:
-            try:
-                tokens = shlex.split(text)
-            except ValueError:
-                tokens = text.split()
-        else:
-            tokens = []
+        tokens = shlex.split(text) if text else []
         requested_board = None
         action = None
         i = 0
@@ -8400,32 +8407,6 @@ class GatewayRunner:
             break
 
         is_create = action == "create"
-        if action == "notify-subscribe":
-            # Gateway-originated subscriptions must always be bound to the
-            # currently running profile, never caller-supplied text.
-            safe_tokens: list[str] = []
-            i = 0
-            while i < len(tokens):
-                tok = tokens[i]
-                if tok == "--notifier-profile":
-                    i += 1
-                    # Only consume the next token if it's actually a value (not another flag)
-                    if i < len(tokens) and not tokens[i].startswith("-"):
-                        i += 1
-                    continue
-                if tok.startswith("--notifier-profile="):
-                    i += 1
-                    continue
-                safe_tokens.append(tok)
-                i += 1
-            safe_tokens.extend(
-                [
-                    "--notifier-profile",
-                    getattr(self, "_kanban_notifier_profile", None)
-                    or self._active_profile_name(),
-                ]
-            )
-            text = shlex.join(safe_tokens)
 
         try:
             output = await asyncio.to_thread(run_slash, text)
@@ -11385,8 +11366,8 @@ class GatewayRunner:
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
-            except ValueError:
-                return t("gateway.title.warn_prefix", error=t("gateway.title.unavailable"))
+            except ValueError as e:
+                return t("gateway.shared.warn_passthrough", error=e)
         else:
             # Show the current title and session ID
             title = self._session_db.get_session_title(session_id)

@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ 新工作階段已啟動：{title}"
     title_rejected:        "\n⚠️ 標題遭拒絕：{error}"
     title_error_untitled:  "\n⚠️ {error} — 工作階段以未命名方式啟動。"
-    title_unavailable:     "無法套用標題。"
     title_empty_untitled:  "\n⚠️ 清理後標題為空 — 工作階段以未命名方式啟動。"
     tip:                   "\n✦ 提示：{tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "工作階段資料庫無法使用。"
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ 清理後標題為空。請使用可列印字元。"
-    unavailable:           "無法套用標題。"
     set_to:                "✏️ 已設定工作階段標題：**{title}**"
     not_found:             "在資料庫中找不到此工作階段。"
     current_with_title:    "📌 工作階段：`{session_id}`\n標題：**{title}**"

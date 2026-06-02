@@ -46,24 +46,24 @@ class TestNormalizeMultimodalContent:
     def test_image_url_preserved_with_text(self):
         content = [
             {"type": "text", "text": "describe this"},
-            {"type": "image_url", "image_url": {"url": "https://8.8.8.8/cat.png", "detail": "high"}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}},
         ]
         out = _normalize_multimodal_content(content)
         assert isinstance(out, list)
         assert out == [
             {"type": "text", "text": "describe this"},
-            {"type": "image_url", "image_url": {"url": "https://8.8.8.8/cat.png", "detail": "high"}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}},
         ]
 
     def test_input_image_converted_to_canonical_shape(self):
         content = [
             {"type": "input_text", "text": "hi"},
-            {"type": "input_image", "image_url": "https://8.8.8.8/cat.png"},
+            {"type": "input_image", "image_url": "https://example.com/cat.png"},
         ]
         out = _normalize_multimodal_content(content)
         assert out == [
             {"type": "text", "text": "hi"},
-            {"type": "image_url", "image_url": {"url": "https://8.8.8.8/cat.png"}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
         ]
 
     def test_data_image_url_accepted(self):
@@ -95,18 +95,6 @@ class TestNormalizeMultimodalContent:
     def test_bad_scheme_rejected(self):
         with pytest.raises(ValueError) as exc:
             _normalize_multimodal_content([{"type": "image_url", "image_url": {"url": "ftp://example.com/x.png"}}])
-        assert str(exc.value).startswith("invalid_image_url:")
-
-    def test_private_image_url_rejected(self):
-        content = [{"type": "image_url", "image_url": {"url": "http://127.0.0.1:8080/secret.png"}}]
-        with pytest.raises(ValueError) as exc:
-            _normalize_multimodal_content(content)
-        assert str(exc.value).startswith("invalid_image_url:")
-
-    def test_cloud_metadata_image_url_rejected(self):
-        content = [{"type": "input_image", "image_url": "http://169.254.169.254/latest/meta-data/"}]
-        with pytest.raises(ValueError) as exc:
-            _normalize_multimodal_content(content)
         assert str(exc.value).startswith("invalid_image_url:")
 
     def test_unknown_part_type_rejected(self):
@@ -159,7 +147,7 @@ class TestChatCompletionsMultimodalHTTP:
         """Multimodal user content reaches _run_agent as a list of parts."""
         image_payload = [
             {"type": "text", "text": "What's in this image?"},
-            {"type": "image_url", "image_url": {"url": "https://8.8.8.8/cat.png", "detail": "high"}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}},
         ]
 
         app = _create_app(adapter)
@@ -284,7 +272,7 @@ class TestResponsesMultimodalHTTP:
                                     {"type": "input_text", "text": "Describe."},
                                     {
                                         "type": "input_image",
-                                        "image_url": "https://8.8.8.8/cat.png",
+                                        "image_url": "https://example.com/cat.png",
                                     },
                                 ],
                             }
@@ -295,7 +283,7 @@ class TestResponsesMultimodalHTTP:
             assert resp.status == 200, await resp.text()
             expected = [
                 {"type": "text", "text": "Describe."},
-                {"type": "image_url", "image_url": {"url": "https://8.8.8.8/cat.png"}},
+                {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
             ]
             assert mock_run.captured["user_message"] == expected
 

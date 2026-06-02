@@ -228,7 +228,6 @@ class TestPeerLookupHelpers:
         assistant_peer.context.assert_called_once_with(
             target=session.user_peer_id,
             search_query="neuralancer",
-            tokens=800,
         )
 
     def test_search_context_unified_mode_uses_user_self_context(self):
@@ -244,7 +243,7 @@ class TestPeerLookupHelpers:
         result = mgr.search_context(session.key, "self")
 
         assert "Unified self context" in result
-        user_peer.context.assert_called_once_with(search_query="self", tokens=800)
+        user_peer.context.assert_called_once_with(search_query="self")
 
     def test_search_context_accepts_explicit_ai_peer_id(self):
         mgr, session = self._make_cached_manager()
@@ -261,7 +260,6 @@ class TestPeerLookupHelpers:
         ai_peer.context.assert_called_once_with(
             target=session.assistant_peer_id,
             search_query="assistant",
-            tokens=800,
         )
 
     def test_resolve_peer_id_rejects_peer_outside_current_session(self):

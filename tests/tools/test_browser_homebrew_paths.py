@@ -39,14 +39,15 @@ class TestSanePath:
     def test_includes_termux_sbin(self):
         assert "/data/data/com.termux/files/usr/sbin" in _SANE_PATH.split(os.pathsep)
 
-    def test_excludes_homebrew_bin(self):
-        assert "/opt/homebrew/bin" not in _SANE_PATH.split(os.pathsep)
+    def test_includes_homebrew_bin(self):
+        assert "/opt/homebrew/bin" in _SANE_PATH.split(os.pathsep)
 
-    def test_excludes_homebrew_sbin(self):
-        assert "/opt/homebrew/sbin" not in _SANE_PATH.split(os.pathsep)
+    def test_includes_homebrew_sbin(self):
+        assert "/opt/homebrew/sbin" in _SANE_PATH.split(os.pathsep)
 
     def test_includes_standard_dirs(self):
         path_parts = _SANE_PATH.split(os.pathsep)
+        assert "/usr/local/bin" in path_parts
         assert "/usr/bin" in path_parts
         assert "/bin" in path_parts
 
@@ -83,7 +84,7 @@ class TestDiscoverHomebrewNodeDirs:
         assert "/opt/homebrew/opt/node@24/bin" in result
 
     def test_excludes_plain_node(self):
-        """'node' (unversioned) should be excluded from versioned discovery."""
+        """'node' (unversioned) should be excluded — covered by /opt/homebrew/bin."""
         with patch("os.path.isdir", return_value=True), \
              patch("os.listdir", return_value=["node"]):
             result = _discover_homebrew_node_dirs()
@@ -104,30 +105,24 @@ class TestFindAgentBrowser:
         with patch("shutil.which", return_value="/usr/local/bin/agent-browser"):
             assert _find_agent_browser() == "/usr/local/bin/agent-browser"
 
-    def test_does_not_find_homebrew_bin_when_absent_from_path(self):
-        """Should not search Homebrew dirs when the operator removed them from PATH."""
+    def test_finds_in_homebrew_bin(self):
+        """Should search Homebrew dirs when not found on current PATH."""
         def mock_which(cmd, path=None):
             if path and "/opt/homebrew/bin" in path and cmd == "agent-browser":
                 return "/opt/homebrew/bin/agent-browser"
             return None
 
-        original_path_exists = Path.exists
-
-        def mock_path_exists(self):
-            if "node_modules" in str(self) and "agent-browser" in str(self):
-                return False
-            return original_path_exists(self)
-
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", return_value=True), \
-             patch.object(Path, "exists", mock_path_exists), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
-            with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
-                _find_agent_browser()
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser()
+            assert result == "/opt/homebrew/bin/agent-browser"
 
     def test_finds_npx_in_homebrew(self):
-        """Should find npx in Homebrew paths when Homebrew is already on PATH."""
+        """Should find npx in Homebrew paths as a fallback."""
         def mock_which(cmd, path=None):
             if cmd == "agent-browser":
                 return None
@@ -151,8 +146,7 @@ class TestFindAgentBrowser:
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],
-             ), \
-             patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin"}, clear=True):
+             ):
             result = _find_agent_browser()
             assert result == "npx agent-browser"
 
@@ -400,7 +394,7 @@ class TestRunBrowserCommandPathConstruction:
             if p in fake_homebrew_dirs or p.startswith(str(tmp_path)):
                 return True
             if "/opt/homebrew/" in p:
-                return True
+                return True  # _SANE_PATH dirs
             return real_isdir(p)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
@@ -413,7 +407,7 @@ class TestRunBrowserCommandPathConstruction:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
             # The function reads from temp files for stdout/stderr
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
@@ -422,10 +416,10 @@ class TestRunBrowserCommandPathConstruction:
         result_path = captured_env.get("PATH", "")
         assert "/opt/homebrew/opt/node@24/bin" in result_path
         assert "/opt/homebrew/opt/node@20/bin" in result_path
-        assert "/opt/homebrew/bin" in result_path  # from operator-provided PATH
+        assert "/opt/homebrew/bin" in result_path  # from _SANE_PATH
 
-    def test_subprocess_path_excludes_homebrew_when_absent_from_path(self, tmp_path):
-        """Homebrew entries should not be injected into restricted subprocess PATH."""
+    def test_subprocess_path_includes_sane_path_homebrew(self, tmp_path):
+        """_SANE_PATH Homebrew entries should appear even without versioned node dirs."""
         captured_env = {}
 
         mock_proc = MagicMock()
@@ -467,8 +461,8 @@ class TestRunBrowserCommandPathConstruction:
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
         result_path = captured_env.get("PATH", "")
-        assert "/opt/homebrew/bin" not in result_path.split(os.pathsep)
-        assert "/opt/homebrew/sbin" not in result_path.split(os.pathsep)
+        assert "/opt/homebrew/bin" in result_path
+        assert "/opt/homebrew/sbin" in result_path
 
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""

@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ Nuwe sessie begin: {title}"
     title_rejected:        "\n⚠️ Titel verwerp: {error}"
     title_error_untitled:  "\n⚠️ {error} — sessie sonder titel begin."
-    title_unavailable:     "Titel kon nie toegepas word nie."
     title_empty_untitled:  "\n⚠️ Titel is leeg na opruiming — sessie sonder titel begin."
     tip:                   "\n✦ Wenk: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ Titel is leeg na opruiming. Gebruik asseblief drukbare karakters."
-    unavailable:           "Titel kon nie toegepas word nie."
     set_to:                "✏️ Sessie-titel gestel: **{title}**"
     not_found:             "Sessie nie in databasis gevind nie."
     current_with_title:    "📌 Sessie: `{session_id}`\nTitel: **{title}**"

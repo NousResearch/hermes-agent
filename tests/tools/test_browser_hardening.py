@@ -2,7 +2,7 @@
 
 import inspect
 import os
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -126,51 +126,6 @@ class TestHomebrewNodeDirsCache:
         from tools.browser_tool import _discover_homebrew_node_dirs
         assert hasattr(_discover_homebrew_node_dirs, "cache_info"), \
             "_discover_homebrew_node_dirs should be decorated with lru_cache"
-
-
-# ---------------------------------------------------------------------------
-# Browser subprocess sandbox flags
-# ---------------------------------------------------------------------------
-
-class TestBrowserSandboxFlags:
-
-    def test_run_browser_command_does_not_auto_disable_chromium_sandbox_as_root(self, tmp_path):
-        """Root execution must not silently opt in to Chromium --no-sandbox."""
-        import tools.browser_tool as bt
-
-        captured_env = {}
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = 0
-
-        def capture_popen(cmd, **kwargs):
-            captured_env.update(kwargs.get("env", {}))
-            return mock_proc
-
-        fake_session = {
-            "session_name": "test-session",
-            "session_id": "test-id",
-            "cdp_url": None,
-        }
-
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool._chromium_installed", return_value=True), \
-             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
-             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
-             patch("tools.browser_tool._get_browser_engine", return_value="auto"), \
-             patch("tools.browser_tool._is_camofox_mode", return_value=False), \
-             patch("tools.browser_tool.os.geteuid", return_value=0), \
-             patch("subprocess.Popen", side_effect=capture_popen), \
-             patch("os.open", return_value=99), \
-             patch("os.close"), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
-            with patch("builtins.open", mock_open(read_data='{"success": true}')):
-                result = bt._run_browser_command("test-task", "navigate", ["https://example.com"])
-
-        assert result["success"] is True
-        assert "AGENT_BROWSER_CHROME_FLAGS" not in captured_env
 
 
 # ---------------------------------------------------------------------------

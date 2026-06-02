@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ 新会话已启动：{title}"
     title_rejected:        "\n⚠️ 标题被拒绝：{error}"
     title_error_untitled:  "\n⚠️ {error} — 会话以未命名方式启动。"
-    title_unavailable:     "无法应用标题。"
     title_empty_untitled:  "\n⚠️ 清理后标题为空 — 会话以未命名方式启动。"
     tip:                   "\n✦ 提示：{tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "会话数据库不可用。"
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ 清理后标题为空。请使用可打印字符。"
-    unavailable:           "无法应用标题。"
     set_to:                "✏️ 已设置会话标题：**{title}**"
     not_found:             "未在数据库中找到该会话。"
     current_with_title:    "📌 会话：`{session_id}`\n标题：**{title}**"

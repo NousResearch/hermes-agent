@@ -1,21 +1,16 @@
-"""Regression guard for Discord bot authorization at the gateway level.
+"""Regression guard for #4466: DISCORD_ALLOW_BOTS works without DISCORD_ALLOWED_USERS.
 
-Original issue #4466: DISCORD_ALLOW_BOTS bypassed DISCORD_ALLOWED_USERS.
+The bug had two sequential gates both rejecting bot messages:
 
-Security fix: the gateway-level bot bypass (Platform.DISCORD in
-platform_allow_bots_map) was removed because DISCORD_ALLOW_BOTS=mentions/all
-allowed any Discord bot/webhook sender to skip DISCORD_ALLOWED_USERS and
-pairing checks entirely.
+  Gate 1 — `on_message` in gateway/platforms/discord.py ran the user-allowlist
+  check BEFORE the bot filter, so bot senders were dropped with a warning
+  before the DISCORD_ALLOW_BOTS policy was ever evaluated.
 
-New behavior (Gateway 2 — `_is_user_authorized`):
-  - DISCORD_ALLOW_BOTS no longer auto-authorizes bots at the gateway layer.
-  - Bot senders must be listed in DISCORD_ALLOWED_USERS or approved via the
-    pairing store to be authorized, just like human senders.
-  - DISCORD_ALLOWED_ROLES bypass is unchanged (adapter pre-filters by role).
+  Gate 2 — `_is_user_authorized` in gateway/run.py rejected bots at the
+  gateway level even if they somehow reached that layer.
 
-Gate 1 behavior (`on_message` in gateway/platforms/discord.py) is unchanged:
-it still applies the DISCORD_ALLOW_BOTS policy to decide whether to forward
-bot messages at all; the gateway layer then applies its own user/pairing check.
+These tests assert both gates now pass a bot message through when
+DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
 """
 
 import os
@@ -45,7 +40,7 @@ def _isolate_discord_env(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
-# Gate 2: _is_user_authorized — bots must use DISCORD_ALLOWED_USERS or pairing
+# Gate 2: _is_user_authorized bypasses allowlist for permitted bots
 # -----------------------------------------------------------------------------
 
 
@@ -86,15 +81,14 @@ def _make_discord_human_source(user_id: str = "100200300"):
     )
 
 
-def test_discord_bot_NOT_authorized_by_allow_bots_alone_mentions(monkeypatch):
-    """DISCORD_ALLOW_BOTS=mentions must NOT auto-authorize a bot sender that is
-    absent from DISCORD_ALLOWED_USERS and not in the pairing store.
+def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
+    """DISCORD_ALLOW_BOTS=mentions must authorize a bot sender even when
+    DISCORD_ALLOWED_USERS is set and the bot's ID is NOT in it.
 
-    Security fix (#4466 follow-up): the gateway-level DISCORD_ALLOW_BOTS bypass
-    was removed because it allowed any Discord bot/webhook sender to skip
-    DISCORD_ALLOWED_USERS and pairing checks. Bot senders (e.g., a Cloudflare
-    Worker webhook) must now be explicitly added to DISCORD_ALLOWED_USERS or
-    approved via pairing to be authorized.
+    This is the exact scenario from #4466 — a Cloudflare Worker webhook
+    posts Notion events to Discord, the Hermes bot gets @mentioned, and
+    the webhook's bot ID is not (and shouldn't be) on the human
+    allowlist.
     """
     runner = _make_bare_runner()
 
@@ -102,38 +96,17 @@ def test_discord_bot_NOT_authorized_by_allow_bots_alone_mentions(monkeypatch):
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")  # human-only allowlist
 
     source = _make_discord_bot_source(bot_id="999888777")
-    assert runner._is_user_authorized(source) is False
+    assert runner._is_user_authorized(source) is True
 
 
-def test_discord_bot_NOT_authorized_by_allow_bots_alone_all(monkeypatch):
-    """DISCORD_ALLOW_BOTS=all must NOT auto-authorize a bot not in DISCORD_ALLOWED_USERS.
-
-    Security fix: DISCORD_ALLOW_BOTS no longer short-circuits gateway
-    authorization. Bots must be listed in DISCORD_ALLOWED_USERS (or approved
-    via pairing) regardless of the DISCORD_ALLOW_BOTS setting.
-    """
+def test_discord_bot_authorized_when_allow_bots_all(monkeypatch):
+    """DISCORD_ALLOW_BOTS=all is a superset of =mentions — should also bypass."""
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
 
     source = _make_discord_bot_source()
-    assert runner._is_user_authorized(source) is False
-
-
-def test_discord_bot_authorized_when_in_allowed_users(monkeypatch):
-    """A bot sender explicitly listed in DISCORD_ALLOWED_USERS is authorized,
-    regardless of the DISCORD_ALLOW_BOTS setting.
-
-    This is the correct way to authorize a trusted bot/webhook (e.g., a
-    Cloudflare Worker): add its bot ID to DISCORD_ALLOWED_USERS.
-    """
-    runner = _make_bare_runner()
-
-    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
-    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300,999888777")  # bot ID on allowlist
-
-    source = _make_discord_bot_source(bot_id="999888777")
     assert runner._is_user_authorized(source) is True
 
 

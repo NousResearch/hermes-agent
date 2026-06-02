@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ 새 세션이 시작되었습니다: {title}"
     title_rejected:        "\n⚠️ 제목이 거부되었습니다: {error}"
     title_error_untitled:  "\n⚠️ {error} — 제목 없이 세션을 시작했습니다."
-    title_unavailable:     "제목을 적용할 수 없습니다."
     title_empty_untitled:  "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
     tip:                   "\n✦ 팁: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ 정리 후 제목이 비어 있습니다. 인쇄 가능한 문자를 사용해 주세요."
-    unavailable:           "제목을 적용할 수 없습니다."
     set_to:                "✏️ 세션 제목 설정됨: **{title}**"
     not_found:             "데이터베이스에서 세션을 찾을 수 없습니다."
     current_with_title:    "📌 세션: `{session_id}`\n제목: **{title}**"

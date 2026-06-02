@@ -209,7 +209,6 @@ gateway:
     header_titled:         "✨ Neue Sitzung gestartet: {title}"
     title_rejected:        "\n⚠️ Titel abgelehnt: {error}"
     title_error_untitled:  "\n⚠️ {error} — Sitzung ohne Titel gestartet."
-    title_unavailable:     "Titel konnte nicht angewendet werden."
     title_empty_untitled:  "\n⚠️ Titel ist nach Bereinigung leer — Sitzung ohne Titel gestartet."
     tip:                   "\n✦ Tipp: {tip}"
 
@@ -268,7 +267,6 @@ gateway:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ Titel ist nach der Bereinigung leer. Bitte druckbare Zeichen verwenden."
-    unavailable:           "Titel konnte nicht angewendet werden."
     set_to:                "✏️ Sitzungstitel gesetzt: **{title}**"
     not_found:             "Sitzung nicht in der Datenbank gefunden."
     current_with_title:    "📌 Sitzung: `{session_id}`\nTitel: **{title}**"

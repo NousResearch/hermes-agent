@@ -224,7 +224,6 @@ gateway:
     header_titled:         "✨ New session started: {title}"
     title_rejected:        "\n⚠️ Title rejected: {error}"
     title_error_untitled:  "\n⚠️ {error} — session started untitled."
-    title_unavailable:     "Title could not be applied."
     title_empty_untitled:  "\n⚠️ Title is empty after cleanup — session started untitled."
     tip:                   "\n✦ Tip: {tip}"
 
@@ -283,7 +282,6 @@ gateway:
     db_unavailable:        "Session database not available."
     warn_prefix:           "⚠️ {error}"
     empty_after_clean:     "⚠️ Title is empty after cleanup. Please use printable characters."
-    unavailable:           "Title could not be applied."
     set_to:                "✏️ Session title set: **{title}**"
     not_found:             "Session not found in database."
     current_with_title:    "📌 Session: `{session_id}`\nTitle: **{title}**"

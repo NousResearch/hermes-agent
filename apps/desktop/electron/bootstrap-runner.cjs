@@ -482,6 +482,18 @@ async function runBootstrap(opts) {
     writeMarker // callback to write the bootstrap-complete marker; main.cjs provides
   } = opts
 
+  // Bail before spawning anything if the user already cancelled — otherwise an
+  // already-aborted signal would still fetch the manifest (a spawn) before the
+  // in-loop abort check fires.
+  if (abortSignal && abortSignal.aborted) {
+    if (typeof onEvent === 'function') {
+      try {
+        onEvent({ type: 'failed', error: 'bootstrap cancelled by user' })
+      } catch {}
+    }
+    return { ok: false, cancelled: true }
+  }
+
   const runLog = openRunLog(logRoot || path.join(hermesHome, 'logs'))
 
   // Tee every event to the runLog AND the caller's onEvent. This gives us a

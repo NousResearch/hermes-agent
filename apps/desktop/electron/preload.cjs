@@ -91,6 +91,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getBootstrapState: () => ipcRenderer.invoke('hermes:bootstrap:get'),
   resetBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:reset'),
   repairBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:repair'),
+  cancelBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:cancel'),
   onBootstrapEvent: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:bootstrap:event', listener)

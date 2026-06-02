@@ -3925,6 +3925,117 @@ def _session_latest_descendant(session_id: str):
     finally:
         db.close()
 
+
+# CRITICAL — every literal-path route below MUST be declared BEFORE the
+# templated ``/api/sessions/{session_id}`` family that follows. FastAPI/
+# Starlette match routes in registration order, and the ``{session_id}``
+# pattern is unconstrained — it would otherwise swallow e.g.
+# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``, or
+# ``GET /api/sessions/stats`` as "operate on the session with id
+# 'empty'" / "'bulk-delete'" / "'stats'", which would 404 (or worse,
+# succeed and delete the wrong row). Same story as the older
+# ``/api/sessions/search`` endpoint up at line ~1191. If you split or
+# reorder this block, move every route in it together.
+class BulkDeleteSessions(BaseModel):
+    ids: List[str]
+
+
+@app.post("/api/sessions/bulk-delete")
+async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+    """Delete every session in ``body.ids`` in a single DB transaction.
+
+    Backs the dashboard's bulk-select-and-delete flow on the sessions
+    page. POST (not DELETE) because most HTTP clients refuse to send a
+    request body on DELETE and a body is the natural shape for a list
+    of IDs — Starlette accepts both, but POSTing a list keeps proxies,
+    curl, and the browser ``fetch`` API consistent.
+
+    Per-row contract matches :meth:`SessionDB.delete_sessions`:
+
+    * Unknown IDs are silently skipped (the response ``deleted`` count
+      reflects what really happened, not the input length). This is
+      deliberate — UI selection state can race against another tab's
+      delete, and we'd rather succeed-on-the-rest than fail-the-whole-
+      batch.
+    * Children of every deleted parent are orphaned, not cascade-
+      deleted.
+    * Active and archived sessions ARE deleted when explicitly
+      selected — unlike ``DELETE /api/sessions/empty``, the user
+      hand-picked the rows so we trust the selection.
+    * Like the other session-delete endpoints, this does NOT pass a
+      ``sessions_dir`` through; on-disk transcript / request-dump
+      cleanup runs at the CLI/agent layer on the next prune pass.
+
+    The response carries the actual deleted count, so the dashboard
+    can surface it in a toast. The IDs that were removed are not
+    echoed back because the client already knows what it asked to
+    delete (unknown IDs are silently skipped — see contract above)
+    and can prune its in-memory list directly from the request.
+    """
+    # Enforce a hard cap so a runaway/typo'd selection can't lock the
+    # DB writer for an extended window. The dashboard pages 20 rows
+    # at a time; 500 covers a "select all on every page in a
+    # reasonable scrollback" worst case without opening the door to
+    # multi-thousand-row transactions.
+    if len(body.ids) > 500:
+        raise HTTPException(
+            status_code=400,
+            detail="ids must contain at most 500 entries",
+        )
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        deleted = db.delete_sessions(body.ids)
+        return {"ok": True, "deleted": deleted}
+    finally:
+        db.close()
+
+
+@app.get("/api/sessions/empty/count")
+async def count_empty_sessions_endpoint():
+    """Return the number of empty, ended, non-archived sessions.
+
+    Drives the dashboard's "Delete empty (N)" button — when N is 0 the
+    UI hides the affordance so users aren't presented with a button
+    that does nothing. Cheap, single-COUNT query.
+    """
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        return {"count": db.count_empty_sessions()}
+    finally:
+        db.close()
+
+
+@app.delete("/api/sessions/empty")
+async def delete_empty_sessions_endpoint():
+    """Delete every empty (``message_count == 0``), ended,
+    non-archived session in a single transaction.
+
+    Safety contract mirrors :meth:`SessionDB.delete_empty_sessions`:
+
+    * Active sessions are skipped (``ended_at IS NULL``) so a live
+      agent isn't yanked mid-handshake.
+    * Archived sessions are skipped — the user explicitly chose to
+      keep those rows.
+    * Children of deleted parents are orphaned, not cascade-deleted.
+
+    Like the single-session ``DELETE /api/sessions/{id}`` endpoint
+    below, this doesn't pass a ``sessions_dir`` through — the on-disk
+    transcript / request-dump cleanup is wired at the CLI/agent layer
+    but the web server historically leaves file cleanup to the next
+    prune-on-startup pass. Matching that pre-existing trade-off keeps
+    the two delete endpoints' DB-vs-disk behaviour consistent.
+    """
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        deleted = db.delete_empty_sessions()
+        return {"ok": True, "deleted": deleted}
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions/stats")
 async def get_session_stats():
     """Session-store statistics for the Sessions page (mirrors `hermes sessions stats`).
@@ -3956,6 +4067,7 @@ async def get_session_stats():
         }
     finally:
         db.close()
+
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str):
@@ -6745,6 +6857,7 @@ def mount_spa(application: FastAPI):
 _BUILTIN_DASHBOARD_THEMES = [
     {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
     {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "nous-blue",     "label": "Nous Blue",           "description": "Light mode — vivid Nous-blue accents on cream canvas"},
     {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},

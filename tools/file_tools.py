@@ -1300,13 +1300,18 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have not changed. Use the information you already have."
             )
 
-        result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when results were truncated — explicit next offset is clearer
         # than relying on the model to infer it from total_count vs match count.
+        # Keep it *inside* the JSON payload: appending raw text after JSON broke
+        # execute_code's RPC parser and made chained search_files() calls raise
+        # JSONDecodeError instead of returning a normal tool result.
         if result_dict.get("truncated"):
             next_offset = offset + limit
-            result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
-        return result_json
+            result_dict["_hint"] = (
+                f"Results truncated. Use offset={next_offset} to see more, "
+                "or narrow with a more specific pattern or file_glob."
+            )
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
 

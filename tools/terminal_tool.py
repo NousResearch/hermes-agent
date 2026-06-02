@@ -1631,15 +1631,122 @@ _INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
 _TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
 
 
+def _read_heredoc_specs_from_line(line: str) -> list[tuple[str, bool]]:
+    """Return (delimiter, strip_tabs) specs for heredocs opened on one shell line.
+
+    This is intentionally a small shell scanner, not a full parser.  It ignores
+    heredoc-looking tokens inside quotes/backticks so Python snippets such as
+    ``print(st.st_mode & 0o777)`` inside ``python3 - <<'PY'`` do not trip the
+    foreground-backgrounding guard.
+    """
+    specs: list[tuple[str, bool]] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch in {"'", '"', "`"}:
+            quote = ch
+            i += 1
+            while i < n:
+                if quote != "'" and line[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if line[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "#":
+            # Conservative shell-comment handling: anything after # on the line
+            # cannot open a heredoc for our guard's purposes.
+            break
+        if line.startswith("<<", i) and not line.startswith("<<<", i):
+            i += 2
+            strip_tabs = False
+            if i < n and line[i] == "-":
+                strip_tabs = True
+                i += 1
+            while i < n and line[i] in " \t":
+                i += 1
+            if i >= n:
+                break
+            delimiter = ""
+            if line[i] in {"'", '"'}:
+                quote = line[i]
+                i += 1
+                start = i
+                while i < n and line[i] != quote:
+                    i += 1
+                delimiter = line[start:i]
+                if i < n and line[i] == quote:
+                    i += 1
+            else:
+                chars: list[str] = []
+                while i < n and not line[i].isspace() and line[i] not in ";|&<>()":
+                    if line[i] == "\\" and i + 1 < n:
+                        chars.append(line[i + 1])
+                        i += 2
+                        continue
+                    chars.append(line[i])
+                    i += 1
+                delimiter = "".join(chars)
+            if delimiter:
+                specs.append((delimiter, strip_tabs))
+            continue
+        i += 1
+    return specs
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc stdin bodies while preserving shell command lines.
+
+    Heredoc bodies are data, not shell syntax.  Leaving them in place made the
+    foreground guard falsely reject safe diagnostics when inline Python used a
+    bitwise ampersand (``st_mode & 0o777``).  If a delimiter is missing, strip the
+    rest of the command: bash would be waiting for stdin, and treating the body as
+    syntax would be less safe.
+    """
+    if "<<" not in command:
+        return command
+
+    lines = command.splitlines(keepends=True)
+    output: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        output.append(line)
+        pending.extend(_read_heredoc_specs_from_line(line))
+        i += 1
+
+        while pending:
+            delimiter, strip_tabs = pending.pop(0)
+            while i < len(lines):
+                candidate = lines[i].rstrip("\r\n")
+                if strip_tabs:
+                    candidate = candidate.lstrip("\t")
+                i += 1
+                if candidate == delimiter:
+                    break
+            else:
+                return "".join(output)
+
+    return "".join(output)
+
+
 def _strip_quotes(command: str) -> str:
-    """Remove single- and double-quoted content so regex checks don't match inside strings.
+    """Remove quoted/heredoc content so regex checks don't match inside data.
 
     This prevents false positives when keywords like 'nohup' or 'setsid' appear
-    in commit messages, Python -c code, echo arguments, or PR body text.
-    Also strips backtick-quoted content and heredoc-style inline text.
+    in commit messages, Python -c code, echo arguments, PR body text, or heredoc
+    stdin payloads.
     """
+    result = _strip_heredoc_bodies(command)
     # Remove single-quoted strings (no escaping inside single quotes in shell)
-    result = re.sub(r"'[^']*'", "''", command)
+    result = re.sub(r"'[^']*'", "''", result)
     # Remove double-quoted strings (handle escaped quotes)
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
     # Remove backtick-quoted strings

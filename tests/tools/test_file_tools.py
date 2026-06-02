@@ -361,8 +361,10 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=0, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=50" in raw
+        result = json.loads(raw)
+        assert "[Hint:" not in raw
+        assert result["_hint"].startswith("Results truncated.")
+        assert "offset=50" in result["_hint"]
 
     @patch("tools.file_tools._get_file_ops")
     def test_non_truncated_no_hint(self, mock_get):
@@ -393,8 +395,10 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=50, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=100" in raw
+        result = json.loads(raw)
+        assert "[Hint:" not in raw
+        assert result["_hint"].startswith("Results truncated.")
+        assert "offset=100" in result["_hint"]
 
 
 # ---------------------------------------------------------------------------

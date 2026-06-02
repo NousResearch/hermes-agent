@@ -27,18 +27,8 @@ This fork maintains the following patches on top of upstream:
 | **YOLO mode for computer_use** | Wires the `--yolo` / `approvals.mode: off` setting into the Computer Use tool's approval layer so automated workflows don't get stuck on approval prompts. | PR [#36926](https://github.com/NousResearch/hermes-agent/pull/36926) |
 | **Model override for delegate_task** | Adds a `model` parameter (with optional `provider` + `model` fields) to `delegate_task`, letting subagents run under a different model than the parent — e.g., Claude for vision tasks while the parent stays on DeepSeek. Per-invocation and per-task overrides supported. | Various PRs: [#34681](https://github.com/NousResearch/hermes-agent/pull/34681), [#34773](https://github.com/NousResearch/hermes-agent/pull/34773), [#36790](https://github.com/NousResearch/hermes-agent/pull/36790) |
 
-## Community
-
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
-
----
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-Built by [Nous Research](https://nousresearch.com).
+Built by [Nous Research](https://nousresearch.com). Fork maintained by [@ThatXliner](https://github.com/ThatXliner).

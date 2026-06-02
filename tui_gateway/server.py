@@ -2759,7 +2759,11 @@ def _(rid, params: dict) -> dict:
     # launch directory? Only an explicit choice is persisted as the session's
     # workspace (see _ensure_session_db_row); otherwise it lands in "No
     # workspace" instead of whatever folder the desktop launched in.
-    explicit_cwd = bool(str(params.get("cwd") or "").strip())
+    raw_cwd = str(params.get("cwd") or "").strip()
+    try:
+        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    except Exception:
+        explicit_cwd = False
     _enable_gateway_prompts()
 
     ready = threading.Event()

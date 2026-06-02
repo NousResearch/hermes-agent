@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import contextvars
 import json
@@ -17,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -153,6 +155,43 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+# ---------------------------------------------------------------------------
+# Persistent thread pool for parallel cron jobs.
+# The tick function submits jobs here and returns immediately so the ticker
+# thread is never blocked by long-running jobs (e.g. the fixer running 15+ min).
+# ---------------------------------------------------------------------------
+_parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_parallel_pool_max_workers: Optional[int] = None
+_running_job_ids: set = set()
+_running_lock = threading.Lock()
+
+
+def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent parallel pool."""
+    global _parallel_pool, _parallel_pool_max_workers
+    if _parallel_pool is None or _parallel_pool_max_workers != max_workers:
+        if _parallel_pool is not None:
+            _parallel_pool.shutdown(wait=False, cancel_futures=False)
+        _parallel_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="cron-parallel",
+        )
+        _parallel_pool_max_workers = max_workers
+    return _parallel_pool
+
+
+def _shutdown_parallel_pool() -> None:
+    """Shut down the persistent pool on process exit."""
+    global _parallel_pool, _parallel_pool_max_workers
+    if _parallel_pool is not None:
+        _parallel_pool.shutdown(wait=True, cancel_futures=False)
+        _parallel_pool = None
+        _parallel_pool_max_workers = None
+
+
+atexit.register(_shutdown_parallel_pool)
+
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -1895,7 +1934,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None) -> int:
+def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
     Check and run all due jobs.
     
@@ -1939,6 +1978,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
+        # For parallel jobs that are already running, advance_next_run keeps
+        # bumping next_run_at forward so the grace window never expires.
+        # mark_job_run() overwrites next_run_at on completion.
         for job in due_jobs:
             advance_next_run(job["id"])
 
@@ -2036,14 +2078,37 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             _ctx = contextvars.copy_context()
             _results.append(_ctx.run(_process_job, job))
 
-        # Parallel pass for the rest — same behaviour as before.
+        # Parallel pass — persistent pool, non-blocking dispatch.
+        # Jobs that are already running (from a previous tick) are skipped.
+        # mark_job_run() updates next_run_at on completion, so the next tick
+        # after completion finds the job due again naturally.  No catch-up
+        # queue needed.
         if parallel_jobs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-                _futures = []
-                for job in parallel_jobs:
-                    _ctx = contextvars.copy_context()
-                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                for f in concurrent.futures.as_completed(_futures, timeout=600):
+            pool = _get_parallel_pool(_max_workers)
+            _parallel_futures = []
+            for job in parallel_jobs:
+                job_id = job["id"]
+                with _running_lock:
+                    if job_id in _running_job_ids:
+                        logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                        continue
+                    _running_job_ids.add(job_id)
+                _ctx = contextvars.copy_context()
+                # Fire-and-forget: remove from running set when done.
+                def _run_and_release(j=job, ctx=_ctx):
+                    try:
+                        return ctx.run(_process_job, j)
+                    finally:
+                        with _running_lock:
+                            _running_job_ids.discard(j["id"])
+                fut = pool.submit(_run_and_release)
+                if sync:
+                    _parallel_futures.append(fut)
+                else:
+                    _results.append(True)  # optimistically counted
+            # In sync mode (tests), wait for all parallel jobs to finish.
+            if sync and _parallel_futures:
+                for f in concurrent.futures.as_completed(_parallel_futures):
                     try:
                         _results.append(f.result())
                     except Exception as exc:

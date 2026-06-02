@@ -300,3 +300,54 @@ class TestRoleAlternationInvariant:
         assert msgs[0]["role"] == "assistant"
         assert msgs[1]["role"] == "tool"
         assert msgs[1]["tool_call_id"] == msgs[0]["tool_calls"][0]["id"]
+
+
+class TestCommandOutputTruncation:
+    """Codex app-server command output must be capped like terminal_tool's.
+
+    Codex runs shell commands through its own runtime, so output is projected
+    here instead of going through ``tools/terminal_tool.py``. A single large
+    result (e.g. a repo-wide ``grep``) must not land in history at full size
+    and saturate the context window. See ``_truncate_command_output``.
+    """
+
+    def _make_notif(self, output: str, exit_code: int = 0) -> dict:
+        item = {
+            **COMMAND_EXEC_COMPLETED["params"]["item"],
+            "id": "trunc-test",
+            "aggregatedOutput": output,
+            "exitCode": exit_code,
+        }
+        return {
+            "method": "item/completed",
+            "params": {**COMMAND_EXEC_COMPLETED["params"], "item": item},
+        }
+
+    def test_large_output_is_truncated(self) -> None:
+        from tools.tool_output_limits import get_max_bytes
+
+        max_chars = get_max_bytes()
+        huge = "x" * (max_chars * 3)
+        p = CodexEventProjector()
+        tool = p.project(self._make_notif(huge)).messages[1]
+        assert tool["role"] == "tool"
+        # Truncated well below the original, near the configured cap.
+        assert len(tool["content"]) < len(huge)
+        assert len(tool["content"]) <= max_chars + 200  # + notice overhead
+        assert "OUTPUT TRUNCATED" in tool["content"]
+
+    def test_small_output_not_truncated(self) -> None:
+        p = CodexEventProjector()
+        tool = p.project(self._make_notif("hello\nworld\n")).messages[1]
+        assert tool["content"] == "hello\nworld\n"
+        assert "OUTPUT TRUNCATED" not in tool["content"]
+
+    def test_truncation_preserves_nonzero_exit_prefix(self) -> None:
+        from tools.tool_output_limits import get_max_bytes
+
+        huge = "e" * (get_max_bytes() * 3)
+        p = CodexEventProjector()
+        tool = p.project(self._make_notif(huge, exit_code=2)).messages[1]
+        # Exit prefix is added after truncation, so it survives at the head.
+        assert tool["content"].startswith("[exit 2]\n")
+        assert "OUTPUT TRUNCATED" in tool["content"]

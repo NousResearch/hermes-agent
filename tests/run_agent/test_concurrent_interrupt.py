@@ -79,7 +79,7 @@ def _make_agent(monkeypatch):
     # /steer injection (added in PR #12116) fires after every concurrent
     # tool batch. Stub it as a no-op — this test exercises interrupt
     # fanout, not steer injection.
-    stub._apply_pending_steer_to_tool_results = lambda *a, **kw: None
+    stub._deliver_pending_steer_as_user_turn = lambda *a, **kw: None
     stub._invoke_tool = MagicMock(side_effect=lambda *a, **kw: '{"ok": true}')
     return stub
 

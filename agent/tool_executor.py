@@ -519,23 +519,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
 
-        # ── Per-tool /steer drain ───────────────────────────────────
-        # Same as the sequential path: drain between each collected
-        # result so the steer lands as early as possible.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
-
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools = len(parsed_calls)
     if num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
         enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
 
-    # ── /steer injection ──────────────────────────────────────────────
-    # Append any pending user steer text to the last tool result so the
-    # agent sees it on its next iteration. Runs AFTER budget enforcement
-    # so the steer marker is never truncated. See steer() for details.
+    # ── /steer delivery ───────────────────────────────────────────────
+    # Deliver any pending user steer as a trailing user-role message after
+    # the full tool batch. Runs AFTER budget enforcement so it is never
+    # truncated. See deliver_pending_steer_as_user_turn for why a user turn
+    # (not tool-result content) is required for hardened models.
     if num_tools > 0:
-        agent._apply_pending_steer_to_tool_results(messages, num_tools)
+        agent._deliver_pending_steer_as_user_turn(messages)
 
 
 
@@ -966,12 +962,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
 
-        # ── Per-tool /steer drain ───────────────────────────────────
-        # Drain pending steer BETWEEN individual tool calls so the
-        # injection lands as soon as a tool finishes — not after the
-        # entire batch.  The model sees it on the next API iteration.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
-
         if not agent.quiet_mode:
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -1001,11 +991,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     if num_tools_seq > 0:
         enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
 
-    # ── /steer injection ──────────────────────────────────────────────
+    # ── /steer delivery ───────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,
     # applied to sequential execution as well.
     if num_tools_seq > 0:
-        agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+        agent._deliver_pending_steer_as_user_turn(messages)
 
 
 

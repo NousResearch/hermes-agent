@@ -274,5 +274,24 @@ class TestSteerCommandRegistry:
         assert should_bypass_active_session("steer") is True
 
 
+class TestSteerCallSites:
+    """Source-level guard: tool_executor delivers the steer only at the
+    batch boundary (one aggregate call per execution path), and the old
+    per-tool drain / old method name are gone. Per-tool insertion is
+    incompatible with safe user-turn delivery (would orphan later tool
+    results in repair_message_sequence)."""
+
+    def test_tool_executor_uses_renamed_aggregate_only(self):
+        import inspect
+
+        import agent.tool_executor as te
+
+        src = inspect.getsource(te)
+        assert "_apply_pending_steer_to_tool_results" not in src
+        # Exactly two delivery calls: parallel-path aggregate + sequential-path
+        # aggregate. No per-tool drains.
+        assert src.count("_deliver_pending_steer_as_user_turn") == 2
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

@@ -212,6 +212,30 @@ def test_click_join_marks_lobby_for_ask_to_join():
     assert state.updates[-1] == {"lobby_waiting": True}
 
 
+def test_detect_auth_challenge_reports_google_reauth():
+    from plugins.google_meet.meet_bot import _detect_auth_challenge
+
+    class _AuthPage:
+        url = "https://accounts.google.com/v3/signin/challenge/pwd"
+
+        def evaluate(self, _script):
+            return "Hi LFDM core@lfdm.co To continue, first verify it’s you Enter your password"
+
+    assert _detect_auth_challenge(_AuthPage()) == "Google reauthentication/password challenge"
+
+
+def test_detect_auth_challenge_ignores_normal_meet_page():
+    from plugins.google_meet.meet_bot import _detect_auth_challenge
+
+    class _MeetPage:
+        url = "https://meet.google.com/abc-defg-hij"
+
+        def evaluate(self, _script):
+            return "Join now"
+
+    assert _detect_auth_challenge(_MeetPage()) == ""
+
+
 # ---------------------------------------------------------------------------
 # process_manager — refuses unsafe URLs, manages active pointer
 # ---------------------------------------------------------------------------

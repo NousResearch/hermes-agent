@@ -576,6 +576,14 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             # we're authed, we instead see "Join now".
             _try_guest_name(page, guest_name)
             if not _click_join(page, state):
+                auth_challenge = _detect_auth_challenge(page)
+                if auth_challenge:
+                    state.set(
+                        error=f"auth challenge before Meet prejoin: {auth_challenge}",
+                        leave_reason="auth_stale",
+                        exited=True,
+                    )
+                    return 5
                 state.set(
                     error="join controls not found before timeout",
                     leave_reason="join_controls_missing",
@@ -810,6 +818,26 @@ def _detect_denied(page) -> bool:
         return bool(page.evaluate(probe))
     except Exception:
         return False
+
+
+def _detect_auth_challenge(page) -> str:
+    """Return a short reason when Meet redirects to Google sign-in/reauth."""
+    try:
+        url = getattr(page, "url", "") or ""
+    except Exception:
+        url = ""
+    try:
+        text = page.evaluate("() => document.body ? (document.body.innerText || '') : ''") or ""
+    except Exception:
+        text = ""
+    combined = f"{url}\n{text}".lower()
+    if "accounts.google.com" not in combined and "servicelogin" not in combined:
+        return ""
+    if "verify it" in combined or "enter your password" in combined or "challenge/pwd" in combined:
+        return "Google reauthentication/password challenge"
+    if "choose an account" in combined or "signed out" in combined or "accountchooser" in combined:
+        return "Google account chooser or signed-out CORE session"
+    return "Google sign-in redirect"
 
 
 def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:

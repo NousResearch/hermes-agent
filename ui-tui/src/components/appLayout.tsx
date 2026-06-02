@@ -358,6 +358,7 @@ const StatusRulePane = memo(function StatusRulePane({
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
+        indicatorStyle={ui.indicatorStyle}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}

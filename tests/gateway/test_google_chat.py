@@ -439,6 +439,68 @@ class TestValidateConfig:
 
 
 class TestHttpEventIngress:
+    def test_cached_google_auth_request_reuses_successful_get_response(self, monkeypatch):
+        now = [100.0]
+        calls = []
+
+        class Response:
+            status = 200
+
+        response = Response()
+
+        def raw_request(**kwargs):
+            calls.append(kwargs)
+            return response
+
+        monkeypatch.setattr(_gc_mod.time, "monotonic", lambda: now[0])
+        request = _gc_mod._CachedGoogleAuthRequest(raw_request, ttl_seconds=300)
+
+        assert request("https://www.googleapis.com/oauth2/v1/certs") is response
+        assert request("https://www.googleapis.com/oauth2/v1/certs") is response
+        assert len(calls) == 1
+
+        now[0] += 301
+        assert request("https://www.googleapis.com/oauth2/v1/certs") is response
+        assert len(calls) == 2
+
+    def test_cached_google_auth_request_does_not_cache_post_response(self):
+        calls = []
+
+        def raw_request(**kwargs):
+            calls.append(kwargs)
+            return object()
+
+        request = _gc_mod._CachedGoogleAuthRequest(raw_request, ttl_seconds=300)
+
+        request("https://example.test/token", method="POST")
+        request("https://example.test/token", method="POST")
+
+        assert len(calls) == 2
+
+    def test_verify_google_id_token_uses_cached_request_and_configured_audience(self, monkeypatch):
+        request = object()
+        captured = {}
+
+        monkeypatch.setattr(_gc_mod, "_get_google_id_token_request", lambda: request)
+
+        class FakeIdToken:
+            @staticmethod
+            def verify_oauth2_token(token, req, audience):
+                captured.update(token=token, request=req, audience=audience)
+                return {"email": "bot@example.test"}
+
+        monkeypatch.setitem(sys.modules, "google.oauth2.id_token", FakeIdToken)
+        monkeypatch.setattr(sys.modules["google.oauth2"], "id_token", FakeIdToken, raising=False)
+
+        assert _gc_mod._verify_google_id_token("signed-token", "https://callback.example/events") == {
+            "email": "bot@example.test"
+        }
+        assert captured == {
+            "token": "signed-token",
+            "request": request,
+            "audience": "https://callback.example/events",
+        }
+
     def test_verify_http_event_request_accepts_expected_google_identity(self, monkeypatch):
         cfg = PlatformConfig(enabled=True)
         cfg.extra.update(

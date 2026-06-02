@@ -43,6 +43,8 @@ import logging
 import os
 import random
 import re
+import threading
+import time
 from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -71,18 +73,57 @@ HttpError: Any = Exception  # type: ignore
 MediaFileUpload: Any = None  # type: ignore
 
 _google_modules_loaded: bool = False
+_GOOGLE_ID_TOKEN_CERTS_TTL_SECONDS = 300
+_google_id_token_request: Any = None
+_google_id_token_request_lock = threading.Lock()
+
+
+class _CachedGoogleAuthRequest:
+    def __init__(self, request: Any, ttl_seconds: int = _GOOGLE_ID_TOKEN_CERTS_TTL_SECONDS) -> None:
+        self._request = request
+        self._ttl_seconds = ttl_seconds
+        self._lock = threading.Lock()
+        self._cache: Dict[Tuple[str, str], Tuple[float, Any]] = {}
+
+    def __call__(self, url: str, method: str = "GET", **kwargs: Any) -> Any:
+        cache_key = (method.upper(), url)
+        if cache_key[0] != "GET":
+            return self._request(url=url, method=method, **kwargs)
+
+        now = time.monotonic()
+        with self._lock:
+            cached = self._cache.get(cache_key)
+            if cached and cached[0] > now:
+                return cached[1]
+
+        response = self._request(url=url, method=method, **kwargs)
+        if getattr(response, "status", None) == 200:
+            with self._lock:
+                self._cache[cache_key] = (now + self._ttl_seconds, response)
+        return response
+
+
+def _get_google_id_token_request() -> Any:
+    global _google_id_token_request
+    with _google_id_token_request_lock:
+        if _google_id_token_request is None:
+            try:
+                from google.auth.transport import requests as google_requests
+            except ImportError as exc:
+                raise RuntimeError("google-auth is required for Google Chat HTTP callbacks") from exc
+            _google_id_token_request = _CachedGoogleAuthRequest(google_requests.Request())
+        return _google_id_token_request
 
 
 def _verify_google_id_token(token: str, audience: str) -> Dict[str, Any]:
     try:
-        from google.auth.transport import requests as google_requests
         from google.oauth2 import id_token
     except ImportError as exc:
         raise RuntimeError("google-auth is required for Google Chat HTTP callbacks") from exc
 
     return id_token.verify_oauth2_token(
         token,
-        google_requests.Request(),
+        _get_google_id_token_request(),
         audience,
     )
 

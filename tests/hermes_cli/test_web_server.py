@@ -2626,21 +2626,43 @@ class TestDashboardPluginManifestExtensions:
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
 #
-# These tests drive the endpoint with a tiny fake command (typically ``cat``
-# or ``sh -c 'printf …'``) instead of the real ``hermes --tui`` binary.  The
-# endpoint resolves its argv through ``_resolve_chat_argv``, so tests
-# monkeypatch that hook.
+# These tests drive the endpoint with a tiny platform-native command instead
+# of the real ``hermes --tui`` binary. The endpoint resolves its argv through
+# ``_resolve_chat_argv``, so tests monkeypatch that hook.
 # ---------------------------------------------------------------------------
 
+import importlib.util
 import sys
 
 
-skip_on_windows = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
+_IS_WINDOWS = sys.platform.startswith("win")
+_PTY_BACKEND_AVAILABLE = importlib.util.find_spec(
+    "winpty" if _IS_WINDOWS else "ptyprocess"
+) is not None
+
+skip_pty_backend_unavailable = pytest.mark.skipif(
+    not _PTY_BACKEND_AVAILABLE,
+    reason="platform PTY dependency is not installed",
+)
+
+skip_posix_pty_unavailable = pytest.mark.skipif(
+    _IS_WINDOWS or importlib.util.find_spec("ptyprocess") is None,
+    reason="test requires POSIX ptyprocess semantics",
 )
 
 
-@skip_on_windows
+def _stdout_argv(text: str) -> list[str]:
+    if _IS_WINDOWS:
+        return ["cmd.exe", "/c", f"echo {text}"]
+    return ["/bin/sh", "-c", f"printf {text}"]
+
+
+def _interactive_echo_argv() -> list[str]:
+    if _IS_WINDOWS:
+        return ["cmd.exe"]
+    return ["/bin/cat"]
+
+
 class TestPtyWebSocket:
     @pytest.fixture(autouse=True)
     def _setup(self, monkeypatch, _isolate_hermes_home):
@@ -2671,7 +2693,10 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             main_mod,
             "_make_tui_argv",
-            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+            lambda project_root, tui_dev=False: (
+                ["node", "dist/entry.js"],
+                str(Path.cwd()),
+            ),
         )
 
         _argv, _cwd, env = self.ws_module._resolve_chat_argv()
@@ -2692,7 +2717,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None: (_interactive_echo_argv(), None, None),
         )
         from starlette.websockets import WebSocketDisconnect
 
@@ -2705,7 +2730,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None: (_interactive_echo_argv(), None, None),
         )
         from starlette.websockets import WebSocketDisconnect
 
@@ -2714,12 +2739,23 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
+    def test_missing_bridge_dependency_closes_with_install_message(self, monkeypatch):
+        monkeypatch.setattr(self.ws_module, "_PTY_BRIDGE_AVAILABLE", False)
+
+        with self.client.websocket_connect(self._url()) as conn:
+            msg = conn.receive_text()
+
+        assert "platform PTY dependency" in msg
+        assert "pywinpty" in msg
+        assert "WSL" not in msg
+
+    @skip_pty_backend_unavailable
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
             lambda resume=None, sidecar_url=None: (
-                ["/bin/sh", "-c", "printf hermes-ws-ok"],
+                _stdout_argv("hermes-ws-ok"),
                 None,
                 None,
             ),
@@ -2742,16 +2778,20 @@ class TestPtyWebSocket:
                     break
             assert b"hermes-ws-ok" in buf
 
+    @skip_pty_backend_unavailable
     def test_client_input_reaches_child_stdin(self, monkeypatch):
-        # ``cat`` echoes stdin back, so a write → read round-trip proves
-        # the full duplex path.
+        # The child echoes input, so a write/read round-trip proves the full
+        # duplex path.
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None: (_interactive_echo_argv(), None, None),
         )
         with self.client.websocket_connect(self._url()) as conn:
-            conn.send_bytes(b"round-trip-payload\n")
+            if _IS_WINDOWS:
+                conn.send_bytes(b"echo round-trip-payload\r")
+            else:
+                conn.send_bytes(b"round-trip-payload\n")
             buf = b""
             import time
 
@@ -2764,6 +2804,7 @@ class TestPtyWebSocket:
                     break
             assert b"round-trip-payload" in buf
 
+    @skip_posix_pty_unavailable
     def test_resize_escape_is_forwarded(self, monkeypatch):
         # Resize escape gets intercepted and applied via TIOCSWINSZ, then the
         # child reads the TTY ioctl directly. Avoid tput because CI may not set
@@ -2817,7 +2858,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None: (_interactive_echo_argv(), None, None),
         )
         # Patch PtyBridge.spawn at the web_server module's binding.
         import hermes_cli.web_server as ws_mod
@@ -2829,12 +2870,13 @@ class TestPtyWebSocket:
             msg = conn.receive_text()
             assert "pty missing" in msg or "unavailable" in msg.lower() or "pty" in msg.lower()
 
+    @skip_pty_backend_unavailable
     def test_resume_parameter_is_forwarded_to_argv(self, monkeypatch):
         captured: dict = {}
 
         def fake_resolve(resume=None, sidecar_url=None):
             captured["resume"] = resume
-            return (["/bin/sh", "-c", "printf resume-arg-ok"], None, None)
+            return (_stdout_argv("resume-arg-ok"), None, None)
 
         monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
 
@@ -2846,6 +2888,7 @@ class TestPtyWebSocket:
                 pass
         assert captured.get("resume") == "sess-42"
 
+    @skip_pty_backend_unavailable
     def test_channel_param_propagates_sidecar_url(self, monkeypatch):
         """When /api/pty is opened with ?channel=, the PTY child gets a
         HERMES_TUI_SIDECAR_URL env var pointing back at /api/pub on the
@@ -2854,7 +2897,7 @@ class TestPtyWebSocket:
 
         def fake_resolve(resume=None, sidecar_url=None):
             captured["sidecar_url"] = sidecar_url
-            return (["/bin/sh", "-c", "printf sidecar-ok"], None, None)
+            return (_stdout_argv("sidecar-ok"), None, None)
 
         monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
         monkeypatch.setattr(

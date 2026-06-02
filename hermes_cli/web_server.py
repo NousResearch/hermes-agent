@@ -5401,8 +5401,9 @@ async def get_models_analytics(days: int = 30):
 # /api/pty — PTY-over-WebSocket bridge for the dashboard "Chat" tab.
 #
 # The endpoint spawns the same ``hermes --tui`` binary the CLI uses, behind
-# a POSIX pseudo-terminal, and forwards bytes + resize escapes across a
-# WebSocket.  The browser renders the ANSI through xterm.js (see
+# the platform PTY backend (ptyprocess on POSIX, pywinpty/ConPTY on Windows),
+# and forwards bytes + resize escapes across a WebSocket. The browser renders
+# the ANSI through xterm.js (see
 # web/src/pages/ChatPage.tsx).
 #
 # Auth: ``?token=<session_token>`` query param (browsers can't set
@@ -5413,10 +5414,9 @@ async def get_models_analytics(days: int = 30):
 
 import re
 
-# PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
-# Windows the import raises; catch and leave PtyBridge=None so the rest of
-# the dashboard (sessions, jobs, metrics, config editor) still loads and the
-# /api/pty endpoint cleanly refuses with a WSL-suggested message.
+# PTY bridge is optional at import time so the rest of the dashboard
+# (sessions, jobs, metrics, config editor) still loads if the platform
+# dependency is missing.
 try:
     from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
     _PTY_BRIDGE_AVAILABLE = True
@@ -5575,9 +5575,9 @@ def _resolve_chat_argv(
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
-    Default: whatever ``hermes --tui`` would run.  Tests monkeypatch this
-    function to inject a tiny fake command (``cat``, ``sh -c 'printf …'``)
-    so nothing has to build Node or the TUI bundle.
+    Default: whatever ``hermes --tui`` would run. Tests monkeypatch this
+    function to inject a tiny platform-native command so nothing has to build
+    Node or the TUI bundle.
 
     Session resume is propagated via the ``HERMES_TUI_RESUME`` env var —
     matching what ``hermes_cli.main._launch_tui`` does for the CLI path.
@@ -5713,14 +5713,14 @@ async def pty_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
-    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
-    # client and close cleanly rather than pretending the feature works.
+    # If the platform PTY dependency is missing, tell the client and close
+    # cleanly rather than pretending the feature works.
     if not _PTY_BRIDGE_AVAILABLE:
         await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
+            "\r\n\x1b[31mChat unavailable: embedded terminal support is "
+            "not available in this Hermes environment.\x1b[0m\r\n"
+            "\x1b[33mInstall the platform PTY dependency (`ptyprocess` on "
+            "POSIX or `pywinpty` on Windows) and restart the dashboard.\x1b[0m\r\n"
         )
         await ws.close(code=1011)
         return
@@ -5737,7 +5737,6 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
-
 
     try:
         bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)

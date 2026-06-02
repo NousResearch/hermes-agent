@@ -1,11 +1,13 @@
-"""Unit tests for hermes_cli.pty_bridge — PTY spawning + byte forwarding.
+"""Unit tests for hermes_cli.pty_bridge.
 
-These tests drive the bridge with minimal POSIX processes (echo, env, sleep,
-printf) to verify it behaves like a PTY you can read/write/resize/close.
+These tests drive the bridge with minimal processes to verify it behaves like
+a PTY you can read/write/resize/close. POSIX uses ptyprocess; native Windows
+uses pywinpty/ConPTY.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import sys
@@ -13,13 +15,20 @@ import time
 
 import pytest
 
-pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
-
 from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
 
 
-skip_on_windows = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
+_POSIX_PTY_AVAILABLE = importlib.util.find_spec("ptyprocess") is not None
+_WINDOWS_PTY_AVAILABLE = importlib.util.find_spec("winpty") is not None
+
+skip_posix_unavailable = pytest.mark.skipif(
+    sys.platform.startswith("win") or not _POSIX_PTY_AVAILABLE,
+    reason="POSIX PTY bridge requires ptyprocess",
+)
+
+skip_windows_unavailable = pytest.mark.skipif(
+    not sys.platform.startswith("win") or not _WINDOWS_PTY_AVAILABLE,
+    reason="Windows PTY bridge requires pywinpty/ConPTY",
 )
 
 
@@ -37,7 +46,7 @@ def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes
     return bytes(buf)
 
 
-@skip_on_windows
+@skip_posix_unavailable
 class TestPtyBridgeSpawn:
     def test_is_available_on_posix(self):
         assert PtyBridge.is_available() is True
@@ -54,7 +63,7 @@ class TestPtyBridgeSpawn:
             PtyBridge.spawn([str(tmp_path / "definitely-not-a-real-binary")])
 
 
-@skip_on_windows
+@skip_posix_unavailable
 class TestPtyBridgeIO:
     def test_reads_child_stdout(self):
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf hermes-ok"])
@@ -65,8 +74,8 @@ class TestPtyBridgeIO:
             bridge.close()
 
     def test_write_sends_to_child_stdin(self):
-        # `cat` with no args echoes stdin back to stdout.  We write a line,
-        # read it back, then signal EOF to let cat exit cleanly.
+        # `cat` with no args echoes stdin back to stdout. We write a line,
+        # read it back, then close the PTY to let cat exit cleanly.
         bridge = PtyBridge.spawn([shutil.which("cat") or "cat"])
         try:
             bridge.write(b"hello-pty\n")
@@ -79,11 +88,9 @@ class TestPtyBridgeIO:
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf done"])
         try:
             _read_until(bridge, b"done")
-            # Give the child a beat to exit cleanly, then drain until EOF.
             deadline = time.monotonic() + 3.0
             while bridge.is_alive() and time.monotonic() < deadline:
                 bridge.read(timeout=0.1)
-            # Next reads after exit should return None (EOF), not raise.
             got_none = False
             for _ in range(10):
                 if bridge.read(timeout=0.1) is None:
@@ -94,11 +101,9 @@ class TestPtyBridgeIO:
             bridge.close()
 
 
-@skip_on_windows
+@skip_posix_unavailable
 class TestPtyBridgeResize:
     def test_resize_updates_child_winsize(self):
-        # Query the TTY ioctl directly instead of using tput, which requires
-        # TERM and fails in GitHub Actions' non-interactive environment.
         winsize_script = (
             "import fcntl, struct, termios, time; "
             "time.sleep(0.1); "
@@ -114,26 +119,24 @@ class TestPtyBridgeResize:
         try:
             bridge.resize(cols=123, rows=45)
             output = _read_until(bridge, b"45", timeout=5.0)
-            # tput prints just the numbers, one per line
             assert b"123" in output
             assert b"45" in output
         finally:
             bridge.close()
 
 
-@skip_on_windows
+@skip_posix_unavailable
 class TestPtyBridgeClose:
     def test_close_is_idempotent(self):
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "sleep 30"])
         bridge.close()
-        bridge.close()  # must not raise
+        bridge.close()
         assert not bridge.is_alive()
 
     def test_close_terminates_long_running_child(self):
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "sleep 30"])
         pid = bridge.pid
         bridge.close()
-        # Give the kernel a moment to reap
         deadline = time.monotonic() + 3.0
         reaped = False
         while time.monotonic() < deadline:
@@ -146,7 +149,7 @@ class TestPtyBridgeClose:
         assert reaped, f"pid {pid} still running after close()"
 
 
-@skip_on_windows
+@skip_posix_unavailable
 class TestPtyBridgeEnv:
     def test_cwd_is_respected(self, tmp_path):
         bridge = PtyBridge.spawn(
@@ -171,9 +174,82 @@ class TestPtyBridgeEnv:
             bridge.close()
 
 
+@skip_windows_unavailable
+class TestWindowsPtyBridge:
+    def test_is_available_on_windows(self):
+        assert PtyBridge.is_available() is True
+
+    def test_reads_child_stdout(self):
+        bridge = PtyBridge.spawn(["cmd.exe", "/c", "echo hermes-winpty-ok"])
+        try:
+            output = _read_until(bridge, b"hermes-winpty-ok")
+            assert b"hermes-winpty-ok" in output
+        finally:
+            bridge.close()
+
+    def test_write_sends_to_child_stdin(self):
+        bridge = PtyBridge.spawn(["cmd.exe"])
+        try:
+            _read_until(bridge, b">")
+            bridge.write(b"echo hello-winpty\r")
+            output = _read_until(bridge, b"hello-winpty")
+            assert b"hello-winpty" in output
+        finally:
+            bridge.write(b"exit\r")
+            bridge.close()
+
+    def test_read_returns_none_after_child_exits(self):
+        bridge = PtyBridge.spawn(["cmd.exe", "/c", "echo done-winpty"])
+        try:
+            _read_until(bridge, b"done-winpty")
+            deadline = time.monotonic() + 3.0
+            while bridge.is_alive() and time.monotonic() < deadline:
+                bridge.read(timeout=0.1)
+            got_none = False
+            for _ in range(10):
+                if bridge.read(timeout=0.1) is None:
+                    got_none = True
+                    break
+            assert got_none, "PtyBridge.read did not return None after child EOF"
+        finally:
+            bridge.close()
+
+    def test_resize_does_not_raise(self):
+        bridge = PtyBridge.spawn(["cmd.exe"])
+        try:
+            bridge.resize(cols=99, rows=41)
+        finally:
+            bridge.write(b"exit\r")
+            bridge.close()
+
+    def test_cwd_is_respected(self, tmp_path):
+        bridge = PtyBridge.spawn(["cmd.exe", "/c", "cd"], cwd=str(tmp_path))
+        try:
+            output = _read_until(bridge, str(tmp_path).encode())
+            assert str(tmp_path).encode() in output
+        finally:
+            bridge.close()
+
+    def test_env_is_forwarded(self):
+        bridge = PtyBridge.spawn(
+            ["cmd.exe", "/c", "echo %HERMES_PTY_TEST%"],
+            env={**os.environ, "HERMES_PTY_TEST": "winpty-env-works"},
+        )
+        try:
+            output = _read_until(bridge, b"winpty-env-works")
+            assert b"winpty-env-works" in output
+        finally:
+            bridge.close()
+
+    def test_close_is_idempotent(self):
+        bridge = PtyBridge.spawn(["cmd.exe"])
+        bridge.close()
+        bridge.close()
+        assert not bridge.is_alive()
+
+
 class TestPtyBridgeUnavailable:
-    """Platform fallback semantics — PtyUnavailableError is importable and
-    carries a user-readable message."""
+    """PtyUnavailableError is importable and carries a user-readable message."""
 
     def test_error_carries_user_message(self):
         err = PtyUnavailableError("platform not supported")

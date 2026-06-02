@@ -648,10 +648,19 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     import httpx
 
     normalized = _normalize_base_url(base_url)
+
+    # Resolve localhost to IPv4 to avoid 2s IPv6 timeout on Windows dual-stack.
+    # Applied to ``normalized`` before deriving server/LM Studio URLs AND
+    # before the cache lookup, so localhost and 127.0.0.1 share a cache entry.
+    normalized = normalized.replace("://localhost:", "://127.0.0.1:")
+    normalized = normalized.replace("://localhost/", "://127.0.0.1/")
+    if normalized.endswith("://localhost"):
+        normalized = normalized[:-len("localhost")] + "127.0.0.1"
+
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
-    lmstudio_url = _lmstudio_server_root(base_url)
+    lmstudio_url = _lmstudio_server_root(normalized)
 
     cached = _endpoint_probe_path_cache.get(server_url)
     if cached is not None:

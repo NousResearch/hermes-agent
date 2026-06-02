@@ -507,6 +507,66 @@ class TestDetectLocalServerTypeAuth:
         assert client_mock.get.call_args_list[0].args[0] == "http://localhost:1234/api/v1/models"
 
 
+class TestDetectLocalServerTypeLocalhostIPv4:
+    """detect_local_server_type should resolve localhost to 127.0.0.1."""
+
+    def test_localhost_resolved_to_ipv4(self):
+        """Probes should use 127.0.0.1, not localhost, to avoid IPv6 timeout."""
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 200
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("http://localhost:8317/v1")
+
+        for call in client_mock.get.call_args_list:
+            url = call[0][0]
+            assert "localhost" not in url, f"Probe URL still uses localhost: {url}"
+            assert "127.0.0.1" in url
+
+    def test_non_localhost_urls_unchanged(self):
+        """Non-localhost URLs should not be modified."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        resp = MagicMock()
+        resp.status_code = 404
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("http://192.168.1.100:8080")
+
+        for call in client_mock.get.call_args_list:
+            url = call[0][0]
+            assert "192.168.1.100" in url
+
+    def test_127_0_0_1_urls_unchanged(self):
+        """URLs already using 127.0.0.1 should pass through unchanged."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        resp = MagicMock()
+        resp.status_code = 404
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("http://127.0.0.1:8317")
+
+        for call in client_mock.get.call_args_list:
+            url = call[0][0]
+            assert "127.0.0.1" in url
+
+
 class TestFetchEndpointModelMetadataLmStudio:
     """fetch_endpoint_model_metadata should use LM Studio's native models endpoint."""
 

@@ -353,6 +353,7 @@ def auth_add_command(args) -> None:
         from agent.google_oauth import run_gemini_oauth_login_pure
 
         creds = run_gemini_oauth_login_pure()
+        auth_mod._mark_google_gemini_cli_active(creds)
         label = (getattr(args, "label", None) or "").strip() or (
             creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
         )

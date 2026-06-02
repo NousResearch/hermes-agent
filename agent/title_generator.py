@@ -9,6 +9,8 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from hermes_cli.config import load_config_readonly
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,17 @@ def _title_language() -> str:
         return ""
 
 
+def _auto_title_enabled() -> bool:
+    """Return whether automatic session title generation is enabled."""
+    try:
+        config = load_config_readonly()
+        title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
+        return is_truthy_value(title_config.get("enabled"), default=True)
+    except Exception:
+        logger.debug("Failed to read title_generation.enabled", exc_info=True)
+        return True
+
+
 def generate_title(
     user_message: str,
     assistant_response: str,
@@ -66,6 +79,10 @@ def generate_title(
     ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
     of silently accumulating untitled sessions.
     """
+    if not _auto_title_enabled():
+        logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
+        return None
+
     # Truncate long messages to keep the request small
     user_snippet = user_message[:500] if user_message else ""
     assistant_snippet = assistant_response[:500] if assistant_response else ""
@@ -244,6 +261,10 @@ def maybe_auto_title(
     - No title is already set
     """
     if not session_db or not session_id or not user_message or not assistant_response:
+        return
+
+    if not _auto_title_enabled():
+        logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
 
     # Count user messages in history to detect first exchange.

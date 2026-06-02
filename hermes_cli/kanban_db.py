@@ -99,6 +99,34 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+# User-facing live status vocabulary.  The storage-level task.status column
+# intentionally keeps the legacy workflow aliases above for migration and DB
+# compatibility; UI/API/CLI surfaces can call live_status_for() when presenting
+# active work to humans.
+LIVE_STATUSES = {"working", "waiting", "blocked", "dormant"}
+_LIVE_STATUS_ALIASES = {
+    "ready": "working",
+    "queue": "working",
+    "running": "working",
+    "in_progress": "working",
+    "review": "working",
+    "todo": "waiting",
+    "scheduled": "waiting",
+    "blocked": "blocked",
+    "triage": "dormant",
+}
+
+
+def live_status_for(status: str) -> str:
+    """Return the canonical live status for an internal Kanban status.
+
+    ``done`` and ``archived`` are completion/history states, not live profile
+    availability states, so they pass through unchanged for historical views.
+    """
+    return _LIVE_STATUS_ALIASES.get(status, status)
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -2481,6 +2509,14 @@ def add_comment(
             (task_id, author.strip(), body.strip(), now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        warning = blocked_comment_action_warning(conn, task_id, body)
+        if warning:
+            _append_event(
+                conn,
+                task_id,
+                "blocked_comment_action_warning",
+                {"warning": warning},
+            )
         return int(cur.lastrowid or 0)
 
 
@@ -3449,6 +3485,43 @@ def _verify_created_cards(
 # ``_new_task_id`` below. Kept permissive on length for forward compat:
 # accept 8+ hex chars after the ``t_`` prefix.
 _TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
+
+
+_BLOCKED_COMMENT_ACTION_RE = re.compile(
+    r"\b("
+    r"ask|call|contact|dm|email|message|notify|ping|reach\s+out|send|tell|"
+    r"please|must|should|need(?:s)?\s+to|follow\s+up"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+BLOCKED_COMMENT_ACTION_WARNING = (
+    "Comment recorded only: this task is blocked, so no worker will be "
+    "spawned or woken by this comment. For peer discussion, send a direct "
+    "profile command or structured internal message yourself. Use Kanban "
+    "only for durable work/dependencies/outcomes: create a new assigned "
+    "work task when actual follow-up work is required, or explicitly "
+    "unblock/re-dispatch the blocked task with the instruction."
+)
+
+
+def blocked_comment_action_warning(
+    conn: sqlite3.Connection, task_id: str, body: str
+) -> Optional[str]:
+    """Return deterministic guidance for action-looking comments on blocked tasks.
+
+    Comments are durable context, not executable dispatch requests. A comment
+    added after a task has blocked does not wake the assignee; only a new ready
+    task or an explicit unblock/re-dispatch enters the dispatcher queue. Keep
+    this helper small and heuristic: it is a safety warning, not a policy gate.
+    """
+    if not body or not _BLOCKED_COMMENT_ACTION_RE.search(body):
+        return None
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row and row["status"] == "blocked":
+        return BLOCKED_COMMENT_ACTION_WARNING
+    return None
 
 
 def _scan_prose_for_phantom_ids(

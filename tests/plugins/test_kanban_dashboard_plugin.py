@@ -68,11 +68,17 @@ def test_board_empty(client):
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200
     data = r.json()
-    # All canonical columns present (triage + the rest), each empty.
+    # Human-facing dashboard columns are canonical live statuses plus done history.
     names = [c["name"] for c in data["columns"]]
-    assert set(names) == kb.VALID_STATUSES - {"archived"}
-    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
-        assert expected in names, f"missing column {expected}: {names}"
+    assert names == ["working", "waiting", "blocked", "dormant", "done"]
+    target_status = {c["name"]: c["target_status"] for c in data["columns"]}
+    assert target_status == {
+        "working": "ready",
+        "waiting": "todo",
+        "blocked": "blocked",
+        "dormant": "triage",
+        "done": "done",
+    }
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
@@ -99,27 +105,37 @@ def test_create_task_appears_on_board(client):
     assert task["title"] == "Research LLM caching"
     assert task["assignee"] == "researcher"
     assert task["status"] == "ready"  # no parents -> immediately ready
+    assert task["live_status"] == "working"
     assert task["priority"] == 3
     assert task["tenant"] == "acme"
     task_id = task["id"]
 
-    # Board now lists it under 'ready'.
+    # Board now lists it under canonical 'working' even though the DB storage
+    # alias remains 'ready' for dispatcher compatibility.
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200
     data = r.json()
-    ready = next(c for c in data["columns"] if c["name"] == "ready")
-    assert len(ready["tasks"]) == 1
-    assert ready["tasks"][0]["id"] == task_id
+    working = next(c for c in data["columns"] if c["name"] == "working")
+    assert working["live_status"] == "working"
+    assert working["target_status"] == "ready"
+    assert len(working["tasks"]) == 1
+    assert working["tasks"][0]["id"] == task_id
+    assert working["tasks"][0]["status"] == "ready"
+    assert working["tasks"][0]["live_status"] == "working"
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
 
 
-def test_scheduled_tasks_have_their_own_column_not_todo(client):
-    """Scheduled/time-delay tasks must not be silently bucketed into todo."""
+def test_scheduled_and_todo_tasks_share_waiting_column(client):
+    """Waiting aliases must not split into separate primary dashboard lanes."""
 
-    task = client.post(
+    scheduled_task = client.post(
         "/api/plugins/kanban/tasks",
         json={"title": "wait for indexed data", "assignee": "ops"},
+    ).json()["task"]
+    todo_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "wait for parent", "assignee": "ops"},
     ).json()["task"]
 
     conn = kb.connect()
@@ -127,16 +143,23 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
         with kb.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET status = 'scheduled' WHERE id = ?",
-                (task["id"],),
+                (scheduled_task["id"],),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'todo' WHERE id = ?",
+                (todo_task["id"],),
             )
     finally:
         conn.close()
 
     r = client.get("/api/plugins/kanban/board")
     assert r.status_code == 200
-    columns = {c["name"]: c["tasks"] for c in r.json()["columns"]}
-    assert any(t["id"] == task["id"] for t in columns["scheduled"])
-    assert not any(t["id"] == task["id"] for t in columns["todo"])
+    columns = {c["name"]: c for c in r.json()["columns"]}
+    assert "todo" not in columns
+    assert "scheduled" not in columns
+    waiting_ids = {t["id"] for t in columns["waiting"]["tasks"]}
+    assert {scheduled_task["id"], todo_task["id"]} <= waiting_ids
+    assert all(t["live_status"] == "waiting" for t in columns["waiting"]["tasks"])
 
 
 def test_tenant_filter(client):
@@ -331,9 +354,12 @@ def test_patch_schedule_then_unblock(client):
     assert r.json()["task"]["status"] == "scheduled"
 
     columns = client.get("/api/plugins/kanban/board").json()["columns"]
-    assert "scheduled" in [c["name"] for c in columns]
-    scheduled = next(c for c in columns if c["name"] == "scheduled")
-    assert any(x["id"] == t["id"] for x in scheduled["tasks"])
+    assert "scheduled" not in [c["name"] for c in columns]
+    waiting = next(c for c in columns if c["name"] == "waiting")
+    assert any(
+        x["id"] == t["id"] and x["status"] == "scheduled" and x["live_status"] == "waiting"
+        for x in waiting["tasks"]
+    )
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{t['id']}",
@@ -608,9 +634,11 @@ def test_create_triage_lands_in_triage_column(client):
     assert task["status"] == "triage"
 
     r = client.get("/api/plugins/kanban/board")
-    triage = next(c for c in r.json()["columns"] if c["name"] == "triage")
-    assert len(triage["tasks"]) == 1
-    assert triage["tasks"][0]["title"] == "rough idea, spec me"
+    dormant = next(c for c in r.json()["columns"] if c["name"] == "dormant")
+    assert len(dormant["tasks"]) == 1
+    assert dormant["tasks"][0]["title"] == "rough idea, spec me"
+    assert dormant["tasks"][0]["status"] == "triage"
+    assert dormant["tasks"][0]["live_status"] == "dormant"
 
 
 def test_triage_task_not_promoted_to_ready(client):
@@ -622,10 +650,10 @@ def test_triage_task_not_promoted_to_ready(client):
     # Run the dispatcher — it should NOT promote the triage task.
     client.post("/api/plugins/kanban/dispatch?dry_run=false&max=4")
     r = client.get("/api/plugins/kanban/board")
-    triage = next(c for c in r.json()["columns"] if c["name"] == "triage")
-    ready = next(c for c in r.json()["columns"] if c["name"] == "ready")
-    assert len(triage["tasks"]) == 1
-    assert len(ready["tasks"]) == 0
+    dormant = next(c for c in r.json()["columns"] if c["name"] == "dormant")
+    working = next(c for c in r.json()["columns"] if c["name"] == "working")
+    assert len(dormant["tasks"]) == 1
+    assert len(working["tasks"]) == 0
 
 
 def test_patch_status_triage_works(client):
@@ -902,10 +930,10 @@ def test_bulk_status_ready(client):
     assert r.status_code == 200
     results = r.json()["results"]
     assert all(r["ok"] for r in results)
-    # All three are now ready.
+    # All three are now in the canonical working column.
     board = client.get("/api/plugins/kanban/board").json()
-    ready = next(col for col in board["columns"] if col["name"] == "ready")
-    ids = {t["id"] for t in ready["tasks"]}
+    working = next(col for col in board["columns"] if col["name"] == "working")
+    ids = {t["id"] for t in working["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
 
 
@@ -2122,11 +2150,11 @@ def test_board_endpoint_accepts_explicit_board_default_param(client):
     r = client.get("/api/plugins/kanban/board?board=default")
     assert r.status_code == 200
     data = r.json()
-    ready = next((c for c in data["columns"] if c["name"] == "ready"), None)
-    assert ready is not None, "no 'ready' column in default board response"
-    task_ids = [task["id"] for task in ready["tasks"]]
+    working = next((c for c in data["columns"] if c["name"] == "working"), None)
+    assert working is not None, "no 'working' column in default board response"
+    task_ids = [task["id"] for task in working["tasks"]]
     assert t["id"] in task_ids, (
-        f"task {t['id']} not found in ready column of default board "
+        f"task {t['id']} not found in working column of default board "
         f"(got tasks: {task_ids}). The board=default param was likely ignored."
     )
 
@@ -2159,7 +2187,8 @@ def test_dashboard_bulk_actions_include_reclaim_first():
 
     assert "reclaim_first: reclaimFirst" in dist
     assert "hermes-kanban-bulk-reclaim-first" in dist
-    assert '"→ todo"' in dist
+    assert '"→ waiting"' in dist
+    assert '"→ working"' in dist
     assert '"Block"' in dist
     assert '"Unblock"' in dist
 

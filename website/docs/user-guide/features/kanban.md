@@ -59,7 +59,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), an internal workflow status (`triage | todo | scheduled | ready | running | blocked | review | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation). User-facing live status reports map those workflow aliases to `working | waiting | blocked | dormant`; `done` is completion history, not live availability.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -68,6 +68,46 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
+
+## Live status vocabulary
+
+Kanban keeps the legacy storage-level workflow states for DB and dispatcher compatibility, but new user-facing reports, dashboard labels, and coordinator/profile status lines should use this live vocabulary:
+
+| Live status | Meaning | Compatibility aliases |
+|---|---|---|
+| `working` | Active work is underway or immediately queued/spawnable. | `ready`, `queue`, `running`, `in_progress`, `review` |
+| `waiting` | A specific active task/duty/dependency exists, but progress is paused on a non-human/system condition. | `todo` with unfinished parents, `scheduled` |
+| `blocked` | A specific active task/duty/dependency is prevented until a human acts. | `blocked` only; do not use it for system waits or idle lanes |
+| `dormant` | No active actionable assignment exists. Human instruction is needed to resume, but no specific dependency is currently prevented. | unspecced `triage`, taskless profiles/projects |
+
+`done` remains valid as task completion history. It is not a live profile/project availability state; a profile with no active work is `dormant`, not `done`.
+
+### Self/Lineage status lines for profile communication
+
+Project-structured profiles that report status in Matrix or other chat surfaces should use two generic lines, not role-specific labels and not legacy `Blocker status` / `NOT BLOCKED` wording:
+
+```text
+Self status: WORKING|WAITING|BLOCKED|DORMANT — <specific status for this profile itself>
+Lineage status: WORKING|WAITING|BLOCKED|DORMANT — <aggregate status for structural descendants>
+```
+
+`Self status` is about the speaker profile's own active action, wait, human blocker, or dormant condition. `Lineage status` is about structurally supervised descendants; it is not the same graph as `task_links` dependencies. A profile with no descendants, or no descendants with active work, reports lineage as `DORMANT`.
+
+Use `scripts/render_status_lines.py` from a source checkout for deterministic copy-paste output instead of recomputing these lines from broad LLM context:
+
+```bash
+python scripts/render_status_lines.py \
+  --self working "updating Kanban status docs" \
+  --lineage-count running 1 \
+  --lineage-count blocked 1
+```
+
+Sample output:
+
+```text
+Self status: WORKING — updating Kanban status docs
+Lineage status: WORKING — working: 1; waiting: 0; blocked: 1; dormant: 0
+```
 
 ## Boards (multi-project)
 
@@ -608,6 +648,22 @@ dashboard:
 ```
 
 Each key is optional and falls back to the shown default.
+
+### Internal profile communication
+
+Kanban is the durable work queue, not a chat transport. Do not create Kanban contact tasks merely to ask, notify, ping, or refine with another profile. Use direct/internal channels for discussion, then write Kanban comments or follow-up tasks only for durable outcomes: decisions, dependencies, blockers, evidence, review handoffs, or concrete work.
+
+Deterministic options:
+
+```bash
+# Direct profile runner path; starts the named profile without creating a Kanban row.
+hermes -p <profile> chat -q '<question or instruction>' --toolsets safe
+
+# Structured internal message path when a validated private room/channel exists.
+printf '%s\n' '<structured note>' | hermes send --to <target> --file - --subject '[internal:<profile>]'
+```
+
+If a Matrix profile-room send is blocked, unvalidated, or unavailable, do not create a Kanban contact task as a workaround. Fall back to the direct profile runner path, or block only when a concrete human decision/action is required.
 
 ### Security model
 

@@ -25,6 +25,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    KANBAN_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -47,6 +48,12 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_kanban_guidance_uses_direct_internal_profile_communication(self):
+        assert "Talk directly, not through contact tasks" in KANBAN_GUIDANCE
+        assert "hermes -p <profile> chat -q" in KANBAN_GUIDANCE
+        assert "Do not create Kanban contact tasks merely" in KANBAN_GUIDANCE
+        assert "Use Kanban for durable work items" in KANBAN_GUIDANCE
 
 
 # =========================================================================

@@ -28,6 +28,27 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Live status aliases
+# ---------------------------------------------------------------------------
+
+
+def test_live_status_for_maps_internal_compatibility_aliases():
+    assert kb.LIVE_STATUSES == {"working", "waiting", "blocked", "dormant"}
+    assert kb.live_status_for("ready") == "working"
+    assert kb.live_status_for("queue") == "working"
+    assert kb.live_status_for("running") == "working"
+    assert kb.live_status_for("in_progress") == "working"
+    assert kb.live_status_for("review") == "working"
+    assert kb.live_status_for("todo") == "waiting"
+    assert kb.live_status_for("scheduled") == "waiting"
+    assert kb.live_status_for("blocked") == "blocked"
+    assert kb.live_status_for("triage") == "dormant"
+    # Completion/history states are not live availability states.
+    assert kb.live_status_for("done") == "done"
+    assert kb.live_status_for("archived") == "archived"
+
+
+# ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
 
@@ -1113,6 +1134,26 @@ def test_archive_hides_from_default_list(kanban_home):
         assert kb.archive_task(conn, t)
         assert len(kb.list_tasks(conn)) == 0
         assert len(kb.list_tasks(conn, include_archived=True)) == 1
+
+
+def test_blocked_comment_warning_points_to_direct_internal_comm_not_contact_tasks(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blocked", assignee="worker")
+        kb.block_task(conn, tid, reason="needs human input")
+
+        warning = kb.blocked_comment_action_warning(conn, tid, "please message the worker")
+        assert warning == kb.BLOCKED_COMMENT_ACTION_WARNING
+        assert "direct profile command" in warning
+        assert "structured internal message" in warning
+        assert "contact task" not in warning.lower()
+
+        kb.add_comment(conn, tid, "coordinator", "please message the worker")
+        events = kb.list_events(conn, tid)
+        payloads = [event.payload for event in events if event.kind == "blocked_comment_action_warning"]
+        assert payloads
+        last_payload = payloads[-1]
+        assert last_payload is not None
+        assert "contact task" not in last_payload["warning"].lower()
 
 
 def test_delete_archived_task_removes_related_rows(kanban_home):

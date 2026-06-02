@@ -1105,6 +1105,7 @@ AUTHOR_MAP = {
     "fiver@example.com": "halmisen",
     "mayq0422@gmail.com": "yuqianma",
     "yuqian@zmetasoft.com": "yuqianma",
+    "hermes-agent@local": "yunuenmf",  # downstream PR #6 attribution salvage
     "scott@bubble.local": "bassings",
     "highland0971@users.noreply.github.com": "highland0971",
     "sudolewis@gmail.com": "lewislulu",

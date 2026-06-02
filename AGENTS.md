@@ -91,6 +91,17 @@ Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packag
 - `src/store` owns shared atoms.
 - `src/lib` owns shared pure helpers.
 
+## Internal Profile Communication
+
+Use direct/internal messaging for profile-to-profile discussion. Kanban is the durable work queue, not a chat transport: do not create contact tasks merely to ask, notify, ping, or refine with another profile. After a direct discussion, record only durable outcomes, dependencies, blockers, evidence, or follow-up work on the board.
+
+Deterministic toolbox:
+
+- Direct profile command / runner path: `hermes -p <profile> chat -q '<question or instruction>' --toolsets safe`. This starts the named profile directly and does not create a Kanban row. Add `--skills <skill>` when the profile needs a specific policy pack.
+- Structured internal message path: use `send_message(target='<platform-or-profile-room>', message='<structured note>')` from an agent, or `printf '%s\n' '<structured note>' | hermes send --to <target> --file - --subject '[internal:<profile>]'` from shell scripts when a private profile room/channel exists.
+- Escalation: contact the human from Matrix (or another human-facing channel) only when the decision/action genuinely requires Yunuen; otherwise keep profile discussion internal. If a Matrix profile-room send is blocked or unvalidated, do not create a Kanban contact task as a workaround — fall back to the direct profile runner path, or block only when human action is truly required.
+- Kanban remains for durable work items, parent/child dependencies, blockers, evidence, review handoffs, and post-discussion outcomes.
+
 ## File Dependency Chain
 
 ```

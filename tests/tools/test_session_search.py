@@ -58,6 +58,23 @@ def _seed_modpack_sessions(db):
     db._conn.commit()
 
 
+def _seed_lineage_sessions(db):
+    """Create a parent/current child lineage with stable anchor ids."""
+    db.create_session("s_parent", source="cli")
+    parent_msg_ids = [
+        db.append_message("s_parent", role="user", content="parent kickoff lineage-token"),
+        db.append_message("s_parent", role="assistant", content="parent answer lineage-token"),
+    ]
+
+    db.create_session("s_child", source="cli", parent_session_id="s_parent")
+    child_msg_ids = [
+        db.append_message("s_child", role="user", content="child compacted question lineage-token"),
+        db.append_message("s_child", role="assistant", content="child compacted answer lineage-token"),
+    ]
+    db._conn.commit()
+    return parent_msg_ids, child_msg_ids
+
+
 # =========================================================================
 # Schema invariants
 # =========================================================================
@@ -92,6 +109,8 @@ class TestSchema:
         assert "BROWSE" in desc
         # Must explain how to scroll
         assert "scroll FORWARD" in desc or "messages[-1]" in desc
+        assert "current session lineage" in desc
+        assert "compaction" in desc
 
     def test_no_llm_promise_in_description(self):
         # The new design never calls an LLM
@@ -326,19 +345,48 @@ class TestScrollShape:
         ))
         assert result["success"] is False
 
-    def test_scroll_rejects_current_session_lineage(self, db):
-        _seed_modpack_sessions(db)
-        # Grab some valid id from s_oldest
-        disc = json.loads(session_search(query="modpack", limit=3, db=db))
-        match = [r for r in disc["results"] if r["session_id"] == "s_oldest"]
-        if match:
-            mid = match[0]["match_message_id"]
-            result = json.loads(session_search(
-                session_id="s_oldest", around_message_id=mid, db=db,
-                current_session_id="s_oldest",
-            ))
-            assert result["success"] is False
-            assert "current session" in result.get("error", "").lower()
+    def test_scroll_allows_explicit_current_lineage_anchor_after_compaction(self, db):
+        parent_msg_ids, _child_msg_ids = _seed_lineage_sessions(db)
+
+        result = json.loads(session_search(
+            session_id="s_parent",
+            around_message_id=parent_msg_ids[1],
+            db=db,
+            current_session_id="s_child",
+        ))
+
+        assert result["success"] is True
+        assert result["mode"] == "scroll"
+        assert [m["id"] for m in result["messages"]] == parent_msg_ids
+        assert "current session lineage" in result.get("warning", "")
+
+    def test_discovery_still_excludes_current_lineage_by_default(self, db):
+        _seed_lineage_sessions(db)
+
+        result = json.loads(session_search(
+            query="lineage-token",
+            db=db,
+            current_session_id="s_child",
+        ))
+
+        assert result["success"] is True
+        assert result["mode"] == "discover"
+        assert result["results"] == []
+
+    def test_scroll_preserves_child_lineage_rebind(self, db):
+        _parent_msg_ids, child_msg_ids = _seed_lineage_sessions(db)
+
+        result = json.loads(session_search(
+            session_id="s_parent",
+            around_message_id=child_msg_ids[0],
+            window=1,
+            db=db,
+        ))
+
+        assert result["success"] is True
+        assert result["session_id"] == "s_child"
+        assert child_msg_ids[0] in [m["id"] for m in result["messages"]]
+        assert "rebound transparently" in result.get("warning", "")
 
     def test_scroll_invalid_around_message_id_errors(self, db):
         _seed_modpack_sessions(db)

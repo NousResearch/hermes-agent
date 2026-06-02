@@ -268,6 +268,58 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
+def _emit_post_compression_pressure_advisory(
+    agent: Any,
+    *,
+    pre_tokens: Optional[int],
+    pre_message_count: int,
+    post_tokens: int,
+    post_message_count: int,
+) -> None:
+    """Warn immediately when a completed compaction did not relieve pressure.
+
+    This is intentionally a deterministic post-compression hook: it evaluates
+    the before/after shape of the compaction that just ran, emits through the
+    existing status/gateway warning plumbing, and performs no LLM calls or
+    scheduler/Kanban side effects.
+    """
+    raw_threshold = (
+        getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0)
+        or 0
+    )
+    if not isinstance(raw_threshold, (int, float)):
+        return
+    threshold = int(raw_threshold)
+    if threshold <= 0 or post_tokens < threshold:
+        return
+
+    token_delta = (
+        f"{pre_tokens:,}→{post_tokens:,}"
+        if pre_tokens is not None and pre_tokens > 0
+        else f"unknown→{post_tokens:,}"
+    )
+    message_delta = f"{pre_message_count:,}→{post_message_count:,} messages"
+    msg = (
+        "⚠ Compression pressure remains high after compaction: "
+        f"rough tokens {token_delta} (threshold {threshold:,}); "
+        f"messages {message_delta}. This post-compression hook only reports "
+        "the just-finished compaction result; it does not call an LLM, run a "
+        "scheduler, or create Kanban blockers. Consider /compress <focus> or "
+        "/new if the session keeps compacting."
+    )
+
+    # Deduplicate exact repeats from retry/fork edge cases while still warning
+    # for later compactions whose measured before/after shape changes.
+    key = (pre_tokens, pre_message_count, post_tokens, post_message_count, threshold)
+    if getattr(agent, "_last_post_compression_pressure_warning_key", None) == key:
+        return
+    agent._last_post_compression_pressure_warning_key = key
+    try:
+        agent._emit_warning(msg)
+    except Exception:
+        logger.debug("post-compression pressure advisory failed", exc_info=True)
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -590,6 +642,13 @@ def compress_context(
     agent.context_compressor.last_prompt_tokens = -1
     agent.context_compressor.last_completion_tokens = 0
     agent.context_compressor.awaiting_real_usage_after_compression = True
+    _emit_post_compression_pressure_advisory(
+        agent,
+        pre_tokens=approx_tokens,
+        pre_message_count=_pre_msg_count,
+        post_tokens=_compressed_est,
+        post_message_count=len(compressed),
+    )
 
     # Clear the file-read dedup cache.  After compression the original
     # read content is summarised away — if the model re-reads the same

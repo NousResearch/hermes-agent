@@ -130,17 +130,24 @@ def _conn(board: Optional[str] = None):
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
-# Columns shown by the dashboard, in left-to-right order. "archived" is
-# available via a filter toggle rather than a visible column.
-#
-# Keep this in sync with kanban_db.VALID_STATUSES.  In particular,
-# ``scheduled`` is a first-class waiting column used for time-based follow-ups;
-# if it is omitted here, the board-level fallback below mis-buckets scheduled
-# tasks into ``todo`` and makes the dashboard look like the Scheduled column
-# disappeared.
-BOARD_COLUMNS: list[str] = [
-    "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done",
-]
+# Columns shown by the dashboard, in left-to-right order.  These are the
+# canonical human-facing live statuses, not storage-level workflow aliases.
+# ``done`` remains visible as completion history; ``archived`` is available via
+# a filter toggle rather than a visible live-status column.
+BOARD_COLUMNS: list[str] = ["working", "waiting", "blocked", "dormant", "done"]
+
+# Moving a card into a canonical live-status column still writes a storage-level
+# workflow status for DB/dispatcher compatibility.  The aliases stay internal;
+# the dashboard groups by live_status so users do not see separate todo vs
+# scheduled or ready vs running lanes as primary semantics.
+COLUMN_TARGET_STATUS: dict[str, str] = {
+    "working": "ready",
+    "waiting": "todo",
+    "blocked": "blocked",
+    "dormant": "triage",
+    "done": "done",
+    "archived": "archived",
+}
 
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
@@ -163,6 +170,7 @@ def _task_dict(
     # ``task_runs.summary`` (the kanban-worker pattern) instead of
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
+    d["live_status"] = kanban_db.live_status_for(task.status)
     # Keep body short on list endpoints; full body comes from /tasks/:id.
     return d
 
@@ -466,7 +474,11 @@ def get_board(
                 # needs the summary.
                 d["diagnostics"] = diags
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
-            col = t.status if t.status in columns else "todo"
+            col = d.get("live_status")
+            if t.status in {"done", "archived"}:
+                col = t.status
+            if col not in columns:
+                col = "waiting"
             columns[col].append(d)
 
         # Stable per-column ordering already applied by list_tasks
@@ -490,7 +502,13 @@ def get_board(
 
         return {
             "columns": [
-                {"name": name, "tasks": columns[name]} for name in columns.keys()
+                {
+                    "name": name,
+                    "live_status": name if name in kanban_db.LIVE_STATUSES else kanban_db.live_status_for(name),
+                    "target_status": COLUMN_TARGET_STATUS.get(name, name),
+                    "tasks": columns[name],
+                }
+                for name in columns.keys()
             ],
             "tenants": tenants,
             "assignees": assignees,

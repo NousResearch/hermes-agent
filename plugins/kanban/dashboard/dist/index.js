@@ -86,28 +86,44 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  // Order matches BOARD_COLUMNS in plugin_api.py. Columns are canonical
+  // human-facing live statuses; storage workflow aliases stay internal.
+  const COLUMN_ORDER = ["working", "waiting", "blocked", "dormant", "done"];
+  const COLUMN_TARGET_STATUS = {
+    working: "ready",
+    waiting: "todo",
+    blocked: "blocked",
+    dormant: "triage",
+    done: "done",
+    archived: "archived",
+  };
+  function targetStatusForColumn(status) {
+    return COLUMN_TARGET_STATUS[status] || status;
+  }
+  function liveStatusForAlias(status) {
+    if (status === "ready" || status === "queue" || status === "running" || status === "in_progress" || status === "review") return "working";
+    if (status === "todo" || status === "scheduled") return "waiting";
+    if (status === "triage") return "dormant";
+    return status;
+  }
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
-    triage: "Triage",
-    todo: "Todo",
-    ready: "Ready",
-    running: "In Progress",
+    working: "Working",
+    waiting: "Waiting",
     blocked: "Blocked",
-    done: "Done",
+    dormant: "Dormant",
+    done: "Done (history)",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
-    triage: "Raw ideas — a specifier will flesh out the spec",
-    todo: "Waiting on dependencies or unassigned",
-    ready: "Dependencies satisfied; assign a profile to dispatch",
-    running: "Claimed by a worker — in-flight",
-    blocked: "Worker asked for human input",
-    done: "Completed",
-    archived: "Archived",
+    working: "Working: active work is underway or immediately queued/spawnable",
+    waiting: "Waiting: a specific active task/duty/dependency is waiting on non-human/system action",
+    blocked: "Blocked: requires human intervention; non-human pauses should be waiting",
+    dormant: "Dormant: no active actionable assignment exists",
+    done: "Done is completion history, not live availability",
+    archived: "Hidden from normal board views",
   };
   const FALLBACK_DESTRUCTIVE = {
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
@@ -152,11 +168,10 @@
   }
 
   const COLUMN_DOT = {
-    triage: "hermes-kanban-dot-triage",
-    todo: "hermes-kanban-dot-todo",
-    ready: "hermes-kanban-dot-ready",
-    running: "hermes-kanban-dot-running",
+    working: "hermes-kanban-dot-ready",
+    waiting: "hermes-kanban-dot-todo",
     blocked: "hermes-kanban-dot-blocked",
+    dormant: "hermes-kanban-dot-triage",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
@@ -666,14 +681,15 @@
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const patch = withCompletionSummary({ status: newStatus }, 1, t);
+      const targetStatus = targetStatusForColumn(newStatus);
+      const patch = withCompletionSummary({ status: targetStatus }, 1, t);
       if (!patch) return;
       setBoardData(function (b) {
         if (!b) return b;
         let moved = null;
         const columns = b.columns.map(function (col) {
           const next = col.tasks.filter(function (t) {
-            if (t.id === taskId) { moved = Object.assign({}, t, { status: newStatus }); return false; }
+            if (t.id === taskId) { moved = Object.assign({}, t, { status: targetStatus, live_status: liveStatusForAlias(targetStatus) }); return false; }
             return true;
           });
           return Object.assign({}, col, { tasks: next });
@@ -700,10 +716,11 @@
       setFailedIds(new Set());
     }, []);
     const moveSelected = useCallback(function (newStatus) {
-      const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
+      const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       if (selectedIds.size === 0) return;
-      const patch = withCompletionSummary({ status: newStatus }, selectedIds.size);
+      const targetStatus = targetStatusForColumn(newStatus);
+      const patch = withCompletionSummary({ status: targetStatus }, selectedIds.size);
       if (!patch) return;
       const ids = Array.from(selectedIds);
       // Optimistic UI: remove selected from all columns and prepend to target.
@@ -713,7 +730,7 @@
         const columns = b.columns.map(function (col) {
           const kept = [];
           for (const t of col.tasks) {
-            if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: newStatus }));
+            if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: targetStatus, live_status: liveStatusForAlias(targetStatus) }));
             else kept.push(t);
           }
           return Object.assign({}, col, { tasks: kept });
@@ -840,7 +857,11 @@
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
+      const requestedColumnStatus = patch && patch.status;
+      const normalizedPatch = requestedColumnStatus
+        ? Object.assign({}, patch, { status: targetStatusForColumn(requestedColumnStatus) })
+        : patch;
+      const finalPatch = withCompletionSummary(normalizedPatch, selectedIds.size, t);
       if (!finalPatch) return;
       const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
       // Optimistic UI for status moves (same pattern as moveSelected).
@@ -851,12 +872,12 @@
           const columns = b.columns.map(function (col) {
             const kept = [];
             for (const t of col.tasks) {
-              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status }));
+              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status, live_status: liveStatusForAlias(finalPatch.status) }));
               else kept.push(t);
             }
             return Object.assign({}, col, { tasks: kept });
           });
-          const dest = columns.find(function (c) { return c.name === finalPatch.status; });
+          const dest = columns.find(function (c) { return c.name === (requestedColumnStatus || liveStatusForAlias(finalPatch.status)); });
           if (dest) dest.tasks = moved.concat(dest.tasks);
           return Object.assign({}, b, { columns });
         });
@@ -2047,15 +2068,15 @@
       h("span", { className: "hermes-kanban-bulk-count" },
         `${props.count} ${tx(t, "selected", "selected")}`),
       h(Button, {
-        onClick: function () { props.onApply({ status: "todo" }); },
+        onClick: function () { props.onApply({ status: "waiting" }); },
         size: "sm",
-        title: "Move selected tasks to Todo.",
-      }, "→ todo"),
+        title: "Move selected tasks to Waiting (stored as todo for dispatcher compatibility).",
+      }, "→ waiting"),
       h(Button, {
-        onClick: function () { props.onApply({ status: "ready" }); },
+        onClick: function () { props.onApply({ status: "working" }); },
         size: "sm",
-        title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
-      }, "→ ready"),
+        title: "Move selected tasks to Working (stored as ready so the dispatcher can pick them up).",
+      }, "→ working"),
       h(Button, {
         onClick: function () { props.onApply({ status: "blocked" },
           `Block ${props.count} task(s)?`); },
@@ -2063,10 +2084,10 @@
         title: "Block selected tasks. Releases any active claims.",
       }, "Block"),
       h(Button, {
-        onClick: function () { props.onApply({ status: "ready" },
+        onClick: function () { props.onApply({ status: "working" },
           `Unblock ${props.count} task(s)?`); },
         size: "sm",
-        title: "Unblock selected tasks (promote to Ready).",
+        title: "Unblock selected tasks (promote to Working; stored as ready).",
       }, "Unblock"),
       h(Button, {
         onClick: function () {
@@ -2298,7 +2319,7 @@
     };
 
     const lanes = useMemo(function () {
-      if (!props.laneByProfile || props.column.name !== "running") return null;
+      if (!props.laneByProfile || props.column.name !== "working") return null;
       const byProfile = {};
       for (const tk of props.column.tasks) {
         const key = tk.assignee || "(unassigned)";
@@ -2416,7 +2437,7 @@
     const age = task.status === "running"
       ? task.age.started_age_seconds
       : task.age.created_age_seconds;
-    const tier = STALENESS[task.status];
+    const tier = STALENESS[task.live_status || liveStatusForAlias(task.status)];
     if (!tier || age == null) return "";
     if (age >= tier.red)   return "hermes-kanban-card--stale-red";
     if (age >= tier.amber) return "hermes-kanban-card--stale-amber";
@@ -2491,7 +2512,7 @@
       draggable: true,
       tabIndex: 0,
       role: "button",
-      "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
+      "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.live_status || liveStatusForAlias(t.status)}`,
       onDragStart: handleDragStart,
       onClick: handleClick,
       onKeyDown: handleKeyDown,
@@ -3187,7 +3208,7 @@
             }, t.title || tx(i18n, "untitled", "(untitled)")),
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
-        h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+        h(MetaRow, { label: tx(i18n, "status", "Status"), value: `${(t.live_status || t.status)}${t.live_status && t.live_status !== t.status ? " (alias: " + t.status + ")" : ""}` }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,

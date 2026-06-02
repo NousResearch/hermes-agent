@@ -33,11 +33,10 @@ from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_p
 # ---------------------------------------------------------------------------
 
 _STATUS_ICONS = {
-    "todo":     "◻",
-    "ready":    "▶",
-    "running":  "●",
-    "scheduled":"⏱",
+    "working":  "●",
+    "waiting":  "⏱",
     "blocked":  "⊘",
+    "dormant":  "◌",
     "done":     "✓",
     "archived": "—",
 }
@@ -50,10 +49,12 @@ def _fmt_ts(ts: Optional[int]) -> str:
 
 
 def _fmt_task_line(t: kb.Task) -> str:
-    icon = _STATUS_ICONS.get(t.status, "?")
+    live_status = kb.live_status_for(t.status)
+    icon = _STATUS_ICONS.get(live_status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    alias = "" if live_status == t.status else f" ({t.status})"
+    return f"{icon} {t.id}  {live_status:8s}{alias:12s}  {assignee:20s}{tenant}  {t.title}"
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -63,6 +64,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "body": t.body,
         "assignee": t.assignee,
         "status": t.status,
+        "live_status": kb.live_status_for(t.status),
         "priority": t.priority,
         "tenant": t.tenant,
         "workspace_kind": t.workspace_kind,

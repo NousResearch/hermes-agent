@@ -180,15 +180,19 @@ def _scroll(
             window = 5
     window = max(1, min(window, 20))
 
-    # Reject scrolling inside the active session lineage — those messages are
-    # already in context.
+    # Explicit scroll is an anchor-retrieval request, so allow current-lineage
+    # reads. This is useful after context compaction: the persisted source row
+    # may no longer be literally present in active context even though it shares
+    # lineage with the current session. Discovery/browse still filter current
+    # lineage by default to avoid noisy self-hits.
+    current_lineage_warning = None
     if current_session_id:
         a_root = _resolve_to_parent(db, session_id)
         c_root = _resolve_to_parent(db, current_session_id)
         if a_root and c_root and a_root == c_root:
-            return tool_error(
-                "scroll rejected: anchor lives in the current session lineage (already in your active context)",
-                success=False,
+            current_lineage_warning = (
+                "explicit scroll returned current session lineage data; "
+                "useful for compaction recovery, but it may duplicate active context"
             )
 
     # Session existence check
@@ -269,8 +273,9 @@ def _scroll(
         "messages_before": view.get("messages_before", 0),
         "messages_after": view.get("messages_after", 0),
     }
-    if rebind_warning:
-        response["warning"] = rebind_warning
+    warnings = [w for w in (current_lineage_warning, rebind_warning) if w]
+    if warnings:
+        response["warning"] = "; ".join(warnings)
     return json.dumps(response, ensure_ascii=False)
 
 
@@ -490,7 +495,10 @@ SESSION_SEARCH_SCHEMA = {
         "       - To scroll BACKWARD: pass messages[0].id back as around_message_id.\n"
         "       - The boundary message appears in both windows — orientation marker.\n"
         "       - When messages_before or messages_after is < window, you're at the "
-        "start or end of the session.\n\n"
+        "start or end of the session.\n"
+        "       - Explicit scroll may return persisted rows from the current session lineage. "
+        "This is intentional for compaction recovery, where source messages may no longer "
+        "be in active context; the response includes a warning when this happens.\n\n"
         "  3) BROWSE — no args:\n"
         "     session_search()\n"
         "     Returns recent sessions chronologically: titles, previews, timestamps. "

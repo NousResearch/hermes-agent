@@ -49,6 +49,25 @@ The bundled plugin registers the `wave_role_board` toolset with these tools:
   - Runs `$HERMES_HOME/wave-hub/restore_wave.sh` if it exists.
   - Safe no-op when all viewers are already running.
   - Returns a missing-script reason when no local restore script exists.
+- `wave_set_mode(mode, project=None)`
+  - Sets `chat`, `council`, `project`, or `scratch` mode.
+  - `project` mode uses an explicit project alias/path or the active project.
+- `wave_route_request(text, project=None, emit_notes=false)`
+  - Classifies a request into `chat`, `council`, `project`, or `scratch`.
+  - Optionally emits short T2 role notes for lightweight modes.
+- `wave_council_note(topic, coda, clara, mira, nova, project=None)`
+  - Records council-mode role opinions in T2 after real or synthesized consultation.
+
+Runtime commands for Sangkun's local Wave hub:
+
+```bash
+~/.hermes/wave-hub/wavehub.py mode current
+~/.hermes/wave-hub/wavehub.py mode set chat|council|project|scratch [--project alias-or-path]
+~/.hermes/wave-hub/wavehub.py mode route [--emit-notes] 'user request text'
+~/.hermes/wave-hub/wavehub.py council --topic 'decision' --coda '...' --clara '...' --mira '...' --nova '...'
+```
+
+The plugin also registers `pre_llm_call` to inject the detected mode policy into each turn without changing the system prompt cache. In `chat`/`scratch` mode it may emit short T2 role notes automatically; it does not auto-spawn four subagents.
 
 Enable in config:
 

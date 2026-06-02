@@ -37,6 +37,7 @@ from typing import Dict, List, Sequence, Tuple
 #       - name: description
 #   </available_skills>
 
+
 def toon_table(
     rows: Sequence[Tuple[str, ...]],
     fields: Sequence[str],
@@ -91,6 +92,7 @@ def toon_table(
 #   §
 #   Content line two...
 
+
 def toon_records(
     entries: Sequence[str],
     name: str = "entries",
@@ -116,7 +118,9 @@ def toon_records(
 
     # Header with optional usage stats
     if usage_max > 0:
-        header = f"{name}[{len(entries)}]{bullet} [{usage_pct}% {usage_cur}/{usage_max}]"
+        header = (
+            f"{name}[{len(entries)}]{bullet} [{usage_pct}% {usage_cur}/{usage_max}]"
+        )
     else:
         header = f"{name}[{len(entries)}]{bullet}"
 
@@ -143,6 +147,7 @@ def toon_records(
 #   User home directory: /Users/macbook
 #   Current working directory: /Users/macbook/.hermes/hermes-agent
 
+
 def toon_kv(
     pairs: Sequence[Tuple[str, str]],
     name: str = "kv",
@@ -168,6 +173,7 @@ def toon_kv(
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
+
 
 def _escape_csv(s: str) -> str:
     """Escape a value for CSV-style output. Quote if it contains comma or newline."""
@@ -199,6 +205,7 @@ def _truncate_desc(s: str, max_len: int) -> str:
 # ── Format a skill index block ──────────────────────────────────────────
 # Takes the same data structure used by build_skills_system_prompt()
 # and produces a compact TOON representation.
+
 
 def format_skills_index_toon(
     skills_by_category: Dict[str, List[Tuple[str, str]]],
@@ -240,6 +247,7 @@ def format_skills_index_toon(
 
 # ── Format a memory/user block ──────────────────────────────────────────
 
+
 def format_memory_block_toon(
     entries: List[str],
     target: str,  # "memory" or "user"
@@ -273,7 +281,9 @@ def format_memory_block_toon(
         subtitle = "(your personal notes)"
 
     if usage_max > 0:
-        header = f"{label} {subtitle} [{usage_pct}% — {usage_cur:,}/{usage_max:,} chars]"
+        header = (
+            f"{label} {subtitle} [{usage_pct}% — {usage_cur:,}/{usage_max:,} chars]"
+        )
     else:
         header = f"{label} {subtitle}"
 

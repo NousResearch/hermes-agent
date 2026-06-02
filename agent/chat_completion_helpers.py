@@ -995,6 +995,9 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 if hasattr(extra, "model_dump"):
                     extra = extra.model_dump()
                 tc_dict["extra_content"] = extra
+            sig = getattr(tool_call, "thought_signature", None)
+            if isinstance(sig, str) and sig:
+                tc_dict["thought_signature"] = sig
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
 
@@ -1851,6 +1854,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "type": "function",
                             "function": {"name": "", "arguments": ""},
                             "extra_content": None,
+                            "thought_signature": None,
                         }
                     entry = tool_calls_acc[idx]
                     if tc_delta.id:
@@ -1875,6 +1879,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         if hasattr(extra, "model_dump"):
                             extra = extra.model_dump()
                         entry["extra_content"] = extra
+                    sig = getattr(tc_delta, "thought_signature", None)
+                    if sig is None and hasattr(tc_delta, "model_extra"):
+                        sig = (tc_delta.model_extra or {}).get("thought_signature")
+                    if isinstance(sig, str) and sig:
+                        entry["thought_signature"] = sig
                     # Fire once per tool when the full name is available
                     name = entry["function"]["name"]
                     if name and idx not in tool_gen_notified:
@@ -1929,6 +1938,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     id=tc["id"],
                     type=tc["type"],
                     extra_content=tc.get("extra_content"),
+                    thought_signature=tc.get("thought_signature"),
                     function=SimpleNamespace(
                         name=tc["function"]["name"],
                         arguments=arguments,

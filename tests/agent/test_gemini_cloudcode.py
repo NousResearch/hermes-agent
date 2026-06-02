@@ -610,7 +610,7 @@ class TestBuildGeminiRequest:
         fc_part = next(p for p in model_turn["parts"] if "functionCall" in p)
         assert fc_part["functionCall"]["name"] == "get_weather"
         assert fc_part["functionCall"]["args"] == {"city": "SF"}
-        assert "thoughtSignature" not in fc_part
+        assert fc_part["thoughtSignature"] == "skip_thought_signature_validator"
 
     def test_tool_call_translation_preserves_thought_signature(self):
         from agent.gemini_cloudcode_adapter import build_gemini_request

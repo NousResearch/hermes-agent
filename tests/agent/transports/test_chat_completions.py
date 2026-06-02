@@ -2,6 +2,7 @@
 
 import pytest
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
@@ -11,6 +12,53 @@ from agent.transports.types import NormalizedResponse
 def transport():
     import agent.transports.chat_completions  # noqa: F401
     return get_transport("chat_completions")
+
+
+@pytest.fixture
+def streaming_agent():
+    from run_agent import AIAgent
+
+    tool_defs = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal",
+                "description": "terminal tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    with (
+        patch("run_agent.get_tool_definitions", return_value=tool_defs),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.client = MagicMock()
+        return agent
+
+
+def _make_stream_chunk(content=None, tool_calls=None, finish_reason=None):
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(model="test/model", choices=[choice])
+
+
+def _make_stream_tc_delta(index=0, tc_id=None, name=None, arguments=None,
+                          thought_signature=None):
+    func = SimpleNamespace(name=name, arguments=arguments)
+    return SimpleNamespace(
+        index=index,
+        id=tc_id,
+        function=func,
+        thought_signature=thought_signature,
+    )
 
 
 class TestChatCompletionsBasic:
@@ -914,6 +962,31 @@ class TestChatCompletionsNormalize:
         )
         nr = transport.normalize_response(r)
         assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
+
+
+class TestChatCompletionsStreamingAccumulator:
+
+    def test_tool_call_direct_thought_signature_preserved(self, streaming_agent):
+        chunks = [
+            _make_stream_chunk(
+                tool_calls=[
+                    _make_stream_tc_delta(
+                        0,
+                        "call_1",
+                        "terminal",
+                        '{"command":"ls"}',
+                        thought_signature="SIG_STREAM",
+                    )
+                ]
+            ),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        streaming_agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = streaming_agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert tc[0].thought_signature == "SIG_STREAM"
 
 
 class TestChatCompletionsCacheStats:

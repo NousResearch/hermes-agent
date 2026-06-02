@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -239,6 +240,78 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert choice.message.reasoning == "thinking..."
     assert choice.message.tool_calls[0].function.name == "search"
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
+
+
+def test_native_thought_signature_round_trips_through_extra_content_carrier():
+    from agent.chat_completion_helpers import build_assistant_message
+    from agent.gemini_native_adapter import (
+        build_gemini_request,
+        translate_gemini_response,
+    )
+    from run_agent import AIAgent
+
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "search",
+                                "args": {"q": "hermes"},
+                            },
+                            "thoughtSignature": "SIG_NATIVE",
+                        }
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 15,
+        },
+    }
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    message = response.choices[0].message
+    tool_call = message.tool_calls[0]
+    assert tool_call.extra_content == {
+        "google": {"thought_signature": "SIG_NATIVE"}
+    }
+    assert not hasattr(tool_call, "thought_signature")
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.client = MagicMock()
+
+    persisted = build_assistant_message(agent, message, "tool_calls")
+    persisted_tool_call = persisted["tool_calls"][0]
+    assert persisted_tool_call["extra_content"] == {
+        "google": {"thought_signature": "SIG_NATIVE"}
+    }
+    assert "thought_signature" not in persisted_tool_call
+
+    request = build_gemini_request(
+        messages=[persisted],
+        tools=[],
+        tool_choice=None,
+    )
+    part = request["contents"][0]["parts"][0]
+    assert part["functionCall"]["name"] == "search"
+    assert part["functionCall"]["args"] == {"q": "hermes"}
+    assert part["thoughtSignature"] == "SIG_NATIVE"
 
 
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):

@@ -115,8 +115,7 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     thought_signature = _tool_call_thought_signature(tool_call)
-    if thought_signature:
-        part["thoughtSignature"] = thought_signature
+    part["thoughtSignature"] = thought_signature or "skip_thought_signature_validator"
     return part
 
 

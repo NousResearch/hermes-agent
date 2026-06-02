@@ -1169,9 +1169,9 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Audio (delivered as voice/audio where supported)
     ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".markdown", ".epub",
     # Spreadsheets / data
-    ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+    ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".toml",
     # Presentations
     ".pptx", ".ppt", ".odp", ".key",
     # Archives
@@ -1179,14 +1179,30 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Web / rendered output
     ".html", ".htm",
 )
+# NOTE: source-file extensions (.py / .js / .sh) are intentionally NOT in this
+# tuple. The reporter of #37318 asked for them, but the bare-path detector in
+# ``extract_local_files`` shares this same tuple, and auto-shipping arbitrary
+# source files based on a stray ``/tmp/script.py`` mention in agent output
+# would be a surprise (see ``test_no_media_extensions`` for the contract).
+# Users who want source files delivered can still use the broader file_tool /
+# send_message MEDIA: flow with a glob, but the auto-detector stays narrow.
 
 # Regex alternation fragment of bare extensions (no leading dot), e.g.
 # ``png|jpe?g|...``. ``jpe?g`` collapses jpg/jpeg into one branch. Sorted
 # longest-first so the alternation never matches a shorter ext as a prefix of
 # a longer one (e.g. ``.tar`` before ``.tar.gz`` components).
-_MEDIA_EXT_ALTERNATION = "|".join(
+#
+# Exported (without the leading underscore) so other dispatch sites — notably
+# ``gateway/run.py``'s ``_TOOL_MEDIA_RE`` for auto-append + history dedup —
+# can build their regex off the same source-of-truth alternation. Keeping the
+# alias means historical callers that imported ``_MEDIA_EXT_ALTERNATION``
+# continue to work. Issue #37318 was a direct consequence of run.py hand-
+# rolling its own extension whitelist that quietly drifted behind this one
+# (``.md``, ``.json``, ``.yaml``, ``.html``, ``.svg`` etc. silently dropped).
+MEDIA_EXT_ALTERNATION = "|".join(
     sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True)
 )
+_MEDIA_EXT_ALTERNATION = MEDIA_EXT_ALTERNATION  # backwards-compat alias
 
 # Anchored ``MEDIA:<path>`` cleanup pattern. Unlike the old loose
 # ``MEDIA:\\s*\\S+``, this only strips a tag whose path ends in a known

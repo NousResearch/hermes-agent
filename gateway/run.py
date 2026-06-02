@@ -680,11 +680,21 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool"}
 # pattern so a bare ``MEDIA:`` token in prose (no deliverable extension) is never
 # auto-appended. Kept local to the auto-append path; the producer-tool allowlist
 # below is the primary guard, this is the secondary precision guard.
+#
+# The extension alternation is sourced from ``MEDIA_EXT_ALTERNATION`` in
+# ``gateway/platforms/base.py`` — the same source of truth that drives
+# ``MEDIA_TAG_CLEANUP_RE`` and ``extract_media``. Issue #37318 was a
+# silent-drop bug caused by this regex hand-rolling its own narrower
+# whitelist (``.md`` / ``.json`` / ``.yaml`` / ``.html`` / ``.svg`` were
+# missing); building from the shared alternation prevents that class of
+# drift entirely. Imported here (rather than via the consolidated import
+# block ~450 lines below) because ``_TOOL_MEDIA_RE`` is built at module
+# import time and needs the alternation before any from-block runs.
+from gateway.platforms.base import (
+    MEDIA_EXT_ALTERNATION as _MEDIA_EXT_ALTERNATION,
+)
 _TOOL_MEDIA_RE = re.compile(
-    r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-    r'txt|csv|apk|ipa))',
+    r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:' + _MEDIA_EXT_ALTERNATION + r'))',
     re.IGNORECASE,
 )
 
@@ -17763,13 +17773,10 @@ class GatewayRunner:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
+                        # Reuse the module-level pattern — see #37318 for why
+                        # this used to be a local copy and why it must not be
+                        # one again (the local re-declaration silently drifted
+                        # behind the shared extension list).
                         for _match in _TOOL_MEDIA_RE.finditer(_hc):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:

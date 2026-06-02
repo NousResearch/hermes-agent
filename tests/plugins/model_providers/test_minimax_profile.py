@@ -42,13 +42,14 @@ def minimax_profile(request):
 class TestMinimaxAuxModelM3:
     """MiniMax profile aux model is the new frontier M3, not the stale M2.7.
 
-    The catalog top entry is ``MiniMax-M3`` (hermes_cli/models.py:298) and
-    the user-facing ``model.default`` for a Token-Plan install is M3, so
-    pinning the aux default to the same model keeps the runtime consistent
-    (same auth, same billing pool, same rate limits, no surprise 2x-cost
-    highspeed variant). M3 was released 2026-06-01 — picking it as the
-    aux default matches the forward-looking catalog order rather than the
-    pre-M3 era.
+    The catalog top entry is ``MiniMax-M3`` in
+    ``hermes_cli.models._PROVIDER_MODELS['minimax']`` and the
+    user-facing ``model.default`` for a Token-Plan install is M3,
+    so pinning the aux default to the same model keeps the runtime
+    consistent (same auth, same billing pool, same rate limits, no
+    surprise 2x-cost highspeed variant). M3 was released 2026-06-01
+    — picking it as the aux default matches the forward-looking
+    catalog order rather than the pre-M3 era.
     """
 
     @pytest.mark.parametrize(

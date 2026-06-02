@@ -157,11 +157,21 @@ class TestMinimaxAuxModel:
     """
 
     def test_minimax_aux_is_standard(self):
+        # Import model_tools to trigger plugin discovery so the
+        # ProviderProfile objects are registered in the providers
+        # registry before _get_aux_model_for_provider() is called.
+        # Without this, profile-based resolution can be order-dependent
+        # or fail outright in isolation (the minimax-* entries are
+        # no longer in _API_KEY_PROVIDER_AUX_MODELS_FALLBACK after the
+        # minimax-M3 default-aux-model cleanup, so the profile is
+        # the only path to a non-empty aux value).
+        import model_tools  # noqa: F401
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert _get_aux_model_for_provider("minimax") == "MiniMax-M3"
         assert _get_aux_model_for_provider("minimax-cn") == "MiniMax-M3"
 
     def test_minimax_aux_not_highspeed(self):
+        import model_tools  # noqa: F401
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert "highspeed" not in _get_aux_model_for_provider("minimax")
         assert "highspeed" not in _get_aux_model_for_provider("minimax-cn")

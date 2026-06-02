@@ -8,18 +8,24 @@ fn main() {
     // `option_env!()` macro to default the install-script reference.
     // Precedence (matches install.ps1's own arg precedence): commit > branch.
     //
-    // Resolution order:
-    //   1. Env var override at build time (HERMES_BUILD_PIN_COMMIT, etc.).
-    //      Useful for CI builds that want to pin to a tagged release SHA
-    //      rather than whatever the checkout's HEAD happens to be.
-    //   2. `git rev-parse HEAD` + `git rev-parse --abbrev-ref HEAD` against
-    //      the repo this build.rs lives in. Default for `cargo tauri build`
-    //      from a dev machine — pins the produced .exe to your current
-    //      checkout state.
-    //   3. Last-resort fallback: hardcoded `main` branch, no commit. The
-    //      installer will fetch HEAD-of-main at runtime. Used when the
-    //      build is happening outside a git checkout (e.g. cargo install
-    //      from a packaged crate, unlikely for this binary but defensive).
+    // The COMMIT pin is opt-in. By default a dev build pins ONLY the branch,
+    // so the produced installer follows that branch's HEAD at install time
+    // (tolerant of fast-forwards/new commits, and never references a SHA the
+    // local checkout hasn't pushed). Set HERMES_BUILD_PIN_COMMIT to bake an
+    // immutable commit pin for reproducible/release installers.
+    //
+    // Commit pin resolution:
+    //   - HERMES_BUILD_PIN_COMMIT, if set and non-empty. Accepts a SHA, tag,
+    //     or branch name; resolved to an immutable SHA via `git rev-parse`
+    //     when possible, else used verbatim if it already looks like a SHA.
+    //   - Otherwise: NO commit pin (branch-follow is the default).
+    //
+    // Branch pin resolution:
+    //   1. HERMES_BUILD_PIN_BRANCH, if set and non-empty.
+    //   2. `git rev-parse --abbrev-ref HEAD` of the checkout this build.rs
+    //      lives in — the current branch. (None on a detached HEAD.)
+    //   3. Last-resort fallback handled below: if neither commit nor branch
+    //      resolves, warn — the binary needs a runtime arg or dev-repo env.
     //
     // Build script reruns on git HEAD change so a new commit triggers
     // a rebuild without `cargo clean`.
@@ -30,11 +36,20 @@ fn main() {
 
     if let Some(c) = &commit {
         println!("cargo:rustc-env=BUILD_PIN_COMMIT={c}");
-        println!("cargo:warning=hermes-bootstrap: pinning to commit {}", short(c));
+        println!(
+            "cargo:warning=hermes-bootstrap: pinning to commit {}",
+            short(c)
+        );
     }
     if let Some(b) = &branch {
         println!("cargo:rustc-env=BUILD_PIN_BRANCH={b}");
-        println!("cargo:warning=hermes-bootstrap: pinning to branch {b}");
+        match &commit {
+            Some(_) => println!("cargo:warning=hermes-bootstrap: pinning to branch {b}"),
+            None => println!(
+                "cargo:warning=hermes-bootstrap: following branch {b} HEAD (no commit pin; \
+                 set HERMES_BUILD_PIN_COMMIT for an immutable pin)"
+            ),
+        }
     }
     if commit.is_none() && branch.is_none() {
         // Fail loudly rather than silently produce a binary that errors
@@ -46,8 +61,11 @@ fn main() {
         );
     }
 
-    // Rerun build.rs when HEAD moves so successive builds pick up new
-    // commits without needing `cargo clean`. .git/HEAD changes on every
+    // Rerun build.rs when HEAD moves. With branch-follow as the default the
+    // baked commit no longer changes per-commit, but a branch *switch* changes
+    // the detected branch name, so we still re-trigger. When an explicit
+    // HERMES_BUILD_PIN_COMMIT resolves a moving ref (tag/branch) to a SHA, a
+    // HEAD move can also change that resolution. .git/HEAD changes on every
     // commit / branch switch / rebase.
     let git_dir = locate_git_dir();
     if let Some(gd) = &git_dir {
@@ -83,24 +101,46 @@ fn main() {
 }
 
 fn resolve_commit_pin() -> Option<String> {
-    if let Ok(v) = std::env::var("HERMES_BUILD_PIN_COMMIT") {
-        if !v.trim().is_empty() {
-            return Some(v.trim().to_string());
-        }
-    }
-    let out = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
+    // Commit pinning is OPT-IN. Only bake a commit when the caller explicitly
+    // asks for one via HERMES_BUILD_PIN_COMMIT. With no env var, we return
+    // None and the installer follows the branch HEAD at install time.
+    let requested = std::env::var("HERMES_BUILD_PIN_COMMIT").ok()?;
+    let requested = requested.trim();
+    if requested.is_empty() {
         return None;
     }
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
+    // Resolve the request (which may be a SHA, tag, or branch name) to an
+    // immutable commit SHA so the baked pin is reproducible. `^{commit}`
+    // dereferences tags to the commit they point at.
+    if let Ok(out) = Command::new("git")
+        .args(["rev-parse", "--verify", &format!("{requested}^{{commit}}")])
+        .output()
+    {
+        if out.status.success() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                let s = s.trim().to_string();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
     }
+    // Couldn't resolve via git (e.g. building outside a checkout). Accept the
+    // literal value only if it already looks like a SHA; otherwise fail loud
+    // rather than bake an unresolvable ref into the binary.
+    if is_sha(requested) {
+        return Some(requested.to_string());
+    }
+    panic!(
+        "HERMES_BUILD_PIN_COMMIT={requested:?} could not be resolved to a commit \
+         (git rev-parse failed and it is not a valid SHA)"
+    );
+}
+
+/// True if `s` looks like an abbreviated-or-full git SHA (7..=40 hex chars).
+fn is_sha(s: &str) -> bool {
+    let len = s.len();
+    (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn resolve_branch_pin() -> Option<String> {

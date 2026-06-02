@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
@@ -82,6 +82,13 @@ class MetadataMemoryProvider(FakeMemoryProvider):
 
     def on_memory_write(self, action, target, content, metadata=None):
         self.memory_writes.append((action, target, content, metadata or {}))
+
+
+class MessagesMemoryProvider(FakeMemoryProvider):
+    """Provider that opts into completed-turn message context."""
+
+    def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+        self.synced_turns.append((user_content, assistant_content, session_id, messages))
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +242,28 @@ class TestMemoryManager:
         mgr.sync_all("user msg", "assistant msg")
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
+
+    def test_sync_all_passes_messages_to_opted_in_provider(self):
+        mgr = MemoryManager()
+        p = MessagesMemoryProvider("external")
+        mgr.add_provider(p)
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+            {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
+        ]
+
+        mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
+
+        assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
+
+    def test_sync_all_omits_messages_for_legacy_provider(self):
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("external")
+        mgr.add_provider(p)
+
+        mgr.sync_all("user msg", "assistant msg", messages=[{"role": "tool"}])
+
+        assert p.synced_turns == [("user msg", "assistant msg")]
 
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
@@ -433,7 +462,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_discover_finds_user_plugins(self, tmp_path, monkeypatch):
         """discover_memory_providers() includes user-installed plugins."""
-        from plugins.memory import discover_memory_providers, _get_user_plugins_dir
+        from plugins.memory import discover_memory_providers
         self._make_user_memory_plugin(tmp_path, "myexternal")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",

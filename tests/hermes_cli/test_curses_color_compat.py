@@ -12,9 +12,8 @@ clamps with ``min(8, curses.COLORS - 1)``.
 import curses
 import re
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
-import pytest
 
 
 # Path to the source files under test

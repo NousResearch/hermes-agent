@@ -14,7 +14,6 @@ Covers four fix paths:
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,8 +21,6 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
-    MessageType,
-    ProcessingOutcome,
     SendResult,
 )
 from gateway.session import SessionSource, build_session_key

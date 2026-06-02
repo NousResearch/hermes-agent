@@ -10201,20 +10201,21 @@ class HermesCLI:
         self.agent._cached_system_prompt = None
 
     def _handle_caduceus_command(self, cmd: str):
-        """Handle /caduceus — toggle Caduceus dynamic-workflow mode.
+        """Handle /caduceus — toggle Caduceus deep-planning mode.
+
+        One switch on purpose. When it's on, the agent works like the Devin CLI:
+        it lays out a live to-do list and drives it methodically — raising
+        reasoning effort and delegating parallelizable work where it helps. Say
+        "workflow" to fan out to the parallel Loom engine.
 
         Usage:
-            /caduceus                 Show current mode + tiers + budget
-            /caduceus on|off          Activate / deactivate (this session)
-            /caduceus status          Show current state
-            /caduceus orch <model>    Set the orchestrator (heavy) tier
-            /caduceus worker <model>  Set the worker (fast) tier
-            /caduceus solo            Worker == orchestrator (one model runs all)
-            /caduceus budget <tokens> Set a shared output-token ceiling (0 = off)
+            /caduceus           Toggle the mode on/off (one-keystroke flip)
+            /caduceus on|off    Force on / off (this session)
+            /caduceus status    Show current state without changing it
 
-        Models accept "provider:model" or just "model" (provider inherited).
+        Model tiers, effort, and budget are auto-tuned. Power users can still
+        override them in the ``caduceus:`` section of config.yaml.
         """
-        from agent.caduceus import resolve_effort_config  # noqa: F401
         from hermes_cli.colors import Colors as _Colors
         # Make sure we have a live agent + a seeded state object.
         if not self.agent:
@@ -10224,88 +10225,42 @@ class HermesCLI:
         st = self._caduceus
 
         def _emit_state():
-            s = st.summary()
-            on = f"{_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}" if s["enabled"] else f"{_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+            on = (f"{_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}" if st.enabled
+                  else f"{_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}")
             _cprint(f"  ⚕ Caduceus: {on}")
-            orch = s["orchestrator"]; work = s["worker"]
-            orch_s = (f"{orch['provider']}:" if orch['provider'] else "") + (orch['model'] or "(session model)")
-            if s["split"]:
-                work_s = (f"{work['provider']}:" if work['provider'] else "") + (work['model'] or "(session model)")
-            else:
-                work_s = "(solo — same as orchestrator)"
-            _cprint(f"  {_DIM}orchestrator:{_RST} {_ACCENT}{orch_s}{_RST}")
-            _cprint(f"  {_DIM}worker:      {_RST} {_ACCENT}{work_s}{_RST}")
-            _cprint(f"  {_DIM}effort: {st.effort}   budget: {s['budget'] if s['budget'] else 'unbounded'}{_RST}")
+            if st.enabled:
+                _cprint(f"  {_DIM}Deep planning — live to-do list + methodical execution."
+                        f" Say \"workflow\" to fan out.{_RST}")
 
-        parts = cmd.strip().split(maxsplit=2)
-        if len(parts) < 2 or parts[1].strip().lower() == "status":
+        parts = cmd.strip().split(maxsplit=1)
+        # Bare /caduceus toggles the mode (one-keystroke flip); /caduceus status
+        # only reports it. on/off force a specific state.
+        arg = parts[1].strip().lower() if len(parts) > 1 else "toggle"
+
+        if arg == "status":
             _emit_state()
-            _cprint(f"  {_DIM}Usage: /caduceus [on|off|orch <model>|worker <model>|solo|budget <n>]{_RST}")
+            _cprint(f"  {_DIM}Usage: /caduceus [on|off|status]{_RST}")
             return
-
-        arg = parts[1].strip().lower()
-        rest = parts[2].strip() if len(parts) > 2 else ""
-
-        def _parse_tier(text: str) -> dict:
-            text = text.strip()
-            if ":" in text:
-                prov, _, mdl = text.partition(":")
-                return {"provider": prov.strip(), "model": mdl.strip()}
-            return {"provider": "", "model": text}
-
-        if arg in {"on", "enable"}:
-            st.activate()
-            self._apply_caduceus_to_agent()
-            _cprint(f"  ⚕ Caduceus {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET} — xhigh effort + standing Workflow opt-in.")
-            _emit_state()
+        if arg == "toggle":
+            want = not st.enabled
+        elif arg in {"on", "enable"}:
+            want = True
         elif arg in {"off", "disable"}:
-            st.deactivate()
-            self._apply_caduceus_to_agent()
-            _cprint(f"  ⚕ Caduceus {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET} — back to standard opt-in.")
-        elif arg == "orch":
-            if not rest:
-                _cprint(f"  {_DIM}Usage: /caduceus orch <provider:model | model>{_RST}")
-                return
-            st.orchestrator = _parse_tier(rest)
-            self._apply_caduceus_to_agent()
-            _cprint(f"  {_ACCENT}✓ Orchestrator tier set.{_RST}")
-            _emit_state()
-        elif arg == "worker":
-            if not rest:
-                _cprint(f"  {_DIM}Usage: /caduceus worker <provider:model | model>{_RST}")
-                return
-            st.worker = _parse_tier(rest)
-            self._apply_caduceus_to_agent()
-            _cprint(f"  {_ACCENT}✓ Worker tier set.{_RST}")
-            _emit_state()
-        elif arg == "solo":
-            st.worker = {"provider": "", "model": ""}
-            self._apply_caduceus_to_agent()
-            _cprint(f"  {_ACCENT}✓ Solo — worker == orchestrator.{_RST}")
-            _emit_state()
-        elif arg == "effort":
-            from hermes_constants import VALID_REASONING_EFFORTS
-            lvl = rest.strip().lower()
-            if lvl not in VALID_REASONING_EFFORTS and lvl != "none":
-                _cprint(f"  {_DIM}Usage: /caduceus effort <none|low|medium|high|xhigh>{_RST}")
-                _cprint(f"  {_DIM}On MiniMax/Anthropic-wire models this is the thinking-token budget"
-                        f" (xhigh=32k, high=16k, medium=8k, low=4k). Lower = faster start.{_RST}")
-            else:
-                st.effort = lvl
-                self._apply_caduceus_to_agent()
-                _cprint(f"  {_ACCENT}✓ Caduceus effort set to {lvl} (lower = faster).{_RST}")
-                _emit_state()
-        elif arg == "budget":
-            try:
-                n = int(rest)
-                st.budget_tokens = n if n > 0 else None
-                self._apply_caduceus_to_agent()
-                _cprint(f"  {_ACCENT}✓ Budget set to {st.budget_tokens if st.budget_tokens else 'unbounded'}.{_RST}")
-            except (TypeError, ValueError):
-                _cprint(f"  {_DIM}Usage: /caduceus budget <tokens>  (0 = unbounded){_RST}")
+            want = False
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /caduceus [on|off|orch <model>|worker <model>|solo|budget <n>]{_RST}")
+            _cprint(f"  {_DIM}Usage: /caduceus [on|off|status]{_RST}")
+            return
+
+        if want:
+            st.activate()
+            self._apply_caduceus_to_agent()
+            _cprint(f"  ⚕ Caduceus {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET} — deep planning: "
+                    f"a live to-do list, driven methodically. Say \"workflow\" to fan out.")
+        else:
+            st.deactivate()
+            self._apply_caduceus_to_agent()
+            _cprint(f"  ⚕ Caduceus {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET} — back to standard mode.")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

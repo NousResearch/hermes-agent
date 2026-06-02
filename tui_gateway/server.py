@@ -2361,7 +2361,7 @@ def _caduceus_defaults() -> dict:
         "orchestrator": dict(c.get("orchestrator") or {"provider": "", "model": ""}),
         "worker": dict(c.get("worker") or {"provider": "", "model": ""}),
         "budget": (c.get("workflow") or {}).get("default_budget_tokens"),
-        "effort": c.get("effort") or "xhigh",
+        "effort": c.get("effort") or "high",
     }
 
 
@@ -2387,7 +2387,7 @@ def _apply_caduceus(sid: str, agent) -> dict:
         return {"enabled": False}
     cstate.orchestrator = dict(settings.get("orchestrator") or {"provider": "", "model": ""})
     cstate.worker = dict(settings.get("worker") or {"provider": "", "model": ""})
-    cstate.effort = settings.get("effort") or "xhigh"
+    cstate.effort = settings.get("effort") or "high"
     budget = settings.get("budget")
     try:
         cstate.budget_tokens = int(budget) if budget else None
@@ -6823,53 +6823,22 @@ def _(rid, params: dict) -> dict:
 
 @method("caduceus.set")
 def _(rid, params: dict) -> dict:
-    """Toggle Caduceus mode for a session (and optionally set the budget)."""
+    """Toggle Caduceus deep-planning mode for a session.
+
+    Caduceus is a single switch — only ``enabled`` is honored here. Effort,
+    model tiers, and budget are auto-tuned (power-user overrides live in the
+    ``caduceus:`` config section), so there are no tier/budget RPCs.
+    """
     try:
         sid = params.get("session_id", "")
         settings = _caduceus_session(sid)
         if "enabled" in params:
             settings["enabled"] = bool(params.get("enabled"))
-        if "budget" in params:
-            b = params.get("budget")
-            try:
-                settings["budget"] = int(b) if b else None
-            except (TypeError, ValueError):
-                settings["budget"] = None
-        if "effort" in params and params.get("effort"):
-            settings["effort"] = str(params.get("effort"))
         summary = _apply_caduceus_to_session(sid)
         _emit("caduceus.state", sid, summary)
         return _ok(rid, summary)
     except Exception as e:
         return _err(rid, 5062, str(e))
-
-
-@method("model.tiers.set")
-def _(rid, params: dict) -> dict:
-    """Set the orchestrator/worker tiers for a session's Caduceus mode.
-
-    Each tier is {"provider": str, "model": str}; omit a tier to leave it.
-    """
-    try:
-        sid = params.get("session_id", "")
-        settings = _caduceus_session(sid)
-        orch = params.get("orchestrator")
-        work = params.get("worker")
-        if isinstance(orch, dict):
-            settings["orchestrator"] = {
-                "provider": str(orch.get("provider") or ""),
-                "model": str(orch.get("model") or ""),
-            }
-        if isinstance(work, dict):
-            settings["worker"] = {
-                "provider": str(work.get("provider") or ""),
-                "model": str(work.get("model") or ""),
-            }
-        summary = _apply_caduceus_to_session(sid)
-        _emit("caduceus.state", sid, summary)
-        return _ok(rid, summary)
-    except Exception as e:
-        return _err(rid, 5063, str(e))
 
 
 @method("model.options")

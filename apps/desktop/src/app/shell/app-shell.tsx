@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 
-import { OrchestratorWorkerPicker } from '@/components/OrchestratorWorkerPicker'
 import { PaneShell } from '@/components/pane-shell'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { WorkflowTheater } from '@/components/workflow/WorkflowTheater'
@@ -155,7 +154,6 @@ export function AppShell({
       </main>
 
       <WorkflowTheater />
-      <OrchestratorWorkerPicker />
 
       {overlays}
     </SidebarProvider>

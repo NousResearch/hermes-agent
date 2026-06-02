@@ -1675,7 +1675,11 @@ DEFAULT_CONFIG = {
                                        # raise if children time out before producing output.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
-        "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
+        "max_concurrent_children": 6,  # max parallel children per batch; floor of 1 enforced, no ceiling.
+                                       # Raised from 3 for more parallel throughput (Caduceus fans work
+                                       # out aggressively). Each child consumes API tokens independently,
+                                       # so cost/rate-limit pressure scales ~linearly — lower it if you
+                                       # hit provider limits. Big fan-out should use the Loom (Workflow).
         # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
         # and _get_orchestrator_enabled).  Values are clamped to [1, 3] with a
         # warning log if out of range.
@@ -1692,22 +1696,27 @@ DEFAULT_CONFIG = {
         "subagent_auto_approve": False,
     },
 
-    # Caduceus — Hermes-native dynamic-workflow mode (the port of Claude
-    # Code's "UltraCode": xhigh effort + a standing Workflow opt-in + an
-    # orchestrator/worker two-model split + the "Loom" workflow engine).
-    # Default-OFF and session-scoped — the /caduceus command (or the desktop
-    # toggle) flips a per-session runtime flag; it does not persist `enabled`
-    # unless the user explicitly saves it. See agent/caduceus.py and
-    # agent/workflow/ for the engine.
+    # Caduceus — Hermes-native deep-planning mode. When on, the agent works
+    # like the Devin CLI: it drives a live, todo-driven plan, raises reasoning
+    # effort, and delegates parallelizable work — and only fans out to the
+    # "Loom" parallel workflow engine when the user explicitly says "workflow".
+    # It's a SINGLE switch: the /caduceus command (or the desktop toggle) flips
+    # a per-session runtime flag and does not persist `enabled` unless the user
+    # saves it. The remaining keys below are auto-tuned defaults exposed only as
+    # power-user overrides (they are NOT surfaced as /caduceus subcommands).
+    # See agent/caduceus.py and agent/workflow/ for the engine.
     "caduceus": {
         # Persisted default for new sessions. The session toggle overrides
         # this at runtime without rewriting config.
         "enabled": False,
-        # Abstract effort applied to the orchestrator (and optionally worker)
-        # while the mode is active. Mapped per-provider in
-        # agent/caduceus.py::resolve_effort_config (xhigh -> Anthropic adaptive
-        # thinking + effort, OpenAI/Codex high, others best-effort/no-op).
-        "effort": "xhigh",
+        # Abstract reasoning effort applied to the orchestrator (and optionally
+        # worker) while the mode is active. Mapped per-provider in
+        # agent/caduceus.py::resolve_effort_config (Anthropic adaptive thinking
+        # + effort, OpenAI/Codex effort, others best-effort/no-op). Default is
+        # "high" — strong planning without the slow-start latency of "xhigh"
+        # (on MiniMax/Anthropic-wire models effort is a thinking-token budget:
+        # high=16k, xhigh=32k). Power-user override; not a command knob.
+        "effort": "high",
         # Apply the Caduceus effort to worker (delegated) agents too. Off by
         # default so the fast worker tier stays fast/cheap.
         "apply_effort_to_worker": False,

@@ -195,10 +195,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(skills_prompt)
 
     # Caduceus standing reminder — placed right after the skills inventory,
-    # mirroring UltraCode's captured request placement. Injected only when the
-    # mode is active AND the Workflow tool is available (so it never references
-    # a missing tool). Toggling the mode busts agent._cached_system_prompt so
-    # this re-renders on the next turn. See agent/caduceus.py.
+    # mirroring UltraCode's captured request placement. Injected when the mode
+    # is active; it drives a todo-driven planning loop (the `todo` tool is core)
+    # and only references the Workflow tool as an explicit-opt-in escalation.
+    # Toggling the mode busts agent._cached_system_prompt so this re-renders on
+    # the next turn. See agent/caduceus.py::standing_reminder_for_prompt.
     try:
         from agent.caduceus import standing_reminder_for_prompt as _cad_standing
         _cad_reminder = _cad_standing(agent)

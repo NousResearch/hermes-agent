@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { CheckCircle2, Layers3, Loader2, Sparkles, X, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $caduceus, $caduceusTheaterOpen, closeTheater, openTheater, openTierPicker } from '@/store/caduceus'
+import { $caduceus, $caduceusTheaterOpen, closeTheater, openTheater } from '@/store/caduceus'
 import { $workflowRun, clearWorkflow, workflowActiveCount } from '@/store/workflow'
 
 import { BudgetGauge, ConcurrencyMeter, Narrator, PhaseLanes, VerifyFeed } from './TheaterPanels'
@@ -95,20 +95,12 @@ export function WorkflowTheater() {
               <div className="flex items-center gap-2">
                 <h2 className="truncate text-sm font-semibold text-foreground">{run.name}</h2>
                 <span className="rounded bg-amber-400/15 px-1.5 py-px text-[0.6rem] font-medium uppercase tracking-wide text-amber-300">
-                  ⚕ Caduceus · {caduceus.effort ?? 'xhigh'}
+                  ⚕ Caduceus · {caduceus.effort ?? 'high'}
                 </span>
               </div>
               {run.description && <p className="truncate text-[0.7rem] text-muted-foreground">{run.description}</p>}
             </div>
             <StatusPill run={run} />
-            <button
-              className="hidden items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) px-2 py-0.5 text-[0.65rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground sm:inline-flex"
-              onClick={openTierPicker}
-              title="Configure orchestrator/worker tiers"
-              type="button"
-            >
-              <Zap className="size-3 text-amber-300" /> tiers
-            </button>
             <span className="flex items-center gap-1 tabular-nums text-xs text-muted-foreground">
               <Loader2 className={cn('size-3', live ? 'animate-spin' : 'opacity-0')} />
               {formatElapsed(elapsedMs)}

@@ -358,18 +358,11 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'caduceus',
     label: 'Caduceus',
     icon: Layers3,
-    keys: [
-      'caduceus.enabled',
-      'caduceus.effort',
-      'caduceus.apply_effort_to_worker',
-      'caduceus.orchestrator.provider',
-      'caduceus.orchestrator.model',
-      'caduceus.worker.provider',
-      'caduceus.worker.model',
-      'caduceus.workflow.max_agents',
-      'caduceus.workflow.auto_escalate',
-      'caduceus.reminders.turns_between_maintenance'
-    ]
+    // Caduceus is a single switch. Only the persisted default + planning depth
+    // are surfaced here; tiers, workflow internals, and reminder cadence are
+    // auto-tuned power-user overrides that live in config.yaml's caduceus:
+    // section (not the GUI).
+    keys: ['caduceus.enabled', 'caduceus.effort']
   },
   {
     id: 'appearance',

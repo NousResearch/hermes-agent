@@ -351,8 +351,8 @@ export function useStatusbarItems({
         title: caduceusLive
           ? 'Open the Orchestration Theater'
           : caduceus.enabled
-            ? 'Caduceus is ON — click to turn off (xhigh + Workflow opt-in)'
-            : 'Turn on Caduceus dynamic-workflow mode',
+            ? 'Caduceus is ON — deep planning: a live to-do list, driven methodically. Click to turn off.'
+            : 'Turn on Caduceus — deep planning mode (say "workflow" to fan out to parallel subagents)',
         variant: 'action'
       },
       {

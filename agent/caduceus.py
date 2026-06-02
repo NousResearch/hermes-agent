@@ -1,9 +1,17 @@
-"""Caduceus — Hermes-native dynamic-workflow mode.
+"""Caduceus — Hermes-native deep-planning mode.
 
-Caduceus is Hermes's native port of Claude Code's "UltraCode": it combines
-``xhigh`` reasoning effort, a *standing* opt-in to the Workflow tool, an
-orchestrator/worker two-model split, and the "Loom" dynamic-workflow engine
-(see :mod:`agent.workflow`).
+Caduceus is Hermes's native answer to Claude Code's "UltraCode". When it's on,
+the agent works like the Devin CLI: it raises reasoning effort and drives a
+*visible, todo-driven plan* — decompose the task with the ``todo`` tool, execute
+one step at a time, mark progress live, delegate parallelizable grunt work to
+subagents, and verify before claiming done. The heavy "Loom" dynamic-workflow
+engine (see :mod:`agent.workflow`) is the *explicit* escalation for parallel
+fan-out — reached only when the user says "workflow"/asks to orchestrate, never
+automatically.
+
+A single toggle (``/caduceus on|off`` or the desktop switch) flips the mode;
+model tiers, effort, and budget have sensible defaults and are power-user-only
+overrides in the ``caduceus:`` config section (not surfaced as command knobs).
 
 This module is the single source of truth for:
 
@@ -38,23 +46,53 @@ from typing import Any, Dict, Optional
 
 # Standing reminder, injected into the system prompt's stable tier while the
 # mode is active (mirrors UltraCode's placement right after the skills
-# inventory). This is the line that converts mode-on into a standing opt-in.
+# inventory). This is the line that sets Caduceus's default operating style:
+# a Devin-CLI-grade, todo-driven planning loop — NOT "always run a workflow".
 STANDING_REMINDER = (
-    "Caduceus is on: optimize for the most exhaustive, correct answer — not the "
-    "fastest or cheapest. Use the Workflow tool on every substantive task; token "
-    "cost is not a constraint. See the Workflow tool's **Caduceus** section and "
-    "quality patterns. Solo only on conversational/trivial turns."
+    "Caduceus is on. Work like a senior engineer driving a visible plan, "
+    "optimizing for the most correct, complete result over the fastest or "
+    "cheapest answer.\n"
+    "RIGHT-SIZE THE PLAN: Match the plan to the task. A simple 1-2 step ask — just "
+    "do it, fast, no to-do list. Genuinely multi-step or hard work (3+ steps, "
+    "multiple asks, multi-file, ambiguous, or error-prone) — your FIRST action is "
+    "a `todo` plan, decomposed as finely as the difficulty actually warrants: a "
+    "light task gets a short list, a hard one gets a deep, granular breakdown. "
+    "Capture new instructions as todos immediately.\n"
+    "ONE STEP AT A TIME: Keep exactly one item in_progress — mark it in_progress "
+    "in its own `todo` write BEFORE you work it, do the work, then in the next "
+    "write mark it completed and set the next item in_progress. Never jump an item "
+    "from pending straight to completed, and never collapse several completions "
+    "into one write. (The to-do tracks logical steps, not individual tool calls.)\n"
+    "PARALLELIZE FOR SPEED: Don't serialize work that can run side by side. Issue "
+    "independent tool calls together (they execute concurrently), and batch "
+    "independent subtasks into ONE delegate_task call so the workers run in "
+    "parallel — not one after another.\n"
+    "COMPLETION HONESTY: Mark a step completed only when it is fully, verifiably "
+    "done. If it is blocked, failing, or partial, keep it in_progress and add a "
+    "new todo for what must be resolved — never mark done on a failing check or a "
+    "partial result.\n"
+    "VERIFY: Before claiming anything done, verify it (lint / typecheck / build / "
+    "tests, or re-read the output, as the change warrants). When the project has "
+    "test infrastructure, prefer writing a failing test first, then making it pass.\n"
+    "ESCALATE: For LARGE parallel fan-out (many files / sources / checks at once), "
+    "or when the user says \"workflow\" or asks to orchestrate, use the Workflow "
+    "tool — the Loom runs many workers concurrently. Be proactive on the follow-ups "
+    "the task implies, but don't take large unrequested actions out of nowhere."
 )
 
 # Lifecycle reminders, injected as per-turn meta notes (cache-friendly: they go
 # into the current user message, never the cached system-prompt prefix).
 ENTER_REMINDER_FULL = STANDING_REMINDER
 ENTER_REMINDER_SPARSE = (
-    "Caduceus is still on — use the Workflow tool; see its Caduceus section."
+    "Caduceus is still on — keep driving the `todo` plan one step at a time: "
+    "exactly one item in_progress, mark it in_progress before you work on it and "
+    "completed right after (don't batch transitions), and verify before claiming "
+    "done. Use the Workflow tool only if asked to fan out."
 )
 SPARSE_REMINDER = ENTER_REMINDER_SPARSE
 EXIT_REMINDER = (
-    "Caduceus is off — the Workflow tool's standard opt-in rule applies again."
+    "Caduceus is off — the deep plan/verify discipline relaxes to normal and the "
+    "Workflow tool's standard opt-in rule applies again."
 )
 
 # Separate opt-in path: the user literally typed "workflow"/"workflows".
@@ -78,9 +116,9 @@ def wrap_reminder(text: str) -> str:
 WORKFLOW_TOOL_DESCRIPTION = """\
 Execute a workflow script that orchestrates many subagents deterministically. Returns when the workflow finishes; progress streams live to the Orchestration Theater. Each subagent is a Hermes delegate child running on the worker tier.
 
-OPT-IN: only call this when the user opted into multi-agent orchestration — they said "workflow"/"workflows", Caduceus is on (see below), they asked to "fan out / orchestrate with subagents", or a skill told you to. Otherwise answer directly or use delegate_task for a single subagent.
+OPT-IN: only call this when the user opted into multi-agent orchestration — they said "workflow"/"workflows", they asked to "fan out / orchestrate with subagents", or a skill told you to. (Caduceus being on is NOT such an opt-in — see below.) Otherwise answer directly, plan with the `todo` tool, or use delegate_task for a single subagent.
 
-**Caduceus.** When a system-reminder says Caduceus is on, that opt-in is standing: author and run a workflow for every substantive task. Aim for the most exhaustive, correct answer — token cost is not a constraint. Scale to the task (a simple ask = a small workflow; "audit thoroughly" = larger fan-out + adversarial verify). Multi-phase work = several workflows in sequence, reading each result before the next. Solo only on trivial/conversational turns. Don't over-deliberate before authoring: scout briefly only if you must, then write the script and call this tool.
+**Caduceus.** Caduceus being on does NOT mean "always run a workflow." Under Caduceus you plan with the `todo` tool and dispatch individual subagents with delegate_task; that handles most work. Use THIS tool only when the user explicitly opts into multi-agent orchestration — they said "workflow"/"workflows", asked to "fan out / orchestrate with subagents", or the task clearly needs large parallel orchestration (e.g. "audit every module", a big map-reduce). When you do author one, aim for the most exhaustive, correct answer and scale the fan-out to the task (a simple ask = a small workflow; "audit thoroughly" = larger fan-out + adversarial verify). Multi-phase work = several workflows in sequence, reading each result before the next. Don't over-deliberate before authoring: scout briefly only if you must, then write the script and call this tool.
 
 SCRIPTS ARE PYTHON, NOT JAVASCRIPT. Define `meta` (a pure literal) and an async `main()`. Use the injected globals directly — do NOT import them, do NOT wrap the script in markdown fences, do NOT use const/let/var or `=>` arrows.
 
@@ -139,7 +177,7 @@ class CaduceusState:
     """
 
     enabled: bool = False
-    effort: str = "xhigh"
+    effort: str = "high"
     apply_effort_to_worker: bool = False
     orchestrator: Dict[str, str] = field(default_factory=lambda: {"provider": "", "model": ""})
     worker: Dict[str, str] = field(default_factory=lambda: {"provider": "", "model": ""})
@@ -205,7 +243,7 @@ def state_from_config(cfg: Optional[Dict[str, Any]]) -> CaduceusState:
         budget = None
     return CaduceusState(
         enabled=bool(c.get("enabled", False)),
-        effort=str(c.get("effort") or "xhigh"),
+        effort=str(c.get("effort") or "high"),
         apply_effort_to_worker=bool(c.get("apply_effort_to_worker", False)),
         orchestrator={"provider": str(orch.get("provider") or ""), "model": str(orch.get("model") or "")},
         worker={"provider": str(work.get("provider") or ""), "model": str(work.get("model") or "")},
@@ -297,13 +335,16 @@ def message_has_workflow_keyword(text: Any) -> bool:
 def standing_reminder_for_prompt(agent: Any) -> Optional[str]:
     """Return the standing reminder for the system prompt, or None.
 
-    Injected only when the mode is active AND the Workflow tool is actually
-    available to the model (so the reminder never references a missing tool).
+    Injected when the mode is active. The standing behavior is now todo-driven
+    planning, so it only needs the (core, near-always-present) ``todo`` tool;
+    the Workflow tool is referenced merely as an explicit-opt-in escalation, so
+    its absence does not void the reminder. We still skip the reminder if we
+    have a tool list and ``todo`` was explicitly disabled.
     """
     if not is_active(agent):
         return None
     valid = getattr(agent, "valid_tool_names", None) or ()
-    if "Workflow" not in valid and "workflow" not in valid:
+    if valid and "todo" not in valid:
         return None
     return STANDING_REMINDER
 

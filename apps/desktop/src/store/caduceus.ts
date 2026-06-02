@@ -20,7 +20,7 @@ const EMPTY_TIER: CaduceusTier = { model: '', provider: '' }
 
 const DEFAULT_STATE: CaduceusSummary = {
   budget: null,
-  effort: 'xhigh',
+  effort: 'high',
   enabled: false,
   orchestrator: { ...EMPTY_TIER },
   split: false,
@@ -32,9 +32,6 @@ export const $caduceus = atom<CaduceusSummary>(DEFAULT_STATE)
 
 /** Whether the full Orchestration Theater overlay is open. */
 export const $caduceusTheaterOpen = atom(false)
-
-/** Whether the orchestrator/worker two-slot picker dialog is open. */
-export const $caduceusPickerOpen = atom(false)
 
 function normalizeTier(t: unknown): CaduceusTier {
   const o = (t ?? {}) as Record<string, unknown>
@@ -77,17 +74,6 @@ export async function setCaduceusEnabled(sessionId: null | string, enabled: bool
   await call('caduceus.set', { enabled, session_id: sessionId ?? '' })
 }
 
-export async function setCaduceusBudget(sessionId: null | string, budget: null | number): Promise<void> {
-  await call('caduceus.set', { budget, session_id: sessionId ?? '' })
-}
-
-export async function setCaduceusTiers(
-  sessionId: null | string,
-  tiers: { orchestrator?: CaduceusTier; worker?: CaduceusTier }
-): Promise<void> {
-  await call('model.tiers.set', { session_id: sessionId ?? '', ...tiers })
-}
-
 export async function refreshCaduceus(sessionId: null | string): Promise<void> {
   const gw = $gateway.get()
   if (!gw) {
@@ -104,6 +90,3 @@ export async function refreshCaduceus(sessionId: null | string): Promise<void> {
 export const openTheater = () => $caduceusTheaterOpen.set(true)
 export const closeTheater = () => $caduceusTheaterOpen.set(false)
 export const toggleTheater = () => $caduceusTheaterOpen.set(!$caduceusTheaterOpen.get())
-
-export const openTierPicker = () => $caduceusPickerOpen.set(true)
-export const closeTierPicker = () => $caduceusPickerOpen.set(false)

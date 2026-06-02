@@ -15,6 +15,7 @@ from hermes_cli.config import (
     get_compatible_custom_providers,
     _explicit_config_paths,
     _normalize_max_turns_config,
+    is_provider_enabled,
     load_config,
     load_env,
     migrate_config,
@@ -2240,3 +2241,36 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+class TestIsProviderEnabled:
+    """``is_provider_enabled`` gates ``providers.<name>`` blocks for the
+    model picker, ``/models`` listings and the runtime resolver. Default
+    must be ``True`` so existing configs keep working untouched."""
+
+    def test_missing_flag_defaults_to_enabled(self):
+        assert is_provider_enabled({"name": "Anthropic"}) is True
+
+    def test_empty_block_defaults_to_enabled(self):
+        assert is_provider_enabled({}) is True
+
+    def test_explicit_true_is_enabled(self):
+        assert is_provider_enabled({"enabled": True}) is True
+
+    def test_explicit_false_hides_it(self):
+        assert is_provider_enabled({"enabled": False}) is False
+
+    @pytest.mark.parametrize("raw", ["false", "False", "FALSE", "0", "no", "off"])
+    def test_yaml_string_falsy_values_hide_it(self, raw):
+        # YAML can hand us a string for a value when the user quotes it.
+        assert is_provider_enabled({"enabled": raw}) is False
+
+    @pytest.mark.parametrize("raw", ["true", "True", "yes", "on", "1", "anything-else"])
+    def test_yaml_string_truthy_values_keep_it_enabled(self, raw):
+        assert is_provider_enabled({"enabled": raw}) is True
+
+    def test_non_dict_input_defaults_to_enabled(self):
+        # Malformed entries (None, list, string) don't disappear silently —
+        # the gate stays open and the existing validation paths will flag
+        # them.
+        assert is_provider_enabled(None) is True
+        assert is_provider_enabled([]) is True
+        assert is_provider_enabled("oops") is True

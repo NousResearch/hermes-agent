@@ -749,11 +749,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- WeCom: route through the gateway's live adapter (issue #37364) ---
+    # WeCom enforces a single WebSocket per bot, so ``WeComAdapter().connect()``
+    # from a standalone path fails with errcode 846609 whenever the gateway is
+    # already running with the same bot credentials.  When the gateway runner
+    # is in this process, reuse the live adapter instance instead.  Text-only
+    # sends keep the legacy ``_send_wecom`` path.
+    if platform == Platform.WECOM and media_files:
+        return await _send_wecom_via_adapter(pconfig, chat_id, message, media_files)
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, wecom and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -761,7 +770,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, wecom and feishu"
         )
 
     last_result = None
@@ -1526,6 +1535,100 @@ async def _send_dingtalk(extra, chat_id, message):
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:
         return _error(f"DingTalk send failed: {e}")
+
+
+async def _send_wecom_via_adapter(pconfig, chat_id, message, media_files=None):
+    """Send WeCom text + media via the gateway's live ``WeComAdapter``.
+
+    WeCom enforces a single WebSocket per bot, so opening a fresh
+    ``WeComAdapter().connect()`` fails with errcode 846609
+    ("aibot websocket not subscribed") whenever the gateway is already
+    running.  This helper therefore reuses the live adapter from the
+    gateway runner whenever it's available in this process, falling
+    back to the standalone ``_send_wecom`` helper for text-only sends
+    (the only path that's safe out-of-process, because the standalone
+    path doesn't open a second WebSocket when the gateway is
+    disconnected).
+
+    For media with no live adapter, an actionable error is returned —
+    WeCom media delivery requires the gateway to be running in-process.
+    """
+    from gateway.config import Platform
+    media_files = media_files or []
+
+    # Try to grab the live adapter from the running gateway.
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    if runner is not None:
+        try:
+            adapter = runner.adapters.get(Platform.WECOM)
+        except Exception:
+            adapter = None
+    else:
+        adapter = None
+
+    if adapter is not None:
+        try:
+            if message and message.strip():
+                text_result = await adapter.send(chat_id, message)
+                if not text_result.success:
+                    return _error(f"WeCom text send failed: {text_result.error}")
+
+            last_result = None
+            for media_path, is_voice in media_files:
+                if not os.path.exists(media_path):
+                    return _error(f"Media file not found: {media_path}")
+                ext = os.path.splitext(media_path)[1].lower()
+                if ext in _IMAGE_EXTS:
+                    last_result = await adapter.send_image_file(chat_id, media_path)
+                elif ext in _VIDEO_EXTS:
+                    last_result = await adapter.send_video(chat_id, media_path)
+                elif ext in _VOICE_EXTS and is_voice:
+                    last_result = await adapter.send_voice(chat_id, media_path)
+                elif ext in _AUDIO_EXTS:
+                    last_result = await adapter.send_voice(chat_id, media_path)
+                else:
+                    last_result = await adapter.send_document(chat_id, media_path)
+                if not last_result.success:
+                    return _error(f"WeCom media send failed: {last_result.error}")
+
+            if last_result is None and not (message and message.strip()):
+                return {
+                    "error": "No deliverable text or media remained after processing MEDIA tags"
+                }
+
+            return {
+                "success": True,
+                "platform": "wecom",
+                "chat_id": chat_id,
+                "message_id": (
+                    last_result.message_id if last_result is not None else "wecom-text"
+                ),
+            }
+        except Exception as e:
+            return _error(f"WeCom send failed: {e}")
+
+    # No live adapter available.
+    if media_files:
+        # WeCom media requires the gateway's WebSocket — a standalone
+        # connect() would clash with the running gateway and fail with
+        # errcode 846609.  Tell the user how to fix it.
+        return {
+            "error": (
+                "WeCom media delivery requires the gateway to be running in this "
+                "process (WeCom enforces a single WebSocket per bot). Start the "
+                "gateway with `hermes gateway` or invoke send_message from a "
+                "session that's colocated with the gateway."
+            )
+        }
+
+    # Text-only fallback: use the legacy standalone path.
+    return await _send_wecom(pconfig.extra, chat_id, message)
 
 
 async def _send_wecom(extra, chat_id, message):

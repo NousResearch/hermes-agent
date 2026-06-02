@@ -2576,6 +2576,199 @@ class TestSendViaAdapterStandaloneFallback:
         assert result["extra_field"] == "preserved"
 
 
+# ── WeCom media delivery (issue #37364) ──────────────────────────────────
+
+
+class TestSendWecomMedia:
+    """Issue #37364: ``send_message`` with ``target="wecom"`` and a
+    ``MEDIA:`` directive was silently dropping attachments — the
+    ``Platform.WECOM and media_files`` branch did not exist in
+    ``_send_to_platform``, so the media fell through to the
+    "Non-media platforms" catch-all.
+
+    The fix routes WeCom media through ``_send_wecom_via_adapter``,
+    which reuses the gateway's live ``WeComAdapter`` instance (WeCom
+    enforces a single WebSocket per bot, so a fresh
+    ``WeComAdapter().connect()`` would fail with errcode 846609 when
+    the gateway is already running).
+    """
+
+    def test_wecom_media_routes_through_via_adapter(self, tmp_path):
+        """The new branch in _send_to_platform must dispatch to
+        ``_send_wecom_via_adapter`` so the live gateway connection is
+        reused (regression test for #37364)."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image bytes")
+
+        helper = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "wecom",
+                "chat_id": "chat-1",
+                "message_id": "wm-1",
+            }
+        )
+        with patch("tools.send_message_tool._send_wecom_via_adapter", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token="", extra={}),
+                    "chat-1",
+                    "with attachment",
+                    media_files=[(str(img), False)],
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once()
+        call = helper.await_args
+        # (pconfig, chat_id, message, media_files, thread_id)
+        assert call.args[1] == "chat-1"
+        assert call.args[2] == "with attachment"
+        assert call.args[3] == [(str(img), False)]
+
+    def test_wecom_text_only_still_uses_legacy_path(self):
+        """Plain text-only WeCom sends must continue to go through
+        ``_send_wecom`` (the standalone helper).  We don't break
+        the existing text-only contract here — that path is owned
+        by a separate issue if/when the gateway-running conflict
+        needs to be addressed for text."""
+        legacy = AsyncMock(
+            return_value={"success": True, "platform": "wecom",
+                          "chat_id": "chat-1", "message_id": "wm-t"}
+        )
+        via = AsyncMock()
+        with patch("tools.send_message_tool._send_wecom", legacy), \
+             patch("tools.send_message_tool._send_wecom_via_adapter", via):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token="", extra={}),
+                    "chat-1",
+                    "no media here",
+                )
+            )
+
+        assert result["success"] is True
+        legacy.assert_awaited_once()
+        via.assert_not_awaited()
+
+
+class TestSendWecomViaAdapter:
+    """Direct unit tests for the new ``_send_wecom_via_adapter``
+    helper introduced for #37364."""
+
+    def _build_fake_adapter(self):
+        """Build a stub WeComAdapter that records the calls we make
+        against it.  Mirrors the public surface area the helper uses.
+        """
+        calls = []
+
+        class FakeAdapter:
+            def __init__(self, _config):
+                self._calls = calls
+                self._last_chat_req_ids = {}
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                calls.append(("send", chat_id, content, reply_to, metadata))
+                return SimpleNamespace(success=True, message_id="wm-text")
+
+            async def send_image_file(self, chat_id, image_path, caption=None,
+                                      reply_to=None, **kwargs):
+                calls.append(("send_image_file", chat_id, image_path))
+                return SimpleNamespace(success=True, message_id="wm-img")
+
+            async def send_document(self, chat_id, file_path, caption=None,
+                                    file_name=None, reply_to=None, **kwargs):
+                calls.append(("send_document", chat_id, file_path))
+                return SimpleNamespace(success=True, message_id="wm-doc")
+
+        return FakeAdapter, calls
+
+    @pytest.mark.asyncio
+    async def test_uses_live_adapter_from_runner(self, tmp_path, monkeypatch):
+        """When the gateway runner has a live WeComAdapter, the helper
+        must use it (single-WebSocket-per-bot policy)."""
+        from tools.send_message_tool import _send_wecom_via_adapter
+
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG bytes")
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 fake")
+
+        FakeAdapter, calls = self._build_fake_adapter()
+        live_adapter = FakeAdapter(None)
+
+        class FakeRunner:
+            adapters = {Platform.WECOM: live_adapter}
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: FakeRunner())
+        monkeypatch.setattr("gateway.platforms.wecom.WeComAdapter", FakeAdapter)
+
+        pconfig = SimpleNamespace(extra={}, token="")
+        result = await _send_wecom_via_adapter(
+            pconfig,
+            "chat-1",
+            "see attached",
+            media_files=[(str(img), False), (str(doc), False)],
+        )
+
+        assert result["success"] is True
+        # Text first, then image (matched by _IMAGE_EXTS), then document
+        # for the .pdf fallback.
+        call_names = [c[0] for c in calls]
+        assert call_names == ["send", "send_image_file", "send_document"]
+        # Args
+        assert calls[0][1] == "chat-1"
+        assert calls[0][2] == "see attached"
+        assert calls[1][2] == str(img)
+        assert calls[2][2] == str(doc)
+
+    @pytest.mark.asyncio
+    async def test_no_live_adapter_returns_helpful_error_for_media(self, monkeypatch):
+        """With media present but no live adapter, the helper must
+        return an actionable error — WeCom media delivery requires
+        the gateway to be running in-process (the standalone path
+        can't open a second WebSocket)."""
+        from tools.send_message_tool import _send_wecom_via_adapter
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        pconfig = SimpleNamespace(extra={}, token="")
+        result = await _send_wecom_via_adapter(
+            pconfig,
+            "chat-1",
+            "with attachment",
+            media_files=[("/tmp/does-not-matter.png", False)],
+        )
+
+        assert "error" in result
+        # The error must point the user at the gateway.
+        assert "gateway" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_no_live_adapter_falls_back_for_text_only(self, monkeypatch):
+        """Text-only sends with no live adapter should fall through to
+        the standalone ``_send_wecom`` path (existing behaviour)."""
+        from tools.send_message_tool import _send_wecom_via_adapter
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        async def fake_standalone(extra, chat_id, message):
+            return {"success": True, "platform": "wecom",
+                    "chat_id": chat_id, "message_id": "wm-standalone"}
+
+        monkeypatch.setattr("tools.send_message_tool._send_wecom", fake_standalone)
+
+        pconfig = SimpleNamespace(extra={}, token="")
+        result = await _send_wecom_via_adapter(
+            pconfig, "chat-1", "no media", media_files=None,
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "wm-standalone"
+
+
 # ---------------------------------------------------------------------------
 # _check_send_message — availability gating
 # ---------------------------------------------------------------------------

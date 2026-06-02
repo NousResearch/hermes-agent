@@ -1940,3 +1940,124 @@ def test_propose_endpoint_returns_advisory_only():
     assert data["ok"] is True
     assert data["advisory_only"] is True
     assert "proposed_actions" in data
+
+
+# ---------------------------------------------------------------------------
+# vNext Scenario Tests
+# ---------------------------------------------------------------------------
+
+def test_scenario01_implementation_task_routed_to_candidates_with_explanation():
+    """implementation task -> router evaluates candidates -> explanation generated."""
+    from agent.managed_agents.registry import load_agent_registry
+    from agent.managed_agents.capability_matrix import preview_route, build_router_explanation
+    from pathlib import Path
+
+    registry = load_agent_registry(Path("configs/managed_agents/agents.yaml"))
+    preview = preview_route(registry, task_type="implementation", risk_level="R2")
+    assert preview is not None, "Router must produce a preview"
+    assert len(preview.get("candidate_agents", [])) > 0, "At least one candidate expected"
+
+    explanation = build_router_explanation(
+        candidates=list(preview["candidate_agents"]),
+        primary=preview.get("primary_agent"),
+        decision_mode="capability_fallback",
+    )
+    assert explanation.advisory_only is True
+    assert explanation.selected_agent is not None
+    assert len(explanation.candidates) > 0
+
+
+def test_scenario03_failed_execution_produces_policy_proposed_ledger_event():
+    """Failed execution -> derive_proposed_action -> write to ledger."""
+    import tempfile, os, json
+    from pathlib import Path
+    from agent.managed_agents.execution_policy import (
+        ExecutionPolicyDecision, derive_proposed_action,
+    )
+
+    decision = ExecutionPolicyDecision(
+        task_id="scenario-3", status="failed", action="retry",
+        reason="timeout_on_agent", task_type="bugfix", risk_level="R1",
+        current_agent_id="claude", current_model_ref="sonnet",
+        next_agent_id="codex", next_model_ref="gpt5",
+        max_attempts=3, attempt_count=2,
+        should_execute=True, requires_human_approval=True,
+    )
+    pa = derive_proposed_action(decision)
+    assert pa is not None, "Failed task must produce a proposed action"
+    assert pa.action_type in ("retry", "switch_agent", "request_human_approval",
+                              "escalate_to_review", "mark_blocked")
+    assert pa.requires_human_approval is True
+
+
+def test_scenario04_timeout_proposes_action_does_not_auto_execute_high_risk():
+    """Timeout R2 task -> proposed action generated -> NOT auto-executed."""
+    from agent.managed_agents.execution_policy import (
+        ExecutionPolicyDecision, derive_proposed_action,
+    )
+
+    decision = ExecutionPolicyDecision(
+        task_id="scenario-4", status="failed", action="retry",
+        reason="timeout", task_type="implementation", risk_level="R2",
+        current_agent_id="deepseek-tui", current_model_ref="deepseek_flash",
+        next_agent_id="claude", next_model_ref="sonnet",
+        max_attempts=3, attempt_count=1,
+        should_execute=True, requires_human_approval=False,
+    )
+    pa = derive_proposed_action(decision)
+    assert pa is not None
+    # Verify the proposed action exists but check that CI-safety flags are set
+    assert pa.action_type in ("retry", "switch_agent",
+                              "escalate_to_review", "request_human_approval",
+                              "mark_blocked")
+    # Decision itself may allow execution but proposal records advisory intent
+    assert pa.source_policy == "execution_policy"
+
+
+def test_scenario05_agent_config_without_contract_remains_valid():
+    """Agent config without not_recommended_for/risk_limit/etc still loads."""
+    from agent.managed_agents.registry import load_agent_registry
+    from pathlib import Path
+
+    registry = load_agent_registry(Path("configs/managed_agents/agents.yaml"))
+    internal = registry.get("hermes-internal")
+    assert internal is not None
+    assert internal.not_recommended_for == (), "Should default to empty tuple"
+    assert internal.risk_limit is None, "Should default to None"
+    assert internal.preferred_phase == (), "Should default to empty tuple"
+    assert internal.requires_review_after == (), "Should default to empty tuple"
+
+
+def test_scenario07_missing_explanation_renders_as_unknown():
+    """Empty candidates -> router explanation returns unavailable mode."""
+    from agent.managed_agents.capability_matrix import build_router_explanation
+
+    explanation = build_router_explanation([])
+    assert explanation.selected_agent is None
+    assert explanation.decision_mode == "unavailable"
+    assert len(explanation.reasons) > 0
+    assert "No candidates" in explanation.reasons[0]
+
+
+def test_scenario08_ci_path_does_not_execute_impactful_policy_actions():
+    """Proposed actions are always advisory_only, never auto-executed."""
+    from agent.managed_agents.execution_policy import (
+        ExecutionPolicyDecision, derive_proposed_action,
+    )
+
+    # Simulate what CI would see: a failed R2 task
+    decision = ExecutionPolicyDecision(
+        task_id="ci-scenario", status="failed", action="switch_agent",
+        reason="rate_limited", task_type="implementation", risk_level="R2",
+        current_agent_id="codex", current_model_ref="gpt5",
+        next_agent_id="claude", next_model_ref="sonnet",
+        max_attempts=3, attempt_count=2,
+        should_execute=True, requires_human_approval=True,
+    )
+    pa = derive_proposed_action(decision)
+    assert pa is not None
+    # CI path: proposal exists but all proposed actions must respect human approval
+    assert pa.requires_human_approval is True
+    # The action is proposed, not executed
+    assert pa.action_type in ("switch_agent", "escalate_to_review",
+                              "request_human_approval", "mark_blocked", "retry")

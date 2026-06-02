@@ -67,6 +67,26 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+
+def _running_under_gateway_service_manager() -> bool:
+    """Return True when this gateway process is owned by a service manager.
+
+    systemd exposes ``INVOCATION_ID``.  macOS launchd does not, but LaunchAgents
+    set ``XPC_SERVICE_NAME`` to the job label.  Treat Hermes' launchd labels as
+    service-managed so in-chat restarts use the service restart path instead of
+    a fragile detached shell helper.  This is especially important for launchd
+    plists with ``KeepAlive.SuccessfulExit=false``: a planned restart must exit
+    non-zero so launchd starts the gateway again.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if sys.platform == "darwin":
+        xpc_service_name = os.environ.get("XPC_SERVICE_NAME", "")
+        return xpc_service_name == "ai.hermes.gateway" or xpc_service_name.startswith(
+            "ai.hermes.gateway-"
+        )
+    return False
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -10646,7 +10666,7 @@ class GatewayRunner:
         # us.  The detached subprocess approach (setsid + bash) doesn't work
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        _under_service = _running_under_gateway_service_manager()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)

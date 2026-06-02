@@ -153,6 +153,7 @@ async def test_no_marker_file_allows_restart(tmp_path, monkeypatch):
     """Clean gateway start (no prior marker) processes /restart normally."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -162,6 +163,40 @@ async def test_no_marker_file_allows_restart(tmp_path, monkeypatch):
 
     assert "Restarting gateway" in result
     runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_restart_uses_service_path_under_launchd(tmp_path, monkeypatch):
+    """macOS LaunchAgent gateways must not rely on detached restart helpers."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    result = await runner._handle_restart_command(_make_restart_event(update_id=100))
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_uses_service_path_under_profile_launchd(tmp_path, monkeypatch):
+    """Profile-scoped launchd labels get the same service-managed restart path."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway-work")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    result = await runner._handle_restart_command(_make_restart_event(update_id=100))
+
+    assert "Restarting gateway" in result
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
 
 
 @pytest.mark.asyncio

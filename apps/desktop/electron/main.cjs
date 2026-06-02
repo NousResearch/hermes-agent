@@ -29,6 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
+const { hasUsableActiveInstall } = require('./runtime-resolver.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -2083,7 +2084,29 @@ function resolveHermesBackend(dashboardArgs) {
     return createActiveBackend(dashboardArgs)
   }
 
-  // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
+  // 4. Existing source install at ACTIVE_HERMES_ROOT without a desktop marker.
+  //    This is the common CLI-first path on macOS/Linux: Finder-launched apps
+  //    often cannot see ~/.local/bin on PATH, but the canonical checkout and
+  //    venv are already present and runnable. Reuse it without writing the
+  //    desktop bootstrap marker so Desktop does not claim ownership of a
+  //    manual install.
+  if (
+    process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1' &&
+    hasUsableActiveInstall({
+      activeRoot: ACTIVE_HERMES_ROOT,
+      canImportHermesCli,
+      fileExists,
+      getVenvPython,
+      isHermesSourceRoot,
+      rememberLog,
+      venvRoot: VENV_ROOT
+    })
+  ) {
+    rememberLog(`Using existing Hermes source install at ${ACTIVE_HERMES_ROOT} without desktop bootstrap marker.`)
+    return createActiveBackend(dashboardArgs)
+  }
+
+  // 5. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
   //    a previous tool-only setup, or pip-installed system-wide. Use it but
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.

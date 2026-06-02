@@ -128,6 +128,20 @@ _HERMES_ENV_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'\.env\b'
 )
+# ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
+# permanent-approval allowlist live here, and the config cache is mtime-keyed
+# so a write takes effect mid-session (the agent could flip approvals.mode=off
+# and immediately bypass the gate). Pair the write_file/patch deny (file_tools
+# _check_sensitive_path) with terminal-side coverage so `sed -i`, `tee`, `>`,
+# `cp`, etc. targeting it are gated too — otherwise the deny is unpaired
+# theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
+# well as ~/.hermes/.
+_HERMES_CONFIG_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'config\.yaml\b'
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -153,6 +167,7 @@ _SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH}|'
+    rf'{_HERMES_CONFIG_PATH}|'
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
@@ -391,6 +406,12 @@ DANGEROUS_PATTERNS = [
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
+    # .env). sed -i bypasses the redirection/tee patterns above because it
+    # mutates the file directly. Pairs the file_tools write_file/patch deny so
+    # the terminal side is not an open door. See #14639.
+    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
+    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),

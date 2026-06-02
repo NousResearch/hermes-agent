@@ -1,10 +1,19 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { StatusRule } from '../components/appChrome.js'
+import { StatusRuleView } from '../components/appChrome.js'
+import { getThinkingVerbs, getToolVerb, translate, translateStatus, type I18nApi } from '../i18n/index.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ReactNodeLike = React.ReactNode
+
+const enI18n: I18nApi = {
+  locale: 'en',
+  t: (key, vars) => translate('en', key, vars),
+  tStatus: status => translateStatus('en', status),
+  toolVerb: name => getToolVerb('en', name),
+  verbs: getThinkingVerbs('en')
+}
 
 const textContent = (node: ReactNodeLike): string => {
   if (node === null || node === undefined || typeof node === 'boolean') {
@@ -57,7 +66,7 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
 describe('StatusRule session count click target', () => {
   it('makes the live session count itself clickable', () => {
     const openSwitcher = vi.fn()
-    const element = StatusRule({
+    const element = StatusRuleView({
       bgCount: 0,
       busy: false,
       cols: 100,
@@ -69,10 +78,14 @@ describe('StatusRule session count click target', () => {
       showCost: false,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
+      i18n: enI18n,
       t: DEFAULT_THEME,
       turnStartedAt: null,
       usage: { total: 0 },
-      voiceLabel: ''
+      voiceEnabled: false,
+      voiceProcessing: false,
+      voiceRecording: false,
+      voiceTts: false
     })
 
     const clickableSessionCount = findClickableWithText(element, '1 session')
@@ -80,5 +93,38 @@ describe('StatusRule session count click target', () => {
     expect(clickableSessionCount).not.toBeNull()
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
     expect(openSwitcher).toHaveBeenCalledOnce()
+  })
+
+  it('keeps status + model and drops the low-value tail on a narrow terminal', () => {
+    const element = StatusRuleView({
+      bgCount: 0,
+      busy: false,
+      cols: 44,
+      cwdLabel: '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)',
+      liveSessionCount: 3,
+      model: 'opus-4.8',
+      onSessionCountClick: vi.fn(),
+      sessionStartedAt: Date.now() - 60_000,
+      showCost: true,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      i18n: enI18n,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
+      voiceEnabled: false,
+      voiceProcessing: false,
+      voiceRecording: false,
+      voiceTts: false
+    })
+
+    const rendered = textContent(element)
+
+    // Must-keep essentials survive intact …
+    expect(rendered).toContain('ready')
+    expect(rendered).toContain('opus 4.8')
+    // … while the low-value tail (session count, cost) is dropped, not truncated.
+    expect(rendered).not.toContain('3 sessions')
+    expect(rendered).not.toContain('$0.5000')
   })
 })

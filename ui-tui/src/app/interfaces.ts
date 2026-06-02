@@ -78,7 +78,6 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
-  picker: boolean
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean
@@ -390,7 +389,7 @@ export interface AppOverlaysProps {
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void
-  onPickerSelect: (sessionId: string) => void
+  onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
   pagerPageSize: number

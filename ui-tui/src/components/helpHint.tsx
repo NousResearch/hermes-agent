@@ -46,7 +46,7 @@ export function HelpHint({ t }: { t: Theme }) {
         </Text>
 
         <Box marginTop={1}>
-            <Text bold color={t.color.accent}>
+          <Text bold color={t.color.accent}>
             {ti('help.commonCommands')}
           </Text>
         </Box>

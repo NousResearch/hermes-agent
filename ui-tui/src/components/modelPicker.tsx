@@ -6,6 +6,7 @@ import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
+import { fuzzyRank } from '../lib/fuzzy.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -30,6 +31,8 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
   const [keyError, setKeyError] = useState('')
+  // Type-to-filter query, scoped per stage (cleared on stage change).
+  const [filter, setFilter] = useState('')
 
   const { stdout } = useStdout()
   // Pin the picker to a stable width so the FloatBox parent (which shrinks-
@@ -70,17 +73,73 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       })
   }, [gw, sessionId])
 
-  const provider = providers[providerIdx]
-  const models = provider?.models ?? []
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
+  // Provider rows carry their display name so fuzzy filtering can match on
+  // name + slug while keeping the name/provider pairing intact across ranking.
+  const providerRows = useMemo(
+    () => providers.map((p, i) => ({ provider: p, name: names[i] ?? p.name ?? p.slug })),
+    [providers, names]
+  )
+
+  // providerIdx / modelIdx always index into the *displayed* (filtered) lists.
+  // With an empty filter the filtered list equals the full list, so navigation
+  // behaves exactly as before. Filtering only applies on the relevant stage.
+  const filteredProviderRows = useMemo(() => {
+    if (stage !== 'provider' || !filter.trim()) {
+      return providerRows
+    }
+
+    return fuzzyRank(
+      providerRows,
+      filter,
+      row => `${row.name} ${row.provider.slug} ${(row.provider.models ?? []).join(' ')}`
+    ).map(r => r.item)
+  }, [providerRows, filter, stage])
+
+  const provider = filteredProviderRows[providerIdx]?.provider
+  const allModels = useMemo(() => provider?.models ?? [], [provider])
+
+  const filteredModels = useMemo(() => {
+    if (stage !== 'model' || !filter.trim()) {
+      return allModels
+    }
+
+    return fuzzyRank(allModels, filter, m => m).map(r => r.item)
+  }, [allModels, filter, stage])
+
+  const models = filteredModels
+
+  // Keep the active selection within the (possibly filtered) list bounds.
+  useEffect(() => {
+    if (providerIdx >= filteredProviderRows.length && filteredProviderRows.length > 0) {
+      setProviderIdx(0)
+    }
+  }, [filteredProviderRows.length, providerIdx])
+
+  useEffect(() => {
+    if (modelIdx >= models.length && models.length > 0) {
+      setModelIdx(0)
+    }
+  }, [models.length, modelIdx])
+
   const back = () => {
+    // Esc first clears an active filter on the list stages, before navigating.
+    if ((stage === 'provider' || stage === 'model') && filter.trim()) {
+      setFilter('')
+      setProviderIdx(stage === 'provider' ? 0 : providerIdx)
+      setModelIdx(0)
+
+      return
+    }
+
     if (stage === 'model' || stage === 'key' || stage === 'disconnect') {
       setStage('provider')
       setModelIdx(0)
       setKeyInput('')
       setKeyError('')
       setKeySaving(false)
+      setFilter('')
 
       return
     }
@@ -88,7 +147,10 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
     onCancel()
   }
 
-  useOverlayKeys({ onBack: back, onClose: onCancel })
+  // On the list stages we capture printable keys (including 'q') into the
+  // filter, so the shared overlay q/Esc handler must yield to our own handler.
+  const listStage = stage === 'provider' || stage === 'model'
+  useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
     // Key entry stage handles its own input
@@ -208,7 +270,21 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       return
     }
 
-    const count = stage === 'provider' ? providers.length : models.length
+    // List-stage Esc/q handling (overlay keys are disabled while on a list
+    // stage so 'q' can be typed into the filter).
+    if (key.escape) {
+      back()
+
+      return
+    }
+
+    if (ch === 'q' && !filter) {
+      onCancel()
+
+      return
+    }
+
+    const count = stage === 'provider' ? filteredProviderRows.length : models.length
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
 
@@ -236,6 +312,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
             setStage('key')
             setKeyInput('')
             setKeyError('')
+            setFilter('')
           }
 
           // Other auth types: no-op (warning shown tells them to run hermes model)
@@ -244,6 +321,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
         setStage('model')
         setModelIdx(0)
+        setFilter('')
 
         return
       }
@@ -261,17 +339,43 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       return
     }
 
-    if (allowPersistGlobal && ch.toLowerCase() === 'g') {
+    // Backspace removes the last filter character; Esc (above) clears a
+    // non-empty filter before navigating back.
+    if (key.backspace || key.delete) {
+      setFilter(v => v.slice(0, -1))
+      setSel(0)
+
+      return
+    }
+
+    // Ctrl+U clears the filter. (Ctrl held → ch is the key name 'u'.)
+    if (key.ctrl && ch === 'u') {
+      setFilter('')
+      setSel(0)
+
+      return
+    }
+
+    // Persist-global toggle moved to Ctrl+G so 'g' can be typed into the
+    // filter. With Ctrl held, @hermes/ink reports `ch` as the key name ('g'),
+    // not the raw control byte (see input-event.ts: input = ctrl ? name : seq).
+    if (allowPersistGlobal && key.ctrl && ch === 'g') {
       setPersistGlobal(v => !v)
 
       return
     }
 
-    // Disconnect: only in provider stage, only for authenticated providers
-    if (ch.toLowerCase() === 'd' && stage === 'provider' && provider?.authenticated !== false) {
+    // Disconnect (Ctrl+D): only in provider stage, only for authenticated providers.
+    if (key.ctrl && ch === 'd' && stage === 'provider' && provider?.authenticated !== false) {
       setStage('disconnect')
 
       return
+    }
+
+    // Any other printable single character extends the filter.
+    if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+      setFilter(v => v + ch)
+      setSel(0)
     }
   })
 
@@ -381,18 +485,19 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
-const rows = providers.map(
-      (p, i) => {
-        const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
-        const modelCount = p.total_models ?? p.models?.length ?? 0
-        const suffix = p.authenticated === false
-          ? (p.auth_type === 'api_key' ? ti('modelPicker.noKey') : ti('modelPicker.needsSetup'))
-          : `${ti('modelPicker.modelsCount', { count: String(modelCount) })}`
+    const rows = filteredProviderRows.map(({ provider: p, name }) => {
+      const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
+      const modelCount = p.total_models ?? p.models?.length ?? 0
 
-      return `${authMark} ${names[i]} · ${suffix}`
+      const suffix = p.authenticated === false
+        ? (p.auth_type === 'api_key' ? ti('modelPicker.noKey') : ti('modelPicker.needsSetup'))
+        : ti('modelPicker.modelsCount', { count: String(modelCount) })
+
+      return `${authMark} ${name} · ${suffix}`
     })
 
     const { items, offset } = windowItems(rows, providerIdx, VISIBLE)
+    const noMatches = !!filter.trim() && rows.length === 0
 
     return (
       <Box flexDirection="column" width={width}>
@@ -407,6 +512,9 @@ const rows = providers.map(
         <Text color={t.color.muted} wrap="truncate-end">
           {ti('modelPicker.current', { model: currentModel || ti('modelPicker.unknown') })}
         </Text>
+        <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
+          {filter ? ti('modelPicker.filtering', { query: `${filter}▎` }) : ti('modelPicker.filterHint')}
+        </Text>
         <Text color={t.color.label} wrap="truncate-end">
           {provider?.warning ? `${ti('common.warning')}: ${provider.warning}` : ' '}
         </Text>
@@ -414,44 +522,53 @@ const rows = providers.map(
           {offset > 0 ? ` ${ti('sys.moreAbove', { count: String(offset) })}` : ' '}
         </Text>
 
-        {Array.from({ length: VISIBLE }, (_, i) => {
-          const row = items[i]
-          const idx = offset + i
-          const p = providers[idx]
-          const dimmed = p?.authenticated === false
+        {noMatches ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {ti('modelPicker.noProviderMatches')}
+          </Text>
+        ) : (
+          Array.from({ length: VISIBLE }, (_, i) => {
+            const row = items[i]
+            const idx = offset + i
+            const p = filteredProviderRows[idx]?.provider
+            const dimmed = p?.authenticated === false
 
-          return row ? (
-            <Text
-              bold={providerIdx === idx}
-              color={providerIdx === idx ? t.color.accent : dimmed ? t.color.label : t.color.muted}
-              inverse={providerIdx === idx}
-              key={providers[idx]?.slug ?? `row-${idx}`}
-              wrap="truncate-end"
-            >
-              {providerIdx === idx ? '▸ ' : '  '}
-              {idx + 1}. {row}
-            </Text>
-          ) : (
-            <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
-              {' '}
-            </Text>
-          )
-        })}
+            return row ? (
+              <Text
+                bold={providerIdx === idx}
+                color={providerIdx === idx ? t.color.accent : dimmed ? t.color.label : t.color.muted}
+                inverse={providerIdx === idx}
+                key={p?.slug ?? `row-${idx}`}
+                wrap="truncate-end"
+              >
+                {providerIdx === idx ? '▸ ' : '  '}
+                {idx + 1}. {row}
+              </Text>
+            ) : (
+              <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
+                {' '}
+              </Text>
+            )
+          })
+        )}
 
         <Text color={t.color.muted} wrap="truncate-end">
           {offset + VISIBLE < rows.length ? ` ${ti('sys.moreBelow', { count: String(rows.length - offset - VISIBLE) })}` : ' '}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-{ti('modelPicker.persist', { scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession') })}
+          {allowPersistGlobal
+            ? ti('modelPicker.persist', { scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession') })
+            : ti('modelPicker.persistOnly', { scope: ti('modelPicker.persistSession') })}
         </Text>
-        <OverlayHint t={t}>{ti('picker.selectHint')}</OverlayHint>
+        <OverlayHint t={t}>{ti('modelPicker.providerFilterHint')}</OverlayHint>
       </Box>
     )
   }
 
   // ── Model selection stage ────────────────────────────────────────────
   const { items, offset } = windowItems(models, modelIdx, VISIBLE)
+  const noModelMatches = !!filter.trim() && models.length === 0
 
   return (
     <Box flexDirection="column" width={width}>
@@ -460,7 +577,10 @@ const rows = providers.map(
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {ti('modelPicker.providerBack', { provider: names[providerIdx] || ti('modelPicker.unknownProvider') })}
+        {ti('modelPicker.providerBack', { provider: filteredProviderRows[providerIdx]?.name || ti('modelPicker.unknownProvider') })}
+      </Text>
+      <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
+        {filter ? ti('modelPicker.filtering', { query: `${filter}▎` }) : ti('modelPicker.filterHint')}
       </Text>
       <Text color={t.color.label} wrap="truncate-end">
         {provider?.warning ? `${ti('common.warning')}: ${provider.warning}` : ' '}
@@ -474,9 +594,9 @@ const rows = providers.map(
         const idx = offset + i
 
         if (!row) {
-          return !models.length && i === 0 ? (
+          return (!allModels.length || noModelMatches) && i === 0 ? (
             <Text color={t.color.muted} key="empty" wrap="truncate-end">
-              {ti('modelPicker.noModels')}
+              {noModelMatches ? ti('modelPicker.noModelMatches') : ti('modelPicker.noModels')}
             </Text>
           ) : (
             <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -506,10 +626,12 @@ const rows = providers.map(
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-{ti('modelPicker.persist', { scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession') })}
+        {allowPersistGlobal
+          ? ti('modelPicker.persist', { scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession') })
+          : ti('modelPicker.persistOnly', { scope: ti('modelPicker.persistSession') })}
       </Text>
       <OverlayHint t={t}>
-        {models.length ? ti('modelPicker.modelHint') : ti('modelPicker.modelHintEmpty')}
+        {models.length ? ti('modelPicker.modelFilterHint') : ti('modelPicker.modelHintEmpty')}
       </OverlayHint>
     </Box>
   )

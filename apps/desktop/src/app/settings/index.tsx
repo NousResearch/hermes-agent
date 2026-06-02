@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
-import { Globe, Info, KeyRound, Package, Wrench } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Package, Wrench } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -19,6 +19,7 @@ import { SEARCH_PLACEHOLDER, SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
+import { SessionsSettings } from './sessions-settings'
 import { ToolsSettings } from './tools-settings'
 import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
 
@@ -27,6 +28,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'gateway',
   'keys',
   'mcp',
+  'sessions',
   'tools',
   'about'
 ]
@@ -40,6 +42,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
     gateway: '',
     keys: '',
     mcp: '',
+    sessions: '',
     tools: ''
   })
 
@@ -149,6 +152,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
             label="MCP"
             onClick={() => setActiveView('mcp')}
           />
+          <OverlayNavItem
+            active={activeView === 'sessions'}
+            icon={Archive}
+            label="Archived Chats"
+            onClick={() => setActiveView('sessions')}
+          />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'about'}
@@ -200,6 +209,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
             <KeysSettings query={queries.keys} />
           ) : activeView === 'mcp' ? (
             <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} query={queries.mcp} />
+          ) : activeView === 'sessions' ? (
+            <SessionsSettings query={queries.sessions} />
           ) : (
             <ToolsSettings query={queries.tools} />
           )}

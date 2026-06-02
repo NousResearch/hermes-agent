@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
+import { fuzzyRank } from "@/lib/fuzzy";
 
 /**
  * Two-stage model picker modal.
@@ -152,25 +153,30 @@ export function ModelPickerDialog(props: Props) {
     [selectedProvider],
   );
 
-  const needle = query.trim().toLowerCase();
+  const trimmedQuery = query.trim();
 
+  // Fuzzy-ranked providers: match on name + slug + the provider's model ids so
+  // typing a model name surfaces its provider (preserves the prior behaviour
+  // where a model match also revealed its provider).
   const filteredProviders = useMemo(
     () =>
-      !needle
-        ? providers
-        : providers.filter(
-            (p) =>
-              p.name.toLowerCase().includes(needle) ||
-              p.slug.toLowerCase().includes(needle) ||
-              (p.models ?? []).some((m) => m.toLowerCase().includes(needle)),
-          ),
-    [providers, needle],
+      fuzzyRank(
+        providers,
+        trimmedQuery,
+        (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
+      ).map((r) => r.item),
+    [providers, trimmedQuery],
   );
 
+  // Fuzzy-ranked models carrying the matched character positions so the model
+  // list can highlight why each entry matched.
   const filteredModels = useMemo(
     () =>
-      !needle ? models : models.filter((m) => m.toLowerCase().includes(needle)),
-    [models, needle],
+      fuzzyRank(models, trimmedQuery, (m) => m).map((r) => ({
+        model: r.item,
+        positions: r.positions,
+      })),
+    [models, trimmedQuery],
   );
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
@@ -259,7 +265,7 @@ export function ModelPickerDialog(props: Props) {
             providers={filteredProviders}
             total={providers.length}
             selectedSlug={selectedSlug}
-            query={needle}
+            query={trimmedQuery}
             onSelect={(slug) => {
               setSelectedSlug(slug);
               setSelectedModel("");
@@ -404,7 +410,7 @@ function ModelColumn({
   onConfirm,
 }: {
   provider: ModelOptionProvider | null;
-  models: string[];
+  models: { model: string; positions: number[] }[];
   allModels: string[];
   selectedModel: string;
   currentModel: string;
@@ -437,7 +443,7 @@ function ModelColumn({
             : "no models listed for this provider"}
         </div>
       ) : (
-        models.map((m) => {
+        models.map(({ model: m, positions }) => {
           const active = m === selectedModel;
           const isCurrent =
             m === currentModel && provider.slug === currentProviderSlug;
@@ -453,7 +459,9 @@ function ModelColumn({
               <Check
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
-              <span className="flex-1 truncate">{m}</span>
+              <span className="flex-1 truncate">
+                <HighlightedText text={m} positions={positions} />
+              </span>
               {isCurrent && <CurrentTag />}
             </ListItem>
           );
@@ -468,5 +476,41 @@ function CurrentTag() {
     <span className="text-display text-xs tracking-wider text-primary shrink-0">
       current
     </span>
+  );
+}
+
+/**
+ * Render `text` with the characters at `positions` emphasised, so users can
+ * see which characters their fuzzy query matched. Positions are indices into
+ * `text`; out-of-range indices are ignored.
+ */
+function HighlightedText({
+  text,
+  positions,
+}: {
+  text: string;
+  positions: number[];
+}) {
+  if (!positions.length) {
+    return <>{text}</>;
+  }
+
+  const hit = new Set(positions);
+
+  return (
+    <>
+      {Array.from(text).map((ch, i) =>
+        hit.has(i) ? (
+          <mark
+            key={i}
+            className="bg-transparent text-primary font-semibold underline underline-offset-2"
+          >
+            {ch}
+          </mark>
+        ) : (
+          <span key={i}>{ch}</span>
+        ),
+      )}
+    </>
   );
 }

@@ -262,6 +262,24 @@ def test_resolve_discovery_timeout_falls_back_on_bad_value(monkeypatch):
     assert mcp_startup._resolve_discovery_timeout(None) == default
 
 
+def test_resolve_discovery_timeout_env_var_wins_over_explicit_and_config(monkeypatch):
+    from hermes_cli import mcp_startup
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 8.0})
+    monkeypatch.setenv("HERMES_MCP_DISCOVERY_TIMEOUT", "10")
+
+    assert mcp_startup._resolve_discovery_timeout(2.5) == 10.0
+
+
+def test_resolve_discovery_timeout_ignores_malformed_env_var(monkeypatch):
+    from hermes_cli import mcp_startup
+
+    monkeypatch.setenv("HERMES_MCP_DISCOVERY_TIMEOUT", "not-a-number")
+
+    assert mcp_startup._resolve_discovery_timeout(2.5) == 2.5
+
+
 def test_stale_generation_refresh_does_not_clobber_newer(monkeypatch):
     """A slower refresh that computed an OLDER registry generation must not
     overwrite a snapshot a newer-generation refresh already published."""

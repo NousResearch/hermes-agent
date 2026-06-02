@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import nullcontext
 from typing import Optional
@@ -51,13 +52,22 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
 
 
 def _resolve_discovery_timeout(explicit: "float | None") -> float:
-    """Resolve the MCP discovery wait bound: explicit arg > config > default.
+    """Resolve the MCP discovery wait bound.
 
-    Reads ``mcp_discovery_timeout`` from config.yaml, defaulting to the value in
-    ``DEFAULT_CONFIG`` (single source of truth) when the key is absent. Kept lazy
-    and fail-safe — a missing/invalid value or a broken config falls back to a
+    Priority: ``HERMES_MCP_DISCOVERY_TIMEOUT`` env var > explicit arg >
+    ``mcp_discovery_timeout`` in config.yaml (defaulting to the value in
+    ``DEFAULT_CONFIG``, the single source of truth) > built-in default. The
+    env var lets process/container-backed servers with long cold-starts
+    override the bound without touching config.yaml. Kept lazy and
+    fail-safe — a missing/invalid value or a broken config falls back to a
     short safe bound so startup can never hang or crash.
     """
+    env_val = os.environ.get("HERMES_MCP_DISCOVERY_TIMEOUT")
+    if env_val is not None:
+        try:
+            return float(env_val)
+        except ValueError:
+            pass  # ignore malformed value, fall through
     if explicit is not None:
         return explicit
     try:

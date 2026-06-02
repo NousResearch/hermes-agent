@@ -1,0 +1,494 @@
+model:
+  default: deepseek-v4-flash
+  provider: deepseek
+  base_url: https://api.deepseek.com
+providers:
+  mimo:
+    base_url: https://api.xiaomimimo.com/v1
+    api_key_env: OPENAI_API_KEY
+fallback_providers: []
+credential_pool_strategies: {}
+toolsets:
+- hermes-cli
+agent:
+  max_turns: 90
+  gateway_timeout: 1800
+  restart_drain_timeout: 180
+  api_max_retries: 3
+  service_tier: ''
+  tool_use_enforcement: auto
+  task_completion_guidance: true
+  environment_probe: true
+  environment_hint: ''
+  gateway_timeout_warning: 900
+  clarify_timeout: 600
+  gateway_notify_interval: 180
+  gateway_auto_continue_freshness: 3600
+  image_input_mode: auto
+  disabled_toolsets: []
+terminal:
+  backend: local
+  modal_mode: auto
+  cwd: .
+  timeout: 180
+  env_passthrough: []
+  shell_init_files: []
+  auto_source_bashrc: true
+  docker_image: nikolaik/python-nodejs:python3.11-nodejs20
+  docker_forward_env: []
+  docker_env: {}
+  singularity_image: docker://nikolaik/python-nodejs:python3.11-nodejs20
+  modal_image: nikolaik/python-nodejs:python3.11-nodejs20
+  daytona_image: nikolaik/python-nodejs:python3.11-nodejs20
+  container_cpu: 1
+  container_memory: 5120
+  container_disk: 51200
+  container_persistent: true
+  docker_volumes: []
+  docker_mount_cwd_to_workspace: false
+  docker_extra_args: []
+  docker_run_as_host_user: false
+  persistent_shell: true
+web:
+  backend: ''
+  search_backend: ''
+  extract_backend: ''
+browser:
+  inactivity_timeout: 120
+  command_timeout: 30
+  record_sessions: false
+  allow_private_urls: false
+  engine: auto
+  auto_local_for_private_urls: true
+  cdp_url: ''
+  dialog_policy: must_respond
+  dialog_timeout_s: 300
+  camofox:
+    managed_persistence: false
+    user_id: ''
+    session_key: ''
+    adopt_existing_tab: false
+    rewrite_loopback_urls: false
+    loopback_host_alias: host.docker.internal
+checkpoints:
+  enabled: false
+  max_snapshots: 20
+  max_total_size_mb: 500
+  max_file_size_mb: 10
+  auto_prune: true
+  retention_days: 7
+  delete_orphans: true
+  min_interval_hours: 24
+file_read_max_chars: 100000
+tool_output:
+  max_bytes: 50000
+  max_lines: 2000
+  max_line_length: 2000
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 5
+    same_tool_failure: 8
+    idempotent_no_progress: 5
+compression:
+  enabled: true
+  threshold: 0.5
+  target_ratio: 0.2
+  protect_last_n: 20
+  hygiene_hard_message_limit: 400
+  protect_first_n: 3
+  abort_on_summary_failure: false
+prompt_caching:
+  cache_ttl: 5m
+openrouter:
+  response_cache: true
+  response_cache_ttl: 300
+  min_coding_score: 0.65
+bedrock:
+  region: ''
+  discovery:
+    enabled: true
+    provider_filter: []
+    refresh_interval: 3600
+  guardrail:
+    guardrail_identifier: ''
+    guardrail_version: ''
+    stream_processing_mode: async
+    trace: disabled
+auxiliary:
+  vision:
+    provider: openai
+    model: mimo-v2-omni
+    base_url: https://api.xiaomimimo.com/v1
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+    api_key_env: OPENAI_API_KEY
+  web_extract:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 360
+    extra_body: {}
+  compression:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+  skills_hub:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+  approval:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+  mcp:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+  title_generation:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 30
+    extra_body: {}
+  triage_specifier:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 120
+    extra_body: {}
+  kanban_decomposer:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 180
+    extra_body: {}
+  profile_describer:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 60
+    extra_body: {}
+  curator:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: ''
+    timeout: 600
+    extra_body: {}
+display:
+  compact: false
+  personality: kawaii
+  resume_display: full
+  resume_exchanges: 10
+  resume_max_user_chars: 300
+  resume_max_assistant_chars: 200
+  resume_max_assistant_lines: 3
+  resume_skip_tool_only: true
+  busy_input_mode: interrupt
+  tui_auto_resume_recent: false
+  tui_agents_nudge: true
+  bell_on_complete: false
+  show_reasoning: false
+  streaming: false
+  timestamps: false
+  final_response_markdown: strip
+  persistent_output: true
+  persistent_output_max_lines: 200
+  inline_diffs: true
+  file_mutation_verifier: true
+  turn_completion_explainer: true
+  show_cost: false
+  skin: default
+  language: en
+  tui_status_indicator: kaomoji
+  user_message_preview:
+    first_lines: 2
+    last_lines: 2
+  interim_assistant_messages: true
+  tool_progress_command: false
+  tool_progress_overrides: {}
+  tool_preview_length: 0
+  ephemeral_system_ttl: 0
+  platforms: {}
+  runtime_footer:
+    enabled: false
+    fields:
+    - model
+    - context_pct
+    - cwd
+  copy_shortcut: auto
+  tool_progress: all
+dashboard:
+  theme: default-large
+  show_token_analytics: true
+  oauth:
+    client_id: ''
+    portal_url: ''
+  public_url: ''
+privacy:
+  redact_pii: false
+tts:
+  provider: edge
+  edge:
+    voice: en-US-AriaNeural
+  elevenlabs:
+    voice_id: pNInz6obpgDQGcFmaJgB
+    model_id: eleven_multilingual_v2
+  openai:
+    model: gpt-4o-mini-tts
+    voice: alloy
+  xai:
+    voice_id: eve
+    language: en
+    sample_rate: 24000
+    bit_rate: 128000
+  mistral:
+    model: voxtral-mini-tts-2603
+    voice_id: c69964a6-ab8b-4f8a-9465-ec0925096ec8
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
+  piper:
+    voice: en_US-lessac-medium
+stt:
+  enabled: true
+  provider: local
+  local:
+    model: base
+    language: ''
+  openai:
+    model: whisper-1
+  mistral:
+    model: voxtral-mini-latest
+voice:
+  record_key: ctrl+b
+  max_recording_seconds: 120
+  auto_tts: false
+  beep_enabled: true
+  silence_threshold: 200
+  silence_duration: 3.0
+human_delay:
+  mode: 'off'
+  min_ms: 800
+  max_ms: 2500
+context:
+  engine: compressor
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  provider: ''
+delegation:
+  model: ''
+  provider: ''
+  base_url: ''
+  api_key: ''
+  api_mode: ''
+  inherit_mcp_toolsets: true
+  max_iterations: 50
+  child_timeout_seconds: 600
+  reasoning_effort: ''
+  max_concurrent_children: 3
+  max_spawn_depth: 1
+  orchestrator_enabled: true
+  subagent_auto_approve: false
+prefill_messages_file: ''
+goals:
+  max_turns: 20
+skills:
+  external_dirs: []
+  template_vars: true
+  inline_shell: false
+  inline_shell_timeout: 10
+  guard_agent_created: false
+curator:
+  enabled: true
+  interval_hours: 168
+  min_idle_hours: 2
+  stale_after_days: 30
+  archive_after_days: 90
+  backup:
+    enabled: true
+    keep: 5
+honcho: {}
+timezone: ''
+slack:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  channel_prompts: {}
+discord:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  auto_thread: true
+  thread_require_mention: false
+  history_backfill: true
+  history_backfill_limit: 50
+  reactions: true
+  channel_prompts: {}
+  dm_role_auth_guild: ''
+  server_actions: ''
+  allow_any_attachment: false
+  max_attachment_bytes: 33554432
+whatsapp: {}
+telegram:
+  reactions: false
+  channel_prompts: {}
+  allowed_chats: ''
+mattermost:
+  require_mention: true
+  free_response_channels: ''
+  allowed_channels: ''
+  channel_prompts: {}
+matrix:
+  require_mention: true
+  free_response_rooms: ''
+  allowed_rooms: ''
+approvals:
+  mode: manual
+  timeout: 60
+  cron_mode: deny
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+command_allowlist:
+- script execution via -e/-c flag
+- stop/restart hermes gateway (kills running agents)
+- script execution via heredoc
+- overwrite system file via redirection
+quick_commands: {}
+hooks: {}
+hooks_auto_accept: false
+personalities: {}
+security:
+  allow_private_urls: false
+  redact_secrets: true
+  tirith_enabled: true
+  tirith_path: tirith
+  tirith_timeout: 5
+  tirith_fail_open: true
+  website_blocklist:
+    enabled: false
+    domains: []
+    shared_files: []
+  acked_advisories: []
+  allow_lazy_installs: true
+cron:
+  wrap_response: true
+  max_parallel_jobs: null
+kanban:
+  dispatch_in_gateway: true
+  dispatch_interval_seconds: 60
+  failure_limit: 2
+  worker_log_rotate_bytes: 2097152
+  worker_log_backup_count: 1
+  orchestrator_profile: ''
+  default_assignee: ''
+  max_in_progress_per_profile: null
+  auto_decompose: true
+  auto_decompose_per_tick: 3
+  dispatch_stale_timeout_seconds: 14400
+code_execution:
+  mode: project
+tools:
+  tool_search:
+    enabled: auto
+    threshold_pct: 10
+    search_default_limit: 5
+    max_search_limit: 20
+logging:
+  level: INFO
+  max_size_mb: 5
+  backup_count: 3
+  memory_monitor:
+    enabled: true
+    interval_seconds: 300
+model_catalog:
+  enabled: true
+  url: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
+  ttl_hours: 24
+  providers: {}
+network:
+  force_ipv4: false
+gateway:
+  strict: false
+  media_delivery_allow_dirs: []
+  trust_recent_files: true
+  trust_recent_files_seconds: 600
+  platforms:
+    feishu:
+      extra:
+        ws_ping_interval: 30
+sessions:
+  auto_prune: false
+  retention_days: 90
+  vacuum_after_prune: true
+  min_interval_hours: 24
+  write_json_snapshots: false
+onboarding:
+  seen:
+    busy_input_prompt: true
+    tool_progress_prompt: true
+updates:
+  pre_update_backup: false
+  backup_keep: 5
+lsp:
+  enabled: true
+  wait_mode: document
+  wait_timeout: 5.0
+  install_strategy: auto
+  servers: {}
+x_search:
+  model: grok-4.20-reasoning
+  timeout_seconds: 180
+  retries: 2
+secrets:
+  bitwarden:
+    enabled: false
+    access_token_env: BWS_ACCESS_TOKEN
+    project_id: ''
+    cache_ttl_seconds: 300
+    override_existing: true
+    auto_install: true
+    server_url: ''
+paste_collapse_threshold: 5
+paste_collapse_threshold_fallback: 5
+paste_collapse_char_threshold: 2000
+_config_version: 24
+session_reset:
+  mode: both
+  idle_minutes: 1440
+  at_hour: 4
+mcp_servers:
+  xiaohongshu:
+    url: http://localhost:18060/mcp
+    timeout: 120
+    connect_timeout: 30

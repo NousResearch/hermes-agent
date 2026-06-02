@@ -201,6 +201,38 @@ class TestSSHPreflight:
         assert env.user == "alice"
 
 
+class TestSSHSubprocessDecoding:
+    def test_text_subprocess_calls_use_replace_decoding(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            stdout = "/home/alice\n" if "echo $HOME" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", fake_run)
+
+        env = object.__new__(ssh_env.SSHEnvironment)
+        env.host = "example.com"
+        env.user = "alice"
+        env.port = 22
+        env.key_path = ""
+        env.control_socket = ssh_env.Path("/tmp/hermes-ssh-test.sock")
+        env._remote_home = "/home/alice"
+
+        env._establish_connection()
+        assert env._detect_remote_home() == "/home/alice"
+        env._ensure_remote_dirs()
+        env._scp_upload("/tmp/local.txt", "/home/alice/.hermes/cache/local.txt")
+        env._ssh_delete(["/home/alice/.hermes/cache/local.txt"])
+
+        assert calls, "expected SSH helpers to spawn subprocesses"
+        for _cmd, kwargs in calls:
+            assert kwargs["capture_output"] is True
+            assert kwargs["text"] is True
+            assert kwargs["errors"] == "replace"
+
+
 def _setup_ssh_env(monkeypatch, persistent: bool):
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", _SSH_HOST)

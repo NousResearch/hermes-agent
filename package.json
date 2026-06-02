@@ -23,7 +23,19 @@
     "agent-browser": "^0.26.0"
   },
   "overrides": {
-    "lodash": "4.18.1"
+    "lodash": "4.18.1",
+    "streamdown": {
+      ".": "^2.5.0",
+      "mermaid": "11.15.0"
+    },
+    "tmp-promise": {
+      ".": "^3.0.3",
+      "tmp": "0.2.7"
+    },
+    "minimatch@10.2.5": {
+      ".": "10.2.5",
+      "brace-expansion": "5.0.6"
+    }
   },
   "engines": {
     "node": ">=20.0.0"

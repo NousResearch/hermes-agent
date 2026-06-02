@@ -1223,6 +1223,46 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is True
         assert "EXTERNAL BODY" in result["content"]
 
+    def test_legacy_flat_lookup_ignores_internal_skill_assets(self, tmp_path):
+        """A <name>.md file inside another skill's asset tree is not a
+        standalone legacy flat skill and must not collide with a real skill."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+
+        _make_skill(local_dir, "notion", category="productivity", body="REAL NOTION")
+        asset_owner = _make_skill(
+            local_dir,
+            "popular-web-designs",
+            category="creative",
+            body="DESIGN SKILL",
+        )
+        templates_dir = asset_owner / "templates"
+        templates_dir.mkdir()
+        (templates_dir / "notion.md").write_text("# Notion template\n")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("notion")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "REAL NOTION" in result["content"]
+
+    def test_legacy_flat_lookup_still_loads_top_level_markdown(self, tmp_path):
+        """Legacy flat <name>.md files directly under a skills root still
+        resolve for existing users that keep old-style skills."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        (local_dir / "legacy-skill.md").write_text("# Legacy body\n")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("legacy-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Legacy body" in result["content"]
+
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with
         same-name skills also trigger the refusal."""

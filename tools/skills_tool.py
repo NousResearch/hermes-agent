@@ -935,6 +935,14 @@ def skill_view(
             seen_md.add(key)
             candidates.append((sd, smd))
 
+        def _is_inside_skill_dir(path: Path, root: Path) -> bool:
+            for ancestor in path.parents:
+                if ancestor == root:
+                    return False
+                if (ancestor / "SKILL.md").exists():
+                    return True
+            return False
+
         for search_dir in all_dirs:
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
@@ -963,6 +971,8 @@ def skill_view(
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             for found_md in search_dir.rglob(f"{name}.md"):
                 if found_md.name != "SKILL.md":
+                    if _is_inside_skill_dir(found_md, search_dir):
+                        continue
                     _record(None, found_md)
 
         if len(candidates) > 1:

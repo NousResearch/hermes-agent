@@ -1,159 +1,99 @@
-"""OpenAI function-schema definitions for the 5 calendar tools."""
+"""JSON-Schema definitions for the calendar plugin tools.
+
+These mirror the ``gws calendar`` CLI surface. Each schema also carries a
+``label_he`` (Hebrew label for operator-facing surfaces) and a ``category``
+field consumed by the agente-desktop tool palette.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict
 
-TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
-    "list_events": {
-        "name": "list_events",
-        "description": (
-            "List calendar events in a time range. Returns events from the "
-            "operator's primary Google Calendar unless a specific calendar_id "
-            "is provided."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "start": {
-                    "type": "string",
-                    "description": "Start of the time range (ISO 8601 datetime or date).",
-                },
-                "end": {
-                    "type": "string",
-                    "description": "End of the time range (ISO 8601 datetime or date).",
-                },
-                "calendar_id": {
-                    "type": "string",
-                    "description": "Optional Google Calendar ID (defaults to primary).",
-                },
+
+LIST_CALENDAR_EVENTS_SCHEMA: Dict[str, Any] = {
+    "name": "list_calendar_events",
+    "description": (
+        "List Google Calendar events between two ISO-8601 timestamps. "
+        "Shells `gws calendar list --from <after> --to <before> --json` and "
+        "returns the parsed event list. OAuth is owned by gws; this tool "
+        "never sees a token."
+    ),
+    "label_he": "רשימת אירועים ביומן",
+    "category": "calendar",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "after": {
+                "type": "string",
+                "description": "ISO-8601 timestamp or `gws`-relative form (e.g. 'today', 'today+1d').",
             },
-            "required": ["start", "end"],
+            "before": {
+                "type": "string",
+                "description": "ISO-8601 timestamp or `gws`-relative form (e.g. 'today+7d').",
+            },
+            "calendar_id": {
+                "type": "string",
+                "description": "Optional calendar id; defaults to primary.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 500,
+                "description": "Optional max number of events to return.",
+            },
         },
+        "required": ["after", "before"],
+        "additionalProperties": False,
     },
-    "create_event": {
-        "name": "create_event",
-        "description": (
-            "Create a new calendar event. Returns the created event with its "
-            "Google Calendar event ID."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "start": {
-                    "type": "string",
-                    "description": "Event start time (ISO 8601 datetime).",
-                },
-                "end": {
-                    "type": "string",
-                    "description": "Event end time (ISO 8601 datetime).",
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Event title (Hebrew/RTL supported via UTF-8).",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Optional event description.",
-                },
-                "location": {
-                    "type": "string",
-                    "description": "Optional event location.",
-                },
-                "calendar_id": {
-                    "type": "string",
-                    "description": "Optional Google Calendar ID (defaults to primary).",
-                },
+}
+
+
+CREATE_CALENDAR_EVENT_SCHEMA: Dict[str, Any] = {
+    "name": "create_calendar_event",
+    "description": (
+        "Create a new Google Calendar event. Shells "
+        "`gws calendar create --title <title> --start <start> --end <end> "
+        "[--attendees a,b] [--description <desc>] --json` and returns the "
+        "created event id + html link. Hebrew/RTL titles are preserved verbatim."
+    ),
+    "label_he": "יצירת אירוע ביומן",
+    "category": "calendar",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Event title (UTF-8; RTL preserved)."},
+            "start": {"type": "string", "description": "ISO-8601 start timestamp."},
+            "end": {"type": "string", "description": "ISO-8601 end timestamp."},
+            "attendees": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of attendee email addresses.",
             },
-            "required": ["start", "end", "title"],
+            "description": {
+                "type": "string",
+                "description": "Optional event description / body.",
+            },
         },
+        "required": ["title", "start", "end"],
+        "additionalProperties": False,
     },
-    "update_event": {
-        "name": "update_event",
-        "description": (
-            "Update an existing calendar event. Only the fields provided are "
-            "changed — omitted fields are left unchanged."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "event_id": {
-                    "type": "string",
-                    "description": "Google Calendar event ID to update.",
-                },
-                "start": {
-                    "type": "string",
-                    "description": "Updated start time (ISO 8601 datetime).",
-                },
-                "end": {
-                    "type": "string",
-                    "description": "Updated end time (ISO 8601 datetime).",
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Updated event title.",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Updated event description.",
-                },
-                "location": {
-                    "type": "string",
-                    "description": "Updated event location.",
-                },
-                "calendar_id": {
-                    "type": "string",
-                    "description": "Optional Google Calendar ID (defaults to primary).",
-                },
-            },
-            "required": ["event_id"],
+}
+
+
+GET_CALENDAR_EVENT_SCHEMA: Dict[str, Any] = {
+    "name": "get_calendar_event",
+    "description": (
+        "Fetch a single Google Calendar event by id. Shells "
+        "`gws calendar get --event <event_id> --json` and returns the parsed event."
+    ),
+    "label_he": "פרטי אירוע ביומן",
+    "category": "calendar",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "event_id": {"type": "string", "description": "Google Calendar event id."},
         },
-    },
-    "cancel_event": {
-        "name": "cancel_event",
-        "description": (
-            "Cancel (delete) a calendar event. Returns confirmation that the "
-            "event was removed."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "event_id": {
-                    "type": "string",
-                    "description": "Google Calendar event ID to cancel.",
-                },
-                "calendar_id": {
-                    "type": "string",
-                    "description": "Optional Google Calendar ID (defaults to primary).",
-                },
-            },
-            "required": ["event_id"],
-        },
-    },
-    "find_free_slots": {
-        "name": "find_free_slots",
-        "description": (
-            "Find free time slots within a window. Returns a list of available "
-            "slots that are at least duration_minutes long."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "duration_minutes": {
-                    "type": "integer",
-                    "description": "Minimum slot duration in minutes (default 30).",
-                    "default": 30,
-                },
-                "within": {
-                    "type": "string",
-                    "description": "Time window to search within (ISO 8601 datetime or date range).",
-                },
-                "calendar_id": {
-                    "type": "string",
-                    "description": "Optional Google Calendar ID (defaults to primary).",
-                },
-            },
-            "required": ["within"],
-        },
+        "required": ["event_id"],
+        "additionalProperties": False,
     },
 }

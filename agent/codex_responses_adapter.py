@@ -1074,6 +1074,15 @@ def _normalize_codex_response(
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+    # Track the genuinely-still-streaming signals separately from the
+    # Azure-Foundry "top-level status == incomplete on an otherwise-complete
+    # response" artifact. The `final_answer` phase override below may only
+    # suppress the latter; a queued/in_progress response (top-level or
+    # per-item) or a per-item `incomplete` status means the stream is not
+    # done and must still resolve to finish_reason="incomplete" even when a
+    # final_answer message is present.
+    response_still_streaming = response_status in {"queued", "in_progress"}
+    saw_streaming_or_item_incomplete = response_still_streaming
     saw_commentary_phase = False
     saw_final_answer_phase = False
     saw_reasoning_item = False
@@ -1088,6 +1097,7 @@ def _normalize_codex_response(
 
         if item_status in {"queued", "in_progress", "incomplete"}:
             has_incomplete_items = True
+            saw_streaming_or_item_incomplete = True
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
@@ -1245,12 +1255,21 @@ def _normalize_codex_response(
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
+    elif saw_streaming_or_item_incomplete:
+        # The response is genuinely still streaming: the top-level status is
+        # queued/in_progress, or some output item is queued/in_progress/
+        # incomplete. A `phase=final_answer` message does NOT make this
+        # complete — more items may still arrive — so we always treat it as
+        # incomplete and let the continuation path drain the stream.
+        finish_reason = "incomplete"
     elif (has_incomplete_items or saw_commentary_phase) and not saw_final_answer_phase:
-        # A `phase=final_answer` message indicates the model produced a
-        # complete user-visible answer, even if the top-level
-        # `response.status` is "incomplete" (Azure Foundry sometimes sets
-        # this on otherwise-complete gpt-5.x responses). Trust the
-        # per-message phase signal over the top-level accounting status.
+        # The only remaining incomplete signal here is a top-level
+        # `response.status == "incomplete"` (Azure Foundry sometimes sets
+        # this on otherwise-complete gpt-5.x responses, see has_incomplete_items
+        # init) or a commentary/analysis phase. A `phase=final_answer` message
+        # indicates the model produced a complete user-visible answer, so trust
+        # the per-message phase signal over the top-level accounting status and
+        # let it fall through to "stop". Without final_answer, stay incomplete.
         finish_reason = "incomplete"
     elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
         # Response contains only reasoning (encrypted thinking state and/or

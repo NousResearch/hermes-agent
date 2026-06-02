@@ -1437,6 +1437,74 @@ def test_normalize_codex_response_top_level_incomplete_without_final_answer_phas
     assert finish_reason == "incomplete"
 
 
+@pytest.mark.parametrize("top_level_status", ["queued", "in_progress"])
+def test_normalize_codex_response_final_answer_does_not_override_streaming_status(
+    monkeypatch, top_level_status
+):
+    """A `phase=final_answer` message must NOT short-circuit a response whose
+    top-level status is still `queued`/`in_progress`. The final_answer override
+    only exists to neutralize the Azure-Foundry top-level `incomplete` artifact;
+    a genuinely-streaming response can still emit more items, so it must stay
+    `finish_reason="incomplete"` and let the continuation path drain the stream
+    (regression for the over-broad override, Copilot review on #28039).
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                phase="final_answer",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="Interim answer.")],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status=top_level_status,
+        model="gpt-5.4",
+    )
+
+    _, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+
+
+def test_normalize_codex_response_final_answer_does_not_override_per_item_in_progress(
+    monkeypatch,
+):
+    """Even with a top-level `completed` status and a `phase=final_answer`
+    message, a sibling output item that is still `in_progress` means the
+    stream is not done; finish_reason must stay `incomplete` rather than
+    `stop` (Copilot review on #28039).
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                phase="final_answer",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="Partial final.")],
+            ),
+            SimpleNamespace(
+                type="message",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text="")],
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    _, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+
+
 def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
     """Incomplete Codex output messages must not be replayed as completed."""
     agent = _build_agent(monkeypatch)

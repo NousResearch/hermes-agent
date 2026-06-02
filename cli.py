@@ -2915,6 +2915,12 @@ def build_skill_invocation_message(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def get_skill_model_for_command(*args, **kwargs):
+    from agent.skill_commands import get_skill_model_for_command as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def build_preloaded_skills_prompt(*args, **kwargs):
     from agent.skill_commands import build_preloaded_skills_prompt as _impl
 
@@ -9081,12 +9087,24 @@ class HermesCLI:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
+                # Skill-level model routing: resolve any per-skill model
+                # preference (config override > SKILL.md frontmatter) before
+                # dispatching, so the swap applies to this skill's turn.
+                _skill_cfg_overrides = (self.config or {}).get("skills", {}).get("model_overrides", {})
+                _skill_model = get_skill_model_for_command(base_cmd, _skill_cfg_overrides)
                 msg = build_skill_invocation_message(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
                 if msg:
                     skill_name = skill_commands[base_cmd]["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
+                    # Apply lightweight transient model swap if the skill
+                    # declares a model. Reverted in the run-loop finally block.
+                    if _skill_model and self.agent is not None:
+                        from agent.skill_utils import skill_model_swap
+                        self._skill_model_snapshot = skill_model_swap(self.agent, _skill_model)
+                    else:
+                        self._skill_model_snapshot = None
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
@@ -12301,6 +12319,15 @@ class HermesCLI:
                             reset_current_session_key(_approval_session_token)
                         except Exception:
                             pass
+                    # Restore model if a skill swapped it for this turn (skill-level
+                    # model routing). Lightweight revert — see skill_model_swap.
+                    if getattr(self, "_skill_model_snapshot", None):
+                        try:
+                            from agent.skill_utils import skill_model_restore
+                            skill_model_restore(self.agent, self._skill_model_snapshot)
+                        except Exception:
+                            pass
+                        self._skill_model_snapshot = None
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP

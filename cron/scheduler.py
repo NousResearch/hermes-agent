@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import contextvars
 import json
@@ -17,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -1862,18 +1864,103 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None) -> int:
+# Module-level persistent pool for fire-and-forget parallel dispatch
+# (#37312). Created lazily by ``_dispatch_parallel(sync=False)`` and
+# shut down on interpreter exit via ``atexit``. Tracks in-flight
+# futures so already-running jobs are not re-dispatched by a later
+# tick before they have a chance to mark themselves done.
+_PARALLEL_POOL: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_RUNNING_PARALLEL: set[str] = set()
+_PARALLEL_LOCK = threading.Lock()
+
+
+def _dispatch_parallel_async(
+    jobs: list, max_workers: Optional[int]
+) -> None:
+    """Fire ``_process_job`` for each due parallel job into a module-level
+    persistent pool. The caller (``tick``) returns immediately; jobs run in
+    the background so a single slow job cannot stall the caller's ticker
+    thread and force every other due job to fast-forward past its grace
+    window (#37312).
+
+    The pool is reused across ticks. Already-running jobs (by ID) are
+    skipped — re-dispatching them would just fast-forward them past
+    their grace window again, which is the exact bug we're fixing.
+    """
+    global _PARALLEL_POOL
+    with _PARALLEL_LOCK:
+        if _PARALLEL_POOL is None:
+            _PARALLEL_POOL = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="cron-tick-parallel",
+            )
+            atexit.register(_shutdown_parallel_pool)
+
+    # Import here to avoid a circular import: _process_job is defined
+    # later in this module and ``tick`` itself captures the closure.
+    # We re-import the public name so this helper can be called from
+    # the gate inside ``tick`` without leaking the local binding.
+    from cron.scheduler import _process_job as _pj  # noqa: PLC0415
+
+    for job in jobs:
+        job_id = getattr(job, "id", None) or repr(job)
+        with _PARALLEL_LOCK:
+            if job_id in _RUNNING_PARALLEL:
+                logger.debug(
+                    "Skipping parallel cron job '%s' — already running "
+                    "from a prior tick (decoupled dispatch, #37312)",
+                    job_id,
+                )
+                continue
+            _RUNNING_PARALLEL.add(job_id)
+
+        _ctx = contextvars.copy_context()
+        future = _PARALLEL_POOL.submit(_ctx.run, _pj, job)
+
+        def _on_complete(fut, _jid=job_id):
+            try:
+                fut.result()
+            except Exception as exc:
+                logger.error(
+                    "Parallel cron job '%s' future failed: %s", _jid, exc
+                )
+            finally:
+                with _PARALLEL_LOCK:
+                    _RUNNING_PARALLEL.discard(_jid)
+
+        future.add_done_callback(_on_complete)
+
+
+def _shutdown_parallel_pool() -> None:
+    """atexit hook: drain the persistent parallel pool cleanly."""
+    global _PARALLEL_POOL
+    pool = _PARALLEL_POOL
+    _PARALLEL_POOL = None
+    if pool is None:
+        return
+    try:
+        pool.shutdown(wait=True, cancel_futures=False)
+    except Exception as e:
+        logger.debug("Persistent parallel pool shutdown failed: %s", e)
+
+
+def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
     """
     Check and run all due jobs.
-    
+
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
-    
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+        sync: If True (default), block on parallel-job completion — back-compat
+            for the ``__main__`` entrypoint and unit tests. If False, fire
+            parallel jobs into a module-level persistent pool and return
+            immediately so a slow job can't stall the caller's 60s ticker
+            thread (#37312). Sequential jobs are still run inline.
+
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
@@ -2003,30 +2090,53 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             _ctx = contextvars.copy_context()
             _results.append(_ctx.run(_process_job, job))
 
-        # Parallel pass for the rest — same behaviour as before.
+        # Parallel pass for the rest. When ``sync=True`` (default, for
+        # back-compat with the ``__main__`` entrypoint and unit tests) we
+        # block on completion exactly as before. When ``sync=False`` we
+        # fire-and-forget into a module-level persistent pool so a single
+        # long-running job cannot stall the 60-second gateway ticker
+        # and force every other due job to fast-forward past its grace
+        # window (#37312).
         if parallel_jobs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-                _futures = []
-                for job in parallel_jobs:
-                    _ctx = contextvars.copy_context()
-                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                for f in concurrent.futures.as_completed(_futures, timeout=600):
-                    try:
-                        _results.append(f.result())
-                    except Exception as exc:
-                        logger.error("Parallel cron job future failed: %s", exc)
-                        _results.append(False)
+            if sync:
+                # Legacy: spin up a per-tick pool, block on completion, throw
+                # it away. Preserves the original behaviour for ``tick(verbose=...)``
+                # callers (CLI ``__main__``, unit tests, anything that does not
+                # opt into the new mode).
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_max_workers
+                ) as _tick_pool:
+                    _futures = []
+                    for job in parallel_jobs:
+                        _ctx = contextvars.copy_context()
+                        _futures.append(
+                            _tick_pool.submit(_ctx.run, _process_job, job)
+                        )
+                    for f in concurrent.futures.as_completed(_futures, timeout=600):
+                        try:
+                            _results.append(f.result())
+                        except Exception as exc:
+                            logger.error(
+                                "Parallel cron job future failed: %s", exc
+                            )
+                            _results.append(False)
 
-        # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown during this tick.  Runs AFTER every job has
-        # finished so active sessions (including live user chats) are
-        # never touched — only PIDs explicitly detected as orphans in
-        # tools.mcp_tool._run_stdio's finally block are reaped.
-        try:
-            from tools.mcp_tool import _kill_orphaned_mcp_children
-            _kill_orphaned_mcp_children()
-        except Exception as _e:
-            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+                # Best-effort sweep of MCP stdio children that survived
+                # their session teardown during this tick. Runs AFTER every
+                # parallel job has finished so active sessions (including
+                # live user chats) are never touched — only PIDs
+                # explicitly detected as orphans in
+                # tools.mcp_tool._run_stdio's finally block are reaped.
+                try:
+                    from tools.mcp_tool import _kill_orphaned_mcp_children
+                    _kill_orphaned_mcp_children()
+                except Exception as _e:
+                    logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+            else:
+                # Fire-and-forget into the module-level persistent pool
+                # so a single slow parallel job can't stall the caller's
+                # 60s ticker thread (#37312).
+                _dispatch_parallel_async(parallel_jobs, max_workers=_max_workers)
 
         return sum(_results)
     finally:

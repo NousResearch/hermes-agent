@@ -19090,7 +19090,11 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop)
+            # sync=False: fire parallel jobs into the persistent pool and
+            # return immediately. A single slow job must not stall this
+            # 60s ticker and force every other due job to fast-forward
+            # past its grace window (#37312).
+            cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 

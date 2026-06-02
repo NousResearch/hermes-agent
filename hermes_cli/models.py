@@ -1262,22 +1262,95 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
 
+# Cache for the live Nous probe — 120s TTL prevents a network round-trip
+# on every picker open while picking up new models within ~2 minutes.
+_NOUS_LIVE_CACHE_TTL: float = 120
+_nous_live_cache: tuple[list[str], float] | None = None
+
+
+def _probe_nous_live_api(curated: list[str]) -> list[str]:
+    """Augment *curated* with model IDs from the live Nous inference API.
+
+    The endpoint is public for listing — auth is not required.  We skip
+    Nous Research's own Hermes foundation models (``hermes-3``/``hermes-4``)
+    because they're served on the Portal but aren't useful inference-picker
+    options.  Result is cached for 120s; on network failure the cache is
+    preserved (stale > no data).
+    """
+    global _nous_live_cache
+    now = time.monotonic()
+
+    if _nous_live_cache is not None:
+        cached_ids, cached_at = _nous_live_cache
+        if now - cached_at < _NOUS_LIVE_CACHE_TTL:
+            return list(cached_ids)
+
+    try:
+        from urllib.request import Request, urlopen
+        import json
+
+        _, base_url = _resolve_nous_pricing_credentials()
+        # base_url may already include /v1; normalise so the path doesn't double up
+        api_root = base_url.rstrip("/")
+        if api_root.endswith("/v1"):
+            api_root = api_root[:-3]
+        req = Request(
+            f"{api_root}/v1/models",
+            headers={"Accept": "application/json", "User-Agent": "HermesAgent/1.0"},
+        )
+        with urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode())
+
+        result = list(curated)
+        existing = set(result)
+        for item in payload.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            mid = item.get("id", "")
+            if not (isinstance(mid, str) and mid.strip()):
+                continue
+            mid = mid.strip()
+            if mid in existing:
+                continue
+            # Skip Nous Research's Hermes foundation models (e.g. hermes-3/hermes-4)
+            low = mid.lower()
+            if "/hermes-3" in low or "/hermes-4" in low:
+                continue
+            result.append(mid)
+            existing.add(mid)
+
+        _nous_live_cache = (result, now)
+        return result
+    except Exception:
+        # Network failure — prefer stale cache over no data
+        if _nous_live_cache is not None:
+            return list(_nous_live_cache[0])
+        return curated
+
+
 def get_curated_nous_model_ids() -> list[str]:
     """Return the curated Nous Portal model-id list.
 
     Prefers the remotely-hosted catalog manifest (published under
     ``website/static/api/model-catalog.json``); falls back to the in-repo
-    snapshot in ``_PROVIDER_MODELS["nous"]`` when the manifest is
-    unreachable. Always returns a list (never None).
+    snapshot in ``_PROVIDER_MODELS[\"nous\"]`` when the manifest is
+    unreachable. Also probes the live Nous inference API for additional
+    models not in the static catalog (e.g. free-tier variants like
+    ``deepseek/deepseek-v4-flash:free``) and merges them in.
+    Always returns a list (never None).
     """
+    curated: list[str] = []
     try:
         from hermes_cli.model_catalog import get_curated_nous_models
         remote = get_curated_nous_models()
     except Exception:
         remote = None
     if remote:
-        return list(remote)
-    return list(_PROVIDER_MODELS.get("nous", []))
+        curated = list(remote)
+    else:
+        curated = list(_PROVIDER_MODELS.get("nous", []))
+
+    return _probe_nous_live_api(curated)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -352,7 +352,10 @@ class TestIntegrationWithModelsModule:
         from hermes_cli import model_catalog
         from hermes_cli.models import get_curated_nous_model_ids, _PROVIDER_MODELS
 
-        with patch.object(model_catalog, "_fetch_manifest", return_value=None):
+        with (
+            patch.object(model_catalog, "_fetch_manifest", return_value=None),
+            patch("urllib.request.urlopen", side_effect=Exception("net down")),
+        ):
             result = get_curated_nous_model_ids()
 
         assert result == list(_PROVIDER_MODELS["nous"])
@@ -361,8 +364,11 @@ class TestIntegrationWithModelsModule:
         from hermes_cli import model_catalog
         from hermes_cli.models import get_curated_nous_model_ids
 
-        with patch.object(
-            model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+        with (
+            patch.object(
+                model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+            ),
+            patch("urllib.request.urlopen", side_effect=Exception("net down")),
         ):
             result = get_curated_nous_model_ids()
 
@@ -403,14 +409,20 @@ class TestIntegrationWithModelsModule:
             # is computed from the same source the picker uses internally
             # (``curated["nous"] = get_curated_nous_model_ids()``), so the test
             # stays an invariant — it can't rot as the curated/manifest list grows.
-            with patch.object(
-                model_catalog, "_fetch_manifest", return_value=_valid_manifest()
-            ), patch("hermes_cli.models.check_nous_free_tier", return_value=False), patch(
-                "hermes_cli.models.union_with_portal_free_recommendations",
-                side_effect=lambda ids, *a, **k: (ids, {}),
-            ), patch(
-                "hermes_cli.models.union_with_portal_paid_recommendations",
-                side_effect=lambda ids, *a, **k: (ids, {}),
+            with (
+                patch.object(
+                    model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+                ),
+                patch("urllib.request.urlopen", side_effect=Exception("net down")),
+                patch("hermes_cli.models.check_nous_free_tier", return_value=False),
+                patch(
+                    "hermes_cli.models.union_with_portal_free_recommendations",
+                    side_effect=lambda ids, *a, **k: (ids, {}),
+                ),
+                patch(
+                    "hermes_cli.models.union_with_portal_paid_recommendations",
+                    side_effect=lambda ids, *a, **k: (ids, {}),
+                ),
             ):
                 expected = get_curated_nous_model_ids()
                 picker = list_picker_providers(
@@ -477,3 +489,52 @@ class TestManifestMatchesInRepoLists:
             "Run: python scripts/build_model_catalog.py && "
             "git add website/static/api/model-catalog.json"
         )
+
+
+class TestNousLiveProbe:
+    """Tests for the live Nous inference API probe in ``hermes_cli.models``."""
+
+    def test_probe_merges_and_caches(self, isolated_home):
+        """Live API models get merged in (minus Hermes 3/4), and the 120s
+        cache prevents redundant network calls on subsequent probes."""
+        from hermes_cli.models import get_curated_nous_model_ids
+        from hermes_cli import model_catalog
+        import hermes_cli.models as m
+
+        m._nous_live_cache = None
+
+        body = json.dumps({"data": [
+            {"id": "anthropic/claude-opus-4.7"},
+            {"id": "deepseek/deepseek-v4-flash:free"},
+            {"id": "NousResearch/hermes-4"},
+            {"id": "nousresearch/hermes-3-llama-3.1-70b"},
+        ]})
+        fake_resp = MagicMock()
+        fake_resp.read.return_value = body.encode()
+        fake_resp.__enter__ = lambda s: s
+        fake_resp.__exit__ = lambda s, *a: None
+
+        call_count = 0
+
+        def fake_urlopen(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return fake_resp
+
+        with (
+            patch.object(model_catalog, "_fetch_manifest", return_value=None),
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            r1 = get_curated_nous_model_ids()
+            r2 = get_curated_nous_model_ids()
+            r3 = get_curated_nous_model_ids()
+
+        # Network was hit exactly once — subsequent calls used the cache
+        assert call_count == 1
+        # Live-only model discovered
+        assert "deepseek/deepseek-v4-flash:free" in r1
+        # Nous Hermes foundation models filtered out
+        assert "NousResearch/hermes-4" not in r1
+        assert "nousresearch/hermes-3-llama-3.1-70b" not in r1
+        # Cache hit returned the same result
+        assert r1 == r2 == r3

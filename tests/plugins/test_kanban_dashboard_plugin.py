@@ -114,6 +114,35 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_board_lane_orders_newest_first(client):
+    """Cards within a lane surface newest-first (regression for #37472).
+
+    Same-priority tasks created in sequence must appear with the most
+    recent at the top of the lane, while higher priority still wins.
+    """
+    ids = []
+    for i in range(3):
+        r = client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": f"task-{i}", "priority": 1},
+        )
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["task"]["id"])
+    # A higher-priority task created last must still sit at the very top.
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "urgent", "priority": 5},
+    )
+    assert r.status_code == 200, r.text
+    urgent_id = r.json()["task"]["id"]
+
+    data = client.get("/api/plugins/kanban/board").json()
+    ready = next(c for c in data["columns"] if c["name"] == "ready")
+    lane_ids = [t["id"] for t in ready["tasks"]]
+    # urgent (higher priority) first, then the priority-1 band newest-first.
+    assert lane_ids == [urgent_id, ids[2], ids[1], ids[0]]
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 

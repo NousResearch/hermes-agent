@@ -396,6 +396,11 @@ def get_board(
             include_archived=include_archived,
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
+            # Newest-first within each priority band so recently-created
+            # cards surface at the top of each lane. Scoped to the dashboard
+            # rather than changing the shared ``list_tasks`` default, which
+            # triage/dispatch paths rely on (FIFO).
+            order_by="priority-newest",
         )
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}

@@ -651,7 +651,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
         [--workflow-template-id <id>] [--current-step-key <key>]
-        [--sort created|created-desc|priority|priority-desc|status|assignee|title|updated]
+        [--sort created|created-desc|priority|priority-newest|priority-desc|status|assignee|title|updated]
         [--json]
 hermes kanban show <id> [--json]
 hermes kanban assign <id> <profile>                    # or 'none' to unassign

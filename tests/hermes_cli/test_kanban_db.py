@@ -1178,6 +1178,34 @@ def test_list_tasks_order_by(kanban_home):
         except ValueError as e:
             assert "order_by must be one of" in str(e)
 
+
+def test_list_tasks_priority_newest_orders_newest_first(kanban_home):
+    """``priority-newest`` keeps priority bands but surfaces newest first.
+
+    Regression for the kanban dashboard showing cards oldest-first within a
+    lane. ``created_at`` is second-resolution and ids are random, so the
+    newest-first ordering relies on the ``rowid DESC`` tiebreaker for tasks
+    created in the same second.
+    """
+    with kb.connect() as conn:
+        # Same priority, created in insertion order. Within a second-bucket
+        # the rowid tiebreaker must yield reverse-insertion (newest first).
+        t1 = kb.create_task(conn, title="first", priority=1)
+        t2 = kb.create_task(conn, title="second", priority=1)
+        t3 = kb.create_task(conn, title="third", priority=1)
+        # A higher-priority task created last must still sort above the
+        # priority-1 band — priority dominates the created_at direction.
+        t_hi = kb.create_task(conn, title="urgent", priority=5)
+
+        newest = kb.list_tasks(conn, order_by="priority-newest")
+        assert [t.id for t in newest] == [t_hi, t3, t2, t1]
+
+        # Sanity: the shared default is unchanged (oldest-first within band),
+        # so triage/dispatch FIFO callers are unaffected by the new option.
+        default = kb.list_tasks(conn)
+        assert [t.id for t in default] == [t_hi, t1, t2, t3]
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

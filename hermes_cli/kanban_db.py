@@ -2256,6 +2256,13 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "created": "created_at ASC, id ASC",
     "created-desc": "created_at DESC, id DESC",
     "priority": "priority DESC, created_at ASC",
+    # Like ``priority`` but newest-first within each priority band. Uses
+    # ``rowid DESC`` (SQLite's monotonic insert order) as the tiebreaker
+    # because ``created_at`` is second-resolution and task ids are random
+    # (``secrets.token_hex``), so ``id`` is not a chronological tiebreaker.
+    # The dashboard uses this so recently-created cards surface at the top
+    # of each lane.
+    "priority-newest": "priority DESC, created_at DESC, rowid DESC",
     "priority-desc": "priority ASC, created_at ASC",
     "status": "status ASC, created_at ASC",
     "assignee": "assignee ASC, created_at ASC",

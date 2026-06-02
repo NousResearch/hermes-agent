@@ -3036,6 +3036,20 @@ def generate_launchd_plist() -> str:
         )
     )
 
+    ca_bundle = get_hermes_home() / "certs" / "hermes-ca-bundle.pem"
+    ca_bundle_xml = ""
+    if ca_bundle.is_file():
+        ca_bundle_path = str(ca_bundle)
+        ca_bundle_xml = f"""
+        <key>HERMES_CA_BUNDLE</key>
+        <string>{ca_bundle_path}</string>
+        <key>SSL_CERT_FILE</key>
+        <string>{ca_bundle_path}</string>
+        <key>REQUESTS_CA_BUNDLE</key>
+        <string>{ca_bundle_path}</string>
+        <key>CURL_CA_BUNDLE</key>
+        <string>{ca_bundle_path}</string>"""
+
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
         f"<string>{python_path}</string>",
@@ -3076,7 +3090,7 @@ def generate_launchd_plist() -> str:
         <key>VIRTUAL_ENV</key>
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{hermes_home}</string>{ca_bundle_xml}
     </dict>
     
     <key>RunAtLoad</key>

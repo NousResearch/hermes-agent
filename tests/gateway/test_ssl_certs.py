@@ -14,12 +14,23 @@ def _load_ensure_ssl():
     import textwrap, ssl as _ssl  # noqa: F401
 
     code = textwrap.dedent("""\
-    import os, ssl
+    import os, ssl, sys
 
     def _ensure_ssl_certs():
         if "SSL_CERT_FILE" in os.environ:
             return
         paths = ssl.get_default_verify_paths()
+        problematic_darwin_defaults = {"/private/etc/ssl/cert.pem", "/etc/ssl/cert.pem"}
+        if sys.platform == "darwin" and (paths.cafile in problematic_darwin_defaults or paths.openssl_cafile in problematic_darwin_defaults):
+            for candidate in (
+                "/opt/homebrew/etc/openssl@3/cert.pem",
+                "/usr/local/etc/openssl@3/cert.pem",
+                "/opt/homebrew/etc/openssl@1.1/cert.pem",
+                "/usr/local/etc/openssl@1.1/cert.pem",
+            ):
+                if os.path.exists(candidate):
+                    os.environ["SSL_CERT_FILE"] = candidate
+                    return
         for candidate in (paths.cafile, paths.openssl_cafile):
             if candidate and os.path.exists(candidate):
                 os.environ["SSL_CERT_FILE"] = candidate
@@ -60,10 +71,57 @@ class TestEnsureSslCerts:
         mock_paths.openssl_cafile = None
 
         env = {k: v for k, v in os.environ.items() if k != "SSL_CERT_FILE"}
+
+        def fake_exists(path):
+            return path == str(cert)
+
         with patch.dict(os.environ, env, clear=True), \
-             patch("ssl.get_default_verify_paths", return_value=mock_paths):
+             patch("ssl.get_default_verify_paths", return_value=mock_paths), \
+             patch("os.path.exists", side_effect=fake_exists):
             fn()
             assert os.environ.get("SSL_CERT_FILE") == str(cert)
+
+    def test_prefers_homebrew_openssl_bundle_over_problematic_darwin_default(self):
+        fn = _load_ensure_ssl()
+        homebrew = "/opt/homebrew/etc/openssl@3/cert.pem"
+        python_default = "/private/etc/ssl/cert.pem"
+
+        mock_paths = MagicMock()
+        mock_paths.cafile = python_default
+        mock_paths.openssl_cafile = None
+
+        env = {k: v for k, v in os.environ.items() if k != "SSL_CERT_FILE"}
+
+        def fake_exists(path):
+            return path in {homebrew, python_default}
+
+        with patch.dict(os.environ, env, clear=True), \
+             patch("ssl.get_default_verify_paths", return_value=mock_paths), \
+             patch("os.path.exists", side_effect=fake_exists), \
+             patch("sys.platform", "darwin"):
+            fn()
+            assert os.environ.get("SSL_CERT_FILE") == homebrew
+
+    def test_does_not_override_non_problematic_darwin_default_with_homebrew_bundle(self):
+        fn = _load_ensure_ssl()
+        homebrew = "/opt/homebrew/etc/openssl@3/cert.pem"
+        python_default = "/custom/python/cert.pem"
+
+        mock_paths = MagicMock()
+        mock_paths.cafile = python_default
+        mock_paths.openssl_cafile = None
+
+        env = {k: v for k, v in os.environ.items() if k != "SSL_CERT_FILE"}
+
+        def fake_exists(path):
+            return path in {homebrew, python_default}
+
+        with patch.dict(os.environ, env, clear=True), \
+             patch("ssl.get_default_verify_paths", return_value=mock_paths), \
+             patch("os.path.exists", side_effect=fake_exists), \
+             patch("sys.platform", "darwin"):
+            fn()
+            assert os.environ.get("SSL_CERT_FILE") == python_default
 
     def test_no_op_when_nothing_found(self):
         fn = _load_ensure_ssl()

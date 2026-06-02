@@ -300,8 +300,8 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     if os.environ.get("HERMES_KANBAN_TASK"):
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
-            "must use kanban_complete, kanban_block, kanban_heartbeat, or "
-            "kanban_comment for their assigned task."
+            "must use kanban_complete, kanban_review, kanban_block, "
+            "kanban_heartbeat, or kanban_comment for their assigned task."
         )
     return None
 
@@ -631,6 +631,52 @@ def _handle_block(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_block failed")
         return tool_error(f"kanban_block: {e}")
+
+
+def _handle_review(args: dict, **kw) -> str:
+    """Move the task to the review column for PR/code review."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    if not summary or not str(summary).strip():
+        return tool_error("summary is required — describe what is ready for review")
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return tool_error("metadata must be a JSON object/dict if provided")
+    review_assignee = args.get("review_assignee") or "default"
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.request_review_task(
+                conn,
+                tid,
+                summary=summary,
+                metadata=metadata,
+                review_assignee=review_assignee,
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not move {tid} to review (unknown id or not in "
+                    f"running/ready)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(task_id=tid, run_id=run.id if run else None, assignee=review_assignee)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
+
 
 
 def _handle_heartbeat(args: dict, **kw) -> str:
@@ -1099,6 +1145,45 @@ KANBAN_BLOCK_SCHEMA = {
     },
 }
 
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Move the task to the Review column because code/PR work is ready "
+        "for an executable review agent. Use this for PR handoff instead "
+        "of kanban_block. Defaults review_assignee to 'default'."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "One-line review handoff: PR URL/branch plus what is ready. "
+                    "This closes your worker run and is visible to the reviewer."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Structured review facts: pr_url, branch, commit, "
+                    "changed_files, tests, decisions. Do not include secrets/PII."
+                ),
+            },
+            "review_assignee": {
+                "type": "string",
+                "description": "Profile that should review; defaults to 'default'.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["summary"],
+    },
+}
+
+
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
@@ -1383,6 +1468,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_mode,
+    emoji="🔎",
 )
 
 registry.register(

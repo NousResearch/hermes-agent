@@ -55,8 +55,8 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_review",
+        "kanban_heartbeat", "kanban_comment", "kanban_create", "kanban_link",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -83,6 +83,7 @@ def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_pat
     names = {s["function"].get("name") for s in schema if "function" in s}
     assert "kanban_show" in names
     assert "kanban_complete" in names
+    assert "kanban_review" in names
     assert "kanban_block" in names
     assert "kanban_list" not in names
 
@@ -135,8 +136,8 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_review",
+        "kanban_heartbeat", "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -594,6 +595,45 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
         assert kb.get_task(conn, worker_env).status == "done"
     finally:
         conn.close()
+
+
+def test_review_happy_path(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_review({
+        "summary": "PR ready for review",
+        "metadata": {"pr_url": "https://github.com/org/repo/pull/123"},
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["assignee"] == "default"
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "review"
+        assert task.assignee == "default"
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        assert run.outcome == "review"
+        assert run.summary == "PR ready for review"
+    finally:
+        conn.close()
+
+
+def test_review_rejects_empty_summary(worker_env):
+    from tools import kanban_tools as kt
+    for bad in ["", "   ", None]:
+        out = kt._handle_review({"summary": bad})
+        assert json.loads(out).get("error")
+
+
+def test_review_rejects_non_dict_metadata(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_review({"summary": "x", "metadata": [1, 2, 3]})
+    assert json.loads(out).get("error")
+
 
 
 def test_block_happy_path(worker_env):

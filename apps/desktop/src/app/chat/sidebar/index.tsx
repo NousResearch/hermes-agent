@@ -452,7 +452,7 @@ export function ChatSidebar({
 
         {sidebarOpen && showSessionSections && (
           <div className="shrink-0 pb-1 pt-1">
-            <div className="flex items-center gap-1.5 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-hover-background) px-2 focus-within:border-(--ui-stroke-secondary)">
+            <div className="flex items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 transition-colors focus-within:border-(--ui-stroke-tertiary)">
               <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="search" size="0.75rem" />
               <input
                 aria-label="Search sessions"

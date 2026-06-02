@@ -353,3 +353,190 @@ def test_cli_start_status_and_tick_json(tmp_path, capsys):
     assert kanban_ultragoal_command(args) == 0
     tick_out = json.loads(capsys.readouterr().out)
     assert tick_out["resumable"] is True
+
+
+def _seed_live_task(db_path, *, task_id="t_parent", public_id="BO-217", status="triage", execution_approved=True):
+    from hermes_cli import kanban_db as kb
+
+    kb.init_db(db_path)
+    conn = kb.connect(db_path)
+    for ddl in (
+        "ALTER TABLE tasks ADD COLUMN public_id TEXT",
+        "ALTER TABLE tasks ADD COLUMN routing_verdict TEXT",
+        "ALTER TABLE tasks ADD COLUMN admission_snapshot TEXT",
+        "ALTER TABLE tasks ADD COLUMN goal_mode INTEGER NOT NULL DEFAULT 0",
+    ):
+        try:
+            conn.execute(ddl)
+        except Exception:
+            pass
+    now = 1780366203
+    body = """
+Goal
+Run a live Kanban card like Ultragoal until a reviewed PR or terminal blocker.
+
+Done criteria:
+- Authority snapshot command reads canonical Kanban state.
+- Lifecycle transition commands expose existing controller transitions.
+- pilot-check is strict read-only.
+"""
+    snapshot = {
+        "execution_approved": execution_approved,
+        "source": "test",
+        "doneCriteria": [
+            "Authority snapshot command reads canonical Kanban state.",
+            "Lifecycle transition commands expose existing controller transitions.",
+            "pilot-check is strict read-only.",
+        ],
+    }
+    conn.execute(
+        """
+        insert into tasks(id,title,body,assignee,status,priority,tenant,workspace_kind,created_by,created_at,public_id,routing_verdict,admission_snapshot,goal_mode)
+        values(?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+        """,
+        (task_id, f"{public_id} — parent", body, None, status, 0, "BO", "scratch", "yuuka", now, public_id, "direct-kanban", json.dumps(snapshot)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_authority_snapshot_command_reads_live_kanban_and_hashes_done_criteria(tmp_path, monkeypatch, capsys):
+    from hermes_cli.kanban_ultragoal import build_parser, kanban_ultragoal_command
+    import argparse
+
+    db_path = tmp_path / "kanban.db"
+    _seed_live_task(db_path)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="cmd")
+    build_parser(sub)
+
+    args = parser.parse_args(["kanban-ultragoal", "--json", "authority-snapshot", "BO-217"])
+    assert kanban_ultragoal_command(args) == 0
+    out = json.loads(capsys.readouterr().out)
+
+    assert out["authority"] == "kanban"
+    assert out["taskId"] == "t_parent"
+    assert out["publicId"] == "BO-217"
+    assert out["routingVerdict"] == "direct-kanban"
+    assert out["executionApproved"] is True
+    assert out["snapshotHash"].startswith("sha256:")
+    assert out["doneCriteriaHash"].startswith("sha256:")
+    assert out["doneCriteria"]
+
+
+def test_pilot_check_is_strict_read_only_and_blocks_unapproved_authority(tmp_path, monkeypatch, capsys):
+    from hermes_cli.kanban_ultragoal import build_parser, kanban_ultragoal_command
+    import argparse
+    import sqlite3
+
+    db_path = tmp_path / "kanban.db"
+    _seed_live_task(db_path, execution_approved=False)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    before = sqlite3.connect(db_path).execute("select count(*) from task_events").fetchone()[0]
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="cmd")
+    build_parser(sub)
+
+    args = parser.parse_args(["kanban-ultragoal", "--json", "pilot-check", "BO-217"])
+    rc = kanban_ultragoal_command(args)
+    after = sqlite3.connect(db_path).execute("select count(*) from task_events").fetchone()[0]
+    out = json.loads(capsys.readouterr().out)
+
+    assert rc == 2
+    assert before == after
+    assert out["eligible"] is False
+    assert "executionApproved" in out["blockers"]
+
+
+def test_main_cli_propagates_kanban_ultragoal_nonzero_without_global_returncode_side_effects(tmp_path):
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+
+    db_path = tmp_path / "kanban.db"
+    _seed_live_task(db_path, execution_approved=False)
+    before = sqlite3.connect(db_path).execute("select count(*) from task_events").fetchone()[0]
+    env = os.environ.copy()
+    env["HERMES_KANBAN_DB"] = str(db_path)
+    env["HERMES_HOME"] = str(tmp_path / ".hermes")
+    env["PYTHONPATH"] = os.getcwd()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "kanban-ultragoal", "--json", "pilot-check", "BO-217"],
+        cwd=os.getcwd(),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    after = sqlite3.connect(db_path).execute("select count(*) from task_events").fetchone()[0]
+    out = json.loads(result.stdout)
+
+    assert result.returncode == 2, result.stderr + result.stdout
+    assert before == after
+    assert out["eligible"] is False
+    assert "executionApproved" in out["blockers"]
+
+
+def test_authority_snapshot_is_read_only_and_fails_closed_when_db_missing(tmp_path, monkeypatch):
+    from hermes_cli.kanban_ultragoal import build_authority_snapshot
+
+    missing = tmp_path / "missing.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(missing))
+
+    with pytest.raises(ValueError, match="does not exist"):
+        build_authority_snapshot("BO-217")
+
+    assert not missing.exists()
+    assert not (tmp_path / "missing.db.init.lock").exists()
+
+
+def test_authority_snapshot_fails_closed_on_ambiguous_task_reference(tmp_path, monkeypatch):
+    from hermes_cli.kanban_ultragoal import build_authority_snapshot
+    import sqlite3
+
+    db_path = tmp_path / "kanban.db"
+    _seed_live_task(db_path, task_id="same", public_id="BO-217")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        insert into tasks(id,title,body,assignee,status,priority,tenant,workspace_kind,created_by,created_at,public_id,routing_verdict,admission_snapshot,goal_mode)
+        values(?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+        """,
+        ("other", "ambiguous", "Done criteria:\n- one", None, "triage", 0, "BO", "scratch", "yuuka", 1780366204, "same", "direct-kanban", json.dumps({"execution_approved": True, "doneCriteria": ["one"]})),
+    )
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        build_authority_snapshot("same")
+
+
+def test_cli_transition_subcommands_expose_existing_store_state_machine(tmp_path, monkeypatch, capsys):
+    from hermes_cli.kanban_ultragoal import build_parser, kanban_ultragoal_command
+    import argparse
+
+    db_path = tmp_path / "kanban.db"
+    _seed_live_task(db_path)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="cmd")
+    build_parser(sub)
+
+    def run(argv):
+        args = parser.parse_args(["kanban-ultragoal", "--workdir", str(tmp_path), "--json", *argv])
+        assert kanban_ultragoal_command(args) == 0
+        return json.loads(capsys.readouterr().out)
+
+    authority = run(["authority-snapshot", "BO-217"])
+    authority_json = json.dumps(authority)
+    run(["start", "t_parent", "--authority-json", authority_json, "--root-objective", "one reviewed PR"])
+    assert run(["record-worker-done", "t_parent", "--authority-json", authority_json, "--evidence-json", '{"commandsRun":["pytest"]}'])["state"] == "worker_done"
+    assert run(["record-verifier-result", "t_parent", "--authority-json", authority_json, "--result-json", '{"passed":true,"doneCriteriaEvidence":[{"criterionId":"DC-1","evidence":"pytest"}]}'])["state"] == "verification_passed"
+    assert run(["record-reviewer-result", "t_parent", "--authority-json", authority_json, "--result-json", '{"recommendation":"APPROVE","securityConcerns":[],"logicErrors":[]}'])["state"] == "review_passed"
+    assert run(["record-pr-created", "t_parent", "--authority-json", authority_json, "--pr-json", '{"url":"https://github.com/chriskim12/hermes-agent/pull/92","number":92,"headSha":"abc"}'])["state"] == "pr_created"
+    assert run(["record-ci-result", "t_parent", "--authority-json", authority_json, "--ci-json", '{"state":"success","headSha":"abc"}'])["state"] == "ci_passed"
+    assert run(["mark-review-ready", "t_parent", "--authority-json", authority_json])["state"] == "review_ready"

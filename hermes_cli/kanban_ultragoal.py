@@ -13,11 +13,14 @@ import hashlib
 import json
 import re
 import shutil
+import sqlite3
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from hermes_cli import kanban_db as kb
 
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 VALID_STATES = {
@@ -55,9 +58,123 @@ def _sha256(data: Any) -> str:
     return "sha256:" + hashlib.sha256(_canonical_json(data).encode()).hexdigest()
 
 
+def _json_loads_maybe(raw: str | None) -> Any:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_done_criteria(body: str | None, snapshot: dict[str, Any] | None = None) -> list[str]:
+    if snapshot:
+        for key in ("doneCriteria", "done_criteria", "doneCriteriaItems"):
+            val = snapshot.get(key)
+            if isinstance(val, list):
+                return [str(item).strip() for item in val if str(item).strip()]
+    if not body:
+        return []
+    out: list[str] = []
+    in_section = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == "done criteria:":
+            in_section = True
+            continue
+        if in_section and stripped and not stripped.startswith("-") and stripped.endswith(":"):
+            break
+        if in_section and stripped.startswith("-"):
+            out.append(stripped[1:].strip())
+    return out
+
+
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    return row[key] if key in row.keys() else default
+
+
+def build_authority_snapshot(task_ref: str) -> dict[str, Any]:
+    """Read a canonical Kanban authority snapshot for ``task_ref``.
+
+    The read path is strict read-only: a missing board DB fails closed instead
+    of initializing Kanban or creating sidecar files.
+    """
+    db_path = kb.kanban_db_path()
+    if not db_path.exists():
+        raise ValueError(f"Kanban DB does not exist: {db_path}")
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM tasks WHERE id = ? OR public_id = ?", (task_ref, task_ref)).fetchall()
+        unique: dict[str, Any] = {row["id"]: row for row in rows}
+        if not unique:
+            raise ValueError(f"no such Kanban task: {task_ref}")
+        if len(unique) != 1:
+            raise ValueError(f"ambiguous Kanban task reference: {task_ref}")
+        row = next(iter(unique.values()))
+        raw_snapshot = _json_loads_maybe(_row_get(row, "admission_snapshot"))
+        admission_snapshot = raw_snapshot if isinstance(raw_snapshot, dict) else {}
+        done_criteria = _extract_done_criteria(_row_get(row, "body"), admission_snapshot)
+        children = [
+            {"id": r["child_id"], "relationType": r["relation_type"]}
+            for r in conn.execute(
+                "SELECT child_id, relation_type FROM task_links WHERE parent_id = ? ORDER BY child_id",
+                (row["id"],),
+            )
+        ]
+        parents = [
+            {"id": r["parent_id"], "relationType": r["relation_type"]}
+            for r in conn.execute(
+                "SELECT parent_id, relation_type FROM task_links WHERE child_id = ? ORDER BY parent_id",
+                (row["id"],),
+            )
+        ]
+        base = {
+            "authority": "kanban",
+            "taskId": row["id"],
+            "runId": row["id"],
+            "publicId": _row_get(row, "public_id") or row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "assignee": row["assignee"],
+            "routingVerdict": _row_get(row, "routing_verdict"),
+            "executionApproved": admission_snapshot.get("execution_approved") is True,
+            "reviewPhase": _row_get(row, "review_phase"),
+            "currentRunId": _row_get(row, "current_run_id"),
+            "goalMode": bool(_row_get(row, "goal_mode", 0)),
+            "children": children,
+            "parents": parents,
+            "doneCriteria": done_criteria,
+            "missingDoneCriteriaContract": not bool(done_criteria),
+        }
+        base["doneCriteriaHash"] = _sha256(done_criteria)
+        base["snapshotHash"] = _sha256({k: base[k] for k in sorted(base) if k != "snapshotHash"})
+        return base
+    finally:
+        conn.close()
+
+
+def pilot_check(task_ref: str) -> dict[str, Any]:
+    """Strict read-only pilot eligibility check over live Kanban authority."""
+    snapshot = build_authority_snapshot(task_ref)
+    blockers: list[str] = []
+    if snapshot.get("routingVerdict") != "direct-kanban":
+        blockers.append("routingVerdict")
+    if snapshot.get("executionApproved") is not True:
+        blockers.append("executionApproved")
+    if not snapshot.get("doneCriteria"):
+        blockers.append("doneCriteria")
+    if snapshot.get("currentRunId") is not None:
+        blockers.append("currentRunId")
+    return {"eligible": not blockers, "blockers": blockers, "authority": snapshot}
+
+
 def _load_json_arg(value: str | None) -> dict[str, Any] | None:
     if not value:
         return None
+    stripped = value.lstrip()
+    if stripped.startswith("{"):
+        return json.loads(value)
     p = Path(value)
     if p.exists():
         return json.loads(p.read_text(encoding="utf-8"))
@@ -352,6 +469,41 @@ def build_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentPar
     tick.add_argument("run_id")
     tick.add_argument("--authority-json", required=True)
     tick.add_argument("--budget-remaining", type=int, default=20)
+
+    authority = sub.add_parser("authority-snapshot")
+    authority.add_argument("task_ref")
+
+    pilot = sub.add_parser("pilot-check")
+    pilot.add_argument("task_ref")
+
+    worker = sub.add_parser("record-worker-done")
+    worker.add_argument("run_id")
+    worker.add_argument("--authority-json", required=True)
+    worker.add_argument("--evidence-json", required=True)
+
+    verifier = sub.add_parser("record-verifier-result")
+    verifier.add_argument("run_id")
+    verifier.add_argument("--authority-json", required=True)
+    verifier.add_argument("--result-json", required=True)
+
+    reviewer = sub.add_parser("record-reviewer-result")
+    reviewer.add_argument("run_id")
+    reviewer.add_argument("--authority-json", required=True)
+    reviewer.add_argument("--result-json", required=True)
+
+    pr = sub.add_parser("record-pr-created")
+    pr.add_argument("run_id")
+    pr.add_argument("--authority-json", required=True)
+    pr.add_argument("--pr-json", required=True)
+
+    ci = sub.add_parser("record-ci-result")
+    ci.add_argument("run_id")
+    ci.add_argument("--authority-json", required=True)
+    ci.add_argument("--ci-json", required=True)
+
+    review_ready = sub.add_parser("mark-review-ready")
+    review_ready.add_argument("run_id")
+    review_ready.add_argument("--authority-json", required=True)
     return parser
 
 
@@ -360,6 +512,13 @@ def _emit(run: KanbanUltragoalRun, *, json_output: bool) -> None:
         print(json.dumps(run.to_dict(), sort_keys=True, ensure_ascii=False))
     else:
         print(f"{run.run_id}: {run.state}")
+
+
+def _emit_data(data: dict[str, Any], *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(data, sort_keys=True, ensure_ascii=False))
+    else:
+        print(_canonical_json(data))
 
 
 def kanban_ultragoal_command(args: argparse.Namespace) -> int:
@@ -371,10 +530,36 @@ def kanban_ultragoal_command(args: argparse.Namespace) -> int:
         run = store.load_run(args.run_id)
     elif cmd == "tick":
         run = store.tick(args.run_id, authority=_load_json_arg(args.authority_json) or {}, budget_remaining=args.budget_remaining)
+    elif cmd == "authority-snapshot":
+        _emit_data(build_authority_snapshot(args.task_ref), json_output=bool(args.json))
+        return 0
+    elif cmd == "pilot-check":
+        data = pilot_check(args.task_ref)
+        _emit_data(data, json_output=bool(args.json))
+        return 0 if data["eligible"] else 2
+    elif cmd == "record-worker-done":
+        run = store.record_worker_done(args.run_id, authority=_load_json_arg(args.authority_json) or {}, evidence=_load_json_arg(args.evidence_json) or {})
+    elif cmd == "record-verifier-result":
+        run = store.record_verifier_result(args.run_id, authority=_load_json_arg(args.authority_json) or {}, result=_load_json_arg(args.result_json) or {})
+    elif cmd == "record-reviewer-result":
+        run = store.record_reviewer_result(args.run_id, authority=_load_json_arg(args.authority_json) or {}, result=_load_json_arg(args.result_json) or {})
+    elif cmd == "record-pr-created":
+        run = store.record_pr_created(args.run_id, authority=_load_json_arg(args.authority_json) or {}, pr=_load_json_arg(args.pr_json) or {})
+    elif cmd == "record-ci-result":
+        run = store.record_ci_result(args.run_id, authority=_load_json_arg(args.authority_json) or {}, ci=_load_json_arg(args.ci_json) or {})
+    elif cmd == "mark-review-ready":
+        run = store.mark_review_ready(args.run_id, authority=_load_json_arg(args.authority_json) or {})
     else:  # pragma: no cover
         raise SystemExit(f"unknown kanban-ultragoal command: {cmd}")
     _emit(run, json_output=bool(args.json))
     return 0
 
 
-__all__ = ["KanbanUltragoalRun", "KanbanUltragoalStore", "build_parser", "kanban_ultragoal_command"]
+__all__ = [
+    "KanbanUltragoalRun",
+    "KanbanUltragoalStore",
+    "build_authority_snapshot",
+    "pilot_check",
+    "build_parser",
+    "kanban_ultragoal_command",
+]

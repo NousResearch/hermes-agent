@@ -6280,7 +6280,10 @@ def cmd_kanban_ultragoal(args):
     """Durable Kanban-authority Ultragoal controller."""
     from hermes_cli.kanban_ultragoal import kanban_ultragoal_command
 
-    return kanban_ultragoal_command(args)
+    result = kanban_ultragoal_command(args)
+    if isinstance(result, int) and result != 0:
+        raise SystemExit(result)
+    return result
 
 
 def cmd_hooks(args):

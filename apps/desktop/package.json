@@ -141,6 +141,7 @@
       "package.json"
     ],
     "beforeBuild": "scripts/before-build.cjs",
+    "beforePack": "scripts/before-pack.cjs",
     "afterPack": "scripts/after-pack.cjs",
     "extraResources": [
       {

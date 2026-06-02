@@ -15,7 +15,7 @@ let
     # lockfile cause network fetch attempts.  Fetcher v2 stages the full
     # cache (including peer-only deps) so `npm ci` can resolve them offline.
     fetcherVersion = 2;
-    hash = "sha256-7W9ObYz08yDMtybY8+RkUXkKVsJXINLl0qBUB91hpao=";
+    hash = "sha256-hLmt1p1QPkC2jJKeZ6DGfwkPZSanMwV/scnTZ42ddk8=";
   };
 
   npm = hermesNpmLib.mkNpmPassthru { folder = "apps/desktop"; attr = "desktop"; pname = "hermes-desktop"; };

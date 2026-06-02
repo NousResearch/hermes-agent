@@ -294,8 +294,58 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    @staticmethod
+    def _archive_path_for(target: str) -> Path:
+        mem_dir = get_memory_dir()
+        if target == "user":
+            return mem_dir / "USER.archive.jsonl"
+        return mem_dir / "MEMORY.archive.jsonl"
+
+    def _archive_overflow(self, target: str, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist an accepted-but-not-hot memory write to the overflow archive.
+
+        Hot MEMORY.md / USER.md are intentionally tiny because they are injected
+        into every future system prompt. When capacity is exhausted, the write is
+        still durable and accepted by appending a JSONL record outside the hot
+        prompt surface. Security/drift/invalid writes are rejected before this
+        helper is called; archive I/O errors remain hard failures.
+        """
+        archive_path = self._archive_path_for(target)
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ts": time.time(),
+            "target": target,
+            **record,
+        }
+        try:
+            with archive_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+        except (OSError, IOError) as e:
+            return {
+                "success": False,
+                "error": f"Failed to archive overflow memory to {archive_path}: {e}",
+                "archive_path": str(archive_path),
+            }
+
+        entries = self._entries_for(target)
+        current = self._char_count(target)
+        limit = self._char_limit(target)
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        return {
+            "success": True,
+            "status": "archived_overflow",
+            "target": target,
+            "archive_path": str(archive_path),
+            "entries": entries,
+            "usage": f"{pct}% — {current:,}/{limit:,} chars",
+            "entry_count": len(entries),
+            "message": "Hot memory full; entry accepted into overflow archive.",
+        }
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """Append a new entry, archiving accepted writes that exceed the hot limit."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -327,16 +377,17 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+                return self._archive_overflow(
+                    target,
+                    {
+                        "action": "add",
+                        "content": content,
+                        "reason": "hot_store_limit_exceeded",
+                        "hot_store_chars": current,
+                        "limit": limit,
+                        "attempted_hot_store_chars": new_total,
+                    },
+                )
 
             entries.append(content)
             self._set_entries(target, entries)
@@ -390,13 +441,20 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
-                return {
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
-                    ),
-                }
+                current = self._char_count(target)
+                return self._archive_overflow(
+                    target,
+                    {
+                        "action": "replace",
+                        "old_text": old_text,
+                        "matched_entry": entries[idx],
+                        "content": new_content,
+                        "reason": "hot_store_limit_exceeded",
+                        "hot_store_chars": current,
+                        "limit": limit,
+                        "attempted_hot_store_chars": new_total,
+                    },
+                )
 
             entries[idx] = new_content
             self._set_entries(target, entries)

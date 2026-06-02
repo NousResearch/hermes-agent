@@ -429,6 +429,13 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// Auto-reload budget for renderer crashes. A deterministic startup crash would
+// otherwise loop forever (reload → crash → reload), pinning CPU and spamming
+// logs. Allow a few reloads per rolling window, then stop and leave the dead
+// window so the user can read the error / quit.
+const RENDERER_RELOAD_WINDOW_MS = 60_000
+const RENDERER_RELOAD_MAX = 3
+let rendererReloadTimes = []
 // Latched bootstrap failure: when the first-launch install fails, we hold
 // onto the error so subsequent startHermes() calls (e.g. the renderer's
 // ensureGatewayOpen retrying after the WS won't open) return the same error
@@ -3222,6 +3229,51 @@ function createWindow() {
     openExternalUrl(url)
   })
 
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
+
+    if (details?.reason === 'crashed' || details?.reason === 'oom') {
+      const now = Date.now()
+      rendererReloadTimes = rendererReloadTimes.filter(t => now - t < RENDERER_RELOAD_WINDOW_MS)
+
+      if (rendererReloadTimes.length >= RENDERER_RELOAD_MAX) {
+        rememberLog(
+          `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
+        )
+
+        return
+      }
+
+      rendererReloadTimes.push(now)
+      setImmediate(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        try {
+          mainWindow.webContents.reload()
+        } catch (err) {
+          rememberLog(`[renderer] reload after crash failed: ${err?.message || err}`)
+        }
+      })
+    }
+  })
+
+  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+
+  // Electron always passes the event first. The canonical (Electron 36+) shape
+  // is (event, messageDetails); the deprecated positional shape is
+  // (event, level, message, line, sourceId). Handle both. `level` is numeric
+  // (0..3), where 3 === error.
+  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
+    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
+    const level = details ? details.level : detailsOrLevel
+
+    if (level !== 3) return
+
+    const text = details ? details.message : message
+    const src = details ? details.sourceUrl : sourceId
+    const lineNo = details ? details.lineNumber : line
+    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+  })
+
   if (DEV_SERVER) {
     mainWindow.loadURL(DEV_SERVER)
   } else {
@@ -3372,13 +3424,21 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
-  const properties = ['openFile']
-  if (options?.directories) properties.push('openDirectory')
+  const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')
+
+  let resolvedDefaultPath
+  if (options?.defaultPath) {
+    try {
+      resolvedDefaultPath = path.resolve(String(options.defaultPath))
+    } catch {
+      resolvedDefaultPath = undefined
+    }
+  }
 
   const result = await dialog.showOpenDialog(mainWindow, {
     title: options?.title || 'Add context',
-    defaultPath: options?.defaultPath ? path.resolve(String(options.defaultPath)) : undefined,
+    defaultPath: resolvedDefaultPath,
     properties,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
   })

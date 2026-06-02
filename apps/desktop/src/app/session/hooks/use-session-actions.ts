@@ -15,6 +15,7 @@ import {
   $currentCwd,
   $messages,
   $sessions,
+  getRememberedWorkspaceCwd,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -291,7 +292,8 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      setCurrentCwd('')
+      // New chats inherit the current workspace.
+      setCurrentCwd(getRememberedWorkspaceCwd())
       setCurrentBranch('')
       clearComposerDraft()
       clearComposerAttachments()
@@ -308,7 +310,7 @@ export function useSessionActions({
     creatingSessionRef.current = true
 
     try {
-      const cwd = $currentCwd.get().trim()
+      const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
       const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
       const stored = created.stored_session_id ?? null
 

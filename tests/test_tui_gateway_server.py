@@ -10,6 +10,55 @@ from unittest.mock import patch
 from tui_gateway import server
 
 
+def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
+    """Desktop/TUI sessions must pin the agent cwd per session.
+
+    The gateway process itself is often launched from apps/desktop in dev, so
+    falling back to os.getcwd() makes agents answer from the desktop app folder
+    even when the sidebar/session cwd is a real project.
+    """
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    sid = "cwd-sid"
+    session_key = "cwd-key"
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "apps" / "desktop"
+    launcher.mkdir(parents=True)
+
+    server._sessions[sid] = {"session_key": session_key, "cwd": str(project)}
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(launcher)
+
+    tokens = server._set_session_context(session_key)
+    try:
+        assert resolve_agent_cwd() == project
+    finally:
+        server._clear_session_context(tokens)
+        server._sessions.pop(sid, None)
+
+
+def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
+    """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
+    parent workspace is passed explicitly; it must pin instead of clearing back
+    to the gateway launch dir."""
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "apps" / "desktop"
+    launcher.mkdir(parents=True)
+
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(launcher)
+
+    tokens = server._set_session_context("bg_deadbe", cwd=str(project))
+    try:
+        assert resolve_agent_cwd() == project
+    finally:
+        server._clear_session_context(tokens)
+
+
 class _ChunkyStdout:
     def __init__(self):
         self.parts: list[str] = []

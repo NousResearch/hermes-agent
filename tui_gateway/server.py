@@ -809,11 +809,31 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = None
 
 
-def _set_session_context(session_key: str) -> list:
+def _cwd_for_session_key(session_key: str) -> str:
+    """Reverse-map session_key to the session's logical cwd.
+
+    Snapshots ``_sessions`` first: concurrent RPC handlers mutate it from the
+    thread pool, so iterating the live view risks ``RuntimeError: dictionary
+    changed size during iteration``.
+    """
+    if not session_key:
+        return ""
+    for sess in list(_sessions.values()):
+        if sess.get("session_key") == session_key:
+            return str(sess.get("cwd") or "")
+    return ""
+
+
+def _set_session_context(session_key: str, cwd: str | None = None) -> list:
     try:
         from gateway.session_context import set_session_vars
 
-        return set_session_vars(session_key=session_key)
+        # Ephemeral task IDs (background, preview) aren't in `_sessions`, so the
+        # reverse-map returns "" and would clear the cwd override. Callers that
+        # know the parent workspace pass it explicitly so spawned agents inherit
+        # it instead of falling back to the gateway launch dir.
+        resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
+        return set_session_vars(session_key=session_key, cwd=resolved)
     except Exception:
         return []
 
@@ -2764,6 +2784,7 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     except Exception:
         explicit_cwd = False
+    resolved_cwd = _completion_cwd(params)
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2782,7 +2803,7 @@ def _(rid, params: dict) -> dict:
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
-        "cwd": _completion_cwd(params),
+        "cwd": resolved_cwd,
         "inflight_turn": None,
         "last_active": now,
         "pending_title": title or None,
@@ -4624,7 +4645,7 @@ def _(rid, params: dict) -> dict:
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
 
     def run():
-        session_tokens = _set_session_context(task_id)
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
         try:
             from run_agent import AIAgent
 
@@ -4709,14 +4730,25 @@ def _(rid, params: dict) -> dict:
         if line
     )
 
+    # Normalize defensively: a malformed client path (embedded NUL, etc.) must
+    # not blow up the whole restart — treat it as "no validated cwd".
+    try:
+        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
+        if preview_cwd and not os.path.isdir(preview_cwd):
+            preview_cwd = ""
+    except Exception:
+        preview_cwd = ""
+
     def run():
-        session_tokens = _set_session_context(task_id)
+        # Pin the validated preview cwd, else the parent workspace — never an
+        # invalid client path, which would silently fall back to the launch dir.
+        session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
         try:
             from run_agent import AIAgent
             from tools.terminal_tool import register_task_env_overrides
 
-            if cwd and os.path.isdir(os.path.abspath(os.path.expanduser(cwd))):
-                register_task_env_overrides(task_id, {"cwd": os.path.abspath(os.path.expanduser(cwd))})
+            if preview_cwd:
+                register_task_env_overrides(task_id, {"cwd": preview_cwd})
 
             history_note = (
                 f" (with {len(parent_history)} parent-session messages of context)"

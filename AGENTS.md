@@ -860,6 +860,54 @@ Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
 ## Important Policies
 
+### Laptop File Locality and Approved SSH Route
+
+When a user says a file is on "my laptop", "Downloads",
+"Windows Downloads", "MSI laptop", "TRAVIS-MSI", or a known laptop path such
+as `C:\Users\Travis\Downloads\`, first classify file locality before claiming
+the file is unavailable. Absence from the VPS filesystem is not evidence that a
+laptop file is unavailable.
+
+Locality classification order:
+
+1. Decide whether the requested file is expected on the VPS, the laptop,
+   OneDrive/rclone, or an unknown source.
+2. Check current local/VPS paths only when the request is plausibly local to
+   the VPS or the current workspace.
+3. If the file is not local and is likely on the laptop, consider the approved
+   private laptop SSH route.
+4. If SSH fails, report the exact failure and do not claim the file does not
+   exist globally.
+
+Approved private laptop route:
+
+- SSH alias: `main-laptop`
+- Hostname: `travis-msi.taila00f3c.ts.net`
+- User: `travis`
+- Remote machine: `TRAVIS-MSI`
+- Remote home: `C:\Users\Travis`
+- Downloads path: `C:\Users\Travis\Downloads\`
+- Agent OS pack:
+  `C:\Users\Travis\Downloads\agent-os-pack\`
+  and `C:\Users\Travis\Downloads\agent-os-pack.7z`
+
+Before using SSH, perform a preflight and require approval unless the active
+task already grants that exact read-only laptop inspection:
+
+- State the SSH alias or host and the exact Windows path being inspected.
+- State the exact read-only command or commands intended.
+- Confirm no secrets will be printed.
+- Confirm no files will be modified, copied, deleted, extracted, installed, or
+  executed.
+- Use Windows-compatible commands on the laptop. Do not assume POSIX shell
+  semantics.
+
+Allowed laptop inspection is limited to read-only existence, listing, metadata,
+and checksum checks inside the approved path. Block copy, delete, move,
+extract, execute, install, broad recursive inventory, and secret
+reading/printing. Never print SSH keys, tokens, credentials, `.env` contents,
+private keys, browser profile data, or unrelated personal file contents.
+
 ### Prompt Caching Must Not Break
 
 Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**

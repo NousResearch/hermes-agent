@@ -111,6 +111,56 @@ Fixed action registry:
 - Arbitrary commands, gateway restart, cron mutation, credential change,
   public/payment action, and messaging outreach are blocked classes.
 
+Laptop SSH Capability:
+
+- Capability name: `laptop_ssh_read_only_inspection`.
+- Default state: disabled until preflight-approved.
+- Purpose: preserve the approved private route for laptop-local files so Jenny
+  does not conclude a laptop file is unavailable merely because it is absent
+  from the VPS filesystem.
+- Locality trigger phrases: "my laptop", "Downloads", "Windows Downloads",
+  "MSI laptop", "TRAVIS-MSI", and known laptop paths such as
+  `C:\Users\Travis\Downloads\`.
+- Approved route:
+  - SSH alias: `main-laptop`
+  - Hostname: `travis-msi.taila00f3c.ts.net`
+  - User: `travis`
+  - Remote machine: `TRAVIS-MSI`
+  - Remote home: `C:\Users\Travis`
+  - Downloads path: `C:\Users\Travis\Downloads\`
+  - Agent OS pack: `C:\Users\Travis\Downloads\agent-os-pack\` and
+    `C:\Users\Travis\Downloads\agent-os-pack.7z`
+- Required locality behavior:
+  - First classify whether the requested file is expected on the VPS, the
+    laptop, OneDrive/rclone, or an unknown source.
+  - Check current local/VPS paths only if relevant to that classification.
+  - If not found locally and likely on the laptop, consider this approved SSH
+    route.
+  - If SSH fails, report the exact failure and do not claim the file does not
+    exist globally.
+- Allowed modes: read-only existence checks, directory listing, file metadata,
+  and checksum checks within the approved path.
+- Blocked modes: copy, delete, move, extract, execute, install, broad recursive
+  inventory, secret reading or printing, unrelated personal-file inspection,
+  and any mutation of laptop files or settings.
+- Approval requirements: before using SSH, state the alias or host, target
+  path, exact read-only Windows command or commands, that no secrets will be
+  printed, and that no files will be modified, copied, deleted, extracted, or
+  run. Require approval unless an active approval slice already grants that
+  exact read-only laptop inspection.
+- Safe Windows command patterns: bounded `cmd /c if exist ...` existence
+  checks, bounded `cmd /c dir ...` listings for the approved path,
+  PowerShell `Get-Item` metadata reads for exact approved paths, and
+  PowerShell `Get-FileHash` checksum reads for exact approved files.
+- Forbidden command patterns: `copy`, `xcopy`, `robocopy`, `move`, `del`,
+  `erase`, `rmdir`, archive extraction, installers, script execution, broad
+  recursive `dir /s` inventory, commands that read `.env`, private keys,
+  browser profiles, credentials, tokens, SSH keys, or unrelated personal file
+  contents.
+- Privacy constraints: never print SSH keys, tokens, credentials, `.env`
+  contents, private keys, browser profile data, or unrelated personal file
+  contents.
+
 Task queue and worker output:
 
 - Hermes Kanban is the existing durable task queue. The shared board lives

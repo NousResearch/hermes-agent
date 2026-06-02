@@ -144,6 +144,7 @@ async def _drive_drain(
     *,
     prepared_text,
     goal_active=None,
+    interrupt_depth=0,
 ):
     """Run _run_agent with one frozen pending event queued for the drain.
 
@@ -194,6 +195,7 @@ async def _drive_drain(
         source=_source(),
         session_id=SESSION_ID,
         session_key=SESSION_KEY,
+        _interrupt_depth=interrupt_depth,
     )
     return hooks
 
@@ -223,6 +225,8 @@ async def test_text_followup_emits_agent_start(monkeypatch, tmp_path):
         "chat_id": "9001",
         "session_id": SESSION_ID,
         "message": "follow up text",
+        "trigger": "interrupt",
+        "interrupt_depth": 1,
     }
 
 
@@ -306,3 +310,50 @@ async def test_no_emit_when_goal_continuation_inactive(monkeypatch, tmp_path):
     )
 
     assert hooks.agent_start_payloads() == []
+
+
+@pytest.mark.asyncio
+async def test_followup_carries_interrupt_trigger_and_depth(monkeypatch, tmp_path):
+    """A first-level drained follow-up is tagged trigger="interrupt", depth 1."""
+    followup = MessageEvent(
+        text="follow up text",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        message_id="m7",
+    )
+    hooks = await _drive_drain(
+        monkeypatch, tmp_path, followup, prepared_text="follow up text"
+    )
+
+    payloads = hooks.agent_start_payloads()
+    assert len(payloads) == 1
+    assert payloads[0]["trigger"] == "interrupt"
+    assert payloads[0]["interrupt_depth"] == 1
+
+
+@pytest.mark.asyncio
+async def test_nested_interrupt_increments_depth(monkeypatch, tmp_path):
+    """An interrupt-of-an-interrupt reports depth _interrupt_depth + 1.
+
+    Driving ``_run_agent`` with ``_interrupt_depth=1`` (a turn that is itself a
+    follow-up) makes its drained follow-up the second level — the emit must use
+    ``_interrupt_depth + 1`` == 2, not a hard-coded 1.
+    """
+    followup = MessageEvent(
+        text="deeper follow up",
+        message_type=MessageType.TEXT,
+        source=_source(),
+        message_id="m8",
+    )
+    hooks = await _drive_drain(
+        monkeypatch,
+        tmp_path,
+        followup,
+        prepared_text="deeper follow up",
+        interrupt_depth=1,
+    )
+
+    payloads = hooks.agent_start_payloads()
+    assert len(payloads) == 1
+    assert payloads[0]["trigger"] == "interrupt"
+    assert payloads[0]["interrupt_depth"] == 2

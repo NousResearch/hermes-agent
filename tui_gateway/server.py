@@ -1504,6 +1504,47 @@ def _get_usage(agent) -> dict:
     return usage
 
 
+def _format_usage_text(usage: dict) -> str:
+    """Format a _get_usage() dict as a human-readable text block.
+
+    Mirrors the layout of cli.py's _show_usage() so TUI users see the same
+    information they would get in the interactive CLI.  Called by the
+    slash.exec handler when /usage is intercepted to avoid routing through the
+    slash worker subprocess, whose HermesCLI instance has no active agent and
+    would return 'No active agent — send a message first.'
+    """
+    lines = ["  \U0001f4ca Session Token Usage", f"  {'─' * 40}"]
+    lines.append(f"  Model:                     {usage.get('model', '')}")
+    lines.append(f"  Input tokens:              {usage.get('input', 0):>10,}")
+    lines.append(f"  Cache read tokens:         {usage.get('cache_read', 0):>10,}")
+    lines.append(f"  Cache write tokens:        {usage.get('cache_write', 0):>10,}")
+    lines.append(f"  Output tokens:             {usage.get('output', 0):>10,}")
+    if usage.get("reasoning"):
+        lines.append(f"  ⤷ Reasoning (subset):      {usage['reasoning']:>10,}")
+    lines.append(f"  Prompt tokens (total):     {usage.get('prompt', 0):>10,}")
+    lines.append(f"  Completion tokens:         {usage.get('completion', 0):>10,}")
+    lines.append(f"  Total tokens:              {usage.get('total', 0):>10,}")
+    lines.append(f"  API calls:                 {usage.get('calls', 0):>10,}")
+    cost_status = usage.get("cost_status", "unknown")
+    lines.append(f"  Cost status:              {cost_status:>10}")
+    if "cost_usd" in usage:
+        prefix = "~" if cost_status == "estimated" else ""
+        lines.append(f"  Total cost:              {prefix}${float(usage['cost_usd']):>10.4f}")
+    elif cost_status == "included":
+        lines.append(f"  Total cost:              {'included':>10}")
+    else:
+        lines.append(f"  Total cost:              {'n/a':>10}")
+    lines.append(f"  {'─' * 40}")
+    if "context_used" in usage and "context_max" in usage:
+        ctx_pct = usage.get("context_percent", 0)
+        lines.append(
+            f"  Current context:  {usage['context_used']:,} / {usage['context_max']:,} ({ctx_pct:.0f}%)"
+        )
+    if "compressions" in usage:
+        lines.append(f"  Compressions:     {usage['compressions']}")
+    return "\n".join(lines)
+
+
 def _probe_credentials(agent) -> str:
     """Light credential check at session creation — returns warning or ''."""
     try:
@@ -6915,6 +6956,18 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"output": str(result or "(no output)")})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
+
+    # /usage is intercepted here so it reads from the live session agent instead
+    # of routing to the slash worker subprocess.  The slash worker's HermesCLI
+    # has no active agent (it is a subprocess that never runs conversation turns),
+    # so _show_usage() would always return "No active agent — send a message
+    # first." regardless of actual session activity (issue #37637).
+    if _cmd_base == "usage":
+        agent = session.get("agent")
+        if agent is None or not getattr(agent, "session_api_calls", 0):
+            return _ok(rid, {"output": "(._.) No API calls made yet in this session."})
+        usage = _get_usage(agent)
+        return _ok(rid, {"output": _format_usage_text(usage)})
 
     worker = session.get("slash_worker")
     if not worker:

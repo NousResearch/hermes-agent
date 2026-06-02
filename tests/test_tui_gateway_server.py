@@ -5459,3 +5459,115 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+
+
+# ---------------------------------------------------------------------------
+# /usage slash command — server-side interception (issue #37637)
+# ---------------------------------------------------------------------------
+
+
+def _make_usage_agent(calls: int = 3):
+    """Minimal agent namespace with usage counters set to non-zero values."""
+    import types
+    agent = types.SimpleNamespace(
+        model="claude-sonnet-4.6",
+        provider="anthropic",
+        base_url=None,
+        api_key="sk-test",
+        session_api_calls=calls,
+        session_input_tokens=1000,
+        session_output_tokens=500,
+        session_cache_read_tokens=200,
+        session_cache_write_tokens=100,
+        session_reasoning_tokens=0,
+        session_prompt_tokens=1000,
+        session_completion_tokens=500,
+        session_total_tokens=1500,
+        context_compressor=types.SimpleNamespace(
+            last_prompt_tokens=800,
+            context_length=200000,
+            compression_count=0,
+        ),
+    )
+    return agent
+
+
+def test_slash_usage_no_agent_returns_no_calls_message():
+    """When the session has no agent yet, /usage returns the 'no calls' message
+    instead of routing to the slash worker (which would return 'No active agent').
+    The session agent is None — no worker should be started."""
+    import types
+    sid = "usage-no-agent"
+    server._sessions[sid] = _session(agent=None)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "slash.exec",
+             "params": {"session_id": sid, "command": "/usage"}}
+        )
+        result = resp.get("result", {})
+        output = result.get("output", "")
+        assert "No API calls" in output
+        # Verify the slash worker was never spawned (it would fail anyway since
+        # there is no real slash_worker binary in the test environment).
+        assert server._sessions[sid].get("slash_worker") is None
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_slash_usage_with_active_agent_returns_formatted_stats():
+    """When the session has an agent with API calls, /usage returns formatted
+    token stats directly from the live session — not from the slash worker
+    subprocess (which has no agent and always reports 'No active agent')."""
+    import types
+    agent = _make_usage_agent(calls=3)
+    sid = "usage-with-agent"
+    server._sessions[sid] = _session(agent=agent)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "slash.exec",
+             "params": {"session_id": sid, "command": "/usage"}}
+        )
+        result = resp.get("result", {})
+        output = result.get("output", "")
+        # Must contain the model name and token counts — not an error message.
+        assert "claude-sonnet-4.6" in output
+        assert "1,500" in output or "1500" in output   # total tokens
+        assert "API calls" in output
+        # Must NOT contain the slash-worker fallback error messages.
+        assert "No active agent" not in output
+        assert "No API calls made yet" not in output
+        # Slash worker must still be None (was never started for /usage).
+        assert server._sessions[sid].get("slash_worker") is None
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_format_usage_text_contains_required_fields():
+    """_format_usage_text() must include model, token counts, and context info."""
+    from tui_gateway.server import _format_usage_text
+
+    usage = {
+        "model": "gpt-5",
+        "input": 1000,
+        "output": 500,
+        "cache_read": 200,
+        "cache_write": 100,
+        "reasoning": 0,
+        "prompt": 1000,
+        "completion": 500,
+        "total": 1500,
+        "calls": 5,
+        "cost_status": "estimated",
+        "cost_usd": 0.0025,
+        "context_used": 800,
+        "context_max": 128000,
+        "context_percent": 1,
+        "compressions": 2,
+    }
+    text = _format_usage_text(usage)
+    assert "gpt-5" in text
+    assert "1,500" in text or "1500" in text
+    assert "5" in text
+    assert "128,000" in text or "128000" in text
+    assert "Compressions" in text
+    assert "$" in text

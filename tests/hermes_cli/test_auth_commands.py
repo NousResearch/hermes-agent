@@ -97,6 +97,39 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["expires_at_ms"] == 1711234567000
 
 
+def test_auth_add_qwen_oauth_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add qwen-oauth must set active_provider in auth.json."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kwargs: {
+            "api_key": "qwen-test-token",
+            "base_url": "https://portal.qwen.ai/v1",
+            "source": "qwen-cli",
+            "auth_file": "/home/user/.qwen/oauth_creds.json",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "qwen-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "qwen-oauth"
+    assert payload["providers"]["qwen-oauth"]["base_url"] == "https://portal.qwen.ai/v1"
+    entries = payload["credential_pool"]["qwen-oauth"]
+    entry = next(item for item in entries if item["source"] == "manual:qwen_cli")
+    assert entry["source"] == "manual:qwen_cli"
+    assert entry["access_token"] == "qwen-test-token"
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})

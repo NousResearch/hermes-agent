@@ -1926,6 +1926,26 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
     return data
 
 
+def _save_qwen_oauth_provider_state(creds: Dict[str, Any]) -> None:
+    """Set active_provider to qwen-oauth in auth.json.
+
+    Qwen OAuth tokens live in the Qwen CLI credential file managed by
+    _save_qwen_cli_tokens / resolve_qwen_runtime_credentials; this call only
+    records the provider-state singleton and sets active_provider so
+    get_active_provider() and _model_section_has_credentials() detect the
+    provider (setup wizard, status checks).
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "qwen-oauth") or {}
+        if creds.get("base_url"):
+            state["base_url"] = creds["base_url"]
+        if creds.get("auth_file"):
+            state["auth_file"] = creds["auth_file"]
+        _save_provider_state(auth_store, "qwen-oauth", state)
+        _save_auth_store(auth_store)
+
+
 def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
     auth_path = _qwen_cli_auth_path()
     auth_path.parent.mkdir(parents=True, exist_ok=True)

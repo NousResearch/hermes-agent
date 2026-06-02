@@ -372,6 +372,7 @@ def auth_add_command(args) -> None:
 
     if provider == "qwen-oauth":
         creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        auth_mod._save_qwen_oauth_provider_state(creds)
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["api_key"],
             _oauth_default_label(provider, len(pool.entries()) + 1),

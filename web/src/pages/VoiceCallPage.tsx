@@ -817,7 +817,7 @@ export default function VoiceCallPage() {
     [addLog, finishResponse, flushPendingHandoffs, handleToolCall, persistTranscript, requestResponseCreate, sendRealtimeEvent, speaker, startBoundedWorkingCue, startWorkingCue, stopWorkingCue],
   );
 
-  const startCall = useCallback(async (overrideMode?: "solo" | "meet") => {
+  const startCall = useCallback(async (overrideMode?: "solo" | "meet", preserveCallId = false) => {
     const callMode = overrideMode ?? mode;
     activeCallModeRef.current = callMode;
     if (!speaker) {
@@ -827,7 +827,7 @@ export default function VoiceCallPage() {
     }
     const callSeq = callSeqRef.current + 1;
     callSeqRef.current = callSeq;
-    if (!new URLSearchParams(window.location.search).get("call_id")) {
+    if (!preserveCallId && !new URLSearchParams(window.location.search).get("call_id")) {
       callIdRef.current = `voice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     }
     setCallIdDisplay(callIdRef.current);
@@ -955,7 +955,7 @@ export default function VoiceCallPage() {
         participant_audio_routing: resp.participant_audio_routing,
         participant_audio_routing_detail: resp.participant_audio_routing_detail,
       });
-      await startCall("meet");
+      await startCall("meet", true);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(`Meet invite unavailable: ${message}`);

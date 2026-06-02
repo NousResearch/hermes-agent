@@ -52,7 +52,9 @@ def test_start_meeting_invite_starts_meet_call_path():
     source = (WEB_DIR / "src/pages/VoiceCallPage.tsx").read_text(encoding="utf-8")
 
     assert "const startMeetingInvite = useCallback" in source
-    assert "await startCall(\"meet\")" in source
+    assert "await startCall(\"meet\", true)" in source
+    assert "preserveCallId = false" in source
+    assert "if (!preserveCallId && !new URLSearchParams(window.location.search).get(\"call_id\"))" in source
     assert "onClick={startMeetingInvite}" in source
     assert "onClick={() => void startCall()}" in source
 

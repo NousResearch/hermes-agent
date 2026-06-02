@@ -579,7 +579,7 @@ export const tr: Translations = {
     unassigned: "atanmamış",
     untitled: "(başlıksız)",
     loadingDetail: "Yükleniyor…",
-    addComment: "Yorum ekle… (göndermek için Enter)",
+    addComment: "Yorum ekle… (göndermek için Enter, resim yapıştır/bırak)",
     comment: "Yorum",
     status: "Durum",
     workspace: "Workspace",

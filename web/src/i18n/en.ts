@@ -583,7 +583,7 @@ export const en: Translations = {
       "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.",
     untitled: "(untitled)",
     loadingDetail: "Loading…",
-    addComment: "Add a comment… (Enter to submit)",
+    addComment: "Add a comment… (Enter to submit, paste/drop images)",
     comment: "Comment",
     status: "Status",
     workspace: "Workspace",

@@ -41,13 +41,30 @@ export function usePlugins() {
     const injectedScripts: HTMLScriptElement[] = [];
 
     for (const manifest of manifests) {
-      // Inject CSS if specified.
+      const versionQuery = manifest.version
+        ? `?v=${encodeURIComponent(manifest.version)}`
+        : "";
+
+      // Inject CSS if specified. Re-inject when the manifest version changes
+      // so browsers load the updated stylesheet without a hard refresh.
       if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
-        if (!document.querySelector(`link[href="${cssUrl}"]`)) {
+        const cssBase = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
+        const cssUrl = import.meta.env.DEV
+          ? `${cssBase}?hermes_dv=${Date.now()}`
+          : `${cssBase}${versionQuery}`;
+        const cssMarker = `link[data-hermes-plugin-css="${manifest.name}"]`;
+        const existingCss = document.querySelector(cssMarker);
+        const existingVersion = existingCss?.getAttribute("data-hermes-version") ?? null;
+        const wantedVersion = manifest.version || "";
+        if (existingCss && existingVersion !== wantedVersion) {
+          existingCss.remove();
+        }
+        if (!existingCss || existingVersion !== wantedVersion) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
           link.href = cssUrl;
+          link.setAttribute("data-hermes-plugin-css", manifest.name);
+          link.setAttribute("data-hermes-version", wantedVersion);
           document.head.appendChild(link);
         }
       }
@@ -58,10 +75,10 @@ export function usePlugins() {
       const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
       const scriptSrc = import.meta.env.DEV
         ? `${baseUrl}?hermes_dv=${Date.now()}`
-        : baseUrl;
+        : `${baseUrl}${versionQuery}`;
       if (!import.meta.env.DEV) {
-        if (loadedScripts.current.has(baseUrl)) continue;
-        loadedScripts.current.add(baseUrl);
+        if (loadedScripts.current.has(scriptSrc)) continue;
+        loadedScripts.current.add(scriptSrc);
       }
 
       const script = document.createElement("script");

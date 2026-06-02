@@ -12649,6 +12649,10 @@ class GatewayRunner:
 
             from hermes_cli.tools_config import _get_platform_tools
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            # Auto-include model_switch toolset when the operator opt-in flag is set.
+            if (user_config or {}).get("agent", {}).get("allow_self_model_switch"):
+                if "model_switch" not in enabled_toolsets:
+                    enabled_toolsets = sorted(list(enabled_toolsets) + ["model_switch"])
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
             enabled_toolsets, disabled_toolsets = self._apply_profile_toolsets(
@@ -16968,6 +16972,10 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        # Auto-include model_switch toolset when the operator opt-in flag is set.
+        if (user_config or {}).get("agent", {}).get("allow_self_model_switch"):
+            if "model_switch" not in enabled_toolsets:
+                enabled_toolsets = sorted(list(enabled_toolsets) + ["model_switch"])
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
         enabled_toolsets, disabled_toolsets = self._apply_profile_toolsets(

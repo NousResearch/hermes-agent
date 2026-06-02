@@ -1,3 +1,5 @@
+import json
+
 from plugins.memory.hindsight.session_summary_generator import (
     FakeSessionSummaryGenerator,
     SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
@@ -7,6 +9,7 @@ from plugins.memory.hindsight.session_summary_generator import (
     build_session_summary_prompt,
     render_session_summary,
     sanitize_session_summary_text,
+    session_summary_window_bounds,
     should_update_session_summary,
     trim_session_summary_inputs,
 )
@@ -117,6 +120,40 @@ def test_inline_metadata_json_negative_anchor_matrix_is_ignored():
         assert forbidden not in combined
 
 
+def test_camel_case_lineage_metadata_aliases_are_ignored():
+    messages = [
+        {
+            "role": "user",
+            "content": "\n".join(
+                [
+                    '{"sourceSystem":"openclaw-source","documentId":"doc-alpha",'
+                    '"updateMode":"bulk-update"}',
+                    "sourceSystem: assignment-source",
+                    "document_id=assignment-document",
+                    "The real project is lineage-audit-cli.",
+                ]
+            ),
+        }
+    ]
+
+    result = FakeSessionSummaryGenerator().generate(_request(messages=messages))
+    combined = " ".join(
+        result.summary_json["active_projects"]
+        + result.summary_json["exact_identifiers"]
+        + result.summary_json["semantic_anchors"]
+    )
+
+    assert "lineage-audit-cli" in combined
+    for forbidden in (
+        "openclaw-source",
+        "doc-alpha",
+        "bulk-update",
+        "assignment-source",
+        "assignment-document",
+    ):
+        assert forbidden not in combined
+
+
 def test_sanitizer_removes_injection_and_privacy_canaries_without_literal_fixture():
     secret_canary = "OC_SECRET" + "_CANARY_DO_NOT_STORE_7f3a9c"
     private_path = "/private/canary/path/" + "DO_NOT_LEAK_42"
@@ -174,6 +211,31 @@ def test_summary_cadence_defaults_do_not_follow_retain_every_turn():
     )
 
 
+def test_summary_window_bounds_cover_overlap_and_recall_context():
+    bounds = session_summary_window_bounds(
+        turn_index=8,
+        retain_every_n_turns=4,
+        retain_overlap_turns=1,
+        recall_context_turns=2,
+    )
+
+    assert bounds.segment_start_turn == 5
+    assert bounds.segment_end_turn == 8
+    assert bounds.input_start_turn == 4
+    assert bounds.recall_context_start_turn == 7
+
+    widened_by_recall = session_summary_window_bounds(
+        turn_index=8,
+        retain_every_n_turns=4,
+        retain_overlap_turns=0,
+        recall_context_turns=6,
+    )
+
+    assert widened_by_recall.segment_start_turn == 5
+    assert widened_by_recall.input_start_turn == 3
+    assert widened_by_recall.recall_context_start_turn == 3
+
+
 def test_budget_trimming_preserves_latest_query_reserve():
     request = _request(
         latest_query="latest-query-" + ("x" * 40),
@@ -189,6 +251,46 @@ def test_budget_trimming_preserves_latest_query_reserve():
     assert trimmed.latest_query.startswith("latest-query-")
     assert sum(len(m["content"]) for m in trimmed.messages) <= 48
     assert trimmed.messages[-1]["content"].endswith("b" * 48)
+
+
+def test_previous_summary_counts_against_input_budget_and_prompt_size():
+    long_previous = "previous-summary-" + ("p" * 5000)
+    request = _request(
+        previous_summary={
+            "schema_version": SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION,
+            "active_projects": ["grounded-app"],
+            "completed_todos": [long_previous],
+            "semantic_anchors": [long_previous],
+        },
+        latest_query="latest-query-" + ("x" * 120),
+        messages=[
+            {"role": "user", "content": "Continue grounded-app. " + ("m" * 600)},
+            {"role": "assistant", "content": "Done: " + ("todo " * 300)},
+        ],
+    )
+    budget = SessionSummaryBudget(
+        max_input_chars=360,
+        min_latest_query_reserve_chars=80,
+        max_recall_query_chars=40,
+    )
+
+    trimmed = trim_session_summary_inputs(request, budget)
+    prompt = build_session_summary_prompt(
+        _request(
+            previous_summary=request.previous_summary,
+            latest_query=request.latest_query,
+            messages=request.messages,
+            budget=budget,
+        )
+    )
+    previous_json = trimmed.previous_summary or {}
+
+    assert len(trimmed.latest_query) == 80
+    assert previous_json.get("completed_todos") is None
+    assert "p" * 5000 not in json_dumps_for_test(previous_json)
+    assert "p" * 5000 not in prompt
+    assert len(json_dumps_for_test(previous_json)) <= 90
+    assert "latest-query-" in prompt
 
 
 def test_budgeted_text_enforces_independent_summary_budgets():
@@ -229,3 +331,15 @@ def test_prompt_and_render_are_bounded_and_summary_only():
     assert "Generate a compact Hindsight session summary" in prompt
     assert "recall" not in text.lower()
     assert len(text) <= 40
+
+
+def test_generator_failure_returns_error_status_without_raising():
+    result = FakeSessionSummaryGenerator().generate(_request(messages=None))
+
+    assert result.status == "error"
+    assert result.error
+    assert result.summary_text == ""
+
+
+def json_dumps_for_test(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)

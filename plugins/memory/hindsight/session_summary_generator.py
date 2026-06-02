@@ -17,6 +17,8 @@ OPERATIONAL_METADATA_KEYS = frozenset(
         "bank_id",
         "channel",
         "channel_id",
+        "document",
+        "document_id",
         "message_id",
         "profile",
         "provider",
@@ -31,6 +33,7 @@ OPERATIONAL_METADATA_KEYS = frozenset(
         "thread_id",
         "tool",
         "tool_call_id",
+        "update_mode",
         "user_id",
     }
 )
@@ -84,6 +87,14 @@ class SessionSummaryBudgetedText:
     recall_query_text: str
     prompt_inject_text: str
     retain_context_text: str
+
+
+@dataclass(frozen=True)
+class SessionSummaryWindowBounds:
+    segment_start_turn: int
+    segment_end_turn: int
+    input_start_turn: int
+    recall_context_start_turn: int
 
 
 @dataclass(frozen=True)
@@ -148,8 +159,9 @@ def build_session_summary_prompt(request: SessionSummaryRequest) -> str:
         "Generate a compact Hindsight session summary as JSON only.\n"
         f"Schema version: {SESSION_SUMMARY_GENERATOR_SCHEMA_VERSION}\n"
         "Rules: use only evidence in user/assistant messages; do not promote "
-        "bank, source, session, sender, profile, provider, or tool metadata into "
-        "semantic entities; carry forward previous anchors only when grounded.\n"
+        "bank, source, session, sender, profile, provider, tool, document, or "
+        "update-mode metadata into semantic entities; carry forward previous "
+        "anchors only when grounded.\n"
         f"Previous summary JSON:\n{prior}\n"
         f"Latest query:\n{sanitize_session_summary_text(trimmed.latest_query)}\n"
         f"Messages JSON:\n{json.dumps(messages, ensure_ascii=False)}"
@@ -183,15 +195,45 @@ def should_update_session_summary(
     recall_context_turns: int = 1,
 ) -> bool:
     """Return whether a background summary refresh should be scheduled."""
-    del retain_overlap_turns, recall_context_turns
     if turn_index <= 0:
         return False
+    session_summary_window_bounds(
+        turn_index=turn_index,
+        retain_every_n_turns=retain_every_n_turns,
+        retain_overlap_turns=retain_overlap_turns,
+        recall_context_turns=recall_context_turns,
+    )
     minimum = max(1, int(min_update_every_n_turns or 1))
     if update_every_n_turns is not None:
         cadence = max(minimum, int(update_every_n_turns or minimum))
     else:
         cadence = max(minimum, int(retain_every_n_turns or 1))
     return turn_index % cadence == 0
+
+
+def session_summary_window_bounds(
+    *,
+    turn_index: int,
+    retain_every_n_turns: int,
+    retain_overlap_turns: int = 0,
+    recall_context_turns: int = 1,
+) -> SessionSummaryWindowBounds:
+    """Return generator-only segment and input bounds for a summary refresh."""
+    end_turn = max(0, int(turn_index or 0))
+    if end_turn <= 0:
+        return SessionSummaryWindowBounds(0, 0, 0, 0)
+    segment_size = max(1, int(retain_every_n_turns or 1))
+    overlap = max(0, int(retain_overlap_turns or 0))
+    recall_context = max(1, int(recall_context_turns or 1))
+    segment_start = max(1, end_turn - segment_size + 1)
+    overlap_start = max(1, segment_start - overlap)
+    recall_start = max(1, end_turn - recall_context + 1)
+    return SessionSummaryWindowBounds(
+        segment_start_turn=segment_start,
+        segment_end_turn=end_turn,
+        input_start_turn=min(overlap_start, recall_start),
+        recall_context_start_turn=recall_start,
+    )
 
 
 def trim_session_summary_inputs(
@@ -203,7 +245,12 @@ def trim_session_summary_inputs(
         request.latest_query,
         max_chars=max(0, budget.min_latest_query_reserve_chars),
     )
-    remaining = max(0, budget.max_input_chars - len(latest))
+    remaining_total = max(0, budget.max_input_chars - len(latest))
+    previous_summary = _trim_previous_summary(
+        request.previous_summary,
+        max_chars=(remaining_total // 4 if request.previous_summary else 0),
+    )
+    remaining = max(0, remaining_total - _json_len(previous_summary))
     kept_reversed: list[dict[str, Any]] = []
     for msg in reversed(request.messages):
         content = sanitize_session_summary_text(str(msg.get("content", "")))
@@ -217,7 +264,13 @@ def trim_session_summary_inputs(
         remaining -= len(content)
         if remaining <= 0:
             break
-    return replace(request, latest_query=latest, messages=list(reversed(kept_reversed)), budget=budget)
+    return replace(
+        request,
+        previous_summary=previous_summary,
+        latest_query=latest,
+        messages=list(reversed(kept_reversed)),
+        budget=budget,
+    )
 
 
 def build_session_summary_budgeted_text(
@@ -304,12 +357,12 @@ def _strip_operational_metadata_json_objects(text: str) -> str:
             return raw
         if not isinstance(parsed, dict):
             return raw
-        keys = {str(key).lower().replace("-", "_") for key in parsed}
+        keys = {_normalize_metadata_key(key) for key in parsed}
         if keys & OPERATIONAL_METADATA_KEYS:
             return ""
         return raw
 
-    return re.sub(r"\{[^\{\}\n]*\}", _replace, text)
+    return re.sub(r"\{[^\{\}]*\}", _replace, text)
 
 
 def _active_projects(evidence_text: str, previous_summary: dict[str, Any] | None) -> list[str]:
@@ -370,16 +423,66 @@ def _looks_like_metadata_assignment(text: str) -> bool:
     except json.JSONDecodeError:
         parsed = None
     if isinstance(parsed, dict):
-        keys = {str(key).lower().replace("-", "_") for key in parsed}
+        keys = {_normalize_metadata_key(key) for key in parsed}
         if keys & OPERATIONAL_METADATA_KEYS:
             return True
-    key = stripped.split(":", 1)[0].strip().strip("\"'").lower().replace("-", "_")
-    return key in OPERATIONAL_METADATA_KEYS
+    separator = ":" if ":" in stripped else "=" if "=" in stripped else ""
+    if not separator:
+        return False
+    key = stripped.split(separator, 1)[0].strip().strip("\"'")
+    return _normalize_metadata_key(key) in OPERATIONAL_METADATA_KEYS
 
 
 def _is_operational_identifier(value: str) -> bool:
-    normalized = value.lower().replace("-", "_").replace(".", "_")
-    return normalized in OPERATIONAL_METADATA_KEYS
+    return _normalize_metadata_key(value) in OPERATIONAL_METADATA_KEYS
+
+
+def _normalize_metadata_key(value: Any) -> str:
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(value).strip())
+    text = text.replace("-", "_").replace(".", "_").lower()
+    return re.sub(r"_+", "_", text).strip("_")
+
+
+def _trim_previous_summary(
+    previous_summary: dict[str, Any] | None,
+    *,
+    max_chars: int,
+) -> dict[str, Any] | None:
+    if not isinstance(previous_summary, dict) or max_chars <= 2:
+        return None
+    sanitized: dict[str, Any] = {}
+    schema_version = previous_summary.get("schema_version")
+    if schema_version is not None:
+        candidate = {"schema_version": schema_version}
+        if _json_len(candidate) <= max_chars:
+            sanitized.update(candidate)
+    for key in (
+        "active_projects",
+        "exact_identifiers",
+        "semantic_anchors",
+        "decisions",
+        "blockers",
+        "open_questions",
+        "completed_todos",
+    ):
+        kept: list[str] = []
+        for value in _as_string_list(previous_summary.get(key)):
+            text = sanitize_session_summary_text(value)
+            if not text:
+                continue
+            candidate = {**sanitized, key: [*kept, text]}
+            if _json_len(candidate) > max_chars:
+                break
+            kept.append(text)
+        if kept:
+            sanitized[key] = kept
+    return sanitized or None
+
+
+def _json_len(value: Any) -> int:
+    if value is None:
+        return 0
+    return len(json.dumps(value, ensure_ascii=False, sort_keys=True))
 
 
 def _as_string_list(value: Any) -> list[str]:

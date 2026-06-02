@@ -16,7 +16,7 @@ import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
@@ -4877,58 +4877,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
         user_id = event.source.user_id or "unknown"
         sender = event.source.user_name or user_id
-        parts: list[str] = []
-        if event.text:
-            parts.append(event.text)
-        media_note = self._telegram_group_observe_media_note(event)
-        if media_note:
-            parts.append(media_note)
-        body = "\n\n".join(parts)
-        return f"[{sender}|{user_id}]\n{body}"
-
-    @staticmethod
-    def _append_media_status_text(existing: str, note: str) -> str:
-        if not note:
-            return existing
-        if not existing:
-            return note
-        return f"{existing}\n\n{note}"
-
-    def _telegram_group_observe_media_note(self, event: MessageEvent) -> str:
-        """Describe cached observed media in transcript context."""
-        media_urls = list(getattr(event, "media_urls", None) or [])
-        if not media_urls:
-            return ""
-
-        try:
-            from tools.credential_files import to_agent_visible_cache_path
-        except Exception:
-            to_agent_visible_cache_path = lambda path: path  # type: ignore[assignment]
-
-        lines: list[str] = []
-        media_types = list(getattr(event, "media_types", None) or [])
-        for index, path in enumerate(media_urls):
-            mtype = media_types[index] if index < len(media_types) else ""
-            basename = os.path.basename(path)
-            parts = basename.split("_", 2)
-            display_name = parts[2] if len(parts) >= 3 else basename
-            display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-            agent_path = to_agent_visible_cache_path(path)
-
-            if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
-                label = "image"
-            elif event.message_type == MessageType.VOICE:
-                label = "voice message"
-            elif event.message_type == MessageType.AUDIO or mtype.startswith("audio/"):
-                label = "audio file"
-            elif mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
-                label = "video"
-            else:
-                label = "document"
-            lines.append(
-                f"[Observed Telegram {label}: '{display_name}' saved at: {agent_path}]"
-            )
-        return "\n".join(lines)
+        return f"[{sender}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
         username = getattr(getattr(self, "_bot", None), "username", None) or "unknown"
@@ -4968,6 +4917,96 @@ class TelegramAdapter(BasePlatformAdapter):
             source=shared_source,
             channel_prompt=channel_prompt,
         )
+
+    def _media_message_type(self, msg: Message) -> MessageType:
+        """Classify a Telegram media message into a MessageType."""
+        if msg.sticker:
+            return MessageType.STICKER
+        if msg.photo:
+            return MessageType.PHOTO
+        if msg.video:
+            return MessageType.VIDEO
+        if msg.audio:
+            return MessageType.AUDIO
+        if msg.voice:
+            return MessageType.VOICE
+        return MessageType.DOCUMENT
+
+    async def _cache_observed_media(self, msg: Message, event: MessageEvent) -> None:
+        """Cache an unmentioned group attachment and annotate the observed text.
+
+        Passive group traffic, so downloads are bounded by the same
+        ``_max_doc_bytes`` limit as the addressed document path. Oversized or
+        unsupported attachments are noted in the transcript without downloading.
+        """
+        from gateway.platforms.base import cache_media_bytes
+
+        source, filename, mime, kind = self._observed_media_source(msg)
+        if source is None:
+            return
+
+        max_bytes = getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)
+        file_size = getattr(source, "file_size", None)
+        try:
+            size = int(file_size or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if not (0 < size <= max_bytes):
+            limit_mb = max_bytes // (1024 * 1024)
+            event.text = self._append_observed_note(
+                event.text,
+                f"[Observed Telegram attachment too large or unverifiable. Maximum: {limit_mb} MB.]",
+            )
+            logger.info("[Telegram] Observed group attachment skipped (size=%s)", file_size)
+            return
+
+        try:
+            file_obj = await source.get_file()
+            data = bytes(await file_obj.download_as_bytearray())
+            if not filename:
+                filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
+            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+        except Exception as exc:
+            logger.warning("[Telegram] Failed to cache observed group media: %s", exc, exc_info=True)
+            return
+
+        if cached is None:
+            event.text = self._append_observed_note(
+                event.text, "[Observed Telegram attachment: unsupported type, not cached.]"
+            )
+            return
+
+        event.media_urls = [cached.path]
+        event.media_types = [cached.media_type]
+        if cached.kind == "image":
+            event.message_type = MessageType.PHOTO
+        elif cached.kind == "video":
+            event.message_type = MessageType.VIDEO
+        event.text = self._append_observed_note(event.text, cached.context_note())
+        logger.info("[Telegram] Cached observed group %s at %s", cached.kind, cached.path)
+
+    def _observed_media_source(self, msg: Message):
+        """Return (telegram_file_source, filename, mime, default_kind) or Nones."""
+        if msg.photo:
+            return msg.photo[-1], "", "", "image"
+        if msg.video:
+            return msg.video, "", "video/mp4", "video"
+        if msg.voice:
+            return msg.voice, "voice.ogg", "audio/ogg", "audio"
+        if msg.audio:
+            return msg.audio, getattr(msg.audio, "file_name", "") or "", "", "audio"
+        if msg.document:
+            doc = msg.document
+            return doc, doc.file_name or "", (doc.mime_type or "").lower(), None
+        return None, "", "", None
+
+    @staticmethod
+    def _append_observed_note(existing: Optional[str], note: str) -> str:
+        if not note:
+            return existing or ""
+        if not existing:
+            return note
+        return f"{existing}\n\n{note}"
 
     def _observe_unmentioned_group_message(
         self,
@@ -5335,272 +5374,27 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
-    def _media_message_type(self, msg: Message) -> MessageType:
-        if msg.sticker:
-            return MessageType.STICKER
-        if msg.photo:
-            return MessageType.PHOTO
-        if msg.video:
-            return MessageType.VIDEO
-        if msg.audio:
-            return MessageType.AUDIO
-        if msg.voice:
-            return MessageType.VOICE
-        return MessageType.DOCUMENT
-
-    def _observed_media_exceeds_cache_limit(self, event: MessageEvent, label: str, file_size: Any) -> bool:
-        max_bytes = getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)
-        try:
-            size = int(file_size or 0)
-        except (TypeError, ValueError):
-            size = 0
-        if 0 < size <= max_bytes:
-            return False
-
-        limit_mb = max_bytes // (1024 * 1024)
-        event.text = self._append_media_status_text(
-            event.text,
-            (
-                f"Observed Telegram {label} was too large or its size could not be "
-                f"verified. Maximum: {limit_mb} MB."
-            ),
-        )
-        logger.info(
-            "[Telegram] Observed group %s too large or unknown size: %s bytes",
-            label,
-            file_size,
-        )
-        return True
-
-    async def _cache_observed_simple_media(
-        self,
-        event: MessageEvent,
-        *,
-        source: Any,
-        label: str,
-        cache_fn: Callable[..., str],
-        default_ext: str,
-        media_type_for_ext: Callable[[str], str],
-        ext_candidates: Optional[Any] = None,
-    ) -> None:
-        try:
-            if self._observed_media_exceeds_cache_limit(event, label, getattr(source, "file_size", None)):
-                return
-
-            file_obj = await source.get_file()
-            media_bytes = await file_obj.download_as_bytearray()
-            ext = default_ext
-            file_path = getattr(file_obj, "file_path", None)
-            if file_path and ext_candidates:
-                file_path_lower = file_path.lower()
-                for candidate in ext_candidates:
-                    if file_path_lower.endswith(candidate):
-                        ext = candidate
-                        break
-
-            cached_path = cache_fn(bytes(media_bytes), ext=ext)
-            event.media_urls = [cached_path]
-            event.media_types = [media_type_for_ext(ext)]
-            logger.info("[Telegram] Cached observed group %s at %s", label, cached_path)
-        except Exception as e:
-            logger.warning("[Telegram] Failed to cache observed group %s: %s", label, e, exc_info=True)
-
-    async def _build_observed_media_event(
-        self,
-        msg: Message,
-        msg_type: MessageType,
-        update_id: Optional[int] = None,
-    ) -> MessageEvent:
-        """Build and cache media for an observed, unmentioned group message."""
-        event = self._build_message_event(msg, msg_type, update_id=update_id)
-        if msg.caption:
-            event.text = self._clean_bot_trigger_text(msg.caption)
-
-        if msg.photo:
-            await self._cache_observed_simple_media(
-                event,
-                source=msg.photo[-1],
-                label="image",
-                cache_fn=cache_image_from_bytes,
-                default_ext=".jpg",
-                ext_candidates=(".png", ".webp", ".gif", ".jpeg", ".jpg"),
-                media_type_for_ext=lambda ext: f"image/{ext.lstrip('.')}",
-            )
-
-        elif msg.voice:
-            await self._cache_observed_simple_media(
-                event,
-                source=msg.voice,
-                label="voice message",
-                cache_fn=cache_audio_from_bytes,
-                default_ext=".ogg",
-                media_type_for_ext=lambda _ext: "audio/ogg",
-            )
-
-        elif msg.audio:
-            await self._cache_observed_simple_media(
-                event,
-                source=msg.audio,
-                label="audio file",
-                cache_fn=cache_audio_from_bytes,
-                default_ext=".mp3",
-                media_type_for_ext=lambda _ext: "audio/mp3",
-            )
-
-        elif msg.video:
-            await self._cache_observed_simple_media(
-                event,
-                source=msg.video,
-                label="video",
-                cache_fn=cache_video_from_bytes,
-                default_ext=".mp4",
-                ext_candidates=SUPPORTED_VIDEO_TYPES,
-                media_type_for_ext=lambda ext: SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4"),
-            )
-
-        elif msg.document:
-            await self._cache_observed_document_event(msg, event)
-
-        return event
-
-    async def _cache_observed_document_event(self, msg: Message, event: MessageEvent) -> None:
-        doc = msg.document
-        try:
-            ext = ""
-            original_filename = doc.file_name or ""
-            if original_filename:
-                _, ext = os.path.splitext(original_filename)
-                ext = ext.lower()
-
-            doc_mime = (doc.mime_type or "").lower()
-            if not ext and doc_mime:
-                ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
-                if not ext:
-                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
-                    ext = mime_to_ext.get(doc_mime, "")
-
-            max_doc_bytes = getattr(self, "_max_doc_bytes", 20 * 1024 * 1024)
-            if not doc.file_size or doc.file_size > max_doc_bytes:
-                limit_mb = max_doc_bytes // (1024 * 1024)
-                event.text = self._append_media_status_text(
-                    event.text,
-                    (
-                        "Observed Telegram document was too large or its size could not "
-                        f"be verified. Maximum: {limit_mb} MB."
-                    ),
-                )
-                logger.info("[Telegram] Observed group document too large: %s bytes", doc.file_size)
-                return
-
-            if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
-                file_obj = await doc.get_file()
-                image_bytes = await file_obj.download_as_bytearray()
-                image_ext = (
-                    ext
-                    if ext in _TELEGRAM_IMAGE_EXTENSIONS
-                    else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
-                )
-                try:
-                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
-                except ValueError as e:
-                    logger.warning("[Telegram] Failed to cache observed image document: %s", e, exc_info=True)
-                    event.text = self._append_media_status_text(
-                        event.text,
-                        (
-                            f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
-                            "could not be read as an image."
-                        ),
-                    )
-                    return
-                event.message_type = MessageType.PHOTO
-                event.media_urls = [cached_path]
-                event.media_types = [
-                    doc_mime
-                    if doc_mime.startswith("image/")
-                    else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")
-                ]
-                logger.info("[Telegram] Cached observed group image-document at %s", cached_path)
-                return
-
-            if not ext and doc.mime_type:
-                video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
-                ext = video_mime_to_ext.get(doc.mime_type, "")
-
-            if not ext and doc.mime_type:
-                image_mime_to_ext: dict[str, str] = {}
-                for _ext, _mime in SUPPORTED_IMAGE_DOCUMENT_TYPES.items():
-                    image_mime_to_ext.setdefault(_mime, _ext)
-                ext = image_mime_to_ext.get(doc.mime_type, "")
-
-            if ext in SUPPORTED_VIDEO_TYPES:
-                file_obj = await doc.get_file()
-                video_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
-                event.message_type = MessageType.VIDEO
-                logger.info("[Telegram] Cached observed group video document at %s", cached_path)
-                return
-
-            if ext not in SUPPORTED_DOCUMENT_TYPES:
-                supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
-                event.text = self._append_media_status_text(
-                    event.text,
-                    f"Unsupported document type '{ext or 'unknown'}'. Supported types: {supported_list}",
-                )
-                logger.info("[Telegram] Unsupported observed group document type: %s", ext or "unknown")
-                return
-
-            file_obj = await doc.get_file()
-            doc_bytes = await file_obj.download_as_bytearray()
-            raw_bytes = bytes(doc_bytes)
-            cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
-            mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
-            event.media_urls = [cached_path]
-            event.media_types = [mime_type]
-            logger.info("[Telegram] Cached observed group document at %s", cached_path)
-
-            max_text_inject_bytes = 100 * 1024
-            if ext in {".md", ".txt"} and len(raw_bytes) <= max_text_inject_bytes:
-                try:
-                    text_content = raw_bytes.decode("utf-8")
-                    display_name = original_filename or f"document{ext}"
-                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                    injection = f"[Content of {display_name}]:\n{text_content}"
-                    event.text = f"{injection}\n\n{event.text}" if event.text else injection
-                except UnicodeDecodeError:
-                    logger.warning(
-                        "[Telegram] Could not decode observed text file as UTF-8, skipping content injection",
-                        exc_info=True,
-                    )
-        except Exception as e:
-            logger.warning("[Telegram] Failed to cache observed group document: %s", e, exc_info=True)
-
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):
-                msg_type = self._media_message_type(update.message)
-                event = await self._build_observed_media_event(
-                    update.message,
-                    msg_type,
-                    update_id=update.update_id,
-                )
+                _m = update.message
+                _observe_type = self._media_message_type(_m)
+                _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
+                if _m.caption:
+                    _event.text = self._clean_bot_trigger_text(_m.caption)
+                await self._cache_observed_media(_m, _event)
                 self._observe_unmentioned_group_message(
-                    update.message,
-                    event.message_type,
-                    update_id=update.update_id,
-                    event=event,
+                    _m, _event.message_type, update_id=update.update_id, event=_event
                 )
             return
 
         msg = update.message
-        
-        # Determine media type
+
         msg_type = self._media_message_type(msg)
-        
+
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
         
         # Add caption as text

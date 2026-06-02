@@ -103,6 +103,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/help` | Show this help message |
 | `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |
 | `/insights` | Show usage insights and analytics (last 30 days) |
+| `/council <task>` | Multi-model deliberation planner — 3 proposers, critique, chairman synthesis. Subcommands: `/council plan <task>`, `/council status`, `/council resume`. See [Council](/user-guide/features/council). |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
 | `/platform <list\|pause\|resume> [name]` | Operate a running gateway platform. `/platform list` lists every adapter and its state (running, paused-by-breaker, manually-paused); `/platform pause <name>` stops dispatching new messages to that adapter without unloading it; `/platform resume <name>` re-enables it. The gateway also auto-pauses an adapter when its circuit breaker trips on repeated retryable failures (network / rate-limit / 5xx) — use `/platform resume <name>` to clear the breaker once the upstream is healthy. Available wherever the gateway is reachable (CLI session, Telegram, Discord, …). |
 | `/paste` | Attach a clipboard image |
@@ -212,6 +213,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/resume [name]` | Resume a previously named session. |
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
 | `/insights [days]` | Show usage analytics. |
+| `/council <task>` | Multi-model deliberation planner — 3 proposers, critique, chairman synthesis. Subcommands: `/council plan <task>`, `/council status`, `/council resume`. See [Council](/user-guide/features/council). |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |

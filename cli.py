@@ -8678,7 +8678,7 @@ class HermesCLI:
 
         if not _state_path:
             import os
-            default_path = os.path.expanduser("~/.hermes/council_state.json")
+            default_path = os.path.join(get_hermes_home(), "council_state.json")
             if os.path.exists(default_path):
                 _state_path = default_path
             else:

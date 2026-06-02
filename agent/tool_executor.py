@@ -734,12 +734,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 store=agent._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+            action = function_args.get("action", "")
+            if agent._memory_manager and action in {"add", "replace", "remove"}:
                 try:
+                    content = function_args.get("content", "")
+                    if action == "remove":
+                        # Remove uses old_text to identify; resolved content is in result
+                        try:
+                            result_dict = json.loads(function_result)
+                            content = result_dict.get("removed_content", "")
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
                     agent._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
+                        action,
                         target,
-                        function_args.get("content", ""),
+                        content,
                         metadata=agent._build_memory_write_metadata(
                             task_id=effective_task_id,
                             tool_call_id=getattr(tool_call, "id", None),

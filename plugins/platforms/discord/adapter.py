@@ -19,6 +19,8 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
@@ -104,6 +106,15 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _extract_roundtable_keyword_topic(text: str) -> Optional[str]:
+    normalized = (text or "").strip()
+    if not normalized.startswith("圓桌會議"):
+        return None
+    topic = normalized[len("圓桌會議"):].strip()
+    topic = re.sub(r"^[\s:：-]+", "", topic).strip()
+    return topic or "圓桌會議"
 
 
 def check_discord_requirements() -> bool:
@@ -4755,6 +4766,11 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        roundtable_topic = _extract_roundtable_keyword_topic(normalized_content)
+        if roundtable_topic and not isinstance(message.channel, discord.DMChannel):
+            forwarded = await self._forward_roundtable_keyword(message, roundtable_topic)
+            if forwarded:
+                return
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -5104,6 +5120,74 @@ class DiscordAdapter(BasePlatformAdapter):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
+
+    async def _forward_roundtable_keyword(self, message: DiscordMessage, topic: str) -> bool:
+        """Forward SaaS roundtable keyword messages before normal chat handling."""
+        base_url = os.getenv("HERMES_SAAS_URL", "").strip().rstrip("/")
+        token = os.getenv("HERMES_INTERNAL_TOKEN", "").strip()
+        tenant_slug = (
+            os.getenv("TENANT_SLUG", "").strip()
+            or os.getenv("HERMES_TENANT_SLUG", "").strip()
+            or os.getenv("HERMES_TENANT", "").strip()
+        )
+        if not base_url or not token or not tenant_slug:
+            logger.warning(
+                "[%s] Roundtable keyword suppressed but SaaS forwarding env is incomplete",
+                self.name,
+            )
+            return True
+
+        guild = getattr(message, "guild", None)
+        author = getattr(message, "author", None)
+        timestamp = getattr(message, "created_at", None)
+        if hasattr(timestamp, "isoformat"):
+            timestamp_value = timestamp.isoformat()
+        else:
+            timestamp_value = None
+
+        payload = {
+            "t": "MESSAGE_CREATE",
+            "d": {
+                "id": str(getattr(message, "id", "")),
+                "guild_id": str(getattr(guild, "id", "")) if guild else None,
+                "channel_id": str(getattr(message.channel, "id", "")),
+                "author": {
+                    "id": str(getattr(author, "id", "")),
+                    "username": getattr(author, "name", None),
+                    "global_name": getattr(author, "display_name", None),
+                },
+                "content": f"圓桌會議：{topic}",
+                "timestamp": timestamp_value,
+            },
+        }
+
+        url = f"{base_url}/api/webhooks/discord/{tenant_slug}"
+
+        def _post() -> int:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hermes-Token": token,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                response.read()
+                return int(getattr(response, "status", 200))
+
+        try:
+            status = await asyncio.to_thread(_post)
+            if status < 400:
+                return True
+            logger.warning("[%s] Roundtable keyword forward returned HTTP %s", self.name, status)
+        except urllib.error.HTTPError as exc:
+            logger.warning("[%s] Roundtable keyword forward returned HTTP %s", self.name, exc.code)
+        except Exception as exc:
+            logger.warning("[%s] Roundtable keyword forward failed: %s", self.name, exc)
+        return True
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Discord client-side splits)

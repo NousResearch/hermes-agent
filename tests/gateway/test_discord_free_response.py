@@ -183,6 +183,27 @@ class FakeHistoryChannel(FakeTextChannel):
 
 
 @pytest.mark.asyncio
+async def test_discord_roundtable_keyword_forwards_before_mention_gate(adapter, monkeypatch):
+    """SaaS roundtable keywords should not enter normal chat/onboarding."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter._forward_roundtable_keyword = AsyncMock(return_value=True)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content="圓桌會議：請業務、市調、UI、爆破組評估公開樂園 v1",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._forward_roundtable_keyword.assert_awaited_once_with(
+        message,
+        "請業務、市調、UI、爆破組評估公開樂園 v1",
+    )
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_discord_defaults_to_require_mention(adapter, monkeypatch):
     """Default behavior: require @mention in server channels."""
     monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
@@ -904,7 +925,6 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
         event = adapter.handle_message.await_args.args[0]
         assert event.channel_context is None
 
-
 @pytest.mark.asyncio
 async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
     """Auto-created threads skip backfill — the thread is brand new with no prior context."""
@@ -925,5 +945,3 @@ async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
 
     adapter._auto_create_thread.assert_awaited_once()
     adapter._fetch_channel_context.assert_not_awaited()
-
-

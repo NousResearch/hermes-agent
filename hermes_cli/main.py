@@ -7235,6 +7235,85 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
+def _electron_download_cache_dirs() -> list[Path]:
+    """Return the per-user Electron download cache directories for this OS.
+
+    electron-builder's ``app-builder unpack-electron`` extracts the Electron
+    distribution from a zip stored in this cache (NOT from node_modules), so a
+    corrupt zip here — not a bad workspace install — is what poisons the build.
+    Honors the ``electron_config_cache`` / ``ELECTRON_CACHE`` overrides that
+    ``@electron/get`` respects, then falls back to the platform defaults.
+    """
+    home = Path.home()
+    candidates: list[Path] = []
+    override = os.environ.get("electron_config_cache") or os.environ.get("ELECTRON_CACHE")
+    if override:
+        candidates.append(Path(override))
+    if sys.platform == "darwin":
+        candidates.append(home / "Library" / "Caches" / "electron")
+    elif sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.append(Path(local) / "electron" / "Cache")
+        candidates.append(home / "AppData" / "Local" / "electron" / "Cache")
+    else:
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg:
+            candidates.append(Path(xdg) / "electron")
+        candidates.append(home / ".cache" / "electron")
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for c in candidates:
+        rc = c.expanduser()
+        if rc not in seen:
+            seen.add(rc)
+            out.append(rc)
+    return out
+
+
+def _purge_corrupt_electron_cache() -> list[Path]:
+    """Delete corrupt cached Electron zips so the next build re-downloads cleanly.
+
+    Root cause of the ``ENOENT … rename '…/linux-unpacked/electron' ->
+    '…/linux-unpacked/Hermes'`` desktop build failure: a truncated/duplicated
+    download leaves a corrupt zip in the Electron cache. ``unpack-electron``
+    extracts a partial tree from it that is MISSING the ``electron`` binary, so
+    electron-builder dies on the final rename. The packed dir then looks plausible
+    (LICENSE, .pak files, chrome-sandbox) but has no launchable binary.
+
+    Validates every ``electron-*.zip`` in the cache with the stdlib zip reader
+    (``testzip()`` does a full per-entry CRC check) and removes the bad ones.
+    Best-effort: never raises; returns the list of removed paths so the caller
+    can decide whether a retry is worthwhile.
+    """
+    import zipfile
+
+    removed: list[Path] = []
+    for cache_dir in _electron_download_cache_dirs():
+        if not cache_dir.is_dir():
+            continue
+        for zip_path in sorted(cache_dir.rglob("electron-*.zip")):
+            corrupt = False
+            try:
+                with zipfile.ZipFile(zip_path) as zf:
+                    # testzip() returns the first bad member, or None if every
+                    # CRC checks out. A raise here means it isn't a readable zip.
+                    corrupt = zf.testzip() is not None
+            except Exception:
+                corrupt = True
+            if not corrupt:
+                continue
+            try:
+                zip_path.unlink()
+                removed.append(zip_path)
+            except OSError:
+                # A locked/permission-denied cache entry is out of our hands;
+                # surface nothing and let the build report its own error.
+                pass
+    return removed
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -7391,6 +7470,18 @@ def cmd_gui(args: argparse.Namespace):
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode:
+                # A corrupt cached Electron zip makes `pack` fail with an ENOENT on
+                # the final `electron` -> `Hermes` rename: unpack-electron extracted
+                # a partial tree from the bad zip. Purge the bad cache entry and
+                # retry once so a poisoned download self-heals instead of wedging
+                # every future `hermes desktop` run.
+                purged = _purge_corrupt_electron_cache()
+                if purged:
+                    print(f"  ⚠ Detected corrupt cached Electron download ({len(purged)} file(s)); removed and retrying build...")
+                    for p in purged:
+                        print(f"    - {p}")
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")

@@ -868,6 +868,9 @@ def _resolve_named_custom_runtime(
     # Check if a credential pool exists for this custom endpoint
     pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
     if pool_result:
+        # Strip trailing /vN for anthropic_messages (same reason as below).
+        if pool_result.get("api_mode") == "anthropic_messages":
+            pool_result["base_url"] = re.sub(r"/v\d+/?$", "", pool_result["base_url"])
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
         model_name = custom_provider.get("model")
@@ -899,11 +902,20 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
+    api_mode = (
+        custom_provider.get("api_mode")
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions"
+    )
+    # Strip trailing /v1 for anthropic_messages: the Anthropic SDK prepends
+    # its own /v1/messages, so a base_url like .../v4 or .../v1 would produce
+    # .../v4/v1/messages or .../v1/v1/messages.  Matches the same guard in the
+    # azure-foundry and opencode branches.  Fixes #11059.
+    if api_mode == "anthropic_messages":
+        base_url = re.sub(r"/v\d+/?$", "", base_url)
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -1044,16 +1056,24 @@ def _resolve_openrouter_runtime(
             provider_name=requested_provider if requested_norm != "custom" else None,
         )
         if pool_result:
+            if pool_result.get("api_mode") == "anthropic_messages":
+                pool_result["base_url"] = re.sub(r"/v\d+/?$", "", pool_result["base_url"])
             return pool_result
 
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
+    resolved_api_mode = (
+        _parse_api_mode(model_cfg.get("api_mode"))
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions"
+    )
+    if resolved_api_mode == "anthropic_messages":
+        base_url = re.sub(r"/v\d+/?$", "", base_url)
+
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": resolved_api_mode,
         "base_url": base_url,
         "api_key": api_key,
         "source": source,

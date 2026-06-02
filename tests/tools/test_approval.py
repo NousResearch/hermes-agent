@@ -722,6 +722,79 @@ class TestGatewayProtection:
         assert dangerous is False
 
 
+
+
+class TestWebhookApprovalExclusion:
+    """Webhook sessions must NOT be treated as gateway approval contexts.
+
+    The webhook adapter has no ``send_exec_approval`` method and no way to
+    receive ``/approve`` replies.  If a webhook session triggers a dangerous
+    command and falls through to the gateway approval branch, the session
+    blocks for the full timeout (60-300 s) with no human who can resolve it.
+
+    Fix: ``_is_gateway_approval_context()`` returns ``False`` when the
+    session platform is ``"webhook"``.
+    """
+
+    def test_webhook_platform_returns_false(self, monkeypatch):
+        """Webhook sessions are not gateway approval contexts."""
+        from tools.approval import _is_gateway_approval_context
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "webhook")
+
+        assert _is_gateway_approval_context() is False
+
+    def test_non_webhook_gateway_session_returns_true(self, monkeypatch):
+        """Non-webhook gateway sessions (e.g. Telegram) are still gateway contexts."""
+        from tools.approval import _is_gateway_approval_context
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+
+        assert _is_gateway_approval_context() is True
+
+    def test_cron_session_returns_false_regardless_of_platform(self, monkeypatch):
+        """Cron sessions are never gateway approval contexts."""
+        from tools.approval import _is_gateway_approval_context
+
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+
+        assert _is_gateway_approval_context() is False
+
+    def test_no_platform_returns_false(self, monkeypatch):
+        """No session platform means not a gateway context."""
+        from tools.approval import _is_gateway_approval_context
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+        assert _is_gateway_approval_context() is False
+
+    def test_webhook_dangerous_command_auto_approves(self, monkeypatch):
+        """Webhook sessions that trigger dangerous commands auto-approve with a warning.
+
+        This is the non-interactive, non-gateway path - safe because the
+        command does not execute in an interactive context where the user
+        could be tricked.
+        """
+        from tools.approval import check_all_command_guards
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "webhook")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-webhook-session")
+
+        result = check_all_command_guards("sudo systemctl restart nginx", "local")
+        # Should auto-approve (non-interactive, non-gateway path)
+        assert result["approved"] is True
+
+
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""
 

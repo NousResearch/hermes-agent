@@ -240,6 +240,21 @@ onboards Telegram/Discord/etc. users to a paired gateway. Full parity with
 
 ![Pairing admin page](/img/dashboard/admin-pairing.png)
 
+### Channels
+
+Connect Hermes to any messaging platform from the browser — full parity with
+`hermes setup gateway`. The page lists every supported channel (Telegram,
+Discord, Slack, Matrix, Mattermost, WhatsApp, Signal, BlueBubbles/iMessage,
+Email, SMS/Twilio, DingTalk, Feishu/Lark, WeCom, WeChat, QQ Bot, Yuanbao, plus
+the API server and webhook endpoints) with its live connection status.
+
+- **Configure** — open a per-platform form with exactly the fields that channel needs (bot token, app token, server URL, allowlist, etc.). Secrets render as password inputs and are stored redacted; leaving a field blank keeps the existing value. Required fields are marked and validated. A "Setup guide" link points to the platform's credential docs.
+- **Enable / disable** — toggle a channel on or off. The credential stays on disk; only the active state changes.
+- **Test** — check whether the channel is configured, enabled, and reporting a live connection from the gateway.
+- **Restart gateway** — credentials are written to `~/.hermes/.env` and the enabled flag to `config.yaml`; the gateway connects each enabled channel on its next restart, which you can trigger right from the page.
+
+![Channels admin page — every messaging platform with status, enable toggles, and per-platform setup forms](/img/dashboard/admin-channels.png)
+
 ### System
 
 A consolidated administration panel for installation-wide operations:
@@ -381,7 +396,7 @@ Returns all toolsets with their label, description, tools list, and active/confi
 
 ### Admin endpoints
 
-These power the MCP, Webhooks, Pairing, and System pages. All sit behind the
+These power the MCP, Channels, Webhooks, Pairing, and System pages. All sit behind the
 same auth gate as the rest of `/api/`.
 
 | Method & path | Purpose |
@@ -393,6 +408,9 @@ same auth gate as the rest of `/api/`.
 | `DELETE /api/mcp/servers/{name}` | Remove a server |
 | `GET /api/mcp/catalog` | Browse the Nous-approved MCP catalog |
 | `POST /api/mcp/catalog/install` | Install a catalog entry (with required env) |
+| `GET /api/messaging/platforms` | List every messaging channel with status + per-platform setup fields |
+| `PUT /api/messaging/platforms/{id}` | Configure a channel. Body: `{enabled?, env?, clear_env?}` (env writes to `.env`, enabled to `config.yaml`) |
+| `POST /api/messaging/platforms/{id}/test` | Report whether a channel is configured, enabled, and connected |
 | `GET /api/pairing` | List pending + approved messaging users |
 | `POST /api/pairing/approve` | Approve a code. Body: `{platform, code}` |
 | `POST /api/pairing/revoke` | Revoke a user. Body: `{platform, user_id}` |

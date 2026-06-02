@@ -196,6 +196,8 @@ The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful
 
 Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
 
+When `cron.notify_session` is enabled (the default), deliveries are additionally buffered (`~/.hermes/cron/pending_notices.json`, keyed by `platform:chat_id`) and folded into the system prompt of the target chat's next turn as a `[System note: ...]` block, then drained. This gives the agent awareness of its own cron output while keeping the message history (and thus alternation) untouched.
+
 ## Recursion Guard
 
 Cron-run sessions have the `cronjob` toolset disabled. This prevents:

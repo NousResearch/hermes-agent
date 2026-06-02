@@ -327,6 +327,20 @@ cron:
   wrap_response: false
 ```
 
+### Session awareness
+
+Cron deliveries are sent straight to the platform and are not added to the chat's conversation history, so by default the agent has no record of what a scheduled job sent. When `cron.notify_session` is enabled (the default), each delivery is buffered and surfaced to the agent on that chat's next message, as a `[System note: ...]` block in the system prompt. This keeps the agent aware of what its own jobs delivered without writing to the message history (which would otherwise break message alternation).
+
+The note is consumed once: it appears on the next turn after a delivery, then clears.
+
+To turn this off and keep deliveries fire-and-forget:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  notify_session: false
+```
+
 ### Silent suppression
 
 If the agent's final response starts with `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.

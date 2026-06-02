@@ -118,24 +118,35 @@ WHITELISTS: dict[str, list[str]] = {
         "z-ai/glm-5.1",
     ],
     # CODING: Code writing, review, and modification tasks only (may overlap other tiers)
+    # Ranked by OpenRouter Pareto Code Router (Artificial Analysis coding percentiles, 020626)
+    # HIGH tier (min_coding_score >= 0.66): strongest coders, highest cost
+    # MEDIUM tier (0.33 <= min_coding_score < 0.66): solid coders, mid cost
+    # LOW tier (min_coding_score < 0.33): lighter coders, lowest cost
+    # Router slug: openrouter/pareto-code (pass min_coding_score via pareto-router plugin)
     "coding": [
-        "x-ai/grok-code-fast-1",
-        "qwen/qwen3-coder-flash",
-        "openai/gpt-5.1-codex-mini",
-        "openai/gpt-5.1-codex",
-        "deepseek/deepseek-v4-pro",
-        "moonshotai/kimi-k2.6",
-        "minimax/minimax-m2.7",
-        "z-ai/glm-5.1",
-        "anthropic/claude-sonnet-4.6",
+        # HIGH
         "openai/gpt-5.5",
+        "google/gemini-3.1-pro-preview",
         "anthropic/claude-opus-4.7",
+        "deepseek/deepseek-v4-pro",
+        # MEDIUM
+        "openai/gpt-5.4-mini",
+        "anthropic/claude-sonnet-4.6",
+        "moonshotai/kimi-k2.6",
+        "x-ai/grok-4.3",
+        # LOW
+        "xiaomi/mimo-v2.5-pro",
+        "qwen/qwen3.6-max-preview",
+        "z-ai/glm-5.1",
+        "deepseek/deepseek-v4-flash",
+        "anthropic/claude-haiku-4.5",
+        "x-ai/grok-build-0.1",
     ],
     # BUDGET: Cron jobs, automated extraction, simple parsing
     "budget": [
         "google/gemini-2.5-flash",
         "google/gemini-2.5-flash-lite",
-        "x-ai/grok-4.1-fast",
+        "google/gemini-3.1-flash-lite",
         "openai/gpt-5-nano",
         "deepseek/deepseek-v4-flash",
     ],

@@ -7,7 +7,7 @@ tags: [delegation, cost, models, routing, auto-router]
 
 # Subagent Model Routing
 
-> **Last updated:** 100526 | **Source:** `~/.hermes/scripts/refresh_openrouter_models.py → WHITELISTS`
+> **Last updated:** 020626 | **Source:** `~/.hermes/scripts/refresh_openrouter_models.py → WHITELISTS`
 > If today is >10 days past the date above, verify pricing before high-stakes decisions.
 
 Load this skill every time you use `delegate_task` without an explicit model.
@@ -26,11 +26,11 @@ Budget/standard/premium are mutually exclusive. Coding overlaps all.
 `moonshotai/kimi-k2.6` | `minimax/minimax-m2.7` | `z-ai/glm-5.1`
 
 **BUDGET** — cron jobs, extraction, parsing (account default)
-`google/gemini-2.5-flash` | `google/gemini-2.5-flash-lite` | `x-ai/grok-4.1-fast`
+`google/gemini-2.5-flash` | `google/gemini-2.5-flash-lite` | `google/gemini-3.1-flash-lite`
 `openai/gpt-5-nano` | `deepseek/deepseek-v4-flash`
 
 **CODING** — anything touching code (overlaps permitted)
-Ranked by [OpenRouter Pareto Code Router](https://openrouter.ai/openrouter/pareto-code/router/) (Artificial Analysis coding percentiles, 100526).
+Ranked by [OpenRouter Pareto Code Router](https://openrouter.ai/openrouter/pareto-code/router/) (Artificial Analysis coding percentiles, 020626).
 Router slug: `openrouter/pareto-code` — see Pareto Router section below for usage.
 
 *HIGH tier* (`min_coding_score >= 0.66`) — strongest coders, highest cost:
@@ -40,7 +40,7 @@ Router slug: `openrouter/pareto-code` — see Pareto Router section below for us
 `openai/gpt-5.4-mini` | `anthropic/claude-sonnet-4.6` | `moonshotai/kimi-k2.6` | `x-ai/grok-4.3`
 
 *LOW tier* (`score < 0.33`) — lighter coders, lowest cost:
-`xiaomi/mimo-v2.5-pro` | `qwen/qwen3.6-max-preview` | `z-ai/glm-5.1` | `deepseek/deepseek-v4-flash` | `anthropic/claude-haiku-4.5`
+`xiaomi/mimo-v2.5-pro` | `qwen/qwen3.6-max-preview` | `z-ai/glm-5.1` | `deepseek/deepseek-v4-flash` | `anthropic/claude-haiku-4.5` | `x-ai/grok-build-0.1`
 
 > **Slug verified 100526:** MiMo-V2.5-Pro is Xiaomi, NOT Minimax. Display name in OR UI was misleading. `xiaomi/mimo-v2.5-pro` ✅ — `minimax/mimo-v2.5-pro` ❌. Always verify OR slugs via live API when vendor name isn't obvious from the model card.
 

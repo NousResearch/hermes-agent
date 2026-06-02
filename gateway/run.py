@@ -24,22 +24,6 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
-# [stoic-quotes-patch] — managed by apply-stoic-messages.py
-import random as _stoic_random
-import os as _stoic_os
-
-def _get_stoic_quote() -> str:
-    """Load a random stoic quote from external file (survives updates)."""
-    _quotes_path = _stoic_os.path.expanduser("~/.hermes/content/stoic-quotes.txt")
-    try:
-        with open(_quotes_path, "r", encoding="utf-8") as _f:
-            _lines = [l.strip() for l in _f if l.strip()]
-        if _lines:
-            return _stoic_random.choice(_lines)
-    except Exception:
-        pass
-    return ""
-
 
 import asyncio
 import dataclasses
@@ -1898,6 +1882,7 @@ class GatewayRunner:
         # These are weaker than manual /model overrides and are released
         # when the session ends or when a manual override takes effect.
         self._pool_assigned_models: Dict[str, Dict[str, Any]] = {}
+        self._pool_assigned_models_lock = threading.Lock()
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -2560,7 +2545,7 @@ class GatewayRunner:
 
         # --- Session Model Pool integration ---
         # If no manual override exists for this session, check whether the
-        # pool wants to assign a different model.  Pool assignments are
+        # pool wants to assign a different model. Pool assignments are
         # weaker than manual /model overrides and are released when the
         # session ends or when a manual override takes effect.
         if not override and resolved_session_key:
@@ -2570,11 +2555,13 @@ class GatewayRunner:
                 _pool = _get_pool(_cfg)
                 if _pool and _pool.enabled:
                     # Already assigned? Reuse (keeps slot alive).
-                    _pool_assign = self._pool_assigned_models.get(resolved_session_key)
+                    with self._pool_assigned_models_lock:
+                        _pool_assign = self._pool_assigned_models.get(resolved_session_key)
                     if not _pool_assign:
                         _pool_assign = _pool.acquire_session_slot(resolved_session_key)
                     if _pool_assign:
-                        self._pool_assigned_models[resolved_session_key] = _pool_assign
+                        with self._pool_assigned_models_lock:
+                            self._pool_assigned_models[resolved_session_key] = _pool_assign
                         model = _pool_assign.get("model", model)
                         logger.debug(
                             "SessionModelPool: session=%s using pool-assigned model=%s provider=%s",
@@ -3508,56 +3495,28 @@ class GatewayRunner:
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
-            _sq = _get_stoic_quote()
-            if _sq:
-                message = (
-                    f"{_sq}\n\n⏩ Steered into current run{status_detail}. "
-                    f"Your message arrives after the next tool call."
-                )
-            else:
-                message = (
-                    f"⏩ Steered into current run{status_detail}. "
-                    f"Your message arrives after the next tool call."
-                )
+            message = (
+                f"⏩ Steered into current run{status_detail}. "
+                f"Your message arrives after the next tool call."
+            )
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and
             # discovers `/stop` as the explicit escape hatch.
-            _sq = _get_stoic_quote()
-            if _sq:
-                message = (
-                    f"{_sq}\n\n⏳ Subagent working{status_detail} — your message is queued for "
-                    f"when it finishes (use /stop to cancel everything)."
-                )
-            else:
-                message = (
-                    f"⏳ Subagent working{status_detail} — your message is queued for "
-                    f"when it finishes (use /stop to cancel everything)."
-                )
+            message = (
+                f"⏳ Subagent working{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
+            )
         elif is_queue_mode:
-            _sq = _get_stoic_quote()
-            if _sq:
-                message = (
-                    f"{_sq}\n\n⏳ Queued for the next turn{status_detail}. "
-                    f"I'll respond once the current task finishes."
-                )
-            else:
-                message = (
-                    f"⏳ Queued for the next turn{status_detail}. "
-                    f"I'll respond once the current task finishes."
-                )
+            message = (
+                f"⏳ Queued for the next turn{status_detail}. "
+                f"I'll respond once the current task finishes."
+            )
         else:
-            _sq = _get_stoic_quote()
-            if _sq:
-                message = (
-                    f"{_sq}\n\n⚡ Interrupting current task{status_detail}. "
-                    f"I'll respond to your message shortly."
-                )
-            else:
-                message = (
-                    f"⚡ Interrupting current task{status_detail}. "
-                    f"I'll respond to your message shortly."
-                )
+            message = (
+                f"⚡ Interrupting current task{status_detail}. "
+                f"I'll respond to your message shortly."
+            )
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
@@ -8822,7 +8781,8 @@ class GatewayRunner:
                 self._pending_model_notes.pop(session_key, None)
             # Release pool-assigned slot for the reset session.
             try:
-                _old_pool = self._pool_assigned_models.pop(session_key, None)
+                with self._pool_assigned_models_lock:
+                    _old_pool = self._pool_assigned_models.pop(session_key, None)
                 if _old_pool:
                     from gateway.session_model_pool import get_session_model_pool as _get_pool
                     _p = _get_pool(_load_gateway_config())
@@ -11044,7 +11004,8 @@ class GatewayRunner:
                         # exists — the manual override takes precedence.
                         try:
                             if hasattr(_self, "_pool_assigned_models"):
-                                _old_pool = _self._pool_assigned_models.pop(_session_key, None)
+                                with _self._pool_assigned_models_lock:
+                                    _old_pool = _self._pool_assigned_models.pop(_session_key, None)
                                 if _old_pool:
                                     from gateway.session_model_pool import get_session_model_pool as _get_pool
                                     _p_cfg = _load_gateway_config()
@@ -11211,7 +11172,8 @@ class GatewayRunner:
         # Release pool-assigned slot for this session if one exists —
         # the manual override takes precedence.
         try:
-            _old_pool = self._pool_assigned_models.pop(session_key, None)
+            with self._pool_assigned_models_lock:
+                _old_pool = self._pool_assigned_models.pop(session_key, None)
             if _old_pool:
                 from gateway.session_model_pool import get_session_model_pool as _get_pool
                 _p = _get_pool(_load_gateway_config())
@@ -18480,12 +18442,7 @@ class GatewayRunner:
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _quote = _get_stoic_quote()
-                _heartbeat_text = (
-                    f"{_quote}\n\n⏳ {_elapsed_mins} min{_status_detail}"
-                    if _quote
-                    else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
-                )
+                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:

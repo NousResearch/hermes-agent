@@ -4975,13 +4975,7 @@ def call_llm(
     try:
         try:
             from gateway.session_model_pool import get_session_model_pool as _get_pool
-            _pool_cfg = {}
-            try:
-                from hermes_cli.config import read_raw_config
-                _pool_cfg = read_raw_config()
-            except Exception:
-                pass
-            _pool = _get_pool(_pool_cfg)
+            _pool = _get_pool({})
             if _pool and _pool.enabled:
                 _pool_aux_acquired = _pool.acquire_auxiliary_slot(final_model or "", resolved_provider or "")
         except Exception:
@@ -5285,13 +5279,7 @@ def call_llm(
         if _pool_aux_acquired:
             try:
                 from gateway.session_model_pool import get_session_model_pool as _get_pool_fin
-                _pool_cfg = {}
-                try:
-                    from hermes_cli.config import read_raw_config
-                    _pool_cfg = read_raw_config()
-                except Exception:
-                    pass
-                _pool_fin = _get_pool_fin(_pool_cfg)
+                _pool_fin = _get_pool_fin({})
                 if _pool_fin and _pool_fin.enabled:
                     _pool_fin.release_auxiliary_slot(final_model or "", resolved_provider or "")
             except Exception:

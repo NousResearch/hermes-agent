@@ -2,6 +2,11 @@
 
 Distributes sessions and auxiliary calls across a configured pool of models,
 respecting per-model concurrency limits and reserving slots for auxiliary tasks.
+
+**Important:** The module-level singleton (`get_session_model_pool`) caches the
+pool instance for the lifetime of the gateway process.  Runtime config changes
+to ``session_model_pool`` require a gateway restart (or calling
+``reset_session_model_pool()`` before the next access).
 """
 
 from __future__ import annotations
@@ -31,9 +36,8 @@ class PoolModelEntry:
     priority: int = 5
 
     # --- runtime state (not persisted) ---
-    session_slots: List[str] = field(default_factory=list)
+    session_slots: Dict[str, float] = field(default_factory=dict)  # session_key -> last_activity
     auxiliary_count: int = 0
-    _last_activity: float = field(default_factory=time.monotonic)
 
     @property
     def session_count(self) -> int:
@@ -89,9 +93,11 @@ class SessionModelPool:
         self.inactive_timeout = inactive_timeout  # seconds
         self._entries: List[PoolModelEntry] = entries or []
         self._lock = threading.Lock()
-        # Track which session_key is currently assigned to which model (for release)
+        # Condition variable for auxiliary slot waiting (replaces polling).
+        self._aux_condition = threading.Condition(self._lock)
+        # Track which session_key is currently assigned to which model (for release).
         self._session_map: Dict[str, str] = {}  # session_key -> pool_key
-        # Track manually overridden sessions (pool won't reassign)
+        # Track manually overridden sessions (pool won't reassign).
         self._manual_overrides: set = set()
 
     # ---- factory ----
@@ -185,26 +191,26 @@ class SessionModelPool:
             return None
 
         with self._lock:
-            # Don't reassign manually-overridden sessions
+            # Don't reassign manually-overridden sessions.
             if session_key in self._manual_overrides:
                 return None
 
-            # Release stale session slots first
+            # Evict stale sessions based on per-session activity timestamps.
             self._evict_inactive_sessions()
 
-            # If session already has a slot, return it
+            # If session already has a slot, refresh its timestamp and return it.
             existing = self._session_map.get(session_key)
             if existing:
                 for entry in self._entries:
                     if entry.pool_key == existing:
-                        entry._last_activity = time.monotonic()
+                        entry.session_slots[session_key] = time.monotonic()
                         return {
                             "model": entry.model,
                             "provider": entry.provider,
                             "context_length": entry.context_length,
                         }
 
-            # Find candidates with available session slots
+            # Find candidates with available session slots.
             candidates = [
                 e for e in self._entries
                 if e.available_session_slots > 0
@@ -218,11 +224,10 @@ class SessionModelPool:
                 )
                 return None
 
-            # Pick the best candidate
+            # Pick the best candidate based on strategy.
             chosen = self._pick_candidate(candidates)
 
-            chosen.session_slots.append(session_key)
-            chosen._last_activity = time.monotonic()
+            chosen.session_slots[session_key] = time.monotonic()
             self._session_map[session_key] = chosen.pool_key
 
             logger.info(
@@ -249,8 +254,7 @@ class SessionModelPool:
                 return
             for entry in self._entries:
                 if entry.pool_key == pool_key:
-                    if session_key in entry.session_slots:
-                        entry.session_slots.remove(session_key)
+                    entry.session_slots.pop(session_key, None)
                     logger.debug(
                         "SessionModelPool: released session %s from %s:%s",
                         session_key, entry.provider, entry.model,
@@ -267,13 +271,12 @@ class SessionModelPool:
 
         with self._lock:
             self._manual_overrides.add(session_key)
-            # Inline release logic (can't call release_session_slot which re-acquires lock)
+            # Inline release (can't call release_session_slot which re-acquires lock).
             pool_key = self._session_map.pop(session_key, None)
             if pool_key:
                 for entry in self._entries:
                     if entry.pool_key == pool_key:
-                        if session_key in entry.session_slots:
-                            entry.session_slots.remove(session_key)
+                        entry.session_slots.pop(session_key, None)
                         break
 
     def clear_manual_override(self, session_key: str) -> None:
@@ -288,7 +291,7 @@ class SessionModelPool:
     ) -> bool:
         """Try to claim an auxiliary slot for a given model.
 
-        Blocks up to *timeout* seconds waiting for a slot to free up.
+        Uses ``threading.Condition`` to wait efficiently (no busy-polling).
         Returns ``True`` if the call is allowed to proceed.
         """
         if not self.enabled:
@@ -297,30 +300,32 @@ class SessionModelPool:
         pool_key = f"{provider}:{model}"
         deadline = time.monotonic() + timeout
 
-        while True:
-            with self._lock:
+        with self._aux_condition:
+            while True:
                 for entry in self._entries:
                     if entry.pool_key == pool_key:
                         if entry.available_auxiliary_slots > 0:
                             entry.auxiliary_count += 1
                             return True
-                        # No auxiliary slot available
+                        # No auxiliary slot available — wait for release.
                         break
                 else:
-                    # Model not in pool — allow without restriction
+                    # Model not in pool — allow without restriction.
                     return True
 
-            # Wait and retry
-            if time.monotonic() >= deadline:
-                logger.warning(
-                    "SessionModelPool: auxiliary slot unavailable for %s:%s "
-                    "after %.1fs (aux=%d, reserved=%d)",
-                    provider, model, timeout,
-                    self._aux_count(pool_key),
-                    self._reserved_count(pool_key),
-                )
-                return False
-            time.sleep(0.5)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "SessionModelPool: auxiliary slot unavailable for %s:%s "
+                        "after %.1fs (aux=%d, reserved=%d)",
+                        provider, model, timeout,
+                        self._aux_count(pool_key),
+                        self._reserved_count(pool_key),
+                    )
+                    return False
+
+                # Wait for a slot to be released (signaled by release_auxiliary_slot).
+                self._aux_condition.wait(timeout=min(remaining, 1.0))
 
     def release_auxiliary_slot(self, model: str, provider: str) -> None:
         """Release an auxiliary slot."""
@@ -328,25 +333,31 @@ class SessionModelPool:
             return
 
         pool_key = f"{provider}:{model}"
-        with self._lock:
+        with self._aux_condition:
             for entry in self._entries:
                 if entry.pool_key == pool_key and entry.auxiliary_count > 0:
                     entry.auxiliary_count -= 1
                     break
+            # Wake up any threads waiting for auxiliary slots.
+            self._aux_condition.notify_all()
 
     # ---- strategy ----
 
     def _pick_candidate(self, candidates: List[PoolModelEntry]) -> PoolModelEntry:
         """Pick the best model from candidates based on configured strategy."""
         if self.strategy == "priority":
-            # Highest priority first; break ties by least loaded
+            # Highest priority first; break ties by least loaded.
             return max(candidates, key=lambda e: (e.priority, -e.session_count))
         elif self.strategy == "least-loaded":
-            # Fewest sessions first; break ties by priority
+            # Fewest sessions first; break ties by priority.
             return min(candidates, key=lambda e: (e.session_count, -e.priority))
         else:
-            # round-robin: pick the one with the oldest last activity
-            return min(candidates, key=lambda e: e._last_activity)
+            # round-robin: pick the entry whose oldest session timestamp is earliest.
+            def _oldest_activity(e: PoolModelEntry) -> float:
+                if e.session_slots:
+                    return min(e.session_slots.values())
+                return 0.0
+            return min(candidates, key=_oldest_activity)
 
     # ---- maintenance ----
 
@@ -358,13 +369,18 @@ class SessionModelPool:
         now = time.monotonic()
         evicted = 0
         for entry in self._entries:
-            stale = [
-                sk for sk in entry.session_slots
-                if (now - entry._last_activity) > self.inactive_timeout
+            stale_keys = [
+                sk for sk, ts in entry.session_slots.items()
+                if (now - ts) > self.inactive_timeout
             ]
-            # We can't know per-session activity time from entry-level tracking,
-            # so we skip per-entry eviction. Instead rely on explicit release.
-            # The timeout is enforced at the acquire level.
+            for sk in stale_keys:
+                entry.session_slots.pop(sk, None)
+                self._session_map.pop(sk, None)
+                evicted += 1
+        if evicted:
+            logger.info(
+                "SessionModelPool: evicted %d inactive sessions", evicted
+            )
         return evicted
 
     def reconstruct_from_active_sessions(self, active_session_keys: List[str]) -> None:
@@ -379,8 +395,6 @@ class SessionModelPool:
             for entry in self._entries:
                 entry.session_slots.clear()
                 entry.auxiliary_count = 0
-            # We can't know which model each session was using, so clear maps
-            # and let sessions be reassigned on next acquire_session_slot call
             logger.info(
                 "SessionModelPool: reconstructed state — %d active sessions will be reassigned",
                 len(active_session_keys),
@@ -434,7 +448,13 @@ _pool_lock = threading.Lock()
 
 
 def get_session_model_pool(config: dict) -> Optional[SessionModelPool]:
-    """Return the global pool instance, creating it from *config* if needed."""
+    """Return the global pool instance, creating it from *config* if needed.
+
+    The pool is cached for the lifetime of the gateway process.
+    Runtime changes to ``session_model_pool`` in ``config.yaml`` require
+    either a gateway restart or a call to ``reset_session_model_pool()``
+    before the next access.
+    """
     global _pool_instance
     if _pool_instance is None:
         with _pool_lock:
@@ -445,7 +465,10 @@ def get_session_model_pool(config: dict) -> Optional[SessionModelPool]:
 
 
 def reset_session_model_pool() -> None:
-    """Clear the singleton so it gets re-created from config on next access."""
+    """Clear the singleton so it gets re-created from config on next access.
+
+    Call this after runtime config changes to ``session_model_pool``.
+    """
     global _pool_instance
     with _pool_lock:
         _pool_instance = None

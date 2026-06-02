@@ -246,14 +246,17 @@ def _temp_stat(path: str) -> dict[str, Any]:
 def _terminate_process_group(proc: subprocess.Popen, *, grace_s: float = AGENT_WORKER_TERMINATE_GRACE_S) -> dict[str, Any]:
     terminated = False
     killed = False
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, OSError):
-        pgid = None
+    can_signal_group = os.name != "nt" and hasattr(os, "getpgid") and hasattr(os, "killpg")
+    pgid = None
+    if can_signal_group:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            pgid = None
     if proc.poll() is None:
         try:
             if pgid is not None:
-                os.killpg(pgid, signal.SIGTERM)
+                os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok
             else:
                 proc.terminate()
             terminated = True
@@ -265,7 +268,7 @@ def _terminate_process_group(proc: subprocess.Popen, *, grace_s: float = AGENT_W
         if proc.poll() is None:
             try:
                 if pgid is not None:
-                    os.killpg(pgid, signal.SIGKILL)
+                    os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))  # windows-footgun: ok
                 else:
                     proc.kill()
                 killed = True

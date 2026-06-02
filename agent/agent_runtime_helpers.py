@@ -1136,6 +1136,20 @@ def dump_api_request_debug(
 
 
 
+# OpenRouter passes through Anthropic-style ``cache_control`` breakpoints for
+# this known set of non-Claude model slugs (Qwen / DeepSeek families) that
+# support explicit caching. Slugs are matched case-insensitively against the
+# lowercased full model id. Ported/extended from upstream PR #20945 — our
+# prod default ``deepseek/deepseek-v4-flash`` (and its dated pin) live here so
+# they get real cache hits instead of re-billing the full prompt every turn.
+_OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS = frozenset({
+    "qwen/qwen-plus", "qwen/qwen3-max", "qwen/qwen3.6-plus",
+    "qwen/qwen3-coder-plus", "qwen/qwen3-coder-flash",
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-20260423",
+})
+
+
 def anthropic_prompt_cache_policy(
     agent,
     *,
@@ -1191,6 +1205,13 @@ def anthropic_prompt_cache_policy(
     if is_native_anthropic:
         return True, True
     if (is_openrouter or is_nous_portal) and is_claude:
+        return True, False
+    # OpenRouter passes through explicit cache_control breakpoints for a known
+    # allow-list of non-Claude slugs (Qwen/DeepSeek). Envelope layout
+    # (native_anthropic=False), matching the other OpenRouter entries. Without
+    # this our prod default deepseek/deepseek-v4-flash falls through to
+    # (False, False) and serves 0% cache hits. Ported from PR #20945.
+    if is_openrouter and model_lower in _OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS:
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -1764,9 +1785,43 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
             return c
 
     # Fuzzy match as last resort.
+    #
+    # Guard against repairing across distinct operations that merely share a
+    # long common namespace prefix.  For namespaced MCP tools the shared
+    # ``mcp_<server>_`` prefix can push two semantically-opposite operations
+    # (e.g. ``mcp_knowledge_kb_search`` vs ``mcp_knowledge_kb_add``) over the
+    # 0.7 cutoff, so a missing read tool would be silently repaired into a
+    # write tool — a dangerous and incorrect remap (BUG-8).  We strip the
+    # shared prefix and re-score on the *operation suffix* (the part that
+    # actually distinguishes the tools); only accept the fuzzy candidate when
+    # the operations themselves are similar (legitimate typo) rather than just
+    # the namespace.
+    from difflib import SequenceMatcher
+
+    def _op_suffix(name: str, other: str) -> str:
+        """Return ``name`` with the longest shared leading ``_``-segment run
+        (the common namespace prefix) removed, so only the operation remains."""
+        a, b = name.split("_"), other.split("_")
+        i = 0
+        while i < len(a) and i < len(b) and a[i] == b[i]:
+            i += 1
+        return "_".join(a[i:]) or name
+
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
     if matches:
-        return matches[0]
+        candidate = matches[0]
+        op_a = _op_suffix(lowered, candidate)
+        op_b = _op_suffix(candidate, lowered)
+        # If the emitted op and candidate op share a namespace prefix but the
+        # operations diverge, require the operations themselves to be a close
+        # match.  When there is no shared prefix (op == full name) this is a
+        # no-op and ordinary fuzzy behaviour is preserved.
+        shared_prefix = op_a != lowered or op_b != candidate
+        if shared_prefix:
+            op_ratio = SequenceMatcher(None, op_a, op_b).ratio()
+            if op_ratio < 0.7:
+                return None
+        return candidate
 
     return None
 

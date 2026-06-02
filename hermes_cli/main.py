@@ -7679,8 +7679,21 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
+    from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+
+    # Keep managed uv current — runs `uv self update` if we already have one.
+    update_managed_uv()
+
+    uv_bin, fresh_bootstrap = ensure_uv()
+    # First-time managed uv install on an existing checkout: the old venv
+    # may point to a Python without FTS5.  Rebuild it so the new managed
+    # uv provides a fresh interpreter with FTS5 guaranteed.
+    if fresh_bootstrap and uv_bin:
+        rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+
     pip_cmd = [sys.executable, "-m", "pip"]
-    uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+    if not uv_bin:
+        uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         if _is_termux_env(uv_env):
@@ -8780,16 +8793,27 @@ def _install_psutil_android_compat(
 
 
 def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
-    """Best-effort uv bootstrap on Termux for faster update installs."""
-    uv_bin = shutil.which("uv")
-    if uv_bin or not _is_termux_env():
-        return uv_bin
+    """Best-effort uv bootstrap on Termux for faster update installs.
+
+    The normal path (``ensure_uv()`` in managed_uv) installs the managed
+    standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
+    installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
+    which gets a Termux-compatible binary.
+    """
+    from hermes_cli.managed_uv import resolve_uv
+
+    existing = resolve_uv()
+    if existing:
+        return existing
+    if not _is_termux_env():
+        return None
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
         subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
     except Exception:
         pass
-    return shutil.which("uv")
+    # After pip install, check managed path first, then PATH
+    return resolve_uv() or shutil.which("uv")
 
 
 def _update_node_dependencies() -> None:
@@ -9440,7 +9464,12 @@ def _cmd_update_pip(args):
     print(f"→ Current version: {__version__}")
     print("→ Checking PyPI for updates...")
 
-    uv = shutil.which("uv")
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+    # Keep managed uv current before using it.
+    update_managed_uv()
+
+    uv, _fresh_bootstrap = ensure_uv()
     in_venv = sys.prefix != sys.base_prefix
     # pipx-managed installs live under .../pipx/venvs/<name>/...
     pipx_managed = "pipx" in sys.prefix.split(os.sep)
@@ -9455,7 +9484,8 @@ def _cmd_update_pip(args):
 
     if is_uv_tool_install():
         if not uv:
-            print("✗ Detected a uv-tool install but `uv` is not on PATH; install uv and retry.")
+            print("✗ Detected a uv-tool install but managed uv install failed.")
+            print("  Install uv manually: https://docs.astral.sh/uv/getting-started/installation/")
             sys.exit(1)
         cmd = [uv, "tool", "upgrade", "hermes-agent"]
     elif pipx_managed and pipx:
@@ -9851,8 +9881,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
+        from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+
+        # Keep managed uv current — runs `uv self update` if we already have one.
+        update_managed_uv()
+
+        uv_bin, fresh_bootstrap = ensure_uv()
+        # First-time managed uv install on an existing checkout: the old venv
+        # may point to a Python without FTS5.  Rebuild it so the new managed
+        # uv provides a fresh interpreter with FTS5 guaranteed.
+        if fresh_bootstrap and uv_bin:
+            rebuild_venv(uv_bin, PROJECT_ROOT / "venv")
+
         pip_cmd = [sys.executable, "-m", "pip"]
-        uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
+        if not uv_bin:
+            uv_bin = _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
 
         if uv_bin:

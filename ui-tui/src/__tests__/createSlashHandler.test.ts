@@ -36,6 +36,15 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('blocks immediate resume-by-id while a turn is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx({ session: { ...buildSession(), guardBusySessionSwitch: vi.fn(() => true) } })
+
+    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).toHaveBeenCalled()
+    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+  })
+
   it('treats /session (singular) as an alias of the sessions overlay', () => {
     const ctx = buildCtx()
 

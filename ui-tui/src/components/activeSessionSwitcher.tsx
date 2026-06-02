@@ -311,9 +311,11 @@ export function ActiveSessionSwitcher({
   const [draftModel, setDraftModel] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
-  // When non-null, the user pressed `d` on this (history) row and we await a
-  // second `d` to confirm deletion. Any other key cancels the prompt.
-  const [confirmDelete, setConfirmDelete] = useState<null | number>(null)
+  // When non-null, the user pressed `d` on this (history) session and we await
+  // a second `d` to confirm deletion. Tracked by session id (not row index) so
+  // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
+  // different session. Any other key cancels the prompt.
+  const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
   const [deleting, setDeleting] = useState(false)
   const initialSelectionAppliedRef = useRef(false)
   // Mirrors `history` so the quiet live-status poll can re-dedupe against the
@@ -452,8 +454,8 @@ export function ActiveSessionSwitcher({
   }, [closingId, currentSessionId, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
 
   const performDelete = useCallback(
-    (index: number) => {
-      const target = history[index - 1 - items.length]
+    (id: string) => {
+      const target = history.find(h => h.id === id)
 
       if (!target || deleting) {
         return
@@ -522,9 +524,9 @@ export function ActiveSessionSwitcher({
     // other key cancels the prompt (mirrors the standalone resume picker).
     if (confirmDelete !== null) {
       if (ch?.toLowerCase() === 'd') {
-        const idx = confirmDelete
+        const id = confirmDelete
         setConfirmDelete(null)
-        performDelete(idx)
+        performDelete(id)
       } else {
         setConfirmDelete(null)
       }
@@ -568,7 +570,7 @@ export function ActiveSessionSwitcher({
     // `d` arms deletion on a resumable history row. (On the New row `d` is
     // captured by the prompt's TextInput, so it never reaches here.)
     if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
-      setConfirmDelete(sel)
+      setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
 
       return
     }
@@ -698,7 +700,7 @@ export function ActiveSessionSwitcher({
 
         if (kind === 'history') {
           const h = history[i - 1 - items.length]!
-          const pendingDelete = confirmDelete === i
+          const pendingDelete = confirmDelete === h.id
           const title = pendingDelete
             ? 'press d again to delete'
             : deleting && selected

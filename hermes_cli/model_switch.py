@@ -585,6 +585,16 @@ def resolve_display_context_length(
     """
     try:
         from agent.model_metadata import get_model_context_length
+        # Load custom_providers from config if not passed by the caller.
+        # Both cli.py call sites (picker and /model <name>) omit this arg,
+        # so without this fallback the resolver never sees user-configured
+        # providers.<name>.context_length and falls to the 256K default.
+        if custom_providers is None:
+            try:
+                from hermes_cli.config import load_config, get_compatible_custom_providers
+                custom_providers = get_compatible_custom_providers(load_config())
+            except Exception:
+                pass
         ctx = get_model_context_length(
             model,
             base_url=base_url or "",

@@ -3717,10 +3717,13 @@ def get_compatible_custom_providers(
 
     custom_providers = config.get("custom_providers")
     if custom_providers is not None:
-        if not isinstance(custom_providers, list):
-            return []
-        for entry in custom_providers:
-            _append_if_new(_normalize_custom_provider_entry(entry))
+        if isinstance(custom_providers, list):
+            for entry in custom_providers:
+                _append_if_new(_normalize_custom_provider_entry(entry))
+        elif isinstance(custom_providers, dict) and custom_providers:
+            # Handle dict-shaped custom_providers (same as providers:)
+            for entry in providers_dict_to_custom_providers(custom_providers):
+                _append_if_new(entry)
 
     for entry in providers_dict_to_custom_providers(config.get("providers")):
         _append_if_new(entry)
@@ -3775,21 +3778,35 @@ def get_custom_provider_context_length(
         entry_url = (entry.get("base_url") or "").rstrip("/")
         if not entry_url or entry_url != target_url:
             continue
+        # 1. Per-model override: models.<model_name>.context_length
         models = entry.get("models")
-        if not isinstance(models, dict):
-            continue
-        model_cfg = models.get(model)
-        if not isinstance(model_cfg, dict):
-            continue
-        raw_ctx = model_cfg.get("context_length")
-        if raw_ctx is None:
-            continue
-        try:
-            ctx = int(raw_ctx)
-        except (TypeError, ValueError):
-            continue
-        if ctx > 0:
-            return ctx
+        if isinstance(models, dict):
+            model_cfg = models.get(model)
+            if isinstance(model_cfg, dict):
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is not None:
+                    try:
+                        ctx = int(raw_ctx)
+                    except (TypeError, ValueError):
+                        pass
+                    else:
+                        if ctx > 0:
+                            return ctx
+        # 2. Provider-level fallback: when the entry's default model
+        #    matches the requested model, use the top-level context_length.
+        #    This covers the common config shape where providers.<name>
+        #    has model + context_length as siblings (no nested models dict).
+        entry_model = (entry.get("model") or "").strip()
+        if entry_model == model:
+            raw_ctx = entry.get("context_length")
+            if raw_ctx is not None:
+                try:
+                    ctx = int(raw_ctx)
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if ctx > 0:
+                        return ctx
     return None
 
 

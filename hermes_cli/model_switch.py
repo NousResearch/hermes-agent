@@ -700,6 +700,48 @@ def switch_model(
 
         target_provider = pdef.id
 
+        # Guard against silent aggregator hops. A vendor name like bare
+        # "openai" is an alias that resolves to an aggregator ("openrouter").
+        # If the user explicitly asked for that vendor but the aggregator it
+        # routes to has no credentials, do NOT silently switch them onto an
+        # unauthed endpoint (the classic HTTP 401 "Missing Authentication
+        # header"). Point them at the real direct provider instead.
+        from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
+        from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
+        _explicit_norm = explicit_provider.strip().lower()
+        _alias_target = _PROVIDER_ALIAS_TABLE.get(_explicit_norm)
+        if (
+            _alias_target
+            and _alias_target == target_provider
+            and target_provider != _explicit_norm
+            and target_provider in _AGG_PROVIDERS
+        ):
+            _authed = get_authenticated_provider_slugs(
+                current_provider=current_provider,
+                user_providers=user_providers,
+                custom_providers=custom_providers,
+            )
+            if target_provider not in _authed:
+                _suggestions = [
+                    s for s in _authed
+                    if s.startswith(_explicit_norm) and s != _explicit_norm
+                ]
+                _hint = (
+                    f" Did you mean: {', '.join(_suggestions)}?"
+                    if _suggestions else ""
+                )
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=target_provider,
+                    provider_label=pdef.name,
+                    is_global=is_global,
+                    error_message=(
+                        f"Provider '{_explicit_norm}' is an alias that routes "
+                        f"through {get_label(target_provider)}, which "
+                        f"has no credentials configured.{_hint}"
+                    ),
+                )
+
         # If no model specified, try auto-detect from endpoint
         if not new_model:
             if pdef.base_url:
@@ -854,25 +896,62 @@ def switch_model(
     api_mode = ""
 
     if provider_changed or explicit_provider:
-        try:
-            runtime = resolve_runtime_provider(
-                requested=target_provider,
-                target_model=new_model,
-            )
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
-        except Exception as e:
-            return ModelSwitchResult(
-                success=False,
-                target_provider=target_provider,
-                provider_label=provider_label,
-                is_global=is_global,
-                error_message=(
-                    f"Could not resolve credentials for provider "
-                    f"'{provider_label}': {e}"
-                ),
-            )
+        import os
+        # User-config providers (providers.<name> in config.yaml) carry their
+        # own base_url + transport + key reference. resolve_runtime_provider()
+        # resolves by provider NAME and doesn't know user-config slugs (e.g. a
+        # block named "openai"), so it would re-resolve from scratch and fail
+        # or hop to an aggregator. Use the pdef's endpoint directly instead.
+        _user_pdef = None
+        if explicit_provider and user_providers:
+            from hermes_cli.providers import resolve_user_provider as _ruser
+            _user_pdef = _ruser(explicit_provider.strip().lower(), user_providers)
+            if _user_pdef is None:
+                _user_pdef = _ruser(target_provider, user_providers)
+        if _user_pdef is not None and _user_pdef.base_url:
+            _ucfg = (user_providers or {}).get(explicit_provider.strip().lower()) \
+                or (user_providers or {}).get(target_provider) or {}
+            _ukey = str(_ucfg.get("api_key", "") or "").strip()
+            if _ukey.startswith("${") and _ukey.endswith("}"):
+                _ukey = os.environ.get(_ukey[2:-1], "").strip()
+            if not _ukey:
+                _kenv = str(_ucfg.get("key_env", "") or "").strip()
+                if _kenv:
+                    _ukey = os.environ.get(_kenv, "").strip()
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=target_provider,
+                    explicit_api_key=_ukey or None,
+                    explicit_base_url=_user_pdef.base_url,
+                    target_model=new_model,
+                )
+                api_key = runtime.get("api_key", "") or _ukey
+                base_url = runtime.get("base_url", "") or _user_pdef.base_url
+                api_mode = runtime.get("api_mode", "")
+            except Exception:
+                api_key = _ukey
+                base_url = _user_pdef.base_url
+                api_mode = ""
+        else:
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=target_provider,
+                    target_model=new_model,
+                )
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
+            except Exception as e:
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=target_provider,
+                    provider_label=provider_label,
+                    is_global=is_global,
+                    error_message=(
+                        f"Could not resolve credentials for provider "
+                        f"'{provider_label}': {e}"
+                    ),
+                )
     else:
         try:
             runtime = resolve_runtime_provider(
@@ -1195,7 +1274,24 @@ def list_authenticated_providers(
         curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
+    from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
+    from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        # Skip vendor names that are merely aliases routing through an
+        # aggregator (e.g. bare "openai" → "openrouter"). These are NOT
+        # directly-routable providers: emitting them as their own picker
+        # row produces a phantom entry that, when selected, resolves via
+        # resolve_provider_full() to the aggregator (OpenRouter) — silently
+        # switching a user off their real provider onto an endpoint they
+        # may have no key for (HTTP 401). The user's real provider (e.g.
+        # openai-api, or a providers.openai config row) covers this vendor.
+        _alias_target = _PROVIDER_ALIAS_TABLE.get(hermes_id)
+        if (
+            _alias_target
+            and _alias_target != hermes_id
+            and _alias_target in _AGG_PROVIDERS
+        ):
+            continue
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).

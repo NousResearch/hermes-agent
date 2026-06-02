@@ -390,89 +390,112 @@ export function StatusRule({
       ? `${fmtK(usage.total)} tok`
       : ''
 
-  const bar = segs.bar && usage.context_max ? ctxBar(pct) : ''
+  const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
-  // Reserve room for the must-keep left segments (indicator + model + context)
-  // so the cwd/branch on the right truncates before they do. The busy face can
-  // grow with its verb/duration tail, but only the glyph itself is essential.
-  const minLeftContent =
+  // Width of the must-keep left segments (indicator + model + context). They
+  // are pinned (never shrink) and reserved so the cwd/branch on the right
+  // yields first. The busy face width depends on the active /indicator style
+  // (kaomoji is wide + verb; unicode is a bare 1-col spinner).
+  const essentialWidth =
     stringWidth('─ ') +
-    // The busy face width depends on the active /indicator style (kaomoji is
-    // wide with a verb; unicode is a bare 1-col spinner) — reserve accordingly
-    // so the model survives, without reserving the unbounded duration tail.
     (busy ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null) : stringWidth(status)) +
     stringWidth(' │ ') +
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, minLeftContent)
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
+
+  // Whole-segment progressive disclosure for the tail: a segment renders only
+  // if it fits in the space left after the pinned essentials, evaluated in
+  // priority order. No mid-segment truncation, and the low-value tail (incl.
+  // the session count) drops first instead of crushing status/model/context.
+  const SEP = stringWidth(' │ ')
+  let tailBudget = Math.max(0, leftWidth - essentialWidth)
+  const fits = (w: number) => {
+    if (tailBudget >= w) {
+      tailBudget -= w
+
+      return true
+    }
+
+    return false
+  }
+
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
+  const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + 6)
+  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+  const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
+  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+  const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
+
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
     onSessionCountClick?.()
   }
 
-  const sessionCountNode = sessionCountText ? (
-    onSessionCountClick ? (
-      <Box flexShrink={0} onClick={handleSessionCountClick}>
-        <Text color={t.color.accent}> │ {sessionCountText}</Text>
-      </Box>
-    ) : (
-      <Text color={t.color.muted}> │ {sessionCountText}</Text>
-    )
-  ) : null
+  const sessionCountNode = onSessionCountClick ? (
+    <Box flexShrink={0} onClick={handleSessionCountClick}>
+      <Text color={t.color.accent}> │ {sessionCountText}</Text>
+    </Box>
+  ) : (
+    <Text color={t.color.muted}> │ {sessionCountText}</Text>
+  )
 
   return (
     <Box height={1}>
       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
-        <Text color={t.color.border} wrap="truncate-end">
-          {'─ '}
-        </Text>
-        {busy ? (
-          <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-        ) : (
-          <Text color={statusColor} wrap="truncate-end">
-            {status}
-          </Text>
-        )}
-        <Text color={t.color.muted} wrap="truncate-end">
-          {' │ '}
-          {modelText}
-        </Text>
-        {ctxLabel ? (
+        {/* Pinned essentials — never shrink, always visible. */}
+        <Box flexDirection="row" flexShrink={0}>
+          <Text color={t.color.border}>{'─ '}</Text>
+          {busy ? (
+            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+          ) : (
+            <Text color={statusColor} wrap="truncate-end">
+              {status}
+            </Text>
+          )}
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            {ctxLabel}
+            {modelText}
           </Text>
-        ) : null}
-        {bar ? (
+          {ctxLabel ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {ctxLabel}
+            </Text>
+          ) : null}
+        </Box>
+        {showBar ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
           </Text>
         ) : null}
-        {segs.duration && sessionStartedAt ? (
+        {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            <SessionDuration startedAt={sessionStartedAt} />
+            <SessionDuration startedAt={sessionStartedAt!} />
           </Text>
         ) : null}
-        {segs.compressions && typeof usage.compressions === 'number' && usage.compressions > 0 ? (
+        {showCompressions ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            <Text
-              color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}
-            >
-              cmp {usage.compressions}
+            <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
+              cmp {compressions}
             </Text>
           </Text>
         ) : null}
         <SpawnHud t={t} />
-        {segs.voice && voiceLabel ? (
+        {showVoice ? (
           <Text
             color={
-              voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
+              voiceLabel!.startsWith('●') ? t.color.error : voiceLabel!.startsWith('◉') ? t.color.warn : t.color.muted
             }
             wrap="truncate-end"
           >
@@ -480,17 +503,17 @@ export function StatusRule({
             {voiceLabel}
           </Text>
         ) : null}
-        {sessionCountNode}
-        {segs.bg && bgCount > 0 ? (
+        {showSessionCount ? sessionCountNode : null}
+        {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {bgCount} bg
           </Text>
         ) : null}
-        {segs.cost && showCost && typeof usage.cost_usd === 'number' ? (
+        {showCostSeg ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ $'}
-            {usage.cost_usd.toFixed(4)}
+            {' │ '}
+            {costText}
           </Text>
         ) : null}
       </Box>

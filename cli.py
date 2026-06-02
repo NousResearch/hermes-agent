@@ -8811,6 +8811,8 @@ class HermesCLI:
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "system_prompt":
+            self._show_system_prompt()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -10334,6 +10336,15 @@ class HermesCLI:
         self._pending_relaunch = ["update"]
         return True
 
+    def _show_system_prompt(self):
+        """Show read-only system-prompt construction sizes without raw prompt text."""
+        try:
+            from hermes_cli.prompt_size import compute_system_prompt_breakdown, render_system_prompt_breakdown
+            data = compute_system_prompt_breakdown(agent=self.agent, platform="cli") if self.agent else compute_system_prompt_breakdown(platform="cli")
+            print(render_system_prompt_breakdown(data, markdown=False))
+        except Exception as e:
+            print(f"(._.) Could not compute system prompt breakdown: {e}")
+
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""
         if not self.agent:
@@ -10370,6 +10381,7 @@ class HermesCLI:
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         compressions = compressor.compression_count
+        last_turn_usage = getattr(agent, "last_turn_usage", None)
 
         msg_count = len(self.conversation_history)
         cost_result = estimate_usage_cost(
@@ -10409,9 +10421,31 @@ class HermesCLI:
         else:
             print(f"  Total cost:              {'n/a':>10}")
         print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
-        print(f"  Messages:         {msg_count}")
-        print(f"  Compressions:     {compressions}")
+        print(f"  Context window:           {ctx_len:>10,}")
+        print(f"  Current prompt:           {last_prompt:>10,} ({pct:.1f}%)")
+        print(f"  Messages:                 {msg_count:>10,}")
+        print(f"  Compressions:             {compressions:>10,}")
+        if last_turn_usage:
+            lt_input = last_turn_usage.get("input_tokens", 0) or 0
+            lt_cache_read = last_turn_usage.get("cache_read_tokens", 0) or 0
+            lt_cache_write = last_turn_usage.get("cache_write_tokens", 0) or 0
+            lt_output = last_turn_usage.get("output_tokens", 0) or 0
+            lt_reasoning = last_turn_usage.get("reasoning_tokens", 0) or 0
+            lt_prompt = last_turn_usage.get("prompt_tokens")
+            if lt_prompt is None:
+                lt_prompt = lt_input + lt_cache_read + lt_cache_write
+            lt_uncached = max(0, lt_prompt - lt_cache_read)
+            hit_pct = (100 * lt_cache_read / lt_prompt) if lt_prompt else 0
+            print(f"  {'─' * 40}")
+            print("  Last turn")
+            print(f"    In (prompt):            {lt_prompt:>10,}")
+            print(f"      Cached:               {lt_cache_read:>10,} ({hit_pct:.0f}% hit)")
+            print(f"      Uncached:             {lt_uncached:>10,}")
+            if lt_cache_write:
+                print(f"      Cache write:          {lt_cache_write:>10,}")
+            print(f"    Out:                    {lt_output:>10,}")
+            if lt_reasoning:
+                print(f"    Reasoning:              {lt_reasoning:>10,}")
         if cost_result.status == "unknown":
             print(f"  Note:             Pricing unknown for {agent.model}")
 

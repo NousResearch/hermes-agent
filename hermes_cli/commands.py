@@ -202,7 +202,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
-    CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
+    CommandDef("usage", "Show token usage, context window, and rate limits for the current session", "Info"),
+    CommandDef("system_prompt", "Show system prompt and tool-schema size breakdown (no raw prompt text)", "Info",
+               aliases=("system-prompt", "prompt")),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -1017,6 +1019,16 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "topic", "mute", "pro", "shortcuts",
 })
 
+# High-value aliases that must survive the 50-slash cap regardless of how
+# many canonical commands exist. Without an explicit reservation, adding a
+# new canonical command can silently evict these in the alias pass (they are
+# appended after every canonical name). Reserving them up front keeps the
+# documented short forms (/bg, /btw, /reset, /q) first-class on Slack —
+# the parity guarantee that test_includes_aliases_as_first_class_slashes
+# protects.
+_SLACK_ESSENTIAL_ALIASES = ("bg", "btw", "reset", "q")
+
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Convert a command name to a valid Slack slash command name.
@@ -1070,6 +1082,15 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         # Slack description cap is 2000 chars; keep it short.
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
+
+    # Reserve high-value short-form aliases up front so the 50-slash cap can
+    # never silently evict them when canonical commands are added (#parity).
+    for alias in _SLACK_ESSENTIAL_ALIASES:
+        cmd = _COMMAND_LOOKUP.get(alias)
+        if cmd is None or not _is_gateway_available(cmd, overrides):
+            continue
+        _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:

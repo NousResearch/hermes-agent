@@ -21,6 +21,7 @@ def _make_mock_agent(**overrides):
         "session_output_tokens": 10_000,
         "session_cache_read_tokens": 5_000,
         "session_cache_write_tokens": 2_000,
+        "last_turn_usage": None,
     }
     defaults.update(overrides)
     for k, v in defaults.items():

@@ -8075,6 +8075,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "system_prompt":
+            return await self._handle_system_prompt_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -13797,6 +13800,36 @@ class GatewayRunner:
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
 
+    async def _handle_system_prompt_command(self, event: MessageEvent) -> str:
+        """Handle /system_prompt -- read-only prompt/tool schema size report."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+        if agent is _AGENT_PENDING_SENTINEL:
+            agent = None
+
+        platform = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "gateway") or "gateway")
+        try:
+            from hermes_cli.prompt_size import compute_system_prompt_breakdown, render_system_prompt_breakdown
+            data = await asyncio.to_thread(
+                compute_system_prompt_breakdown,
+                agent=agent,
+                platform=platform,
+                resident=bool(agent),
+            )
+            return render_system_prompt_breakdown(data, markdown=True)
+        except Exception as e:
+            logger.debug("system_prompt breakdown failed: %s", e, exc_info=True)
+            return f"Could not compute system prompt breakdown: {e}"
+
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.
 
@@ -13865,6 +13898,8 @@ class GatewayRunner:
             output_tokens = getattr(agent, "session_output_tokens", 0) or 0
             cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
             cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
+            reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
+            last_turn_usage = getattr(agent, "last_turn_usage", None)
 
             lines.append(t("gateway.usage.header_session"))
             lines.append(t("gateway.usage.label_model", model=agent.model))
@@ -13906,6 +13941,31 @@ class GatewayRunner:
                 lines.append(t("gateway.usage.label_context", used=f"{ctx.last_prompt_tokens:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+
+            # Last-turn cached/uncached breakdown (no new locale keys; literal
+            # labels keep this change self-contained). Only shown when the most
+            # recent API turn recorded usage.
+            if last_turn_usage:
+                lt_input = last_turn_usage.get("input_tokens", 0) or 0
+                lt_cache_read = last_turn_usage.get("cache_read_tokens", 0) or 0
+                lt_cache_write = last_turn_usage.get("cache_write_tokens", 0) or 0
+                lt_output = last_turn_usage.get("output_tokens", 0) or 0
+                lt_reasoning = last_turn_usage.get("reasoning_tokens", 0) or 0
+                lt_prompt = last_turn_usage.get("prompt_tokens")
+                if lt_prompt is None:
+                    lt_prompt = lt_input + lt_cache_read + lt_cache_write
+                lt_uncached = max(0, lt_prompt - lt_cache_read)
+                hit_pct = (100 * lt_cache_read / lt_prompt) if lt_prompt else 0
+                lines.append("")
+                lines.append("**Last turn**")
+                lines.append(f"In (prompt): {lt_prompt:,}")
+                lines.append(f"  Cached: {lt_cache_read:,} ({hit_pct:.0f}% hit)")
+                lines.append(f"  Uncached: {lt_uncached:,}")
+                if lt_cache_write:
+                    lines.append(f"  Cache write: {lt_cache_write:,}")
+                lines.append(f"Out: {lt_output:,}")
+                if lt_reasoning:
+                    lines.append(f"Reasoning: {lt_reasoning:,}")
 
             if account_lines:
                 lines.append("")

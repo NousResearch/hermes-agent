@@ -141,13 +141,7 @@ export const FIELD_LABELS: Record<string, string> = {
   'delegation.max_iterations': 'Subagent Turn Limit',
   'delegation.max_concurrent_children': 'Parallel Subagents',
   'delegation.child_timeout_seconds': 'Subagent Timeout',
-  'delegation.reasoning_effort': 'Subagent Reasoning Effort',
-  'auxiliary.vision.provider': 'Vision Provider',
-  'auxiliary.vision.model': 'Vision Model',
-  'auxiliary.compression.provider': 'Compression Provider',
-  'auxiliary.compression.model': 'Compression Model',
-  'auxiliary.title_generation.provider': 'Title Provider',
-  'auxiliary.title_generation.model': 'Title Model'
+  'delegation.reasoning_effort': 'Subagent Reasoning Effort'
 }
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = {
@@ -183,7 +177,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'model',
     label: 'Model',
     icon: Sparkles,
-    keys: ['model', 'model_context_length', 'fallback_providers']
+    keys: ['model_context_length', 'fallback_providers']
   },
   {
     id: 'chat',
@@ -287,13 +281,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_iterations',
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
-      'delegation.reasoning_effort',
-      'auxiliary.vision.provider',
-      'auxiliary.vision.model',
-      'auxiliary.compression.provider',
-      'auxiliary.compression.model',
-      'auxiliary.title_generation.provider',
-      'auxiliary.title_generation.model'
+      'delegation.reasoning_effort'
     ]
   }
 ]

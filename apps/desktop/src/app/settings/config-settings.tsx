@@ -18,6 +18,7 @@ import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { enumOptionsFor, getNested, includesQuery, prettyName, setNested } from './helpers'
+import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
 import type { SearchProps } from './types'
 
@@ -167,10 +168,12 @@ export function ConfigSettings({
   query,
   activeSectionId,
   onConfigSaved,
+  onMainModelChanged,
   importInputRef
 }: SearchProps & {
   activeSectionId: string
   onConfigSaved?: () => void
+  onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
 }) {
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
@@ -322,6 +325,11 @@ export function ConfigSettings({
 
   return (
     <SettingsContent>
+      {activeSectionId === 'model' && !query.trim() && (
+        <div className="mb-6">
+          <ModelSettings onMainModelChanged={onMainModelChanged} />
+        </div>
+      )}
       {query.trim() && (
         <div className="mb-4 text-xs text-muted-foreground">
           {fields.length} result{fields.length === 1 ? '' : 's'}

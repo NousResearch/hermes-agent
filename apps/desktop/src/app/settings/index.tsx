@@ -31,7 +31,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
-export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPageProps) {
+export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
 
   const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
@@ -194,6 +194,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
               activeSectionId={activeView.slice('config:'.length)}
               importInputRef={importInputRef}
               onConfigSaved={onConfigSaved}
+              onMainModelChanged={onMainModelChanged}
               query={queries.config}
             />
           ) : activeView === 'keys' ? (

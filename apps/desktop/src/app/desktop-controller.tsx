@@ -537,6 +537,13 @@ export function DesktopController() {
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
+            onMainModelChanged={(provider, model) => {
+              setCurrentProvider(provider)
+              setCurrentModel(model)
+              updateModelOptionsCache(provider, model, true)
+              void refreshCurrentModel()
+              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+            }}
           />
         </Suspense>
       )}
@@ -547,13 +554,6 @@ export function DesktopController() {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
-            onMainModelChanged={(provider, model) => {
-              setCurrentProvider(provider)
-              setCurrentModel(model)
-              updateModelOptionsCache(provider, model, true)
-              void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-            }}
             onNavigateRoute={path => navigate(path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />

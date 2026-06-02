@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
+import { busyIndicatorWidth, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
 
 describe('statusRuleWidths', () => {
   it('keeps the status rule within the terminal width', () => {
@@ -100,6 +100,21 @@ describe('statusBarSegments', () => {
 
       expect(visible).toBeLessThanOrEqual(prevCount)
       prevCount = visible
+    }
+  })
+})
+
+describe('busyIndicatorWidth', () => {
+  it('reserves a bare spinner for the verb-less unicode style', () => {
+    // unicode is a 1-col braille spinner with no verb; far slimmer than the
+    // kaomoji face which carries a wide glyph + rotating verb.
+    expect(busyIndicatorWidth('unicode', false)).toBeLessThan(busyIndicatorWidth('kaomoji', false))
+    expect(busyIndicatorWidth('unicode', false)).toBe(1)
+  })
+
+  it('reserves room for the elapsed-time tail only when a turn is timed', () => {
+    for (const style of ['kaomoji', 'emoji', 'ascii', 'unicode'] as const) {
+      expect(busyIndicatorWidth(style, true)).toBeGreaterThan(busyIndicatorWidth(style, false))
     }
   })
 })

@@ -75,6 +75,34 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
+const indicatorFrameWidth = (style: IndicatorStyle): number => {
+  if (style === 'kaomoji') {
+    return FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+  }
+
+  if (style === 'emoji') {
+    return EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+  }
+
+  // 'ascii' and 'unicode' are single-column glyphs.
+  return 1
+}
+
+// Display width to reserve for the busy indicator so its verb + elapsed-time
+// tail can't shove the model off-screen on narrow terminals. Style-aware:
+// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
+// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
+// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
+export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
+  const { showVerb } = renderIndicator(style, 0)
+  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  // ` · ` plus a bounded clock (e.g. `59m59s`); long-running durations let the
+  // tail clip rather than reserving unbounded width.
+  const duration = hasDuration ? stringWidth(' · ') + 6 : 0
+
+  return indicatorFrameWidth(style) + verb + duration
+}
+
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
   const ui = useStore($uiState)
   const style = ui.indicatorStyle
@@ -337,6 +365,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  indicatorStyle = 'kaomoji',
   usage,
   bgCount,
   liveSessionCount,
@@ -369,9 +398,10 @@ export function StatusRule({
   // grow with its verb/duration tail, but only the glyph itself is essential.
   const minLeftContent =
     stringWidth('─ ') +
-    // The busy face carries a verb + elapsed-time tail; reserve enough that it
-    // can't shove the model off-screen, but not the whole (growing) duration.
-    (busy ? 10 : stringWidth(status)) +
+    // The busy face width depends on the active /indicator style (kaomoji is
+    // wide with a verb; unicode is a bare 1-col spinner) — reserve accordingly
+    // so the model survives, without reserving the unbounded duration tail.
+    (busy ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null) : stringWidth(status)) +
     stringWidth(' │ ') +
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
@@ -586,6 +616,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  indicatorStyle?: IndicatorStyle
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

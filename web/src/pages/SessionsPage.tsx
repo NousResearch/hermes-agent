@@ -23,12 +23,17 @@ import {
   Hash,
   X,
   Play,
+  Download,
+  Pencil,
+  Check,
+  Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
+  SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
@@ -44,6 +49,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/c
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { Input } from "@nous-research/ui/ui/components/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@nous-research/ui/ui/components/dialog";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
@@ -262,6 +275,8 @@ function SessionRow({
   isExpanded,
   onToggle,
   onDelete,
+  onRename,
+  onExport,
   resumeInChatEnabled,
 }: {
   session: SessionInfo;
@@ -270,11 +285,16 @@ function SessionRow({
   isExpanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  onRename: (id: string, title: string) => Promise<void>;
+  onExport: (id: string) => void;
   resumeInChatEnabled: boolean;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(session.title ?? "");
+  const [renameSaving, setRenameSaving] = useState(false);
   const { t } = useI18n();
   const navigate = useNavigate();
 
@@ -294,6 +314,21 @@ function SessionRow({
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
+
+  const submitRename = async () => {
+    const value = renameValue.trim();
+    if (!value || value === session.title) {
+      setRenaming(false);
+      return;
+    }
+    setRenameSaving(true);
+    try {
+      await onRename(session.id, value);
+      setRenaming(false);
+    } finally {
+      setRenameSaving(false);
+    }
+  };
 
   const actionButtons = (
     <>
@@ -316,6 +351,39 @@ function SessionRow({
           <Play />
         </Button>
       )}
+
+      <Button
+        ghost
+        size="icon"
+        className="text-muted-foreground hover:text-foreground"
+        aria-label="Rename session"
+        title="Rename session"
+        onClick={(e) => {
+          e.stopPropagation();
+          setRenameValue(
+            session.title && session.title !== "Untitled"
+              ? session.title
+              : "",
+          );
+          setRenaming(true);
+        }}
+      >
+        <Pencil />
+      </Button>
+
+      <Button
+        ghost
+        size="icon"
+        className="text-muted-foreground hover:text-foreground"
+        aria-label="Export session"
+        title="Export session JSON"
+        onClick={(e) => {
+          e.stopPropagation();
+          onExport(session.id);
+        }}
+      >
+        <Download />
+      </Button>
 
       <Button
         ghost
@@ -351,15 +419,61 @@ function SessionRow({
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
-                >
-                  {hasTitle
-                    ? session.title
-                    : session.preview
-                      ? session.preview.slice(0, 60)
-                      : t.sessions.untitledSession}
-                </span>
+                {renaming ? (
+                  <div
+                    className="flex min-w-0 flex-1 items-center gap-1.5"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Input
+                      autoFocus
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void submitRename();
+                        else if (e.key === "Escape") setRenaming(false);
+                      }}
+                      placeholder="Session title"
+                      className="h-7 min-w-0 flex-1 py-0 text-sm"
+                      disabled={renameSaving}
+                    />
+                    <Button
+                      ghost
+                      size="icon"
+                      className="text-muted-foreground hover:text-success"
+                      aria-label="Save title"
+                      title="Save title"
+                      disabled={renameSaving}
+                      onClick={() => void submitRename()}
+                    >
+                      {renameSaving ? (
+                        <Spinner className="text-sm" />
+                      ) : (
+                        <Check />
+                      )}
+                    </Button>
+                    <Button
+                      ghost
+                      size="icon"
+                      className="text-muted-foreground hover:text-foreground"
+                      aria-label="Cancel rename"
+                      title="Cancel rename"
+                      disabled={renameSaving}
+                      onClick={() => setRenaming(false)}
+                    >
+                      <X />
+                    </Button>
+                  </div>
+                ) : (
+                  <span
+                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                  >
+                    {hasTitle
+                      ? session.title
+                      : session.preview
+                        ? session.preview.slice(0, 60)
+                        : t.sessions.untitledSession}
+                  </span>
+                )}
                 {session.is_active && (
                   <Badge tone="success" className="shrink-0 text-xs">
                     <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
@@ -492,9 +606,13 @@ export default function SessionsPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
   const [view, setView] = useState<SessionsView>("overview");
+  const [stats, setStats] = useState<SessionStoreStats | null>(null);
+  const [pruneOpen, setPruneOpen] = useState(false);
+  const [pruneDays, setPruneDays] = useState("90");
+  const [pruning, setPruning] = useState(false);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
-  const { setAfterTitle } = usePageHeader();
+  const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
 
@@ -513,6 +631,23 @@ export default function SessionsPage() {
     };
   }, [loading, setAfterTitle, total]);
 
+  useEffect(() => {
+    setEnd(
+      <Button
+        outlined
+        size="sm"
+        className="gap-1.5"
+        onClick={() => setPruneOpen(true)}
+      >
+        <Archive className="h-3.5 w-3.5" />
+        Prune old sessions
+      </Button>,
+    );
+    return () => {
+      setEnd(null);
+    };
+  }, [setEnd]);
+
   const loadSessions = useCallback((p: number) => {
     setLoading(true);
     api
@@ -524,6 +659,17 @@ export default function SessionsPage() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  const loadStats = useCallback(() => {
+    api
+      .getSessionStats()
+      .then(setStats)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadStats();
+  }, [loadStats]);
 
   useEffect(() => {
     loadSessions(page);
@@ -583,6 +729,7 @@ export default function SessionsPage() {
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
           showToast(t.sessions.sessionDeleted, "success");
+          loadStats();
         } catch {
           showToast(t.sessions.failedToDelete, "error");
           throw new Error("delete failed");
@@ -591,11 +738,81 @@ export default function SessionsPage() {
       [
         expandedId,
         showToast,
+        loadStats,
         t.sessions.sessionDeleted,
         t.sessions.failedToDelete,
       ],
     ),
   });
+
+  const handleRename = useCallback(
+    async (id: string, title: string) => {
+      try {
+        await api.renameSession(id, title);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === id ? { ...s, title } : s)),
+        );
+        setOverviewSessions((prev) =>
+          prev.map((s) => (s.id === id ? { ...s, title } : s)),
+        );
+        showToast("Session renamed", "success");
+        loadStats();
+      } catch {
+        showToast("Failed to rename session", "error");
+      }
+    },
+    [showToast, loadStats],
+  );
+
+  const handleExport = useCallback(
+    async (id: string) => {
+      try {
+        const res = await fetch(api.exportSessionUrl(id), {
+          credentials: "include",
+          headers: {
+            "X-Hermes-Session-Token":
+              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
+                .__HERMES_SESSION_TOKEN__ ?? "",
+          },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `session-${id}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        showToast("Failed to export session", "error");
+      }
+    },
+    [showToast],
+  );
+
+  const handlePrune = useCallback(async () => {
+    const days = parseInt(pruneDays, 10);
+    if (!Number.isFinite(days) || days < 0) {
+      showToast("Enter a valid number of days", "error");
+      return;
+    }
+    setPruning(true);
+    try {
+      const resp = await api.pruneSessions(days);
+      showToast(
+        `Pruned ${resp.removed} session${resp.removed === 1 ? "" : "s"}`,
+        "success",
+      );
+      setPruneOpen(false);
+      loadSessions(0);
+      setPage(0);
+      loadStats();
+    } catch {
+      showToast("Failed to prune sessions", "error");
+    } finally {
+      setPruning(false);
+    }
+  }, [pruneDays, showToast, loadSessions, loadStats]);
 
   const pendingSession = sessionDelete.pendingId
     ? sessions.find((s) => s.id === sessionDelete.pendingId)
@@ -680,6 +897,98 @@ export default function SessionsPage() {
         }
         loading={sessionDelete.isDeleting}
       />
+
+      <Dialog
+        open={pruneOpen}
+        onOpenChange={(open) => {
+          if (!pruning) setPruneOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Prune old sessions</DialogTitle>
+            <DialogDescription>
+              Permanently remove archived sessions whose last activity is older
+              than the given number of days. Active sessions are never pruned.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="prune-days"
+              className="text-xs font-medium text-muted-foreground"
+            >
+              Older than (days)
+            </label>
+            <Input
+              id="prune-days"
+              type="number"
+              min={0}
+              value={pruneDays}
+              onChange={(e) => setPruneDays(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handlePrune();
+              }}
+              disabled={pruning}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              outlined
+              onClick={() => setPruneOpen(false)}
+              disabled={pruning}
+            >
+              {t.common.cancel}
+            </Button>
+            <Button
+              destructive
+              onClick={() => void handlePrune()}
+              disabled={pruning}
+              className="gap-1.5"
+            >
+              {pruning && <Spinner className="text-sm" />}
+              Prune
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {stats && (
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
+          <div className="flex flex-col">
+            <span className="text-lg font-semibold tabular-nums leading-none">
+              {stats.total}
+            </span>
+            <span className="text-xs text-muted-foreground">Total</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-lg font-semibold tabular-nums leading-none text-success">
+              {stats.active_store}
+            </span>
+            <span className="text-xs text-muted-foreground">Active in store</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-lg font-semibold tabular-nums leading-none">
+              {stats.archived}
+            </span>
+            <span className="text-xs text-muted-foreground">Archived</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-lg font-semibold tabular-nums leading-none">
+              {stats.messages}
+            </span>
+            <span className="text-xs text-muted-foreground">Messages</span>
+          </div>
+          {Object.keys(stats.by_source).length > 0 && (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+              {Object.entries(stats.by_source).map(([src, count]) => (
+                <Badge key={src} tone="outline" className="text-xs">
+                  {src}: {count}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {alerts.length > 0 && (
         <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
@@ -850,6 +1159,8 @@ export default function SessionsPage() {
                     setExpandedId((prev) => (prev === s.id ? null : s.id))
                   }
                   onDelete={() => sessionDelete.requestDelete(s.id)}
+                  onRename={handleRename}
+                  onExport={handleExport}
                   resumeInChatEnabled={resumeInChatEnabled}
                 />
               ))}

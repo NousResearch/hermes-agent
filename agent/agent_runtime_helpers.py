@@ -25,24 +25,17 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import re
-import threading
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.message_sanitization import (
-    _repair_tool_call_arguments,
-    _sanitize_surrogates,
-)
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
-from agent.error_classifier import classify_api_error, FailoverReason
+from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -558,6 +551,24 @@ def recover_with_credential_pool(
     """
     pool = agent._credential_pool
     if pool is None:
+        return False, has_retried_429
+
+    # Defensive guard: if a fallback provider is active and its provider name
+    # doesn't match the pool's provider, the pool belongs to the PRIMARY
+    # provider.  Mutating it based on fallback errors would corrupt the
+    # primary's credential state (see #33088) and, via _swap_credential,
+    # overwrite the agent's base_url back to the primary's endpoint — every
+    # subsequent request then goes to the wrong host and 404s (see #33163).
+    # The pool should only act when the agent is still on the same provider
+    # that seeded the pool.
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+    if current_provider and pool_provider and current_provider != pool_provider:
+        _ra().logger.warning(
+            "Credential pool provider mismatch: pool=%s, agent=%s — "
+            "skipping pool mutation to avoid cross-provider contamination",
+            pool_provider, current_provider,
+        )
         return False, has_retried_429
 
     effective_reason = classified_reason
@@ -1681,6 +1692,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             session_id=agent.session_id or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
         )
 
 
@@ -1975,6 +1988,36 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # context compaction).  Don't pass null to the API.
     api_msg.pop("reasoning_content", None)
 
+
+def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
+    """Re-pad assistant turns with reasoning_content for the active provider.
+
+    ``api_messages`` is built once, before the retry loop, while the *primary*
+    provider is active.  If a mid-conversation fallback then switches to a
+    require-side provider (DeepSeek / Kimi / MiMo thinking mode), assistant
+    turns that were built when the prior provider did NOT need the echo-back go
+    out without ``reasoning_content`` and the new provider rejects them with
+    HTTP 400 ("The reasoning_content in the thinking mode must be passed back").
+
+    Calling this immediately before building the request kwargs re-applies the
+    pad against the *current* provider.  It is idempotent and a no-op unless
+    ``_needs_thinking_reasoning_pad()`` is True for the active provider, so it
+    is safe to call every iteration and covers every fallback path.
+
+    Returns the number of assistant turns that gained reasoning_content.
+    """
+    if not agent._needs_thinking_reasoning_pad():
+        return 0
+    padded = 0
+    for api_msg in api_messages:
+        if api_msg.get("role") != "assistant":
+            continue
+        if api_msg.get("reasoning_content"):
+            continue
+        copy_reasoning_content_for_api(agent, api_msg, api_msg)
+        if api_msg.get("reasoning_content"):
+            padded += 1
+    return padded
 
 
 def _iter_pool_sockets(client: Any):

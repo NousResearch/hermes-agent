@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Niente da annullare."
-    removed:               "↩️ Annullati {count} messaggio/i.\nRimosso: \"{preview}\""
+    removed:               "↩️ Annullati {turns} turno/i ({count} messaggio/i).\nSalvato in: \"{preview}\"\nCopia/modifica il testo qui sopra e invialo per ripartire da qui."
+    invalid_count:         "Conteggio non valido \"{arg}\" — usa /undo o /undo N."
 
   update:
     platform_not_messaging:  "✗ /update è disponibile solo dalle piattaforme di messaggistica. Esegui `hermes update` dal terminale."

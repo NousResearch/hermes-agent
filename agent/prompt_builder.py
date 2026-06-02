@@ -7,7 +7,6 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
-import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -15,6 +14,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
+from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
@@ -236,6 +236,11 @@ KANBAN_GUIDANCE = (
     "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
     "the `kanban_*` tools — they work across all terminal backends.\n"
     "- Do not complete a task you didn't actually finish. Block it.\n"
+    "- Do not call `clarify` to ask questions. You are running headless — "
+    "there is no live user to answer. The call will time out and the task "
+    "will sit silently in `running` with no signal to the operator. Instead: "
+    "`kanban_comment` the context, then `kanban_block(reason=...)` so the "
+    "task surfaces on the board as needing input.\n"
     "- Do not assign follow-up work to yourself. Assign it to the right "
     "specialist profile.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
@@ -261,6 +266,37 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
+
+# Universal "finish the job" guidance — applied to ALL models, not gated
+# by model family.  Addresses two cross-model failure modes:
+#   1. Stopping after a stub: writing a tiny file or running one command
+#      and then ending the turn with a description of the plan instead
+#      of the finished artifact.  (Observed on Opus during a real
+#      Sarasota real-estate build task: 3 API calls, 85-byte file,
+#      one terminal command, finish_reason=stop.)
+#   2. Fabricating output when a real path is blocked.  When `pip` or a
+#      tool fails, some models will synthesize plausible-looking results
+#      (fake addresses, fake JSON, fake numbers) instead of reporting
+#      the blocker.  (Observed on DeepSeek v4-flash on the same task:
+#      pushed through PEP-668 wall, then returned fabricated listings.)
+#
+# Short on purpose.  This block is shipped to every user, every session,
+# in the cached system prompt — token cost is paid once at install and
+# then amortised across all sessions via prefix caching.  Keep it tight.
+TASK_COMPLETION_GUIDANCE = (
+    "# Finishing the job\n"
+    "When the user asks you to build, run, or verify something, the deliverable is "
+    "a working artifact backed by real tool output — not a description of one. "
+    "Do not stop after writing a stub, a plan, or a single command. Keep working "
+    "until you have actually exercised the code or produced the requested result, "
+    "then report what real execution returned.\n"
+    "If a tool, install, or network call fails and blocks the real path, say so "
+    "directly and try an alternative (different package manager, different "
+    "approach, ask the user). NEVER substitute plausible-looking fabricated "
+    "output (made-up data, invented file contents, synthesised API responses) "
+    "for results you couldn't actually produce. Reporting a blocker honestly "
+    "is always better than inventing a result."
+)
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
@@ -767,7 +803,7 @@ def build_environment_hints() -> str:
 
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
-            host_lines.append(f"Current working directory: {os.getcwd()}")
+            host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:
             pass
 
@@ -813,6 +849,27 @@ def build_environment_hints() -> str:
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
+
+    # Embedder-supplied environment description. Lets a host that wraps Hermes
+    # (e.g. a sandbox runner / managed platform) explain the environment the
+    # agent is running in — proxy, credential handling, mount layout — without
+    # forking the identity slot (SOUL.md). Read once at prompt-build time, so
+    # it's part of the stable, cache-safe system prompt. The env var is the
+    # build-time/embedder mechanism (set in a container ENV); config.yaml
+    # ``agent.environment_hint`` is the user-facing surface. Env var wins.
+    extra = (os.getenv("HERMES_ENVIRONMENT_HINT") or "").strip()
+    if not extra:
+        try:
+            from hermes_cli.config import load_config
+
+            extra = str(
+                (load_config().get("agent", {}) or {}).get("environment_hint", "")
+            ).strip()
+        except Exception as e:
+            logger.debug("Could not read agent.environment_hint from config: %s", e)
+    if extra:
+        hints.append(extra)
+
     return "\n\n".join(hints)
 
 

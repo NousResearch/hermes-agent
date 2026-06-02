@@ -1,7 +1,6 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import httpx
@@ -72,6 +71,143 @@ class TestParseFrontmatterQuick:
 
 
 # ---------------------------------------------------------------------------
+# GitHubSource skills.sh.json grouping sidecar (category support)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsShGroupings:
+    """Parsing + stamping of the skills.sh.json grouping sidecar.
+
+    A tap can ship a repo-root ``skills.sh.json`` declaring category
+    groupings; we flatten it to {skill_name: title} and stamp the title onto
+    each SkillMeta's ``extra["category"]``. This is the generic cross-ecosystem
+    mechanism behind NVIDIA-style categorization — not NVIDIA-specific.
+    """
+
+    def test_parse_basic_groupings(self):
+        content = json.dumps({
+            "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+            "groupings": [
+                {"title": "Inference AI", "skills": ["dynamo-router", "dynamo-recipe"]},
+                {"title": "Decision Optimization", "skills": ["cuopt-developer"]},
+            ],
+        })
+        mapping = GitHubSource._parse_skillsh_groupings(content)
+        assert mapping == {
+            "dynamo-router": "Inference AI",
+            "dynamo-recipe": "Inference AI",
+            "cuopt-developer": "Decision Optimization",
+        }
+
+    def test_parse_invalid_json_returns_none(self):
+        assert GitHubSource._parse_skillsh_groupings("not json{{") is None
+
+    def test_parse_non_dict_returns_none(self):
+        assert GitHubSource._parse_skillsh_groupings("[1, 2, 3]") is None
+
+    def test_parse_missing_groupings_returns_none(self):
+        assert GitHubSource._parse_skillsh_groupings('{"foo": 1}') is None
+
+    def test_parse_empty_groupings_returns_empty_map(self):
+        assert GitHubSource._parse_skillsh_groupings('{"groupings": []}') == {}
+
+    def test_parse_tolerates_malformed_group(self):
+        # A group missing its skills list is skipped; the valid one survives.
+        content = json.dumps({"groupings": [
+            {"title": "X"},                              # no skills -> skipped
+            {"skills": ["a"]},                           # no title -> skipped
+            {"title": "Y", "skills": ["b", 5, None]},    # only valid string members kept
+        ]})
+        assert GitHubSource._parse_skillsh_groupings(content) == {"b": "Y"}
+
+    def test_parse_first_grouping_wins_on_duplicate(self):
+        content = json.dumps({"groupings": [
+            {"title": "First", "skills": ["dup"]},
+            {"title": "Second", "skills": ["dup"]},
+        ]})
+        assert GitHubSource._parse_skillsh_groupings(content) == {"dup": "First"}
+
+    def test_get_groupings_caches_per_repo(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+        content = json.dumps({"groupings": [{"title": "T", "skills": ["s"]}]})
+        with patch.object(src, "_fetch_file_content", return_value=content) as mock_fetch:
+            first = src._get_skillsh_groupings("acme/skills")
+            second = src._get_skillsh_groupings("acme/skills")
+        assert first == {"s": "T"}
+        assert second == {"s": "T"}
+        # Second call must hit the per-repo cache, not GitHub again.
+        mock_fetch.assert_called_once_with("acme/skills", "skills.sh.json")
+
+    def test_get_groupings_no_sidecar_returns_none_and_caches(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+        with patch.object(src, "_fetch_file_content", return_value=None) as mock_fetch:
+            assert src._get_skillsh_groupings("acme/skills") is None
+            assert src._get_skillsh_groupings("acme/skills") is None
+        mock_fetch.assert_called_once()
+
+    def test_list_skills_stamps_category_from_sidecar(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        meta = SkillMeta(
+            name="cuopt-developer", description="d", source="github",
+            identifier="NVIDIA/skills/skills/cuopt-developer", trust_level="trusted",
+        )
+        contents = [{"type": "dir", "name": "cuopt-developer"}]
+        groupings = {"cuopt-developer": "Decision Optimization"}
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = contents
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=groupings), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch("tools.skills_hub.httpx.get", return_value=resp):
+            skills = src._list_skills_in_repo("NVIDIA/skills", "skills/")
+
+        assert len(skills) == 1
+        assert skills[0].extra["category"] == "Decision Optimization"
+
+    def test_list_skills_no_sidecar_leaves_extra_empty(self):
+        auth = MagicMock()
+        src = GitHubSource(auth=auth)
+
+        meta = SkillMeta(
+            name="foo", description="d", source="github",
+            identifier="acme/skills/skills/foo", trust_level="community",
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"type": "dir", "name": "foo"}]
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch("tools.skills_hub.httpx.get", return_value=resp):
+            skills = src._list_skills_in_repo("acme/skills", "skills/")
+
+        assert len(skills) == 1
+        assert "category" not in skills[0].extra
+
+    def test_meta_to_dict_roundtrip_preserves_extra(self):
+        meta = SkillMeta(
+            name="x", description="d", source="github",
+            identifier="acme/skills/x", trust_level="trusted",
+            extra={"category": "Inference AI"},
+        )
+        d = GitHubSource._meta_to_dict(meta)
+        assert d["extra"] == {"category": "Inference AI"}
+        # Round-trips back through the cache deserialization path.
+        restored = SkillMeta(**d)
+        assert restored.extra == {"category": "Inference AI"}
+
+
+# ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
 
@@ -102,6 +238,36 @@ class TestTrustLevelFor:
         result = src.trust_level_for("owner/repo")
         # No path part — still resolves repo correctly
         assert result in {"trusted", "community"}
+
+    def test_nvidia_skills_tap_is_registered_and_trusted(self):
+        # Invariant: every trusted repo in TRUSTED_REPOS that we want
+        # browseable/searchable through `hermes skills browse` must also
+        # appear as a default tap on GitHubSource. Without the tap, the
+        # repo's skills don't show up in search results or the docs-site
+        # Skills Hub page even though the trust level is correct.
+        from tools.skills_guard import TRUSTED_REPOS
+
+        assert "NVIDIA/skills" in TRUSTED_REPOS
+        tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
+        assert "NVIDIA/skills" in tap_repos
+
+        src = self._source()
+        assert src.trust_level_for("NVIDIA/skills/aiq-deploy") == "trusted"
+
+    def test_browseable_trusted_repos_have_taps(self):
+        # General invariant covering all current and future trusted repos
+        # that publish under a single `skills/`-style path. openai/skills
+        # is the deliberate exception — it has two taps (`.curated/` and
+        # `.system/`) — so we just assert membership not path equality.
+        from tools.skills_guard import TRUSTED_REPOS
+
+        tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
+        for repo in TRUSTED_REPOS:
+            assert repo in tap_repos, (
+                f"Trusted repo {repo!r} is in TRUSTED_REPOS but missing "
+                "from GitHubSource.DEFAULT_TAPS — its skills will not be "
+                "browsable via `hermes skills browse`."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +637,68 @@ class TestSkillsShSource:
         assert result == "owner/repo/product-team/product-designer"
         requested_urls = [call.args[0] for call in mock_get.call_args_list]
         assert root_url not in requested_urls
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_empty_query_walks_sitemap_not_homepage(
+        self, mock_get, _mock_read_cache, _mock_write_cache,
+    ):
+        """Empty query must walk the full sitemap.
+
+        Regression for skills.sh shipping ~858/20000 skills: the previous
+        empty-query path scraped the homepage's featured strip (~200 entries),
+        and build_skills_index.py supplemented it with 28 popular keyword
+        searches to drag the count to ~850. The sitemap walker hits the
+        full ~20k catalog in one pass.
+        """
+        index_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.skills.sh/sitemap-misc.xml</loc></sitemap>
+  <sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap>
+  <sitemap><loc>https://www.skills.sh/sitemap-skills-2.xml</loc></sitemap>
+</sitemapindex>"""
+        skills_1_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.skills.sh/anthropics/skills/frontend-design</loc></url>
+  <url><loc>https://www.skills.sh/anthropics/skills/pdf</loc></url>
+  <url><loc>https://www.skills.sh/vercel-labs/agent-skills/react-best-practices</loc></url>
+</urlset>"""
+        skills_2_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.skills.sh/microsoft/azure-skills/azure-ai</loc></url>
+  <url><loc>https://www.skills.sh/anthropics/skills/frontend-design</loc></url>
+</urlset>"""
+
+        def side_effect(url, *args, **kwargs):
+            resp = MagicMock(status_code=200)
+            if url.endswith("/sitemap.xml"):
+                resp.text = index_xml
+            elif "sitemap-skills-1" in url:
+                resp.text = skills_1_xml
+            elif "sitemap-skills-2" in url:
+                resp.text = skills_2_xml
+            else:
+                resp.status_code = 404
+                resp.text = ""
+            return resp
+
+        mock_get.side_effect = side_effect
+
+        results = self._source().search("", limit=0)
+
+        # 4 unique skills (the frontend-design dup across sitemaps collapsed).
+        assert len(results) == 4
+        identifiers = {r.identifier for r in results}
+        assert identifiers == {
+            "skills-sh/anthropics/skills/frontend-design",
+            "skills-sh/anthropics/skills/pdf",
+            "skills-sh/vercel-labs/agent-skills/react-best-practices",
+            "skills-sh/microsoft/azure-skills/azure-ai",
+        }
+        # Homepage was NOT fetched — the sitemap path is taken on empty query.
+        urls_called = [call.args[0] for call in mock_get.call_args_list]
+        assert not any(u == "https://skills.sh" or u == "https://skills.sh/" for u in urls_called)
 
 
 class TestFindSkillInRepoTree:
@@ -1787,6 +2015,19 @@ class TestInstallPathSafety:
             skill_hash="h", install_path="devops/good", files=["SKILL.md"],
         )
         assert lock.get_installed("good")["install_path"] == "devops/good"
+
+    def test_record_install_accepts_nested_official_skill_path(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="trl-fine-tuning", source="official",
+            identifier="official/mlops/training/trl-fine-tuning",
+            trust_level="builtin", scan_verdict="pass",
+            skill_hash="h", install_path="mlops/training/trl-fine-tuning",
+            files=["SKILL.md"],
+        )
+        entry = lock.get_installed("trl-fine-tuning")
+        assert entry is not None
+        assert entry["install_path"] == "mlops/training/trl-fine-tuning"
 
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Hand-edited lock.json with absolute install_path must not delete anything."""

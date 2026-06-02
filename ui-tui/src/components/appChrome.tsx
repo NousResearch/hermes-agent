@@ -6,7 +6,6 @@ import unicodeSpinners from 'unicode-animations'
 import { $delegationState } from '../app/delegationStore.js'
 import type { IndicatorStyle } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
-import { $uiState } from '../app/uiStore.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
@@ -116,9 +115,7 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
   return indicatorFrameWidth(style) + verb + duration
 }
 
-function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
-  const ui = useStore($uiState)
-  const style = ui.indicatorStyle
+function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
@@ -468,7 +465,7 @@ export function StatusRule({
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : (
             <Text color={statusColor} wrap="truncate-end">
               {status}

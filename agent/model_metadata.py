@@ -554,7 +554,15 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
 
     try:
         with httpx.Client(timeout=2.0, headers=headers) as client:
-            # LM Studio exposes /api/v1/models — check first (most specific)
+            # OpenAI-compatible servers respond to /v1/models — check first.
+            # If this succeeds, skip Ollama/llama.cpp/vLLM probes entirely.
+            try:
+                r = client.get(f"{server_url}/v1/models")
+                if r.status_code == 200:
+                    return "openai-compatible"
+            except Exception:
+                pass
+            # LM Studio exposes /api/v1/models — check next (most specific)
             try:
                 r = client.get(f"{server_url}/api/v1/models")
                 if r.status_code == 200:

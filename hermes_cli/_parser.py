@@ -220,6 +220,17 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--remote-control",
+        "--rc",
+        action="store_true",
+        default=False,
+        help=(
+            "With --tui: start the opt-in loopback Remote Control bridge "
+            "for live clients"
+        ),
+    )
+    _inherited_flag(
+        parser,
         "--dev",
         dest="tui_dev",
         action="store_true",
@@ -368,6 +379,17 @@ def build_top_level_parser():
         action="store_true",
         default=False,
         help="Launch the modern TUI instead of the classic REPL",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--remote-control",
+        "--rc",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "With --tui: start the opt-in loopback Remote Control bridge "
+            "for live clients"
+        ),
     )
     _inherited_flag(
         chat_parser,

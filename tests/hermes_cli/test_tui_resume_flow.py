@@ -16,6 +16,7 @@ def _args(**overrides):
         "toolsets": None,
         "tui": True,
         "tui_dev": False,
+        "remote_control": False,
     }
     base.update(overrides)
     return Namespace(**base)
@@ -201,6 +202,7 @@ def test_cmd_chat_tui_forwards_chat_flags(monkeypatch, main_mod):
                 pass_session_id=True,
                 max_turns=7,
                 accept_hooks=True,
+                remote_control=True,
             )
         )
 
@@ -214,6 +216,7 @@ def test_cmd_chat_tui_forwards_chat_flags(monkeypatch, main_mod):
     assert captured["pass_session_id"] is True
     assert captured["max_turns"] == 7
     assert captured["accept_hooks"] is True
+    assert captured["remote_control"] is True
 
 
 def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
@@ -894,6 +897,68 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+
+
+def test_launch_tui_remote_control_sets_bridge_env(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(remote_control=True)
+
+    assert captured["env"]["HERMES_TUI_REMOTE_BRIDGE"] == "1"
+
+
+def test_launch_tui_without_remote_control_leaves_bridge_env_unset(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.delenv("HERMES_TUI_REMOTE_BRIDGE", raising=False)
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert "HERMES_TUI_REMOTE_BRIDGE" not in captured["env"]
+
+
+def test_launch_tui_remote_control_overrides_disabled_bridge_env(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("HERMES_TUI_REMOTE_BRIDGE", "0")
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(remote_control=True)
+
+    assert captured["env"]["HERMES_TUI_REMOTE_BRIDGE"] == "1"
 
 
 def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):

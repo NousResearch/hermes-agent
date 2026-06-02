@@ -601,6 +601,12 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def pending_gateway_approvals(session_key: str) -> list[dict]:
+    """Return a snapshot of pending blocking approval payloads for a session."""
+    with _lock:
+        return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
+
+
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:

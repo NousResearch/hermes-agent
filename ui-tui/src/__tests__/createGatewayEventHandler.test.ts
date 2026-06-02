@@ -132,6 +132,65 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
   })
 
+  it('renders remote prompt.submitted events as user messages', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { client_id: 'mobile-1', source: 'mobile', text: 'hello from phone' }, type: 'prompt.submitted' } as any)
+
+    expect(appended).toEqual([{ role: 'user', text: 'hello from phone' }])
+  })
+
+  it('archives the current live turn before rendering a remote interrupt prompt', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'old thinking' }, type: 'reasoning.delta' } as any)
+    expect(getTurnState().streamSegments).toEqual([
+      expect.objectContaining({ kind: 'trail', role: 'system', thinking: 'old thinking' })
+    ])
+
+    onEvent({ payload: { client_id: 'mobile-1', source: 'mobile', text: 'wait' }, type: 'prompt.submitted' } as any)
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('session.interrupt', expect.anything())
+    expect(appended).toEqual([
+      expect.objectContaining({ kind: 'trail', role: 'system', thinking: 'old thinking' }),
+      { role: 'user', text: 'wait' }
+    ])
+    expect(getUiState().busy).toBe(false)
+    expect(turnController.reasoningText).toBe('')
+    expect(getTurnState().streamSegments).toEqual([])
+
+    onEvent({ payload: { text: 'late old chunk' }, type: 'reasoning.delta' } as any)
+    expect(turnController.reasoningText).toBe('')
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'fresh thinking' }, type: 'reasoning.delta' } as any)
+    expect(turnController.reasoningText).toBe('fresh thinking')
+  })
+
+  it('clears pending prompt overlays when a peer resolves them', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({ payload: { choices: ['yes'], question: 'Proceed?', request_id: 'rid-1' }, type: 'clarify.request' } as any)
+    expect(getOverlayState().clarify).toMatchObject({ requestId: 'rid-1' })
+
+    onEvent({ payload: { kind: 'clarify', request_id: 'other', source: 'mobile' }, type: 'prompt.resolved' } as any)
+    expect(getOverlayState().clarify).toMatchObject({ requestId: 'rid-1' })
+
+    onEvent({ payload: { kind: 'clarify', request_id: 'rid-1', source: 'mobile' }, type: 'prompt.resolved' } as any)
+    expect(getOverlayState().clarify).toBeNull()
+    expect(getUiState().status).toBe('clarify answered on mobile')
+
+    onEvent({ payload: { command: 'rm -rf /tmp/nope', description: 'dangerous command' }, type: 'approval.request' } as any)
+    expect(getOverlayState().approval).toMatchObject({ description: 'dangerous command' })
+
+    onEvent({ payload: { choice: 'deny', kind: 'approval', source: 'mobile' }, type: 'prompt.resolved' } as any)
+    expect(getOverlayState().approval).toBeNull()
+  })
+
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

@@ -580,7 +580,7 @@ export function useMainApp(gw: GatewayClient) {
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId, source: 'tui' }).then(r => {
         if (!r) {
           return
         }
@@ -844,7 +844,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const answerApproval = useCallback(
     (choice: string) =>
-      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
+      respondWith('approval.respond', { choice, session_id: ui.sid, source: 'tui' }, () => {
         patchOverlayState({ approval: null })
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
@@ -858,7 +858,7 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: overlay.sudo.requestId }, () => {
+      return respondWith('sudo.respond', { password: pw, request_id: overlay.sudo.requestId, source: 'tui' }, () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -872,7 +872,7 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('secret.respond', { request_id: overlay.secret.requestId, value }, () => {
+      return respondWith('secret.respond', { request_id: overlay.secret.requestId, source: 'tui', value }, () => {
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })

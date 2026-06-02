@@ -131,7 +131,53 @@ def _ws_peer_label(ws: Any) -> str:
     return f"{host}:{port}" if port is not None else host
 
 
-async def handle_ws(ws: Any) -> None:
+# Methods a remote bridge client may invoke. Dashboard/internal WebSocket
+# callers use ``handle_ws(..., allowed_methods=None)`` to preserve the full
+# gateway surface; only the opt-in remote bridge passes this allowlist. Anything
+# not listed is rejected before dispatch, so a bridge token never reaches
+# shell.exec / config mutation / key management / scheduling / slash-command
+# exec. Grow this set deliberately as the mobile client gains features.
+BRIDGE_ALLOWED_METHODS: frozenset[str] = frozenset(
+    {
+        # live session control
+        "session.active_list",
+        "session.activate",
+        "session.create",
+        "session.interrupt",
+        "session.close",
+        "prompt.submit",
+        "image.attach",
+        "image.detach",
+        "approval.respond",
+        "clarify.respond",
+        "sudo.respond",
+        "secret.respond",
+        # read-only / informational
+        "session.status",
+        "session.usage",
+        "session.history",
+        "session.list",
+        "session.most_recent",
+        "commands.catalog",
+        "model.options",
+        "tools.list",
+        "tools.show",
+        "toolsets.list",
+        "agents.list",
+        "plugins.list",
+        "insights.get",
+        "setup.status",
+        "rollback.list",
+        "rollback.diff",
+    }
+)
+
+
+async def handle_ws(
+    ws: Any,
+    *,
+    allowed_methods: frozenset[str] | None = None,
+) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
@@ -209,6 +255,39 @@ async def handle_ws(ws: Any) -> None:
                     break
                 continue
 
+            method = req.get("method") if isinstance(req, dict) else None
+            params = req.get("params") if isinstance(req, dict) else None
+
+            # Remote bridge callers may pass an allowlist. Dashboard/internal
+            # callers intentionally leave it as None to preserve the full
+            # authenticated gateway surface.
+            if (
+                allowed_methods is not None
+                and method is not None
+                and method not in allowed_methods
+            ):
+                ok = await transport.write_async(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req.get("id") if isinstance(req, dict) else None,
+                        "error": {
+                            "code": 4403,
+                            "message": f"method '{method}' is not permitted over the remote bridge",
+                        },
+                    }
+                )
+                if not ok:
+                    break
+                continue
+
+            if method == "session.activate" and isinstance(params, dict):
+                # A remote client that activates an existing stdio-owned TUI
+                # session needs to receive future live events without stealing
+                # them from Ink.  Register this WS as a best-effort mirror;
+                # session-owned writes still go to the original primary
+                # transport first.
+                server.attach_bridge_transport(str(params.get("session_id") or ""), transport)
+
             # dispatch() may schedule long handlers on the pool; it returns
             # None in that case and the worker writes the response itself via
             # the transport we pass in (a separate thread, so transport.write
@@ -261,6 +340,7 @@ async def handle_ws(ws: Any) -> None:
 
             # Detach the transport from any sessions it owned so later emits
             # fall back to stdio instead of crashing into a closed socket.
+            server.detach_bridge_transport(transport)
             for _, sess in list(server._sessions.items()):
                 if sess.get("transport") is transport:
                     sess["transport"] = server._stdio_transport

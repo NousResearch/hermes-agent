@@ -127,19 +127,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.approval) {
       return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
+        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid, source: 'tui' })
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
     if (overlay.sudo) {
       return gateway
-        .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })
+        .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId, source: 'tui' })
         .then(r => r && (patchOverlayState({ sudo: null }), actions.sys('sudo cancelled')))
     }
 
     if (overlay.secret) {
       return gateway
-        .rpc<SecretRespondResponse>('secret.respond', { request_id: overlay.secret.requestId, value: '' })
+        .rpc<SecretRespondResponse>('secret.respond', { request_id: overlay.secret.requestId, source: 'tui', value: '' })
         .then(r => r && (patchOverlayState({ secret: null }), actions.sys('secret entry cancelled')))
     }
 

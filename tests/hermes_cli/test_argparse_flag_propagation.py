@@ -109,6 +109,35 @@ class TestChatVerboseArg:
         assert "verbose" not in captured
 
 
+class TestRemoteControlArg:
+    """Verify --remote-control/--rc parse on both top-level and chat forms."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--tui", "--remote-control"],
+            ["--tui", "--rc"],
+            ["chat", "--tui", "--remote-control"],
+            ["chat", "--tui", "--rc"],
+        ],
+    )
+    def test_remote_control_flag_sets_attribute(self, argv):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(argv)
+
+        assert args.remote_control is True
+
+    def test_chat_without_remote_control_preserves_parent_default(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["--tui", "chat"])
+
+        assert args.remote_control is False
+
+
 class TestYoloEnvVar:
     """Verify --yolo sets HERMES_YOLO_MODE regardless of flag position.
 

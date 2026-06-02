@@ -154,11 +154,17 @@ export interface SessionInflightTurn {
   user?: string
 }
 
+export interface PendingPromptSnapshot {
+  payload?: Record<string, unknown>
+  type: 'approval.request' | 'clarify.request' | 'sudo.request' | 'secret.request' | string
+}
+
 export interface SessionActivateResponse {
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  pending_prompt?: null | PendingPromptSnapshot
   running?: boolean
   session_id: string
   session_key?: string
@@ -506,6 +512,7 @@ export type GatewayEvent =
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
+  | { payload?: { client_id?: string; source?: string; text?: string }; session_id?: string; type: 'prompt.submitted' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
@@ -552,6 +559,19 @@ export type GatewayEvent =
   | { payload: { command: string; description: string }; session_id?: string; type: 'approval.request' }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
+  | {
+      payload: {
+        all?: boolean
+        choice?: string
+        client_id?: string
+        kind: 'approval' | 'clarify' | 'sudo' | 'secret' | string
+        request_id?: string
+        resolved?: number
+        source?: string
+      }
+      session_id?: string
+      type: 'prompt.resolved'
+    }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }

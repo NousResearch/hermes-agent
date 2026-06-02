@@ -401,6 +401,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'prompt.submitted': {
+        const text = String(ev.payload?.text ?? '').trim()
+
+        if (text) {
+          if (getUiState().busy) {
+            turnController.archiveInterruptedTurn({ appendMessage, sys })
+          }
+
+          appendMessage({ role: 'user', text })
+        }
+
+        return
+      }
+
       case 'thinking.delta': {
         if (!getUiState().busy) {
           return
@@ -682,6 +696,40 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         setStatus('secret input needed')
 
         return
+
+      case 'prompt.resolved': {
+        const kind = String(ev.payload.kind ?? '')
+        const requestId = String(ev.payload.request_id ?? '')
+        let cleared = false
+
+        patchOverlayState(state => {
+          if (kind === 'approval' && state.approval) {
+            cleared = true
+            return { ...state, approval: null }
+          }
+          if (kind === 'clarify' && state.clarify && (!requestId || state.clarify.requestId === requestId)) {
+            cleared = true
+            return { ...state, clarify: null }
+          }
+          if (kind === 'sudo' && state.sudo && (!requestId || state.sudo.requestId === requestId)) {
+            cleared = true
+            return { ...state, sudo: null }
+          }
+          if (kind === 'secret' && state.secret && (!requestId || state.secret.requestId === requestId)) {
+            cleared = true
+            return { ...state, secret: null }
+          }
+          return state
+        })
+
+        if (cleared) {
+          const source = String(ev.payload.source ?? '').trim()
+          const where = source ? ` on ${source}` : ' elsewhere'
+          setStatus(`${kind || 'prompt'} answered${where}`)
+        }
+
+        return
+      }
 
       case 'background.complete':
         dropBgTask(ev.payload.task_id)

@@ -363,14 +363,69 @@ def _db_unavailable_error(rid, *, code: int):
     return _err(rid, code, f"state.db unavailable: {detail}")
 
 
+def _session_event_transports(session: dict) -> list[Transport]:
+    """Return the primary transport plus any remote bridge mirrors."""
+    transports: list[Transport] = []
+    seen: set[int] = set()
+
+    def add(t: Transport | None) -> None:
+        if t is None:
+            return
+        ident = id(t)
+        if ident in seen:
+            return
+        seen.add(ident)
+        transports.append(t)
+
+    add(session.get("transport"))
+    for t in session.get("bridge_transports") or ():
+        add(t)
+    return transports
+
+
+def _attach_transport_to_session(session: dict, transport: Transport | None = None) -> None:
+    """Mirror future events for a live session to *transport* without stealing primary ownership."""
+    transport = transport or current_transport() or _stdio_transport
+    if session.get("transport") is transport:
+        return
+    bridges = session.get("bridge_transports") or []
+    if any(t is transport for t in bridges):
+        return
+    # Copy-on-write: never mutate the list in place. write_json /
+    # _session_event_transports iterate it from the streaming thread, so an
+    # in-place append would risk "list changed size during iteration".
+    # detach_bridge_transport rebinds the same way, so readers always iterate a
+    # stable snapshot.
+    session["bridge_transports"] = [*bridges, transport]
+
+
+def attach_bridge_transport(session_id: str, transport: Transport) -> bool:
+    """Mirror future events for *session_id* to a remote WS transport."""
+    session = _sessions.get(session_id or "")
+    if session is None:
+        return False
+    _attach_transport_to_session(session, transport)
+    return True
+
+
+def detach_bridge_transport(transport: Transport) -> None:
+    """Remove a remote mirror transport from every live session."""
+    for session in list(_sessions.values()):
+        bridges = session.get("bridge_transports")
+        if not bridges:
+            continue
+        session["bridge_transports"] = [t for t in bridges if t is not transport]
+
+
 def write_json(obj: dict) -> bool:
     """Emit one JSON frame. Routes via the most-specific transport available.
 
     Precedence:
 
-    1. Event frames with a session id → the transport stored on that session,
-       so async events land with the client that owns the session even if
-       the emitting thread has no contextvar binding.
+    1. Event frames with a session id → the transport stored on that session
+       plus any remote bridge mirrors.  The primary transport owns the return
+       value so stdio peer loss still behaves as before; bridge mirrors are
+       best-effort and never kill the TUI.
     2. Otherwise the transport bound on the current context (set by
        :func:`dispatch` for the lifetime of a request).
     3. Otherwise the module-level stdio transport, matching the historical
@@ -378,17 +433,193 @@ def write_json(obj: dict) -> bool:
     """
     if obj.get("method") == "event":
         sid = ((obj.get("params") or {}).get("session_id")) or ""
-        if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            return t.write(obj)
+        if sid and (session := _sessions.get(sid)) is not None:
+            transports = _session_event_transports(session)
+            if transports:
+                primary_ok = transports[0].write(obj)
+                stale: list[Transport] = []
+                for t in transports[1:]:
+                    try:
+                        if not t.write(obj):
+                            stale.append(t)
+                    except Exception:
+                        stale.append(t)
+                for t in stale:
+                    detach_bridge_transport(t)
+                return primary_ok
 
     return (current_transport() or _stdio_transport).write(obj)
 
 
+_DISPLAY_JOURNAL_LIMIT = 500
+
+
+def _compact_display_text(value: Any, limit: int = 220) -> str:
+    text = _content_display_text(value).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _display_message_for_event(event: str, payload: dict | None) -> dict | None:
+    payload = payload or {}
+    if event == "prompt.submitted":
+        text = _compact_display_text(payload.get("text"), limit=16_000)
+        return {"role": "user", "text": text} if text else None
+    if event == "message.complete":
+        text = _compact_display_text(payload.get("text"), limit=16_000)
+        return {"role": "assistant", "text": text} if text else None
+    if event == "tool.start":
+        name = str(payload.get("name") or "tool")
+        text = _compact_display_text(
+            payload.get("context") or payload.get("args_text") or name or "tool started"
+        )
+        return {"role": "tool", "name": name, "text": text} if text else None
+    if event == "tool.complete":
+        name = str(payload.get("name") or "tool")
+        text = _compact_display_text(
+            payload.get("summary")
+            or payload.get("result_text")
+            or ("error" if payload.get("error") else "complete")
+        )
+        return {"role": "tool", "name": name, "text": text} if text else None
+    if event == "status.update":
+        text = _compact_display_text(payload.get("text"))
+        kind = str(payload.get("kind") or "").strip()
+        if text and kind and kind != "status":
+            return {"role": "event", "name": kind, "text": text}
+        return None
+    if event == "error":
+        text = _compact_display_text(payload.get("message") or "unknown error")
+        return {"role": "system", "name": "error", "text": text} if text else None
+    return None
+
+
+def _append_display_message(session: dict, message: dict | None) -> None:
+    if not message:
+        return
+
+    def _append() -> None:
+        journal = session.setdefault("display_messages", [])
+        if not isinstance(journal, list):
+            journal = []
+            session["display_messages"] = journal
+        journal.append(dict(message))
+        if len(journal) > _DISPLAY_JOURNAL_LIMIT:
+            del journal[: len(journal) - _DISPLAY_JOURNAL_LIMIT]
+
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            _append()
+    else:
+        _append()
+
+
+def _append_display_event(sid: str, event: str, payload: dict | None = None) -> None:
+    session = _sessions.get(sid)
+    if not isinstance(session, dict):
+        return
+    _append_display_message(session, _display_message_for_event(event, payload))
+
+
 def _emit(event: str, sid: str, payload: dict | None = None):
+    _append_display_event(sid, event, payload)
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def _prompt_submitted_payload(text: Any, params: dict) -> dict:
+    payload = {"text": _content_display_text(text).strip()}
+    client_id = str(params.get("client_id") or "").strip()
+    if client_id:
+        payload["client_id"] = client_id
+    source = str(params.get("source") or "").strip()
+    if source:
+        payload["source"] = source
+    return payload
+
+
+def _emit_to_peer_transports(sid: str, session: dict, event_type: str, payload: dict) -> None:
+    """Emit a session event to every attached client except the current caller."""
+    origin = current_transport() or _stdio_transport
+    frame = {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {"type": event_type, "session_id": sid, "payload": payload},
+    }
+    stale: list[Transport] = []
+    for transport in _session_event_transports(session):
+        if transport is origin:
+            continue
+        try:
+            if not transport.write(frame):
+                stale.append(transport)
+        except Exception:
+            stale.append(transport)
+    for transport in stale:
+        detach_bridge_transport(transport)
+
+
+def _emit_prompt_submitted_to_peers(sid: str, session: dict, text: Any, params: dict) -> None:
+    """Mirror a user prompt to every attached client except the submitter.
+
+    Each submitting client optimistically renders its own user prompt before
+    calling ``prompt.submit``.  Peer clients do not see that local echo, so the
+    gateway emits a small user-turn event to the other transports only:
+
+    - desktop TUI submit → mobile mirrors see the prompt, desktop does not
+      duplicate it;
+    - mobile submit → desktop and any other mirrors see the prompt, the sending
+      phone does not duplicate it.
+    """
+    payload = _prompt_submitted_payload(text, params)
+    if not payload.get("text"):
+        return
+    _append_display_message(session, _display_message_for_event("prompt.submitted", payload))
+    _emit_to_peer_transports(sid, session, "prompt.submitted", payload)
+
+
+def _prompt_resolved_payload(kind: str, params: dict, *, request_id: str = "", resolved: int = 1) -> dict:
+    payload = {"kind": kind, "resolved": int(resolved)}
+    if request_id:
+        payload["request_id"] = request_id
+    choice = str(params.get("choice") or "").strip()
+    if kind == "approval" and choice:
+        payload["choice"] = choice
+    if params.get("all"):
+        payload["all"] = True
+    client_id = str(params.get("client_id") or "").strip()
+    if client_id:
+        payload["client_id"] = client_id
+    source = str(params.get("source") or "").strip()
+    if source:
+        payload["source"] = source
+    return payload
+
+
+def _emit_prompt_resolved_to_peers(
+    sid: str,
+    session: dict | None,
+    kind: str,
+    params: dict,
+    *,
+    request_id: str = "",
+    resolved: int = 1,
+) -> None:
+    """Tell peer clients a blocking prompt was answered elsewhere.
+
+    The submitting client clears its own prompt after the RPC response.  Peers
+    need a small event to clear stale approval/clarify/sudo/secret panels.  Do
+    not include free-form answers/passwords/secrets in this payload; only the
+    non-sensitive resolution metadata crosses clients.
+    """
+    if not sid or session is None or resolved <= 0:
+        return
+    payload = _prompt_resolved_payload(kind, params, request_id=request_id, resolved=resolved)
+    _emit_to_peer_transports(sid, session, "prompt.resolved", payload)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -858,6 +1089,33 @@ def _clear_pending(sid: str | None = None) -> None:
         if sid is None or owner_sid == sid:
             _answers[rid] = ""
             ev.set()
+
+
+def _request_session_interrupt(sid: str, session: dict, message: Any = None) -> None:
+    """Best-effort interrupt for a single live session.
+
+    ``message`` is passed through when available so agent implementations that
+    record the follow-up prompt (classic CLI parity) can attach it to the
+    interrupt result.  Prompt/approval waiters are also released with the same
+    session scoping as the explicit ``session.interrupt`` RPC.
+    """
+    agent = session.get("agent")
+    interrupt = getattr(agent, "interrupt", None)
+    if callable(interrupt):
+        try:
+            if message is None:
+                interrupt()
+            else:
+                interrupt(message)
+        except TypeError:
+            interrupt()
+    _clear_pending(sid)
+    try:
+        from tools.approval import resolve_gateway_approval
+
+        resolve_gateway_approval(session.get("session_key", ""), "deny", resolve_all=True)
+    except Exception:
+        pass
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -2349,6 +2607,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "agent": agent,
         "session_key": key,
         "history": history,
+        "display_messages": _history_to_messages(list(history or [])),
         "history_lock": threading.Lock(),
         "history_version": 0,
         "inflight_turn": None,
@@ -2720,6 +2979,37 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _prompt_submit_interrupts_on_busy(params: dict) -> bool:
+    if params.get("interrupt") is True:
+        return True
+    raw = (
+        params.get("on_busy")
+        or params.get("busy_mode")
+        or params.get("busy_input_mode")
+        or ""
+    )
+    return str(raw).strip().lower() == "interrupt"
+
+
+def _queue_interrupt_prompt(session: dict, text: Any) -> None:
+    queued = session.setdefault("interrupt_queue", [])
+    if not isinstance(queued, list):
+        queued = []
+        session["interrupt_queue"] = queued
+    queued.append(text)
+
+
+def _take_queued_interrupt_prompt(session: dict) -> Any | None:
+    queued = session.pop("interrupt_queue", [])
+    if not isinstance(queued, list) or not queued:
+        return None
+    if len(queued) == 1:
+        return queued[0]
+    parts = [_content_display_text(item).strip() for item in queued]
+    combined = "\n".join(part for part in parts if part)
+    return combined or None
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -2758,6 +3048,7 @@ def _(rid, params: dict) -> dict:
         "attached_images": [],
         "cols": cols,
         "created_at": now,
+        "display_messages": [],
         "edit_snapshots": {},
         "history": history,
         "history_lock": threading.Lock(),
@@ -2912,6 +3203,16 @@ def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
     if not target:
         return _err(rid, 4006, "session_id required")
+
+    live = _live_session_for_target(str(target))
+    if live is not None:
+        sid, session = live
+        _attach_transport_to_session(session)
+        payload = _session_activate_payload(sid, session)
+        payload["resumed"] = payload.get("session_key") or str(target)
+        payload["live"] = True
+        return _ok(rid, payload)
+
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5000)
@@ -2922,6 +3223,18 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    else:
+        target = found.get("id") or target
+
+    live = _live_session_for_target(str(target))
+    if live is not None:
+        sid, session = live
+        _attach_transport_to_session(session)
+        payload = _session_activate_payload(sid, session)
+        payload["resumed"] = str(target)
+        payload["live"] = True
+        return _ok(rid, payload)
+
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:
@@ -2937,6 +3250,9 @@ def _(rid, params: dict) -> dict:
         finally:
             _clear_session_context(tokens)
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
+        live_session = _sessions.get(sid)
+        if isinstance(live_session, dict):
+            live_session["display_messages"] = list(messages)
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
     return _ok(
@@ -2975,17 +3291,39 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, info)
 
 
-def _session_pending_kind(sid: str) -> str:
+def _pending_prompt_for_session(sid: str, session: dict | None = None) -> dict | None:
+    """Return the oldest pending prompt payload a late-attaching client can render."""
     for rid, (owner_sid, _ev) in list(_pending.items()):
         if owner_sid != sid:
             continue
-        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
-        return str(event).removesuffix(".request")
-    return ""
+        event, payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+        return {"type": str(event), "payload": dict(payload)}
+
+    if session is None:
+        session = _sessions.get(sid)
+    session_key = str((session or {}).get("session_key") or sid)
+    if not session_key:
+        return None
+    try:
+        from tools.approval import pending_gateway_approvals
+
+        approvals = pending_gateway_approvals(session_key)
+    except Exception:
+        approvals = []
+    if approvals:
+        return {"type": "approval.request", "payload": dict(approvals[0])}
+    return None
+
+
+def _session_pending_kind(sid: str, session: dict | None = None) -> str:
+    pending = _pending_prompt_for_session(sid, session)
+    if not pending:
+        return ""
+    return str(pending.get("type") or "input.request").removesuffix(".request")
 
 
 def _session_live_status(sid: str, session: dict) -> str:
-    if _session_pending_kind(sid):
+    if _session_pending_kind(sid, session):
         return "waiting"
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set():
@@ -3039,6 +3377,23 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
+def _live_session_for_target(target: str) -> tuple[str, dict] | None:
+    """Return an in-process live session addressed by live id or persistent key."""
+    needle = str(target or "").strip()
+    if not needle:
+        return None
+    try:
+        items = list(_sessions.items())
+    except Exception:
+        return None
+    for sid, session in items:
+        key = str(session.get("session_key") or "").strip()
+        agent_session_id = str(getattr(session.get("agent"), "session_id", "") or "").strip()
+        if needle == sid or needle == key or (agent_session_id and needle == agent_session_id):
+            return sid, session
+    return None
+
+
 def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
@@ -3050,6 +3405,45 @@ def _fallback_session_info(session: dict) -> dict:
         "skills": {},
         "tools": {},
     }
+
+
+def _session_activate_payload(sid: str, session: dict) -> dict:
+    with session["history_lock"]:
+        session["last_active"] = time.time()
+        display_messages = list(session.get("display_messages") or [])
+        history = list(session.get("display_history") or session.get("history") or [])
+        messages = display_messages if display_messages else _history_to_messages(history)
+        inflight = _inflight_snapshot(session)
+        if inflight:
+            inflight_user = str(inflight.get("user") or "").strip()
+            if inflight_user:
+                for index in range(len(messages) - 1, -1, -1):
+                    message = messages[index]
+                    if (
+                        isinstance(message, dict)
+                        and message.get("role") == "user"
+                        and str(message.get("text") or "").strip() == inflight_user
+                    ):
+                        messages = messages[:index] + messages[index + 1 :]
+                        break
+        running = bool(session.get("running"))
+    pending_prompt = _pending_prompt_for_session(sid, session)
+    status = "waiting" if pending_prompt else _session_live_status(sid, session)
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(messages),
+        "messages": messages,
+        "running": running,
+        "session_id": sid,
+        "session_key": session.get("session_key") or sid,
+        "started_at": float(session.get("created_at") or time.time()),
+        "status": status,
+    }
+    if inflight:
+        payload["inflight"] = inflight
+    if pending_prompt:
+        payload["pending_prompt"] = pending_prompt
+    return payload
 
 
 @method("session.active_list")
@@ -3084,25 +3478,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait({"session_id": sid}, rid)
     if err:
         return err
+    assert session is not None
 
-    with session["history_lock"]:
-        session["last_active"] = time.time()
-        history = list(session.get("display_history") or session.get("history") or [])
-        inflight = _inflight_snapshot(session)
-        running = bool(session.get("running"))
-    status = _session_live_status(sid, session)
-    payload = {
-        "info": _fallback_session_info(session),
-        "message_count": len(history),
-        "messages": _history_to_messages(history),
-        "running": running,
-        "session_id": sid,
-        "session_key": session.get("session_key") or sid,
-        "started_at": float(session.get("created_at") or time.time()),
-        "status": status,
-    }
-    if inflight:
-        payload["inflight"] = inflight
+    _attach_transport_to_session(session)
+    payload = _session_activate_payload(sid, session)
     return _ok(
         rid,
         payload,
@@ -3548,19 +3927,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    if hasattr(session["agent"], "interrupt"):
-        session["agent"].interrupt()
-    # Scope the pending-prompt release to THIS session.  A global
-    # _clear_pending() would collaterally cancel clarify/sudo/secret
-    # prompts on unrelated sessions sharing the same tui_gateway
-    # process, silently resolving them to empty strings.
-    _clear_pending(params.get("session_id", ""))
-    try:
-        from tools.approval import resolve_gateway_approval
-
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
-    except Exception:
-        pass
+    assert session is not None
+    _request_session_interrupt(params.get("session_id", ""), session)
     return _ok(rid, {"status": "interrupted"})
 
 
@@ -3833,37 +4201,56 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
+    assert session is not None
+    # Re-bind to the current primary client transport for this request. This
+    # keeps streaming events on the active websocket even if an earlier
+    # disconnect or fallback moved the primary session transport to stdio.
+    # Remote bridge mirrors must not steal primary ownership, otherwise peer
+    # prompt.submitted events stop reaching the desktop/primary TUI.
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        bridges = session.get("bridge_transports") or ()
+        if session.get("transport") is t or not any(t is bridge for bridge in bridges):
+            session["transport"] = t
+
+    interrupting = False
     with session["history_lock"]:
         if session.get("running"):
-            return _err(rid, 4009, "session busy")
-        if truncate_user_ordinal is not None:
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            if ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
+            if not _prompt_submit_interrupts_on_busy(params):
+                return _err(rid, 4009, "session busy")
+            _queue_interrupt_prompt(session, text)
+            session["last_active"] = time.time()
+            interrupting = True
+        else:
+            if truncate_user_ordinal is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
-        session["running"] = True
-        session["last_active"] = time.time()
-        _start_inflight_turn(session, text)
+                    ordinal = int(truncate_user_ordinal)
+                except (TypeError, ValueError):
+                    return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+                history = session.get("history", [])
+                user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
+                if ordinal >= len(user_indices):
+                    return _err(rid, 4018, "target user message is no longer in session history")
+                truncated = history[: user_indices[ordinal]]
+                session["history"] = truncated
+                session["history_version"] = int(session.get("history_version", 0)) + 1
+                if (db := _get_db()) is not None:
+                    try:
+                        db.replace_messages(session["session_key"], truncated)
+                    except Exception as exc:
+                        print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+            session["running"] = True
+            session["last_active"] = time.time()
+            _start_inflight_turn(session, text)
 
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)
+
+    if interrupting:
+        _emit_prompt_submitted_to_peers(sid, session, text, params)
+        _request_session_interrupt(sid, session, text)
+        return _ok(rid, {"status": "interrupting"})
+
+    _emit_prompt_submitted_to_peers(sid, session, text, params)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -4050,6 +4437,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         approval_token = None
         session_tokens = []
         goal_followup = None  # set by the post-turn goal hook below
+        queued_interrupt_prompt = None
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -4380,11 +4768,26 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             except Exception:
                 pass
             _clear_session_context(session_tokens)
+            queued_interrupt_prompt = None
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
+                queued_interrupt_prompt = _take_queued_interrupt_prompt(session)
+                if queued_interrupt_prompt is not None:
+                    session["running"] = True
+                    session["last_active"] = time.time()
+                    _start_inflight_turn(session, queued_interrupt_prompt)
             _emit("session.info", sid, _session_info(agent, session))
+
+        if queued_interrupt_prompt is not None:
+            _run_prompt_submit(
+                f"__interrupt__{int(time.time() * 1000)}",
+                sid,
+                session,
+                queued_interrupt_prompt,
+            )
+            return
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the
@@ -4745,30 +5148,31 @@ def _(rid, params: dict) -> dict:
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
-def _respond(rid, params, key):
+def _respond(rid, params, key, kind):
     r = params.get("request_id", "")
     entry = _pending.get(r)
     if not entry:
         return _err(rid, 4009, f"no pending {key} request")
-    _, ev = entry
+    sid, ev = entry
     _answers[r] = params.get(key, "")
+    _emit_prompt_resolved_to_peers(sid, _sessions.get(sid), kind, params, request_id=str(r))
     ev.set()
     return _ok(rid, {"status": "ok"})
 
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "answer")
+    return _respond(rid, params, "answer", "clarify")
 
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password")
+    return _respond(rid, params, "password", "sudo")
 
 
 @method("secret.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "value")
+    return _respond(rid, params, "value", "secret")
 
 
 @method("approval.respond")
@@ -4776,19 +5180,23 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    assert session is not None
     try:
         from tools.approval import resolve_gateway_approval
 
-        return _ok(
-            rid,
-            {
-                "resolved": resolve_gateway_approval(
-                    session["session_key"],
-                    params.get("choice", "deny"),
-                    resolve_all=params.get("all", False),
-                )
-            },
+        resolved = resolve_gateway_approval(
+            session["session_key"],
+            params.get("choice", "deny"),
+            resolve_all=params.get("all", False),
         )
+        _emit_prompt_resolved_to_peers(
+            params.get("session_id", ""),
+            session,
+            "approval",
+            params,
+            resolved=resolved,
+        )
+        return _ok(rid, {"resolved": resolved})
     except Exception as e:
         return _err(rid, 5004, str(e))
 

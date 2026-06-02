@@ -476,6 +476,51 @@ def build_skill_invocation_message(
     )
 
 
+def get_skill_model_for_command(
+    cmd_key: str, config_overrides: dict | None = None
+) -> str | None:
+    """Return the model override for a skill command, or None if no override.
+
+    Why: Enables skill-scoped model routing — a skill can prefer a different
+    model for its turn, with user config able to override the author's choice.
+    What: Resolves, in order: (1) config.yaml skills.model_overrides.<skill-name>,
+    (2) SKILL.md metadata.hermes.model, (3) None. Returns the resolved model slug.
+    Test: For a skill whose SKILL.md sets metadata.hermes.model="x/y", with no
+    config_overrides -> "x/y"; with config_overrides={"<name>":"z"} -> "z";
+    for a skill with no model declared and no override -> None.
+    """
+    skill_info = get_skill_commands().get(cmd_key)
+    if not skill_info:
+        return None
+
+    skill_name = skill_info.get("name", "")
+
+    # Check config override first (highest priority — user intent).
+    if config_overrides:
+        override = config_overrides.get(skill_name)
+        if override:
+            return override
+
+    # Fall back to the skill author's frontmatter recommendation.
+    result = _load_skill_payload(skill_info["skill_dir"])
+    if not result:
+        return None
+    loaded_skill, _, _ = result
+
+    raw_content = str(
+        loaded_skill.get("raw_content") or loaded_skill.get("content") or ""
+    )
+    if raw_content:
+        from agent.skill_utils import (
+            parse_frontmatter,
+            extract_skill_model_override,
+        )
+
+        frontmatter, _ = parse_frontmatter(raw_content)
+        return extract_skill_model_override(frontmatter)
+    return None
+
+
 def build_preloaded_skills_prompt(
     skill_identifiers: list[str],
     task_id: str | None = None,

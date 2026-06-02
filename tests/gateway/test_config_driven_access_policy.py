@@ -1,8 +1,9 @@
 """Tests for config-driven platform access policies at the gateway layer.
 
-Background (#34515): WeCom, Weixin, Yuanbao, and QQBot expose a documented
-config-driven access surface (``dm_policy`` / ``group_policy`` / ``allow_from``
-/ ``group_allow_from`` in ``PlatformConfig.extra``) and enforce it at intake —
+Background (#34515): WeCom, Weixin, Yuanbao, QQBot, and WhatsApp expose a
+documented config-driven access surface (``dm_policy`` / ``group_policy`` /
+``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra``) and enforce
+it at intake —
 a message is dropped inside the adapter and never reaches the gateway unless it
 already passed that policy.
 
@@ -34,6 +35,7 @@ _OWN_POLICY_PLATFORMS = [
     Platform.WEIXIN,
     Platform.YUANBAO,
     Platform.QQBOT,
+    Platform.WHATSAPP,
 ]
 
 
@@ -44,6 +46,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "YUANBAO_ALLOWED_USERS",
         "QQ_ALLOWED_USERS",
         "QQ_GROUP_ALLOWED_USERS",
+        "WHATSAPP_ALLOWED_USERS",
         "TELEGRAM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
@@ -51,6 +54,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "WEIXIN_ALLOW_ALL_USERS",
         "YUANBAO_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
+        "WHATSAPP_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -103,10 +107,11 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
         ("gateway.platforms.weixin", "WeixinAdapter"),
         ("gateway.platforms.yuanbao", "YuanbaoAdapter"),
         ("gateway.platforms.qqbot.adapter", "QQAdapter"),
+        ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
     ],
 )
 def test_own_policy_adapters_declare_the_flag(module_path, class_name):
-    """The four config-policy adapters override the flag to True."""
+    """The config-policy adapters override the flag to True."""
     import importlib
 
     module = importlib.import_module(module_path)

@@ -48,7 +48,8 @@ import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/co
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
-import { DirectiveContent, DirectiveText } from '@/components/assistant-ui/directive-text'
+import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
@@ -703,9 +704,10 @@ const UserMessage: FC<{
         </span>
       )}
       {hasBody && (
-        <span className="wrap-anywhere block whitespace-pre-line">
-          <MessagePrimitive.Parts components={{ Text: DirectiveText }} />
-        </span>
+        // Render the user's text through a minimal markdown pipeline:
+        // backtick `code` and ``` fenced ``` blocks, with directive chips
+        // (`@file:` etc.) still resolved inside the plain-text spans.
+        <UserMessageText className="wrap-anywhere" text={messageText} />
       )}
     </>
   )

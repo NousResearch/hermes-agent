@@ -27,6 +27,11 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      settings: {
+        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
+        setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+      }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
@@ -48,6 +53,7 @@ declare global {
       getBootstrapState: () => Promise<DesktopBootstrapState>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
+      cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
       updates: {
@@ -194,12 +200,7 @@ export interface DesktopBootstrapStageDescriptor {
   needs_user_input?: boolean
 }
 
-export type DesktopBootstrapStageState =
-  | 'pending'
-  | 'running'
-  | 'succeeded'
-  | 'skipped'
-  | 'failed'
+export type DesktopBootstrapStageState = 'pending' | 'running' | 'succeeded' | 'skipped' | 'failed'
 
 export interface DesktopBootstrapStageResult {
   state: DesktopBootstrapStageState
@@ -247,7 +248,6 @@ export type DesktopBootstrapEvent =
       installCommand: string
       docsUrl: string
     }
-
 
 export interface HermesApiRequest {
   path: string

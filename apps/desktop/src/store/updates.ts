@@ -48,7 +48,22 @@ export const setUpdateOverlayOpen = (open: boolean) => $updateOverlayOpen.set(op
 export const resetUpdateApplyState = () => $updateApply.set(IDLE)
 
 const UPDATE_TOAST_ID = 'desktop-update-available'
-const UPDATE_TOAST_DISMISSED_KEY = 'hermes:update-toast-dismissed-sha'
+// Time-based snooze instead of per-sha dismissal: this repo lands ~100 commits
+// a day, so a "don't show this exact sha again" guard re-popped the toast on
+// every new commit. We instead suppress the toast for a cooldown window that
+// (re)starts whenever the user closes it.
+const UPDATE_TOAST_SNOOZE_KEY = 'hermes:update-toast-snooze-until'
+const UPDATE_TOAST_COOLDOWN_MS = 24 * 60 * 60 * 1000
+
+function snoozeUpdateToast(): void {
+  persistString(UPDATE_TOAST_SNOOZE_KEY, String(Date.now() + UPDATE_TOAST_COOLDOWN_MS))
+}
+
+function isUpdateToastSnoozed(): boolean {
+  const until = Number(storedString(UPDATE_TOAST_SNOOZE_KEY) || 0)
+
+  return Number.isFinite(until) && Date.now() < until
+}
 
 // Must match tui_gateway's DESKTOP_BACKEND_CONTRACT that this build was written
 // against. The backend reports its own value in session runtime info; a lower
@@ -74,25 +89,18 @@ export function reportBackendContract(contract: number | undefined): void {
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
-    message:
-      'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
+    message: 'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
     title: 'Backend out of date'
   })
 }
 
-function markToastDismissed(sha: string | undefined) {
-  if (sha) {
-    persistString(UPDATE_TOAST_DISMISSED_KEY, sha)
-  }
-}
-
 /**
- * Fire a one-shot toast the first time we see a particular target commit so
- * users don't have to notice the status-bar version pill turning colors.
- * Dismissal is remembered per-target-sha so the toast doesn't keep popping
- * back for the same update across restarts.
+ * Fire a toast when an update is available, at most once per cooldown window.
+ * Closing the toast — dismissing it or opening the updates window from it —
+ * (re)starts the cooldown, so a busy upstream branch doesn't re-spam the user
+ * on every new commit. The snooze is persisted, so it survives relaunches too.
  */
-function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
+export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   if (!status || status.supported === false || status.error || !status.targetSha) {
     return
   }
@@ -101,7 +109,7 @@ function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     return
   }
 
-  if (storedString(UPDATE_TOAST_DISMISSED_KEY) === status.targetSha) {
+  if (isUpdateToastSnoozed()) {
     return
   }
 
@@ -110,13 +118,12 @@ function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
   }
 
   const behind = status.behind ?? 0
-  const targetSha = status.targetSha
 
   notify({
     action: {
       label: "See what's new",
       onClick: () => {
-        markToastDismissed(targetSha)
+        snoozeUpdateToast()
         openUpdatesWindow()
       }
     },
@@ -124,7 +131,7 @@ function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
     id: UPDATE_TOAST_ID,
     kind: 'info',
     message: `${behind} new change${behind === 1 ? '' : 's'} available.`,
-    onDismiss: () => markToastDismissed(targetSha),
+    onDismiss: () => snoozeUpdateToast(),
     title: 'Update ready'
   })
 }
@@ -136,6 +143,34 @@ function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null) {
 export function openUpdatesWindow(): void {
   $updateOverlayOpen.set(true)
   void checkUpdates()
+}
+
+/** Re-read the running app's version from the Electron main process and
+ *  publish it on `$desktopVersion`. Called when the About panel mounts, the
+ *  update flow finishes, and the window regains focus, so the About text
+ *  stays in sync with the just-installed binary instead of frozen at the
+ *  value captured at first-load. */
+export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  // Best-effort UI sync: callers (checkUpdates, startUpdatePoller, window
+  // focus handler) all kick this off with `void refreshDesktopVersion()`,
+  // so any rejection from the IPC bridge (e.g. main process shutting down
+  // mid-reload, or the bridge not yet ready on first paint) would surface
+  // as an unhandled promise rejection in the renderer. Swallow it.
+  try {
+    const next = await window.hermesDesktop?.getVersion?.()
+
+    if (next) {
+      $desktopVersion.set(next)
+    }
+
+    return next ?? null
+  } catch {
+    return null
+  }
 }
 
 export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
@@ -151,6 +186,10 @@ export async function checkUpdates(): Promise<DesktopUpdateStatus | null> {
     const status = await bridge.check()
     $updateStatus.set(status)
     maybeNotifyUpdateAvailable(status)
+    // The update check pulls the latest hermes_cli + bundled package metadata
+    // into place. Re-read the running version so About reflects the now-fresh
+    // checkout rather than the one captured at process start.
+    void refreshDesktopVersion()
 
     return status
   } catch (error) {
@@ -242,7 +281,7 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   void checkUpdates()
-  void window.hermesDesktop?.getVersion?.().then(info => $desktopVersion.set(info))
+  void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
   window.addEventListener('focus', onFocus)
@@ -268,4 +307,8 @@ function onFocus() {
 
   lastFocusAt = now
   void checkUpdates()
+  // Cheap and safe to re-read on every (throttled) focus: the user may have
+  // updated Hermes from another window/CLI between focuses, and About should
+  // catch up without forcing a restart.
+  void refreshDesktopVersion()
 }

@@ -379,6 +379,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
         return False
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
+        return True
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":

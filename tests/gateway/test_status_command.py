@@ -58,6 +58,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     # Default: no DB row → /status reports 0 tokens.  Tests that exercise
     # the populated path override this.
     runner._session_db.get_session.return_value = None
+    runner._format_session_info = MagicMock(return_value="")
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -122,6 +123,28 @@ async def test_status_command_includes_session_title_when_present():
 
     assert "**Session ID:** `sess-1`" in result
     assert "**Title:** My titled session" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_session_info_block():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._format_session_info.return_value = "◆ Model: `test-model`\n◆ Provider: custom\n◆ Context: 32K (config)"
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "◆ Model: `test-model`" in result
+    assert "◆ Provider: custom" in result
+    assert "◆ Context: 32K (config)" in result
+    assert runner._format_session_info.call_count == 1
 
 
 @pytest.mark.asyncio

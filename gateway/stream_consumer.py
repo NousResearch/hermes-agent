@@ -32,6 +32,7 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
 )
+from agent.memory_manager import StreamingContextScrubber as _StreamingContextScrubber
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -169,6 +170,11 @@ class GatewayStreamConsumer:
         self._in_think_block = False
         self._think_buffer = ""
 
+        # Memory-context scrubber — stateful filter that strips
+        # <memory-context>...</memory-context> blocks across chunk
+        # boundaries where one-shot regex would fail.
+        self._context_scrubber = _StreamingContextScrubber()
+
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
         # supports_draft_streaming() probe.  When True, the consumer emits
@@ -261,6 +267,9 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # Keep memory-context scrubber state across segment/tool boundaries.
+        # A tag can be split as "<" / segment-break / "memory-context>";
+        # resetting here loses the held prefix and leaks the payload.
         # Native draft streaming: bump the draft_id so the next text segment
         # animates as a fresh preview below the tool-progress bubbles, not
         # over the prior segment's already-finalized draft.  This is how
@@ -304,6 +313,12 @@ class GatewayStreamConsumer:
         discarded.  Partial tags at buffer boundaries are held back in
         ``_think_buffer`` until enough characters arrive to decide.
         """
+        # Scrub memory-context blocks BEFORE think-block filtering.
+        # The stateful scrubber handles <memory-context> tags split
+        # across deltas where one-shot regex would fail.
+        text = self._context_scrubber.feed(text)
+        if not text:
+            return
         buf = self._think_buffer + text
         self._think_buffer = ""
 
@@ -450,6 +465,11 @@ class GatewayStreamConsumer:
                 # tag is not lost.
                 if got_done:
                     self._flush_think_buffer()
+                    # Flush memory-context scrubber so held-back partial
+                    # tags that turned out not to be real tags are emitted.
+                    tail = self._context_scrubber.flush()
+                    if tail:
+                        self._accumulated += tail
 
                 # Decide whether to flush an edit
                 now = time.monotonic()
@@ -656,18 +676,20 @@ class GatewayStreamConsumer:
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip MEDIA: directives, memory-context blocks, and internal markers from text before display.
 
         The streaming path delivers raw text chunks that may include
-        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
-        the platform adapter's post-processing.  The actual media files are
+        ``MEDIA:<path>`` tags, ``[[audio_as_voice]]`` directives, memory-context
+        wrappers, or recovery system notes.  The actual media files are
         delivered separately via ``_deliver_media_from_response()`` after the
-        stream finishes — we just need to hide the raw directives from the
-        user.
+        stream finishes — we just need to hide the raw directives/internal notes
+        from the user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
+        from agent.memory_manager import sanitize_context
+        cleaned = sanitize_context(text)
+        if "MEDIA:" not in cleaned and "[[audio_as_voice]]" not in cleaned:
+            return cleaned
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
@@ -1012,6 +1034,10 @@ class GatewayStreamConsumer:
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
+        # Commentary is user-visible assistant text too.  Route it through the
+        # same stateful memory-context scrubber as normal deltas so a fence
+        # split across a text/commentary boundary cannot leak.
+        text = self._context_scrubber.feed(text)
         text = self._clean_for_display(text)
         if not text.strip():
             return False

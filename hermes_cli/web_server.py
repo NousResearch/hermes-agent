@@ -3001,10 +3001,13 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
             }
         if provider_id == "xai-oauth":
             raw = hauth.get_xai_oauth_auth_status()
+            # source_label is meant to be a human-readable origin (auth-store
+            # path / credential source), not the internal auth_mode string
+            # ("oauth_pkce"). Prefer the store path, then the source slug.
             return {
                 "logged_in": bool(raw.get("logged_in")),
                 "source": raw.get("source") or "xai_oauth",
-                "source_label": raw.get("auth_mode") or "xAI Grok OAuth",
+                "source_label": raw.get("auth_store") or raw.get("source") or "xAI Grok OAuth",
                 "token_preview": _truncate_token(raw.get("api_key")),
                 "expires_at": None,
                 "has_refresh_token": True,

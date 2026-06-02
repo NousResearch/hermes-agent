@@ -125,11 +125,12 @@ class MemoryStore:
     """
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
-                 compact_format: bool = False):
+                 compact_format: bool = False, warn_pct: int = 80):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.warn_pct = warn_pct  # 0 = disabled, show warning in headers/responses above this %
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._compact_format = compact_format
@@ -475,6 +476,13 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
+        # Warn the agent when usage exceeds threshold so it can proactively trim
+        if self.warn_pct > 0 and pct >= self.warn_pct:
+            resp["warn"] = (
+                f"Memory usage at {pct}% (threshold: {self.warn_pct}%). "
+                "Consider removing or consolidating entries with memory(action='remove') "
+                "before adding more."
+            )
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
@@ -495,12 +503,17 @@ class MemoryStore:
             return _toon_memory_block(
                 entries, target,
                 usage_pct=pct, usage_cur=current, usage_max=limit,
+                warn_pct=self.warn_pct,
             )
 
         if target == "user":
             header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
         else:
             header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+
+        # Prefix a warning when usage exceeds the configured threshold
+        if self.warn_pct > 0 and pct >= self.warn_pct:
+            header = f"⚠️ NEAR FULL — trim soon  " + header
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"

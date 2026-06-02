@@ -246,6 +246,7 @@ def format_memory_block_toon(
     usage_pct: int = 0,
     usage_cur: int = 0,
     usage_max: int = 0,
+    warn_pct: int = 0,
 ) -> str:
     """Format a memory or user profile block in compact TOON style.
 
@@ -275,6 +276,10 @@ def format_memory_block_toon(
         header = f"{label} {subtitle} [{usage_pct}% — {usage_cur:,}/{usage_max:,} chars]"
     else:
         header = f"{label} {subtitle}"
+
+    # Prefix a warning when usage exceeds the configured threshold
+    if warn_pct > 0 and usage_pct >= warn_pct:
+        header = f"⚠️ NEAR FULL — trim soon  " + header
 
     lines = [header]
     for entry in entries:

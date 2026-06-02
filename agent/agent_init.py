@@ -1080,6 +1080,7 @@ def init_agent(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                     compact_format=_compact,
+                    warn_pct=mem_config.get("memory_warn_pct", 80),
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

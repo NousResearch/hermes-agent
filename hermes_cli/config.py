@@ -1553,6 +1553,9 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # When usage exceeds this percentage, a warning is shown in the
+        # system prompt header and tool responses. Set to 0 to disable.
+        "memory_warn_pct": 80,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

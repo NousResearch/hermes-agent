@@ -388,6 +388,11 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "wecom":
+        # WeCom user IDs are arbitrary strings set by the org admin.
+        # No structural validation needed here; the adapter validates
+        # at send time.
+        return target_ref.strip(), None, True
     if platform_name == "yuanbao":
         match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
         if match:

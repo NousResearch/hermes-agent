@@ -2874,6 +2874,16 @@ def _require_mission_briefs_enabled() -> None:
         raise HTTPException(status_code=404, detail="Mission Briefs disabled")
 
 
+def _goal_contracts_enabled() -> bool:
+    config = load_config()
+    return cfg_get(config, "dashboard", "goal_contracts_enabled", default=False) is True
+
+
+def _require_goal_contracts_enabled() -> None:
+    if not _goal_contracts_enabled():
+        raise HTTPException(status_code=404, detail="Goal Contracts disabled")
+
+
 def _mission_brief_error(exc: Exception) -> HTTPException:
     from hermes_cli.mission_briefs import MissionBriefError
 
@@ -2884,6 +2894,18 @@ def _mission_brief_error(exc: Exception) -> HTTPException:
             return HTTPException(status_code=404, detail="Mission Brief not found")
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=500, detail="Mission Brief error")
+
+
+def _goal_contract_error(exc: Exception) -> HTTPException:
+    from hermes_cli.mission_control_goal_contracts import GoalContractError
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="Goal Contract not found")
+    if isinstance(exc, GoalContractError):
+        if str(exc) == "Invalid contract id":
+            return HTTPException(status_code=404, detail="Goal Contract not found")
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail="Goal Contract error")
 
 
 @app.get("/api/mission-control/packets")
@@ -2998,6 +3020,58 @@ async def delete_mission_brief(brief_id: str):
         return archive_brief(brief_id)
     except Exception as exc:
         raise _mission_brief_error(exc) from exc
+
+
+@app.get("/api/mission-control/goal-contracts")
+async def get_goal_contracts():
+    _require_goal_contracts_enabled()
+    from hermes_cli.mission_control_goal_contracts import list_contracts
+
+    return list_contracts()
+
+
+@app.post("/api/mission-control/goal-contracts")
+async def post_goal_contract(body: Dict[str, Any]):
+    _require_goal_contracts_enabled()
+    from hermes_cli.mission_control_goal_contracts import create_contract
+
+    try:
+        return {"contract": create_contract(dict(body))}
+    except Exception as exc:
+        raise _goal_contract_error(exc) from exc
+
+
+@app.get("/api/mission-control/goal-contracts/{contract_id}")
+async def get_goal_contract(contract_id: str):
+    _require_goal_contracts_enabled()
+    from hermes_cli.mission_control_goal_contracts import get_contract
+
+    try:
+        return get_contract(contract_id)
+    except Exception as exc:
+        raise _goal_contract_error(exc) from exc
+
+
+@app.put("/api/mission-control/goal-contracts/{contract_id}")
+async def put_goal_contract(contract_id: str, body: Dict[str, Any]):
+    _require_goal_contracts_enabled()
+    from hermes_cli.mission_control_goal_contracts import update_contract
+
+    try:
+        return update_contract(contract_id, dict(body))
+    except Exception as exc:
+        raise _goal_contract_error(exc) from exc
+
+
+@app.delete("/api/mission-control/goal-contracts/{contract_id}")
+async def delete_goal_contract(contract_id: str):
+    _require_goal_contracts_enabled()
+    from hermes_cli.mission_control_goal_contracts import archive_contract
+
+    try:
+        return archive_contract(contract_id)
+    except Exception as exc:
+        raise _goal_contract_error(exc) from exc
 
 
 @app.get("/api/mission-control/project-rooms")

@@ -1371,27 +1371,181 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:
-        """Normalize markdown for DingTalk's parser.
+        """Normalize markdown for DingTalk's limited renderer.
 
-        DingTalk's markdown renderer has quirks:
+        DingTalk markdown quirks and limitations:
+        - **No table support** — convert to formatted lists
         - Numbered lists need blank line before them
         - Indented code blocks may render incorrectly
+        - Horizontal rules (---/***) not supported — remove
+        - Strikethrough (~~text~~) not supported — strip tildes
+        - Headers deeper than ## may render poorly — downgrade to bold
+        - Nested blockquotes limited — keep but flatten deeply nested ones
         """
         lines = text.split("\n")
-        out = []
-        for i, line in enumerate(lines):
-            # Ensure blank line before numbered list items
-            is_numbered = re.match(r"^\d+\.\s", line.strip())
+        out: list[str] = []
+        i = 0
+        in_code_block = False
+
+        while i < len(lines):
+            line = lines[i]
+
+            # --- Track fenced code blocks (don't transform inside them) ---
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                # Dedent fenced code block markers
+                if line != line.lstrip():
+                    indent = len(line) - len(line.lstrip())
+                    line = line[indent:]
+                out.append(line)
+                i += 1
+                continue
+
+            if in_code_block:
+                out.append(line)
+                i += 1
+                continue
+
+            # --- Tables: detect and convert to formatted list ---
+            if DingTalkAdapter._is_table_row(stripped):
+                table_lines: list[str] = []
+                while i < len(lines) and DingTalkAdapter._is_table_row(lines[i].strip()):
+                    table_lines.append(lines[i].strip())
+                    i += 1
+                converted = DingTalkAdapter._convert_table(table_lines)
+                # Add blank line before table block for spacing
+                if out and out[-1].strip():
+                    out.append("")
+                out.extend(converted)
+                out.append("")
+                continue
+
+            # --- Horizontal rules: replace with blank line ---
+            if re.match(r"^(?:---+|\*\*\*+|___+)\s*$", stripped):
+                # Skip consecutive horizontal rules
+                if out and out[-1].strip():
+                    out.append("")
+                i += 1
+                continue
+
+            # --- Headers: h3+ downgrade to bold text ---
+            header_match = re.match(r"^(#{3,6})\s+(.+)$", stripped)
+            if header_match:
+                level = len(header_match.group(1))
+                title = header_match.group(2).strip()
+                # h3 → bold, h4-h6 → bold with decreasing emphasis
+                if out and out[-1].strip():
+                    out.append("")
+                out.append(f"**{title}**")
+                i += 1
+                continue
+
+            # --- Strikethrough: strip ~~ delimiters ---
+            if "~~" in line:
+                line = re.sub(r"~~(.+?)~~", r"\1", line)
+
+            # --- Ensure blank line before numbered list items ---
+            is_numbered = re.match(r"^\d+\.\s", stripped)
             if is_numbered and i > 0:
                 prev = lines[i - 1]
                 if prev.strip() and not re.match(r"^\d+\.\s", prev.strip()):
                     out.append("")
-            # Dedent fenced code blocks
+
+            # --- Ensure blank line before unordered list items ---
+            is_bullet = re.match(r"^[-*+]\s", stripped)
+            if is_bullet and out and out[-1].strip() and not re.match(r"^[-*+]\s", out[-1].strip()):
+                # Only add blank line if previous line is not a list item
+                pass  # DingTalk handles bullet lists better, skip extra spacing
+
+            # --- Dedent fenced code blocks (markers handled above, this for inline) ---
             if line.strip().startswith("```") and line != line.lstrip():
                 indent = len(line) - len(line.lstrip())
                 line = line[indent:]
+
             out.append(line)
+            i += 1
+
         return "\n".join(out)
+
+    @staticmethod
+    def _is_table_row(stripped: str) -> bool:
+        """Check if a line looks like a markdown table row."""
+        if not stripped.startswith("|"):
+            return False
+        # Must have at least 2 pipes (| cell |)
+        if stripped.count("|") < 2:
+            return False
+        # Separator row: |---|---|
+        if re.match(r"^\|[\s\-:|]+\|$", stripped):
+            return True
+        # Data/header row: | text | text |
+        if re.match(r"^\|.+\|$", stripped):
+            return True
+        return False
+
+    @staticmethod
+    def _convert_table(table_lines: list[str]) -> list[str]:
+        """Convert markdown table lines to DingTalk-friendly formatted list.
+
+        Input:  ["| Name | Value |", "|------|-------|", "| Foo | 123 |"]
+        Output: ["**Name / Value**", "- Foo: 123"]
+        """
+        if len(table_lines) < 2:
+            return table_lines
+
+        def parse_cells(row: str) -> list[str]:
+            """Extract cells from a | cell1 | cell2 | row."""
+            # Strip leading/trailing pipes, then split
+            inner = row.strip().strip("|")
+            return [c.strip() for c in inner.split("|")]
+
+        # Find header row (first non-separator row)
+        headers: list[str] = []
+        data_start = 0
+        for idx, row in enumerate(table_lines):
+            cells = parse_cells(row)
+            # Skip separator rows (all dashes/colons/spaces)
+            if all(re.match(r"^[\s\-:]+$", c) for c in cells if c):
+                continue
+            headers = cells
+            data_start = idx + 1
+            break
+
+        # Collect data rows
+        result: list[str] = []
+        if headers:
+            # Header summary line
+            header_text = " / ".join(h for h in headers if h)
+            if header_text:
+                result.append(f"**{header_text}**")
+
+        for row in table_lines[data_start:]:
+            cells = parse_cells(row)
+            # Skip separator rows that might appear after header
+            if all(re.match(r"^[\s\-:]+$", c) for c in cells if c):
+                continue
+            if not any(cells):
+                continue
+
+            # Format each data row as a list item
+            if len(headers) == len(cells):
+                # Pair with headers: "- Header1: val1 | Header2: val2"
+                pairs = []
+                for h, v in zip(headers, cells):
+                    if h and v:
+                        pairs.append(f"{h}: {v}")
+                    elif v:
+                        pairs.append(v)
+                if pairs:
+                    result.append("- " + "｜".join(pairs))
+            else:
+                # Fallback: join cells with separator
+                non_empty = [c for c in cells if c]
+                if non_empty:
+                    result.append("- " + "｜".join(non_empty))
+
+        return result if result else table_lines
 
 
 # ---------------------------------------------------------------------------

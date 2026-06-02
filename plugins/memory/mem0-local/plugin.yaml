@@ -1,0 +1,6 @@
+name: mem0-local
+version: 1.0.0
+description: "Mem0 Local — fully local memory with qdrant vector store + fastembed embeddings. No cloud API, no data leaves the machine."
+pip_dependencies:
+  - mem0ai
+  - fastembed

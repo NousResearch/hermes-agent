@@ -94,6 +94,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+_IS_WINDOWS = sys.platform == "win32"
 
 
 # ---------------------------------------------------------------------------
@@ -1411,20 +1412,16 @@ class MCPServerTask:
                     await self._wait_for_lifecycle_event()
         finally:
             # Runs on clean exit, exceptions, AND asyncio cancellation.
-            # If any of the spawned PIDs are still alive, the SDK's
-            # teardown failed (common when the task is cancelled mid-way
-            # on Linux, where setsid() children escape the parent cgroup).
-            # Mark them as orphans so the next cleanup sweep can reap them.
+            # Attempt immediate child teardown on reconnect/exit so the
+            # replacement stdio server does not overlap the stale one. Any
+            # survivors remain tracked for the later orphan sweep.
             if new_pids:
                 with _lock:
                     for _pid in new_pids:
                         _stdio_pids.pop(_pid, None)
                     for pid in new_pids:
-                        # ``os.kill(pid, 0)`` is NOT a no-op on Windows
-                        # (bpo-14484). Use the cross-platform check.
-                        from gateway.status import _pid_exists
-                        if not _pid_exists(pid):
-                            continue  # process already exited — nothing to do
+                        if _terminate_stdio_subprocess(pid):
+                            continue
                         _orphan_stdio_pids.add(pid)
 
     async def _run_http(self, config: dict):
@@ -2249,6 +2246,48 @@ def _snapshot_child_pids() -> set:
         pass
 
     return set()
+
+
+def _terminate_stdio_subprocess(pid: int) -> bool:
+    """Best-effort immediate teardown for a tracked stdio MCP subprocess."""
+    from gateway.status import _pid_exists, terminate_pid
+
+    if not _pid_exists(pid):
+        return True
+
+    if not _IS_WINDOWS:
+        try:
+            import signal as _signal
+            pgid = os.getpgid(pid)
+            if pgid == pid:
+                os.killpg(pgid, _signal.SIGTERM)  # windows-footgun: ok — guarded by _IS_WINDOWS check above
+                time.sleep(0.1)
+                return not _pid_exists(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            proc = psutil.Process(pid)
+            for child in reversed(proc.children(recursive=True)):
+                try:
+                    child.terminate()
+                except (psutil.Error, OSError, ValueError):
+                    pass
+        except (psutil.Error, OSError, ValueError):
+            pass
+
+    try:
+        terminate_pid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    time.sleep(0.1)
+    return not _pid_exists(pid)
 
 
 def _mcp_loop_exception_handler(loop, context):

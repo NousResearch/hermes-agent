@@ -24,6 +24,10 @@ def _make_runner():
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
+    runner._session_model_overrides = {}
+    runner._session_reasoning_overrides = {}
+    runner._pending_approvals = {}
+    runner._update_prompt_pending = {}
     return runner
 
 
@@ -398,6 +402,35 @@ class TestAgentCacheLifecycle:
         with runner._agent_cache_lock:
             assert "session-A" not in runner._agent_cache
             assert "session-B" in runner._agent_cache
+
+    def test_explicit_evict_preserves_session_model_override(self):
+        """Explicit cache evictions must not discard /model session overrides."""
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        runner._session_model_overrides[session_key] = {
+            "model": "gpt-5.4",
+            "provider": "openai",
+            "api_key": "key",
+            "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions",
+        }
+
+        runner._evict_cached_agent(session_key)
+
+        assert session_key in runner._session_model_overrides
+
+    def test_explicit_evict_preserves_session_reasoning_override(self):
+        """Explicit cache evictions must not discard /reasoning session overrides."""
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        runner._session_reasoning_overrides[session_key] = {
+            "enabled": True,
+            "effort": "high",
+        }
+
+        runner._evict_cached_agent(session_key)
+
+        assert session_key in runner._session_reasoning_overrides
 
     def test_reasoning_config_updates_in_place(self):
         """Reasoning config can be set on a cached agent without eviction."""

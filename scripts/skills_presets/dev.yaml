@@ -1,0 +1,33 @@
+# 开发闭环：代码 + 容器 + DB + 检索 + 浏览器自动化
+name: dev
+description: 日常软件开发与调试（Anthropic/Vercel 神级包 + 基础设施）
+enabled:
+  - skill-creator
+  - mcp-builder
+  - docker-management
+  - postgres
+  - mysql
+  - memory
+  - web-search
+  - tavily-search
+  - tavily-research
+  - tavily-extract
+  - duckduckgo-search
+  - playwright
+  - playwright-interactive
+  - webapp-testing
+  - deploy-to-vercel
+  - web-design-guidelines
+  - react-best-practices
+  - plan
+  - hermes-agent
+  - feishu-rich-report
+  - claude-code
+  - domain-intel
+  - scrapling
+always_keep_prefixes:
+  - lark-
+always_keep_substrings:
+  - kanban
+  - stock
+  - feishu

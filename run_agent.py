@@ -2397,6 +2397,66 @@ class AIAgent:
         except Exception:
             pass
 
+        # WORKAROUND for issue #25315 — break the reference cycle that
+        # prevents GC from collecting the evicted agent.
+        #
+        # Each callback is a closure created by the gateway adapter:
+        #   gateway_adapter → callback → (adapter, transport, session) → agent
+        # As long as any callback is non-None the entire object graph stays
+        # alive: adapter → agent → _session_messages (tens of MB).
+        #
+        # Clearing all callbacks + large data fields here lets CPython's
+        # reference counter (not just the cyclic GC) reclaim the agent and
+        # everything it owns as soon as _release_evicted_agent_soft() returns.
+        #
+        # Safe because:
+        # - Callbacks are per-gateway-turn wiring; the next turn for this
+        #   session uses a freshly-built AIAgent with fresh callbacks.
+        # - _session_messages is persisted to the session DB; reloaded by
+        #   the new agent on the next turn.
+        # - _cached_system_prompt is rebuilt from scratch on first API call.
+        # - _anthropic_image_fallback_cache is ephemeral per-turn state.
+        for _cb in (
+            "tool_progress_callback",
+            "tool_start_callback",
+            "tool_complete_callback",
+            "thinking_callback",
+            "reasoning_callback",
+            "clarify_callback",
+            "step_callback",
+            "stream_delta_callback",
+            "interim_assistant_callback",
+            "status_callback",
+            "tool_gen_callback",
+            "background_review_callback",
+            "_stream_callback",
+            "_print_fn",
+        ):
+            try:
+                setattr(self, _cb, None)
+            except Exception:
+                pass
+        try:
+            self._session_messages = []
+        except Exception:
+            pass
+        try:
+            self._anthropic_image_fallback_cache = {}
+        except Exception:
+            pass
+        try:
+            self._cached_system_prompt = None
+        except Exception:
+            pass
+        try:
+            self._pending_steer = None
+        except Exception:
+            pass
+        try:
+            self._interrupt_message = None
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 

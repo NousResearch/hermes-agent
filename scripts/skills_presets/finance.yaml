@@ -1,0 +1,38 @@
+# 投研 / 财经：A 股 + 模型 + 飞书协作
+name: finance
+description: 股票研究、财报建模、飞书文档与 Kanban 流水线
+enabled:
+  - stocks
+  - dcf-model
+  - comps-analysis
+  - 3-statement-model
+  - merger-model
+  - lbo-model
+  - excel-author
+  - pptx-author
+  - china-stock-analysis
+  - stock-monitoring
+  - stock-analysis
+  - feishu-finance-kanban
+  - feishu-finance-nexus
+  - feishu-rich-report
+  - vectorbt-backtest
+  - qlib-backtest
+  - finance-quant-workflow
+  - kanban
+  - kanban-orchestrator
+  - kanban-stock-nexus
+  - web-search
+  - tavily-search
+  - tavily-research
+  - duckduckgo-search
+  - domain-intel
+  - osint-investigation
+  - memory
+  - postgres
+always_keep_prefixes:
+  - lark-
+always_keep_substrings:
+  - stock
+  - finance
+  - trading

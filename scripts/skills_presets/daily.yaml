@@ -1,0 +1,30 @@
+# 飞书 + 投研 + 开发日常（默认推荐）
+name: daily
+description: 飞书 lark-cli + finance-kanban/nexus（实时回帖+Base 同步）+ 轻量检索
+enabled:
+  - hermes-agent
+  - plan
+  - memory
+  - memory-recall
+  - lobster-recall
+  - openclaw-ops
+  - web-search
+  - tavily-search
+  - skill-creator
+  - mcp-builder
+  - kanban
+  - kanban-orchestrator
+  - feishu-finance-kanban
+  - feishu-finance-nexus
+  - feishu-rich-report
+  - china-stock-analysis
+  - stock-monitoring
+  # 飞书 lark-cli（含 PPT；不含 lark-vc/calendar/minutes 等）
+  - lark-shared
+  - lark-im
+  - lark-doc
+  - lark-doc-with-images
+  - lark-sheets
+  - lark-base
+  - lark-drive
+  - lark-slides

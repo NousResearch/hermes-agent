@@ -1,0 +1,28 @@
+# 科研分析：K-Dense 科学技能 + 文献与可视化
+name: science
+description: 科研推导、文献、生物信息学与科学可视化
+enabled:
+  - bioinformatics
+  - drug-discovery
+  - darwinian-evolver
+  - arxiv
+  - kanban
+  - kanban-orchestrator
+  - kanban-paper-nexus
+  - paper-search
+  - scientific-writing
+  - scientific-visualization
+  - literature-review
+  - scientific-critical-thinking
+  - web-search
+  - tavily-search
+  - tavily-research
+  - duckduckgo-search
+  - memory
+  - postgres
+include_kdense_bundle: true
+always_keep_prefixes:
+  - lark-
+always_keep_substrings:
+  - scientific
+  - literature-review

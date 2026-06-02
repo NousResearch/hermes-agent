@@ -61,8 +61,13 @@ from hermes_cli.fallback_config import get_fallback_chain
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
-_AGENT_CACHE_MAX_SIZE = 128
-_AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+#
+# WORKAROUND for issue #25315: override via environment variables to
+# reduce peak memory on constrained hosts while the upstream fix lands:
+#   HERMES_AGENT_CACHE_MAX_SIZE=24        # lower cap (default 128)
+#   HERMES_AGENT_CACHE_IDLE_TTL_SECS=900  # evict idle agents after 15 min
+_AGENT_CACHE_MAX_SIZE = int(os.environ.get("HERMES_AGENT_CACHE_MAX_SIZE", "128"))
+_AGENT_CACHE_IDLE_TTL_SECS = float(os.environ.get("HERMES_AGENT_CACHE_IDLE_TTL_SECS", "3600.0"))
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
@@ -15418,11 +15423,37 @@ class GatewayRunner:
             self._release_running_agent_state(session_key)
 
     def _evict_cached_agent(self, session_key: str) -> None:
-        """Remove a cached agent for a session (called on /new, /model, etc)."""
+        """Remove a cached agent for a session (called on /new, /model, etc.).
+
+        WORKAROUND for issue #25315: schedule soft cleanup on the evicted
+        agent so its OpenAI client, _session_messages, and callback
+        references are freed, not orphaned.
+        """
         _lock = getattr(self, "_agent_cache_lock", None)
+        evicted_agent = None
         if _lock:
             with _lock:
-                self._agent_cache.pop(session_key, None)
+                entry = self._agent_cache.pop(session_key, None)
+                if isinstance(entry, tuple) and entry:
+                    evicted_agent = entry[0]
+        if evicted_agent is not None:
+            threading.Thread(
+                target=self._release_evicted_agent_soft,
+                args=(evicted_agent,),
+                daemon=True,
+                name=f"agent-cache-evict-explicit-{session_key[:24]}",
+            ).start()
+        # Only transient per-turn state is safe to drop here. Session model
+        # and reasoning overrides must survive explicit evictions because
+        # commands like /model and /reasoning write the override first, then
+        # evict the cached agent so the next turn rebuilds from it.
+        for _attr in (
+            "_pending_approvals",
+            "_update_prompt_pending",
+        ):
+            _d = getattr(self, _attr, None)
+            if isinstance(_d, dict):
+                _d.pop(session_key, None)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -15462,6 +15493,15 @@ class GatewayRunner:
                 # Older agent instance (shouldn't happen in practice) —
                 # fall back to the legacy full-close path.
                 self._cleanup_agent_resources(agent)
+        except Exception:
+            pass
+        # WORKAROUND for issue #25315: clear _session_messages so
+        # conversation history (which can be tens of MB per session) is
+        # freed immediately rather than retained until process exit.
+        # The session DB persists the history; the next agent for this
+        # session reloads it from there.
+        try:
+            agent._session_messages = []
         except Exception:
             pass
 
@@ -15588,6 +15628,20 @@ class GatewayRunner:
                 daemon=True,
                 name=f"agent-cache-idle-{key[:24]}",
             ).start()
+        # WORKAROUND for issue #25315: prune stale entries from per-session
+        # dicts that accumulate without bound across the gateway lifetime.
+        if to_evict:
+            evicted_keys = {k for k, _ in to_evict}
+            for _attr in (
+                "_session_model_overrides",
+                "_session_reasoning_overrides",
+                "_pending_approvals",
+                "_update_prompt_pending",
+            ):
+                _d = getattr(self, _attr, None)
+                if isinstance(_d, dict):
+                    for _k in evicted_keys:
+                        _d.pop(_k, None)
         return len(to_evict)
 
     # ------------------------------------------------------------------

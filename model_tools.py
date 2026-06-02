@@ -322,6 +322,13 @@ def get_tool_definitions(
         # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
         # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
         _tool_defs_cache[cache_key] = result
+        # WORKAROUND for issue #25315: each config.yaml touch creates a new
+        # cache entry that is never evicted.  Cap at 8; clear entirely when
+        # exceeded so the cache repopulates from the current config on the
+        # next call (avoids growing without bound during long gateway runs).
+        if len(_tool_defs_cache) > 8:
+            _tool_defs_cache.clear()
+            _tool_defs_cache[cache_key] = result
         return list(result)
     return result
 

@@ -144,6 +144,17 @@ def workflow_tool(
         payload["scriptPath"] = res.script_path
     if not res.ok:
         payload["error"] = res.error
+        # Actionable one-shot fix so the model corrects a bad script immediately
+        # instead of abandoning the workflow.
+        payload["fix"] = (
+            "Scripts are PYTHON, not JavaScript. Use this exact shape and re-call Workflow:\n"
+            "meta = {\"name\": \"...\", \"description\": \"...\", \"phases\": [{\"title\": \"...\"}]}\n"
+            "async def main():\n"
+            "    phase(\"...\")\n"
+            "    out = await agent(\"<prompt>\", label=\"...\", phase=\"...\")\n"
+            "    return {\"result\": out}\n"
+            "No const/let/var, no `=>` (use `lambda x:` or `async def`), no imports, no markdown fences."
+        )
     if res.ok:
         payload["note"] = (
             "Workflow complete. Read `result` and decide the next phase. To iterate, "

@@ -183,6 +183,31 @@ async def main():
         dt.run_workflow_leaf = _fake_leaf
 
 
+def test_sandbox_tolerates_js_flavored_script():
+    """Fenced + const/export (the common LLM slip) normalize and run."""
+    from agent.workflow.sandbox import normalize_script
+    js = (
+        "```python\n"
+        'export const meta = {"name": "t", "description": "d"}\n'
+        "const ITEMS = [1, 2, 3]\n"
+        "async def main():\n"
+        '    return {"n": len(ITEMS)}\n'
+        "```"
+    )
+    norm = normalize_script(js)
+    assert norm.strip().startswith("meta =")
+    assert "const " not in norm and "```" not in norm
+    res = _run(js)
+    assert res.ok and res.result == {"n": 3}
+
+
+def test_sandbox_arrow_function_gives_python_hint():
+    from agent.workflow.sandbox import SandboxError, validate
+    with pytest.raises(SandboxError) as exc:
+        validate("meta={'name':'x','description':'y'}\nasync def main():\n    f = (x => x)\n")
+    assert "PYTHON, not JavaScript" in str(exc.value)
+
+
 def test_resume_cache_hit():
     script = '''
 meta = {"name":"res","description":"resume"}

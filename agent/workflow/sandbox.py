@@ -22,6 +22,7 @@ import ast
 import builtins as _builtins
 import json
 import math
+import re as _re
 from typing import Any, Dict, Tuple
 
 
@@ -78,12 +79,42 @@ class _Validator(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+# Common LLM slips (the model knows UltraCode's *JavaScript* DSL): a fenced
+# block, and JS declaration keywords. These are cheap, safe to normalize so a
+# JS-flavored script just runs instead of erroring + retrying.
+_FENCE_OPEN = _re.compile(r"^\s*```[A-Za-z]*\s*\n")
+_FENCE_CLOSE = _re.compile(r"\n```\s*$")
+_DECL = _re.compile(r"^(\s*)(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=", _re.M)
+
+
+def normalize_script(source: str) -> str:
+    """Forgivingly normalize a model-authored script before parsing.
+
+    Strips markdown fences and rewrites JS declaration keywords
+    (``const``/``let``/``var``/``export``) to bare Python assignments so the
+    most frequent LLM mistakes don't cost a failed run + retry. Arrow functions
+    and other JS constructs are NOT transpiled — the description steers the
+    model to Python, and a clear error covers the rest.
+    """
+    s = (source or "").strip()
+    if _FENCE_OPEN.match(s):
+        s = _FENCE_OPEN.sub("", s, count=1)
+        s = _FENCE_CLOSE.sub("", s, count=1)
+    # `export const meta = {...}` / `const X = ...` -> `meta = {...}` / `X = ...`
+    s = _DECL.sub(r"\1\2 =", s)
+    return s
+
+
 def validate(source: str) -> ast.AST:
     """Parse and AST-validate the script. Raises SandboxError on any violation."""
     try:
         tree = ast.parse(source, filename="<workflow>", mode="exec")
     except SyntaxError as exc:
-        raise SandboxError(f"workflow script syntax error: {exc}") from exc
+        hint = ""
+        if "=>" in source:
+            hint = (" — scripts are PYTHON, not JavaScript: use `async def stage(x): ...` "
+                    "or `lambda x: ...` instead of `x => ...`, and `{**a, 'k': v}` instead of `{...a, k: v}`")
+        raise SandboxError(f"workflow script syntax error: {exc}{hint}") from exc
     v = _Validator()
     v.visit(tree)
     if v.errors:
@@ -109,6 +140,7 @@ def compile_workflow(source: str, dsl: Dict[str, Any]) -> Tuple[Dict[str, Any], 
     defined by the script. Raises :class:`SandboxError` on policy violation or
     when ``meta``/``main`` are missing.
     """
+    source = normalize_script(source)
     tree = validate(source)
     code = compile(tree, filename="<workflow>", mode="exec")
     g = build_globals(dsl)

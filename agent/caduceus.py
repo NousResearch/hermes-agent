@@ -76,117 +76,50 @@ def wrap_reminder(text: str) -> str:
 # ``delegate_task`` child running on the worker tier; tool reachability is via
 # Hermes toolsets; and the standing-opt-in clause is rebranded to **Caduceus**.
 WORKFLOW_TOOL_DESCRIPTION = """\
-Execute a workflow script that orchestrates multiple subagents deterministically. Workflows run in the background — this tool returns immediately with a run id, and a <workflow-notification> tool result arrives when the workflow completes. Watch live progress in the Orchestration Theater (desktop) or with /caduceus.
+Execute a workflow script that orchestrates many subagents deterministically. Returns when the workflow finishes; progress streams live to the Orchestration Theater. Each subagent is a Hermes delegate child running on the worker tier.
 
-A workflow structures work across many agents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context can't hold (migrations, audits, broad sweeps). The script is where you encode that structure: what fans out, what verifies, what synthesizes.
+OPT-IN: only call this when the user opted into multi-agent orchestration — they said "workflow"/"workflows", Caduceus is on (see below), they asked to "fan out / orchestrate with subagents", or a skill told you to. Otherwise answer directly or use delegate_task for a single subagent.
 
-ONLY call this tool when the user has explicitly opted into multi-agent orchestration. Workflows can spawn dozens of agents and consume a large amount of tokens; the user must request that scale, not have it inferred. Explicit opt-in means one of:
-- The user included the "workflow" or "workflows" keyword (you'll see a system-reminder confirming it).
-- Caduceus is on (a system-reminder confirms it) — see **Caduceus** below.
-- The user directly asked you to run a workflow or use multi-agent orchestration in their own words ("run a workflow", "fan out agents", "orchestrate this with subagents"). The ask must be in the user's words — a task that would merely benefit from a workflow does not count.
-- The user invoked a skill or slash command whose instructions tell you to call Workflow.
-- The user asked you to run a specific named or saved workflow.
+**Caduceus.** When a system-reminder says Caduceus is on, that opt-in is standing: author and run a workflow for every substantive task. Aim for the most exhaustive, correct answer — token cost is not a constraint. Scale to the task (a simple ask = a small workflow; "audit thoroughly" = larger fan-out + adversarial verify). Multi-phase work = several workflows in sequence, reading each result before the next. Solo only on trivial/conversational turns. Don't over-deliberate before authoring: scout briefly only if you must, then write the script and call this tool.
 
-For any other task — even one that would clearly benefit from parallelism — do NOT call this tool. Use delegate_task for individual subagents, or briefly describe what a multi-agent workflow could do and how much it would roughly cost, and ask the user whether to run it. Mention they can include "workflow" in a future message to skip the ask.
-
-When you do call it, the right move is often **hybrid**: scout inline first (list the files, find the channels, scope the diff) to discover the work-list, then call Workflow to pipeline over it. You don't need to know the shape before the *task* — only before the *orchestration step*.
-
-Common single-phase workflows you can chain across turns:
-- **Understand** — parallel readers over relevant subsystems → structured map
-- **Design** — judge panel of N independent approaches → scored synthesis
-- **Review** — dimensions → find → adversarially verify (example below)
-- **Research** — multi-modal sweep → deep-read → synthesize
-- **Migrate** — discover sites → transform each (worktree isolation) → verify
-
-For larger work, run several in sequence — read each result before deciding the next phase. You stay in the loop; each workflow is one well-scoped fan-out.
-
-**Caduceus.** When a system-reminder confirms Caduceus is on, that opt-in is standing: author and run a workflow for every substantive task by default. The goal is the most exhaustive, correct answer you can produce — token cost is not a constraint. For multi-phase work (understand → design → implement → review), that often means several workflows in sequence — one per phase — so you stay in the loop between them. The quality patterns below (adversarial verify, multi-modal sweep, completeness critic, loop-until-dry) are the tools; pick what fits the task. Lean toward orchestrating with workflows and adversarially verifying your findings — unless the work is trivial or already verified. Solo only on conversational turns or trivial mechanical edits. When a reminder says Caduceus is off, revert to the opt-in rule above.
-
-Pass the script inline via `script` — do not write it to a file first. Every invocation automatically persists its script to a file under the session directory and returns the path in the tool result. To iterate on a workflow, edit that file and re-invoke Workflow with `{"scriptPath": "<path>"}` instead of resending the full script.
-
-Every script must define `meta` and an async `main()`:
-
-    meta = {
-        "name": "find-flaky-tests",
-        "description": "Find flaky tests and propose fixes",  # one-line
-        "phases": [                                            # one entry per phase() call
-            {"title": "Scan", "detail": "grep test logs for retries"},
-            {"title": "Fix", "detail": "one agent per flaky test"},
-        ],
-    }
-
-    async def main():
-        phase("Scan")
-        flaky = await agent("grep CI logs for retry markers", schema=FLAKY_SCHEMA)
-        ...
-        return {"flaky": flaky}
-
-The `meta` object must be a PURE LITERAL — no variables, function calls, or interpolation. Required: `name`, `description`. Optional: `whenToUse`, `phases`. Use the SAME phase titles in meta["phases"] as in phase() calls — titles are matched exactly; a phase() call with no matching meta entry just gets its own progress group.
-
-Script body hooks (all injected as globals — do NOT import them):
-- agent(prompt: str, *, label=None, phase=None, schema=None, model=None, isolation=None, agent_type=None) -> awaitable — spawn a subagent (a Hermes delegate_task child on the worker tier). Without `schema`, returns its final text as a string. With `schema` (a JSON Schema dict), the subagent is forced to return a validated object via a structured-output tool — no parsing needed. Returns None if the agent fails or is skipped (filter with `[x for x in results if x]`). `label` overrides the display label. `phase` explicitly assigns this agent to a progress group (use this inside pipeline()/parallel() stages to avoid races on the global phase() state). `model` overrides the model for this one call — default to omitting it (the agent inherits the worker tier, which is almost always correct); set it only when you're highly confident a different tier fits, e.g. escalating one hard synthesis to the orchestrator tier. `isolation='worktree'` runs the agent in a fresh git worktree — EXPENSIVE, use ONLY when agents mutate files in parallel and would otherwise conflict. `agent_type` selects a custom subagent type instead of the default.
-- pipeline(items, *stages) -> awaitable[list] — run each item through all stages independently, NO barrier between stages. Item A can be in stage 3 while item B is still in stage 1. This is the DEFAULT for multi-stage work. Wall-clock = slowest single-item chain, not sum-of-slowest-per-stage. Every stage callable receives (prev_result, original_item, index). A stage that raises drops that item to None and skips its remaining stages.
-- parallel(thunks) -> awaitable[list] — run zero-arg callables concurrently. This is a BARRIER: awaits all before returning. A thunk that raises (or whose agent errors) resolves to None — the call itself never raises, so filter out None before using the results. Use ONLY when you genuinely need all results together.
-- log(message: str) -> None — emit a narrator line above the progress tree.
-- phase(title: str) -> None — start a new phase; subsequent agent() calls group under it.
-- args — the value passed as Workflow's `args` input, verbatim (None if not provided). Pass arrays/objects as actual JSON values, NOT a JSON-encoded string.
-- budget — an object with `.total` (int or None), `.spent()` and `.remaining()`. The pool is shared across the main loop and all leaves. `.total` is a HARD ceiling: once `.spent()` reaches `.total`, further agent() calls raise. Use for dynamic loops: `while budget.total and budget.remaining() > 50_000: ...`.
-- workflow(name_or_ref, args=None) -> awaitable — run another workflow inline as a sub-step (one level deep; nesting deeper raises). Pass a saved name (str) or {"scriptPath": "..."}. The child shares this run's concurrency cap, agent counter, and token budget.
-
-Subagents are told their final text IS the return value (not a human-facing message), so they return raw data. For structured output, use the schema option — validation happens at the tool-call layer so the model retries on mismatch.
-
-Workflow agents reach the session's tools through Hermes toolsets (the worker inherits the orchestrator's enabled toolsets, intersected for safety).
-
-Scripts are restricted Python: an async `main()` you define is awaited, and the DSL hooks above are injected as globals. No imports, no filesystem or network from the script body, no `eval`/`exec`. Standard pure helpers are available (len, range, sorted, min, max, sum, enumerate, zip, map, filter, dict/list/set/tuple/str/int/float/bool, abs, any, all, round, and the `json` and `math` modules). `time`, `random`, and wall-clock are UNAVAILABLE in the script body — they would break resume; pass timestamps in via `args`, stamp results after the workflow returns, and for randomness vary the agent prompt/label by index.
-
-DEFAULT TO pipeline(). Only reach for a barrier (parallel between stages) when you genuinely need ALL prior-stage results together.
-
-A barrier is correct ONLY when stage N needs cross-item context from all of stage N-1:
-- Dedup/merge across the full result set before expensive downstream work
-- Early-exit if the total count is zero ("0 bugs found → skip verification entirely")
-- Stage N's prompt references "the other findings" for comparison
-
-A barrier is NOT justified by "I need to flatten/map/filter first" (do it inside a pipeline stage), "the stages are conceptually separate" (that's what pipeline models), or "it's cleaner code" (barrier latency is real).
-
-Concurrent agent() calls are capped per workflow (default min(16, cpu-2)) — excess calls queue and run as slots free. You can still pass 100 items to parallel()/pipeline() and they all complete; only ~cap run at any moment. Total agent count across a workflow's lifetime is capped (default 1000) as a runaway backstop.
-
-The canonical multi-stage pattern — pipeline by default, each dimension verifies as soon as its review completes:
+SCRIPTS ARE PYTHON, NOT JAVASCRIPT. Define `meta` (a pure literal) and an async `main()`. Use the injected globals directly — do NOT import them, do NOT wrap the script in markdown fences, do NOT use const/let/var or `=>` arrows.
 
     meta = {
         "name": "review-changes",
-        "description": "Review changed files across dimensions, verify each finding",
+        "description": "Review changed files, verify each finding",
         "phases": [{"title": "Review"}, {"title": "Verify"}],
     }
-    DIMENSIONS = [{"key": "bugs", "prompt": "..."}, {"key": "perf", "prompt": "..."}]
+    FINDINGS = {"type": "object", "properties": {"findings": {"type": "array"}}, "required": ["findings"]}
+    VERDICT = {"type": "object", "properties": {"isReal": {"type": "boolean"}}, "required": ["isReal"]}
+    DIMENSIONS = [{"key": "bugs", "prompt": "Find bugs"}, {"key": "perf", "prompt": "Find perf issues"}]
 
     async def main():
-        async def review_stage(d):
-            return await agent(d["prompt"], label="review:" + d["key"], phase="Review", schema=FINDINGS_SCHEMA)
-
-        async def verify_stage(review, d, i):
-            async def verify_one(f):
-                v = await agent("Adversarially verify: " + f["title"], phase="Verify", schema=VERDICT_SCHEMA)
+        async def review(d):
+            return await agent(d["prompt"], label="review:" + d["key"], phase="Review", schema=FINDINGS)
+        async def verify(rev, d, i):
+            async def vone(f):
+                v = await agent("Adversarially verify: " + f["title"], phase="Verify", schema=VERDICT)
                 return {**f, "verdict": v}
-            return await parallel([(lambda f=f: verify_one(f)) for f in review["findings"]])
-
-        results = await pipeline(DIMENSIONS, review_stage, verify_stage)
+            return await parallel([(lambda f=f: vone(f)) for f in rev["findings"]])
+        results = await pipeline(DIMENSIONS, review, verify)
         confirmed = [f for r in results if r for f in r if f and f["verdict"]["isReal"]]
         return {"confirmed": confirmed}
 
-Quality patterns — common shapes; pick by task and compose freely:
-- Adversarial verify: spawn N independent skeptics per finding, each prompted to REFUTE. Kill if a majority refute. Prevents plausible-but-wrong findings from surviving.
-- Perspective-diverse verify: give each verifier a distinct lens (correctness, security, perf, does-it-reproduce) instead of N identical refuters — diversity catches failure modes redundancy can't.
-- Judge panel: generate N independent attempts from different angles, score with parallel judges, synthesize from the winner while grafting the best ideas from runners-up.
-- Loop-until-dry: for unknown-size discovery (bugs, issues, edge cases), keep spawning finders until K consecutive rounds return nothing new. Dedup vs everything seen so far, not just confirmed.
-- Multi-modal sweep: parallel agents each searching a different way (by-container, by-content, by-entity, by-time).
-- Completeness critic: a final agent that asks "what's missing — modality not run, claim unverified, source unread?" What it finds becomes the next round of work.
-- No silent caps: if a workflow bounds coverage (top-N, no-retry, sampling), log() what was dropped.
+Injected globals (no import):
+- agent(prompt, *, label=None, phase=None, schema=None, model=None, isolation=None, agent_type=None) -> await it. Without schema returns the subagent's final text (str). With schema (a JSON Schema dict) it returns a validated object (the subagent is forced to return JSON; it retries on mismatch). Returns None on failure — filter with `[x for x in results if x]`. Omit `model` (inherits the worker tier); set it only to escalate one hard leaf.
+- pipeline(items, *stages) -> await -> list. Each item flows through all stages independently, NO barrier (item A in stage 3 while B in stage 1). THE DEFAULT for multi-stage work. Each stage is called (prev_result, original_item, index) — take only the args you need. A raising stage drops that item to None.
+- parallel(thunks) -> await -> list. Runs zero-arg callables concurrently; BARRIER (awaits all). A failing thunk resolves to None (never raises) — filter None before use. Use ONLY when stage N genuinely needs ALL of stage N-1 (dedup/merge, early-exit on zero, cross-item comparison).
+- phase(title), log(message): narrate the Theater.
+- budget: .total (int|None), .spent(), .remaining(). HARD ceiling — agent() raises once spent>=total. Loop with `while budget.total and budget.remaining() > 50_000: ...`.
+- args: the verbatim `args` input (None if absent).
+- workflow(name_or_ref, args=None) -> await: run a saved workflow / {"scriptPath": ...} inline (one level deep).
+- Quality-pattern helpers (all async): adversarial_verify(claim, n=3), perspective_verify(claim, lenses), judge_panel(attempts, criteria), loop_until_dry(finder, k=2, key=None), multimodal_sweep(searches), completeness_critic(state).
 
-Scale to what the user asked for. "find any bugs" → a few finders, single-vote verify. "thoroughly audit this" or "be comprehensive" → larger finder pool, 3–5 vote adversarial pass, synthesis stage. When unsure, lean toward thoroughness for research/review/audit and toward brevity for quick checks. Compose novel harnesses when the task calls for it (tournament brackets, self-repair loops, staged escalation).
+DEFAULT TO pipeline(); reach for parallel() only for a real barrier. Concurrency is capped per workflow; total agents are capped as a runaway backstop. Subagents reach the session's tools via Hermes toolsets and are told their final text IS the return value, so they return raw data.
 
-Use this tool for multi-step orchestration where control flow should be deterministic (loops, conditionals, fan-out) rather than model-driven.
+Standard pure builtins + the `json` and `math` modules are available. `time`, `random`, and wall-clock are NOT (they break resume) — pass timestamps via `args`, stamp after return, vary randomness by index.
 
-The tool result includes a runId. To resume after a pause, kill, or script edit, relaunch with `{"scriptPath": ..., "resumeFromRunId": ...}` — the longest unchanged prefix of agent() calls returns cached results instantly; the first edited/new call and everything after it runs live. Same script + same args → 100% cache hit."""
+To iterate or resume: the result includes a runId and the persisted scriptPath. Edit that file and re-invoke with {"scriptPath": ..., "resumeFromRunId": ...} — unchanged agent() calls return cached results instantly; the first edited/new call runs live. Same script + same args = 100% cache hit."""
 
 
 # ---------------------------------------------------------------------------

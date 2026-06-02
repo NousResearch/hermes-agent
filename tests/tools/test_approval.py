@@ -506,6 +506,32 @@ class TestHermesConfigPerlAwkInPlace:
         )
         assert dangerous is False
 
+    def test_perl_include_path_flag_not_flagged(self):
+        # Regression for the Copilot finding on PR #37107: detection lowercases
+        # input and runs under re.IGNORECASE, so perl's include-path flag `-I`
+        # (uppercase, takes a directory arg) collapses to `-i`. A loose
+        # `[^\s]*i` match wrongly flagged `perl -Ilib script.pl <config>` as an
+        # in-place edit even though no in-place editing happens. The precise
+        # flag-grammar pattern must NOT fire here.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -Ilib script.pl ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+        # Multiple include paths bundled the same way must also stay safe.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -Ilib -Ivendor/lib run.pl ~/.hermes/.env"
+        )
+        assert dangerous is False
+
+    def test_perl_real_inplace_still_flagged_vs_include(self):
+        # Companion to the regression above: a genuine in-place edit that also
+        # passes an include path must STILL be gated. Pins that the fix narrows
+        # only the false positive, not real coverage.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -Ilib -i -pe 's/manual/off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
     def test_read_only_awk_on_config_safe(self):
         # awk without -i inplace only reads; must not trip.
         dangerous, key, desc = detect_dangerous_command(

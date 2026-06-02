@@ -449,7 +449,20 @@ DANGEROUS_PATTERNS = [
     # mutates ~/.hermes/config.yaml (or .env) directly, and the mtime-keyed
     # config cache reloads it mid-session — so gating only `sed` leaves the
     # write_file/patch deny unpaired. Sibling follow-up to #14639.
-    (rf'\bperl\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl -i)"),
+    #
+    # The `-i` token must be matched against perl's actual flag grammar, NOT a
+    # loose `[^\s]*i` that fires on any `i` in a flag bundle. Detection runs
+    # under re.IGNORECASE *and* lowercases input, so the include-path flag
+    # `-I` (which consumes its arg as a directory, e.g. `perl -Ilib script.pl`)
+    # is indistinguishable from `-i` by case alone — a loose match wrongly
+    # gates `perl -Ilib script.pl ~/.hermes/config.yaml`. Instead require `-i`
+    # to be a real in-place flag: an optional bundle of the boolean prefix
+    # flags perl allows before it (`-pi`, `-ni`, `-pi.bak`, …), then `i`, then
+    # either the flag boundary (whitespace) or a backup suffix introduced by a
+    # non-letter (`.bak`, `~`, `'*'`). `-Ilib` fails because `i` is followed by
+    # the letters of the include path, which is neither a boundary nor a
+    # suffix start. See #14639 and the Copilot finding on this PR.
+    (rf'\bperl\s+(?:[^\s]+\s+)*?-[pnaslwxcefutWCSU0-9]*i(?=\s|[.~\'"*])[^\s]*\s.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl -i)"),
     (rf'\b(?:g?awk)\s+-i\s+inplace\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (awk -i inplace)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.

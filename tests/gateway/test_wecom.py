@@ -336,6 +336,43 @@ class TestPolicyHelpers:
         assert adapter._is_group_allowed("group-1", "user-2") is False
         assert adapter._is_group_allowed("group-2", "user-1") is False
 
+    def test_group_allowlist_honors_env_only_allowed_groups(self, monkeypatch):
+        """Env-only setup (WECOM_GROUP_POLICY + WECOM_GROUP_ALLOWED_USERS, no config
+        ``extra``) must populate the group allowlist. Otherwise ``group_policy:
+        allowlist`` runs with an empty allowlist and drops every group message
+        at intake — the documented env vars become no-ops."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.setenv("WECOM_GROUP_POLICY", "allowlist")
+        monkeypatch.setenv("WECOM_GROUP_ALLOWED_USERS", "group-1, group-2")
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        assert adapter._group_policy == "allowlist"
+        assert adapter._group_allow_from == ["group-1", "group-2"]
+        assert adapter._is_group_allowed("group-1", "any-user") is True
+        assert adapter._is_group_allowed("group-2", "any-user") is True
+        assert adapter._is_group_allowed("group-x", "any-user") is False
+
+    def test_group_allowlist_extra_takes_precedence_over_env(self, monkeypatch):
+        """Config ``extra`` wins over the env fallback, so an explicit
+        group allowlist is never silently widened by a stray
+        WECOM_GROUP_ALLOWED_USERS."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.setenv("WECOM_GROUP_ALLOWED_USERS", "env-group")
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["cfg-group"]},
+            )
+        )
+
+        assert adapter._group_allow_from == ["cfg-group"]
+        assert adapter._is_group_allowed("cfg-group", "any-user") is True
+        assert adapter._is_group_allowed("env-group", "any-user") is False
+
 
 class TestMediaHelpers:
     def test_detect_wecom_media_type(self):

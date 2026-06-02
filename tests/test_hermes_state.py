@@ -3509,3 +3509,43 @@ class TestApplyWalProbe:
         assert any("journal_mode=WAL" in sql for sql in conn.executed), (
             "set-pragma must fire when probe returns 'delete'"
         )
+
+
+class TestSessionArchive:
+    """Soft-archiving hides a session from default listings without deleting it."""
+
+    def _seed(self, db, sid, *, archived=False):
+        db.create_session(session_id=sid, source="cli")
+        db.append_message(session_id=sid, role="user", content=f"hello from {sid}")
+        if archived:
+            db.set_session_archived(sid, True)
+
+    def test_set_session_archived_roundtrip(self, db):
+        self._seed(db, "s1")
+        assert db.set_session_archived("s1", True) is True
+        assert db.get_session("s1")["archived"] == 1
+        assert db.set_session_archived("s1", False) is True
+        assert db.get_session("s1")["archived"] == 0
+
+    def test_set_session_archived_missing_row(self, db):
+        assert db.set_session_archived("nope", True) is False
+
+    def test_archived_excluded_by_default(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        ids = [s["id"] for s in db.list_sessions_rich()]
+        assert ids == ["live"]
+        assert db.session_count() == 1
+
+    def test_archived_only_and_include(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        only = [s["id"] for s in db.list_sessions_rich(archived_only=True)]
+        assert only == ["hidden"]
+        assert db.session_count(archived_only=True) == 1
+
+        both = {s["id"] for s in db.list_sessions_rich(include_archived=True)}
+        assert both == {"live", "hidden"}
+        assert db.session_count(include_archived=True) == 2

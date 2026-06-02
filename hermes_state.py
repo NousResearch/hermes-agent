@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_platform TEXT,
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -1430,6 +1431,22 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
+    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+        """Archive or unarchive a session.
+
+        Archived sessions are hidden from the default session list but keep all
+        their messages — this is a soft hide, not a delete. Returns True when a
+        row was updated.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET archived = ? WHERE id = ?",
+                (1 if archived else 0, session_id),
+            )
+            return cursor.rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:
@@ -1549,6 +1566,8 @@ class SessionDB:
         min_message_count: int = 0,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
+        include_archived: bool = False,
+        archived_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1604,6 +1623,10 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         if order_by_last_active:
@@ -3027,7 +3050,13 @@ class SessionDB:
     # Utility
     # =========================================================================
 
-    def session_count(self, source: str = None, min_message_count: int = 0) -> int:
+    def session_count(
+        self,
+        source: str = None,
+        min_message_count: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
+    ) -> int:
         """Count sessions, optionally filtered by source."""
         where_clauses = []
         params = []
@@ -3038,6 +3067,10 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("message_count >= ?")
             params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("archived = 1")
+        elif not include_archived:
+            where_clauses.append("archived = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 

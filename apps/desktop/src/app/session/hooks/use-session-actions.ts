@@ -2,7 +2,7 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { deleteSession, getSessionMessages } from '@/hermes'
+import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -751,7 +751,39 @@ export function useSessionActions({
     ]
   )
 
+  const archiveSession = useCallback(
+    async (storedSessionId: string) => {
+      clearNotifications()
+
+      const archived = $sessions.get().find(s => s.id === storedSessionId)
+      const wasSelected = selectedStoredSessionId === storedSessionId
+      const previousPinned = $pinnedSessionIds.get()
+
+      // Soft-hide: drop from the sidebar immediately, keep the data.
+      setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+
+      if (wasSelected) {
+        startFreshSessionDraft(true)
+      }
+
+      try {
+        await setSessionArchived(storedSessionId, true)
+        notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
+      } catch (err) {
+        if (archived) {
+          setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
+        }
+
+        $pinnedSessionIds.set(previousPinned)
+        notifyError(err, 'Archive failed')
+      }
+    },
+    [selectedStoredSessionId, startFreshSessionDraft]
+  )
+
   return {
+    archiveSession,
     branchCurrentSession,
     closeSettings,
     createBackendSessionForSend,

@@ -884,6 +884,73 @@ def test_session_title_queues_when_db_row_not_ready(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_notification_event_routing_by_session_key(monkeypatch):
+    """Background-process events surface only in the session that owns them."""
+    mine = _session(session_key="mine")
+    other = _session(session_key="other")
+    monkeypatch.setattr(server, "_sessions", {"a": mine, "b": other})
+
+    # My own event → handle it.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "mine"}) is False
+    # Global/system event with no owner → handle it.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": ""}) is False
+    assert server._notification_event_belongs_elsewhere(mine, {}) is False
+    # Owned by another *live* session → defer to that session's poller.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "other"}) is True
+    # Owner is gone (not in _sessions) → handle as fallback so it isn't lost.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "ghost"}) is False
+
+
+def test_session_create_does_not_persist_empty_row(monkeypatch):
+    """session.create must NOT eagerly write a DB row.
+
+    Every TUI/desktop launch opens a session here just to paint the composer;
+    eagerly creating a row left an empty "Untitled" session behind for every
+    launch the user never typed into. The row is created lazily on first prompt.
+    """
+    created = []
+
+    class _FakeDB:
+        def create_session(self, *args, **kwargs):
+            created.append((args, kwargs))
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server.threading,
+        "Timer",
+        lambda *a, **k: types.SimpleNamespace(daemon=False, start=lambda: None),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    try:
+        assert resp["result"]["stored_session_id"]
+        assert created == [], "session.create should not persist an empty DB row"
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_ensure_session_db_row_persists_with_cwd(monkeypatch, tmp_path):
+    """First prompt persists the row (INSERT OR IGNORE) capturing cwd up front."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
+
+    assert created == [
+        {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(tmp_path)}
+    ]
+
+
 def test_session_title_clears_pending_after_persist(monkeypatch):
     class _FakeDB:
         def __init__(self):

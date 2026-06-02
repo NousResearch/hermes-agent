@@ -111,9 +111,13 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 }
 
-export async function listSessions(limit = 40, minMessages = 0): Promise<PaginatedSessions> {
+export async function listSessions(
+  limit = 40,
+  minMessages = 0,
+  archived: 'exclude' | 'include' | 'only' = 'exclude'
+): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}`
+    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}`
   })
 
   return {
@@ -121,6 +125,14 @@ export async function listSessions(limit = 40, minMessages = 0): Promise<Paginat
     sessions: result.sessions.slice(0, limit),
     offset: 0
   }
+}
+
+export function setSessionArchived(id: string, archived: boolean): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { archived }
+  })
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {

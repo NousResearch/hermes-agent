@@ -97,7 +97,7 @@ function ChatHeader({
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const activeStoredSession = sessions.find(session => session.id === selectedSessionId) || null
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New agent'
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
   const selectedIsPinned = selectedSessionId ? pinnedSessionIds.includes(selectedSessionId) : false
 
   return (

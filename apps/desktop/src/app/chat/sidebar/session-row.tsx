@@ -14,6 +14,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   isPinned: boolean
   isSelected: boolean
   isWorking: boolean
+  onArchive: () => void
   onDelete: () => void
   onPin: () => void
   onResume: () => void
@@ -45,6 +46,7 @@ export function SidebarSessionRow({
   isPinned,
   isSelected,
   isWorking,
+  onArchive,
   onDelete,
   onPin,
   onResume,
@@ -61,7 +63,14 @@ export function SidebarSessionRow({
   const handleLabel = `Reorder ${title}`
 
   return (
-    <SessionContextMenu onDelete={onDelete} onPin={onPin} pinned={isPinned} sessionId={session.id} title={title}>
+    <SessionContextMenu
+      onArchive={onArchive}
+      onDelete={onDelete}
+      onPin={onPin}
+      pinned={isPinned}
+      sessionId={session.id}
+      title={title}
+    >
       <div
         className={cn(
           'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
@@ -84,6 +93,15 @@ export function SidebarSessionRow({
               event.stopPropagation()
               triggerHaptic('selection')
               onPin()
+
+              return
+            }
+
+            if (event.metaKey || event.ctrlKey) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              onArchive()
 
               return
             }
@@ -127,7 +145,14 @@ export function SidebarSessionRow({
               {age}
             </span>
           )}
-          <SessionActionsMenu onDelete={onDelete} onPin={onPin} pinned={isPinned} sessionId={session.id} title={title}>
+          <SessionActionsMenu
+            onArchive={onArchive}
+            onDelete={onDelete}
+            onPin={onPin}
+            pinned={isPinned}
+            sessionId={session.id}
+            title={title}
+          >
             <Button
               aria-label={`Actions for ${title}`}
               className="size-5 rounded-md bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"

@@ -6,6 +6,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
+import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -33,6 +34,8 @@ import {
   $selectedStoredSessionId,
   setAwaitingResponse,
   setBusy,
+  setCurrentBranch,
+  setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
@@ -122,6 +125,7 @@ export function DesktopController() {
     settingsOpen,
     toggleCommandCenter
   } = useOverlayRouting()
+
   const terminalTakeoverActive = chatOpen && terminalTakeover
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
@@ -192,7 +196,10 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
-      const result = await listSessions(limit)
+      // Require at least one message so abandoned/empty "Untitled" drafts (one
+      // was created per TUI/desktop launch before the lazy-create fix) don't
+      // clutter the sidebar.
+      const result = await listSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(result.sessions)
@@ -324,6 +331,7 @@ export function DesktopController() {
   })
 
   const {
+    archiveSession,
     branchCurrentSession,
     createBackendSessionForSend,
     openSettings,
@@ -390,6 +398,29 @@ export function DesktopController() {
       return branched
     },
     [branchCurrentSession, refreshSessions]
+  )
+
+  const startSessionInWorkspace = useCallback(
+    (path: null | string) => {
+      startFreshSessionDraft()
+
+      const target = path?.trim()
+
+      if (!target) {
+        return
+      }
+
+      // The next message creates the backend session in $currentCwd, so seed
+      // it (and the branch) from the workspace the user clicked the + on.
+      setCurrentCwd(target)
+      void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
+        .then(info => {
+          setCurrentCwd(info.cwd || target)
+          setCurrentBranch(info.branch || '')
+        })
+        .catch(() => undefined)
+    },
+    [requestGateway, startFreshSessionDraft]
   )
 
   const handleSkinCommand = useSkinCommand()
@@ -461,9 +492,11 @@ export function DesktopController() {
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
+      onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreSessions={loadMoreSessions}
       onNavigate={selectSidebarItem}
+      onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
     />
   )
@@ -485,6 +518,7 @@ export function DesktopController() {
       />
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
       <UpdatesOverlay />
+      <GatewayConnectingOverlay />
       <BootFailureOverlay />
 
       {settingsOpen && (
@@ -575,10 +609,10 @@ export function DesktopController() {
       titlebarTools={titlebarToolGroups.flat.right}
     >
       <Pane
+        disabled={terminalTakeoverActive}
         id="chat-sidebar"
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
-        disabled={terminalTakeoverActive}
         resizable
         side="left"
         width={`${SIDEBAR_DEFAULT_WIDTH}px`}

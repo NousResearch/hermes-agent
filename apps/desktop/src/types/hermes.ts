@@ -240,6 +240,7 @@ export interface SessionCreateResponse {
 }
 
 export interface SessionInfo {
+  archived?: boolean
   cwd?: null | string
   ended_at: null | number
   id: string

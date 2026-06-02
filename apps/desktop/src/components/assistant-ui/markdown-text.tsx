@@ -19,9 +19,9 @@ import {
   filePathFromMediaPath,
   mediaExternalUrl,
   mediaKind,
-  mediaMime,
   mediaName,
-  mediaPathFromMarkdownHref
+  mediaPathFromMarkdownHref,
+  mediaStreamUrl
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { cn } from '@/lib/utils'
@@ -40,24 +40,22 @@ import { cn } from '@/lib/utils'
 // LLM convention). The default false-setting only accepts `$$...$$`.
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
-async function typedBlobUrl(dataUrl: string, mime: string): Promise<string> {
-  const blob = await fetch(dataUrl).then(response => response.blob())
-
-  return URL.createObjectURL(new Blob([await blob.arrayBuffer()], { type: mime }))
-}
-
 async function mediaSrc(path: string): Promise<string> {
   if (/^(?:https?|data):/i.test(path)) {
     return path
+  }
+
+  // Stream audio/video through the custom protocol: data URLs are capped and
+  // load the whole file into memory, which broke playback for larger videos.
+  if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
+    return mediaStreamUrl(path)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
     return mediaExternalUrl(path)
   }
 
-  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
-
-  return ['audio', 'video'].includes(mediaKind(path)) ? typedBlobUrl(dataUrl, mediaMime(path)) : dataUrl
+  return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 }
 
 function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
@@ -278,10 +276,7 @@ const MarkdownTextImpl = () => {
   // render, which churns Streamdown's outer memo + propagates new prop
   // identities into every Block. The plugin set really only varies on
   // `isStreaming`, so memoize on that.
-  const plugins = useMemo(
-    () => (isStreaming ? { math: mathPlugin } : { math: mathPlugin, code }),
-    [isStreaming]
-  )
+  const plugins = useMemo(() => (isStreaming ? { math: mathPlugin } : { math: mathPlugin, code }), [isStreaming])
 
   const components = useMemo(
     () =>

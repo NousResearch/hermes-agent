@@ -351,13 +351,16 @@ export function ActiveSessionSwitcher({
       }
 
       try {
-        const [liveRaw, histRaw] = await Promise.all([
+        // Fetch independently (allSettled) so a failing session.list can't
+        // wipe the live-session list: live sessions still render and the
+        // resumable history degrades on its own.
+        const [liveRes, histRes] = await Promise.allSettled([
           gw.request<SessionActiveListResponse>('session.active_list', {
             current_session_id: currentSessionId
           }),
           includeHistory ? gw.request<SessionListResponse>('session.list', { limit: 200 }) : Promise.resolve(null)
         ])
-        const r = asRpcResult<SessionActiveListResponse>(liveRaw)
+        const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
 
         if (!r) {
           setErr('invalid response: session.active_list')
@@ -368,18 +371,22 @@ export function ActiveSessionSwitcher({
 
         const next = r.sessions ?? []
 
-        // Surface a garbled session.list rather than silently blanking the
-        // resumable section; keep the last good raw history so a transient RPC
+        // Surface a garbled/failed session.list rather than silently blanking
+        // the resumable section; keep the last good raw history so a transient
         // failure doesn't wipe it.
         let histError = ''
 
         if (includeHistory) {
-          const parsedHist = asRpcResult<SessionListResponse>(histRaw)
+          if (histRes.status === 'fulfilled') {
+            const parsedHist = asRpcResult<SessionListResponse>(histRes.value)
 
-          if (parsedHist) {
-            rawHistoryRef.current = parsedHist.sessions ?? []
+            if (parsedHist) {
+              rawHistoryRef.current = parsedHist.sessions ?? []
+            } else {
+              histError = 'invalid response: session.list'
+            }
           } else {
-            histError = 'invalid response: session.list'
+            histError = 'could not load resumable sessions'
           }
         }
 

@@ -1,69 +1,52 @@
 ---
 sidebar_position: 3
 title: "Desktop App"
-description: "The native Hermes desktop app — a polished Electron window for chatting with the full agent, with streaming tool output, side-by-side previews, a file browser, voice, cron, profiles, skills, and settings. macOS, Windows, and Linux."
+description: "The native Hermes desktop app — a polished experience for chatting with Hermes, with streaming tool output, side-by-side previews, a file browser, voice, cron, profiles, skills, and settings. macOS, Windows, and Linux."
 ---
 
 # Desktop App
 
-The Hermes desktop app is a native window around the **same** agent you get from the CLI and the gateway — same config, same API keys, same sessions, same skills, same memory. It is not a separate product or a lightweight clone; it installs the standard Hermes Agent runtime into the standard `~/.hermes` layout and drives it through a real UI. If you have used `hermes` in a terminal, everything you set up there is already here, and anything you do here shows up there.
+The Hermes desktop app is a native app built around the **same** agent you get from the CLI and the gateway — same config, same API keys, same sessions, same skills, same memory. It is not a separate product or a lightweight clone; it uses the same Hermes Agent core and settings, and drives it through a modern & thoughtfully designed UI. If you have used `hermes` in a terminal, everything you set up there is already here, and anything you do here shows up there.
 
-It's built on Electron and runs on **macOS, Windows, and Linux**.
+It runs on **macOS, Windows, and Linux**.
 
 :::tip Which interface is which?
 Hermes has several front ends that all talk to the same agent:
 
+- **Desktop App** (this page) — a native application with a purpose-built UI for chat, configuration, and management.
 - **CLI** (`hermes`) and **[TUI](./tui.md)** (`hermes --tui`) — terminal interfaces.
 - **[Web Dashboard](./features/web-dashboard.md)** (`hermes dashboard`) — a browser admin panel; its optional **Chat** tab embeds the TUI through a pseudo-terminal.
-- **Desktop App** (this page) — a native window with a purpose-built React UI for chat, previews, and management.
 
 Pick whichever fits the moment. They share state, so you can start a session in one and resume it in another.
 :::
 
 ## Install
 
-### With the Hermes installer (recommended)
+### With the Hermes Desktop installer on MacOS or Windows (recommended)
 
-Add `--include-desktop` to the one-line installer and it provisions the agent and builds the desktop app in a single pass:
+[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+
+### With the CLI installer on Linux, MacOS, or Windows
+
+Add `--include-desktop` to the regular install script.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
 ```
 
-Already have the Hermes CLI? Build and launch against your existing install:
+### With an existing Hermes installation
+
+If you already have Hermes installed, simply run
 
 ```bash
 hermes desktop
 ```
 
-That uses your current config, keys, sessions, and skills. On first launch the app walks you through picking a provider and model; there's nothing else to configure.
-
-### Prebuilt installers
-
-When a release ships desktop installers they're attached to the [releases page](https://github.com/NousResearch/hermes-agent/releases/latest):
-
-| Platform | Artifacts |
-|----------|-----------|
-| macOS | `.dmg` (signed + notarized) |
-| Windows | `.exe` (NSIS) / `.msi` |
-| Linux | `.AppImage` / `.deb` / `.rpm` |
-
-These are published manually, so the install-with-Hermes path above is the most reliable way to get the latest build.
-
-### Windows GUI installer
-
-On Windows there's also a thin GUI installer: download **Hermes Desktop**, run the `.exe`, and on first launch it calls `install.ps1` under the hood to provision a bundled Python (via `uv`), a portable Git, ripgrep, and the rest of the dependencies — no admin rights or system changes required. The desktop app and a PowerShell-installed CLI share the same install and data directories, so you can use either or both. See the [Windows (Native) guide](./windows-native.md#desktop-installer-alternative) for details.
-
-## Requirements
-
-The installer handles the toolchain for you (Python 3.11+, a portable Git, ripgrep). What's worth knowing:
-
-- **Windows** — the installer bundles its own Git and Python; no admin rights needed.
-- **macOS / Linux** — uses your system Python 3.11+, installed automatically if missing.
+That uses your current config, keys, sessions, and skills.
 
 ## What's in the app
 
-The desktop app is organized as a chat-first window with a left sidebar for navigation. The headline surface is the conversation; the rest are management panes that mirror what you'd otherwise do through `hermes` subcommands or the web dashboard.
+The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
 
 ### Chat
 
@@ -73,7 +56,6 @@ The center of the app. You get:
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
-- **A model picker** for switching models mid-session without leaving the window.
 
 ### File browser
 
@@ -99,25 +81,23 @@ The app also surfaces the broader Hermes management surface so you don't have to
 
 ## Updating
 
-The app checks for updates in the background and offers a one-click update when one is ready. You can also update any time from the CLI — this pulls the latest agent and rebuilds the app in place:
+The app checks for updates in the background and offers a one-click update when one is ready.
 
-```bash
-hermes update
-```
+The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
 ## CLI reference: `hermes desktop`
 
-The canonical command is `hermes desktop` (the older `hermes gui` is kept as a deprecated alias). By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
+To launch via the CLI, simply run `hermes desktop`. By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
 
-| Flag | Description |
-|------|-------------|
-| `--skip-build` | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |
-| `--source` | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app |
-| `--build-only` | Build the desktop app but do not launch it (used by the installer's `--update` flow) |
-| `--cwd PATH` | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`) |
-| `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`) |
-| `--ignore-existing` | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution |
-| `--fake-boot` | Enable deterministic boot delays for validating the startup UI |
+| Flag                 | Description                                                                               |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| `--skip-build`       | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |
+| `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
+| `--build-only`       | Build the desktop app but do not launch it (used by the installer's `--update` flow)      |
+| `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
+| `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
+| `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
+| `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
 
 ## How it works
 

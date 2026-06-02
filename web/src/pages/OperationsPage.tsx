@@ -538,20 +538,27 @@ export default function OperationsPage() {
   }, [agentRuns, agents, effectiveness, routing, watchdog]);
 
   const stabilityStats = useMemo(() => {
-    const stats: Record<string, {
+    interface StabilityEntry {
       total: number;
       ok: number;
       timeout: number;
       failed: number;
       lastState: string;
       lastTime: string | null;
+      lastTimeMs: number;
       timeoutRate: number;
       okRate: number;
-    }> = {};
+      avgDurationMs: number;
+      p95DurationMs: number;
+      handoffSuccessRate: number;
+      latestError: string | null;
+    }
+    const stats: Record<string, StabilityEntry> = {};
+
     for (const agentId of EXTERNAL_AGENT_IDS) {
       const runs = agentRuns.filter((r) => r.agent_id === agentId);
       if (!runs.length) {
-        stats[agentId] = { total: 0, ok: 0, timeout: 0, failed: 0, lastState: "no sample", lastTime: null, timeoutRate: 0, okRate: 0 };
+        stats[agentId] = { total: 0, ok: 0, timeout: 0, failed: 0, lastState: "no sample", lastTime: null, lastTimeMs: 0, timeoutRate: 0, okRate: 0, avgDurationMs: 0, p95DurationMs: 0, handoffSuccessRate: 0, latestError: null };
         continue;
       }
       const sorted = [...runs].sort((a, b) => {
@@ -561,6 +568,16 @@ export default function OperationsPage() {
       });
       const last = sorted[0];
       const classification = runClassification(last);
+      const lastTimeMs = runObservedAt(last) ? new Date(runObservedAt(last) as string).getTime() : 0;
+      const completedRuns = runs.filter((r) => r.status === "completed" || runClassification(r) === "ok");
+      const handoffRuns = runs.filter((r) => r.status === "completed" || r.status === "failed");
+      const durations = completedRuns
+        .map((r) => (r as any).duration_ms as number | undefined)
+        .filter((d): d is number => typeof d === "number" && d > 0)
+        .sort((a, b) => a - b);
+      const avgDurationMs = durations.length > 0 ? durations.reduce((sum, d) => sum + d, 0) / durations.length : 0;
+      const p95Idx = Math.max(0, Math.ceil(durations.length * 0.95) - 1);
+      const p95DurationMs = durations.length > 0 ? durations[p95Idx] : 0;
       stats[agentId] = {
         total: runs.length,
         ok: runs.filter((r) => runClassification(r) === "ok" || r.status === "completed").length,
@@ -568,8 +585,13 @@ export default function OperationsPage() {
         failed: runs.filter((r) => r.status === "failed" || runClassification(r) === "failed").length,
         lastState: classification,
         lastTime: runObservedAt(last) ?? null,
+        lastTimeMs,
         timeoutRate: runs.length > 0 ? (runs.filter((r) => runClassification(r) === "timeout" || (r.error && r.error.toLowerCase().includes("timeout"))).length / runs.length) * 100 : 0,
         okRate: runs.length > 0 ? (runs.filter((r) => runClassification(r) === "ok" || r.status === "completed").length / runs.length) * 100 : 0,
+        avgDurationMs,
+        p95DurationMs,
+        handoffSuccessRate: handoffRuns.length > 0 ? (handoffRuns.filter((r) => r.status === "completed").length / handoffRuns.length) * 100 : 0,
+        latestError: sorted.find((r) => r.error)?.error ?? null,
       };
     }
     return stats;
@@ -1251,10 +1273,23 @@ export default function OperationsPage() {
                   : tone === "warning" ? "border-l-amber-500"
                   : tone === "destructive" ? "border-l-destructive"
                   : "border-l-border";
+                const staleMs = stat.lastTimeMs > 0 ? Date.now() - stat.lastTimeMs : Infinity;
+                const isStale = stat.total > 0 && staleMs > 3600000;
                 return (
                   <div key={agentId} className={"rounded-md border border-border p-3 text-xs border-l-4 " + cardBorder}>
                     <div className="flex items-center justify-between gap-1">
-                      <span className="font-mono font-medium text-[11px] normal-case">{agentId}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-medium text-[11px] normal-case">{agentId}</span>
+                        <span className="text-[9px] uppercase text-muted-foreground/60 border border-border/50 rounded px-1 py-0.25">external</span>
+                        {isStale ? (
+                          <span className="text-[9px] text-amber-500" title={"Last sample " + Math.round(staleMs / 60000) + "m ago"}>
+                            stale {Math.round(staleMs / 60000)}m
+                          </span>
+                        ) : null}
+                        {stat.total === 0 ? (
+                          <span className="text-[9px] text-muted-foreground/50">no sample</span>
+                        ) : null}
+                      </div>
                       <Button
                         size="sm"
                         outlined
@@ -1297,11 +1332,19 @@ export default function OperationsPage() {
                         {stat.lastTime ? isoTimeAgo(stat.lastTime) : "never"}
                       </span>
                     </div>
-                    <div className="mt-1.5 flex gap-2 text-[10px] text-muted-foreground">
+                    <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
                       <span title="Success rate">{Math.round(stat.okRate)}% ok</span>
                       <span title="Timeout rate">{Math.round(stat.timeoutRate)}% timeout</span>
-                      <span title="Total samples">{stat.total} samples</span>
+                      <span title="Average duration">{stat.avgDurationMs > 0 ? (stat.avgDurationMs / 1000).toFixed(1) + "s avg" : "avg -"}</span>
+                      <span title="P95 duration">{stat.p95DurationMs > 0 ? (stat.p95DurationMs / 1000).toFixed(1) + "s p95" : "p95 -"}</span>
+                      <span title="Handoff success">{Math.round(stat.handoffSuccessRate)}% hoff</span>
+                      <span title="Total samples">{stat.total} runs</span>
                     </div>
+                    {stat.latestError ? (
+                      <div className="mt-1.5 max-w-[14rem] truncate text-[9px] text-destructive/80" title={stat.latestError}>
+                        {stat.latestError}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}

@@ -145,6 +145,10 @@ from hermes_cli.config import (
 # display_hermes_home imported lazily at call sites (stale-module safety during hermes update)
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.access_setup import (
+    configure_direct_message_access,
+    is_open_access_enabled,
+)
 
 
 def print_header(title: str):
@@ -1646,12 +1650,16 @@ def _setup_telegram():
         if not prompt_yes_no("Reconfigure Telegram?", False):
             # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
-                print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
+                if is_open_access_enabled(get_env_value("TELEGRAM_ALLOW_ALL_USERS")):
+                    print_info("Telegram open access is enabled - anyone can use your bot!")
+                else:
+                    print_info("Telegram has no user allowlist - new DM users will need pairing approval.")
                 if prompt_yes_no("Add allowed users now?", True):
                     print_info("   To find your Telegram user ID: message @userinfobot")
                     allowed_users = prompt("Allowed user IDs (comma-separated)")
                     if allowed_users:
                         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                        save_env_value("TELEGRAM_ALLOW_ALL_USERS", "false")
                         print_success("Telegram allowlist configured")
             return
 
@@ -1679,13 +1687,21 @@ def _setup_telegram():
     print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
     print()
     allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty for open access)"
+        "Allowed user IDs (comma-separated, leave empty to choose open access or DM pairing)"
     )
-    if allowed_users:
-        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Telegram allowlist configured - only listed users can use the bot")
-    else:
-        print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
+    configure_direct_message_access(
+        platform_label="Telegram",
+        pairing_platform="telegram",
+        allowed_users_env="TELEGRAM_ALLOWED_USERS",
+        allow_all_env="TELEGRAM_ALLOW_ALL_USERS",
+        allowed_users_value=allowed_users,
+        prompt_yes_no_fn=prompt_yes_no,
+        print_info_fn=print_info,
+        print_success_fn=print_success,
+        print_warning_fn=print_warning,
+        open_access_warning="Open access enabled - anyone who finds your bot can use it!",
+        allowlist_success="Telegram allowlist configured - only listed users can use the bot",
+    )
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results,")
@@ -1919,12 +1935,21 @@ def _setup_matrix():
         print_info("🔒 Security: Restrict who can use your bot")
         print_info("   Matrix user IDs look like @username:server")
         print()
-        allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
-        if allowed_users:
-            save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
-            print_success("Matrix allowlist configured")
-        else:
-            print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+        allowed_users = prompt(
+            "Allowed user IDs (comma-separated, leave empty to choose open access or DM pairing)"
+        )
+        configure_direct_message_access(
+            platform_label="Matrix",
+            pairing_platform="matrix",
+            allowed_users_env="MATRIX_ALLOWED_USERS",
+            allow_all_env="MATRIX_ALLOW_ALL_USERS",
+            allowed_users_value=allowed_users,
+            prompt_yes_no_fn=prompt_yes_no,
+            print_info_fn=print_info,
+            print_success_fn=print_success,
+            print_warning_fn=print_warning,
+            open_access_warning="Open access enabled - anyone who can message the bot can use it!",
+        )
 
         print()
         print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
@@ -1969,12 +1994,21 @@ def _setup_bluebubbles():
     print_info("🔒 Security: Restrict who can message your bot")
     print_info("   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)")
     print()
-    allowed_users = prompt("Allowed iMessage addresses (comma-separated, leave empty for open access)")
-    if allowed_users:
-        save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("BlueBubbles allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
+    allowed_users = prompt(
+        "Allowed iMessage addresses (comma-separated, leave empty to choose open access or DM pairing)"
+    )
+    configure_direct_message_access(
+        platform_label="BlueBubbles",
+        pairing_platform="bluebubbles",
+        allowed_users_env="BLUEBUBBLES_ALLOWED_USERS",
+        allow_all_env="BLUEBUBBLES_ALLOW_ALL_USERS",
+        allowed_users_value=allowed_users,
+        prompt_yes_no_fn=prompt_yes_no,
+        print_info_fn=print_info,
+        print_success_fn=print_success,
+        print_warning_fn=print_warning,
+        open_access_warning="Open access enabled - anyone who can iMessage you can use the bot!",
+    )
 
     print()
     print_info("📬 Home Channel: phone or email for cron job delivery and notifications.")

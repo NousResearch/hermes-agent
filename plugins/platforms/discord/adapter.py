@@ -6024,6 +6024,10 @@ def interactive_setup() -> None:
     the plugin's import surface stays small, prompts for the bot token,
     captures an allowlist, and offers to set a home channel.
     """
+    from hermes_cli.access_setup import (
+        configure_direct_message_access,
+        is_open_access_enabled,
+    )
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
@@ -6031,6 +6035,7 @@ def interactive_setup() -> None:
         print_header,
         print_info,
         print_success,
+        print_warning,
     )
 
     print_header("Discord")
@@ -6039,13 +6044,17 @@ def interactive_setup() -> None:
         print_info("Discord: already configured")
         if not prompt_yes_no("Reconfigure Discord?", False):
             if not get_env_value("DISCORD_ALLOWED_USERS"):
-                print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
+                if is_open_access_enabled(get_env_value("DISCORD_ALLOW_ALL_USERS")):
+                    print_info("Discord open access is enabled - anyone can use your bot!")
+                else:
+                    print_info("Discord has no user allowlist - new DM users will need pairing approval.")
                 if prompt_yes_no("Add allowed users now?", True):
                     print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
                     allowed_users = prompt("Allowed user IDs (comma-separated)")
                     if allowed_users:
                         cleaned_ids = _clean_discord_user_ids(allowed_users)
                         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+                        save_env_value("DISCORD_ALLOW_ALL_USERS", "false")
                         print_success("Discord allowlist configured")
             return
 
@@ -6065,14 +6074,21 @@ def interactive_setup() -> None:
     print_info("   You can also use Discord usernames (resolved on gateway start).")
     print()
     allowed_users = prompt(
-        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+        "Allowed user IDs or usernames (comma-separated, leave empty to choose open access or DM pairing)"
     )
-    if allowed_users:
-        cleaned_ids = _clean_discord_user_ids(allowed_users)
-        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-        print_success("Discord allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
+    configure_direct_message_access(
+        platform_label="Discord",
+        pairing_platform="discord",
+        allowed_users_env="DISCORD_ALLOWED_USERS",
+        allow_all_env="DISCORD_ALLOW_ALL_USERS",
+        allowed_users_value=allowed_users,
+        prompt_yes_no_fn=prompt_yes_no,
+        print_info_fn=print_info,
+        print_success_fn=print_success,
+        print_warning_fn=print_warning,
+        open_access_warning="Open access enabled - anyone in servers with your bot can use it!",
+        clean_allowlist=lambda value: ",".join(_clean_discord_user_ids(value)),
+    )
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results,")

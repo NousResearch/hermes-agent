@@ -1029,6 +1029,7 @@ def interactive_setup() -> None:
     ``hermes_cli/setup.py::_setup_mattermost`` function this migration
     removes.
     """
+    from hermes_cli.access_setup import configure_direct_message_access
     from hermes_cli.config import get_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
@@ -1036,6 +1037,7 @@ def interactive_setup() -> None:
         print_header,
         print_info,
         print_success,
+        print_warning,
     )
 
     print_header("Mattermost")
@@ -1063,12 +1065,21 @@ def interactive_setup() -> None:
     print_info("   To find your user ID: click your avatar → Profile")
     print_info("   or use the API: GET /api/v4/users/me")
     print()
-    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
-    if allowed_users:
-        save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Mattermost allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+    allowed_users = prompt(
+        "Allowed user IDs (comma-separated, leave empty to choose open access or DM pairing)"
+    )
+    configure_direct_message_access(
+        platform_label="Mattermost",
+        pairing_platform="mattermost",
+        allowed_users_env="MATTERMOST_ALLOWED_USERS",
+        allow_all_env="MATTERMOST_ALLOW_ALL_USERS",
+        allowed_users_value=allowed_users,
+        prompt_yes_no_fn=prompt_yes_no,
+        print_info_fn=print_info,
+        print_success_fn=print_success,
+        print_warning_fn=print_warning,
+        open_access_warning="Open access enabled - anyone who can message the bot can use it!",
+    )
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")

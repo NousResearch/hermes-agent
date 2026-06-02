@@ -778,6 +778,24 @@ class TestMCPServerTask:
             mock_read, mock_write,
         )
 
+    @pytest.mark.asyncio
+    async def test_wait_for_lifecycle_event_keepalive_failure(self):
+        """Keepalive failure triggers a reconnect event."""
+        from tools.mcp_tool import MCPServerTask
+
+        task = MCPServerTask("srv")
+        mock_session = MagicMock()
+        mock_session.list_tools = AsyncMock(side_effect=Exception("Network died"))
+        task.session = mock_session
+
+        with patch("asyncio.wait", new_callable=AsyncMock) as mock_wait:
+            mock_wait.return_value = (set(), set())
+            
+            result = await task._wait_for_lifecycle_event()
+            
+            assert result == "reconnect"
+            mock_session.list_tools.assert_called_once()
+
     def test_start_connects_and_discovers_tools(self):
         """start() creates a Task that connects, discovers tools, and waits."""
         from tools.mcp_tool import MCPServerTask

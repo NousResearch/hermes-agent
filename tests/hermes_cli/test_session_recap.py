@@ -177,3 +177,62 @@ def test_ignores_non_mapping_entries_gracefully():
     # Should not raise.
     out = build_recap(msgs)
     assert "Session recap" in out
+
+
+def test_files_touched_are_backtick_wrapped():
+    """Recap file paths must be inline-code wrapped.
+
+    The gateway scans outbound message text for bare local file paths and
+    auto-uploads matches as native attachments. An absolute/``~`` path in the
+    recap would otherwise leak the file's contents into the chat. Wrapping in
+    backticks puts the path inside an inline-code span, which the gateway's
+    bare-path detector explicitly skips.
+    """
+    msgs = [
+        _user("read the config"),
+        _assistant(
+            tool_calls=[_tool_call("read_file", {"path": "/etc/some_config.yaml"})]
+        ),
+        _tool_result(),
+        _assistant("done"),
+    ]
+    out = build_recap(msgs)
+    files_line = [l for l in out.splitlines() if "Files touched" in l][0]
+    assert "`/etc/some_config.yaml`" in files_line
+    # The path must not appear un-backticked: stripping all inline-code spans
+    # from the line should leave no trace of the path.
+    import re
+
+    stripped = re.sub(r"`[^`\n]+`", "", files_line)
+    assert "/etc/some_config.yaml" not in stripped
+
+
+def test_recap_paths_survive_gateway_bare_path_detector():
+    """End-to-end-ish: recap paths must live inside an inline-code span.
+
+    Reproduces the original bug where ``/status`` attached config.yaml: a
+    touched file outside the gateway cwd rendered as a bare absolute path and
+    the gateway's outbound bare-path detector auto-uploaded it. That detector
+    skips paths inside inline-code spans, so the structural guarantee we pin
+    here is that every recap file path sits inside backticks.
+    """
+    import re
+
+    msgs = [
+        _user("read the config"),
+        _assistant(
+            tool_calls=[
+                _tool_call("read_file", {"path": "/Users/nobody/.hermes/config.yaml"})
+            ]
+        ),
+        _tool_result(),
+        _assistant("done"),
+    ]
+    recap = build_recap(msgs)
+    code_spans = [(m.start(), m.end()) for m in re.finditer(r"`[^`\n]+`", recap)]
+    path_pos = recap.find("/Users/nobody/.hermes/config.yaml")
+    assert path_pos != -1
+    assert any(s <= path_pos < e for s, e in code_spans), (
+        "recap file path must live inside an inline-code span so the gateway "
+        "bare-path auto-attach detector skips it"
+    )

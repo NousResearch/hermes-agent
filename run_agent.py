@@ -1199,10 +1199,17 @@ class AIAgent:
         OpenAI's newer models (gpt-4o, o-series, gpt-5+) require
         'max_completion_tokens'. Azure OpenAI also requires
         'max_completion_tokens' for gpt-5.x models served via the
-        OpenAI-compatible endpoint. OpenRouter, local models, and older
+        OpenAI-compatible endpoint. MiniMax's OpenAI-compatible models
+        also reject the legacy key. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        if self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url():
+        model_lower = (self.model or "").lower()
+        if (
+            self._is_direct_openai_url()
+            or self._is_azure_openai_url()
+            or self._is_github_copilot_url()
+            or model_lower.startswith("minimax")
+        ):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 

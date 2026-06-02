@@ -4578,6 +4578,20 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_minimax_models(self, agent):
+        """MiniMax chat-completions models reject the legacy max_tokens key."""
+        agent.base_url = "https://router.example.com/v1"
+        agent.model = "MiniMax-M3"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_minimax_models_case_insensitive(self, agent):
+        """Model-family detection should work even when the configured name is lowercase."""
+        agent.base_url = "https://router.example.com/v1"
+        agent.model = "minimax-m2.7"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
 
 class TestGpt5ApiModeRouting:
     """Verify provider-specific GPT-5 API-mode routing."""

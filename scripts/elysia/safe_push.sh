@@ -8,8 +8,9 @@
 # [HOW]  所有参数硬编码 + 分支校验 + 错误处理，LLM 只需传入 commit message
 #
 # Usage:
-#   ./safe_push.sh "<commit message>"
+#   ./safe_push.sh "<commit message>" [file1 file2 ...]
 #   ./safe_push.sh "feat(router): 注入本地化强路由约束"
+#   ./safe_push.sh "feat(iac): 新增脚本" scripts/elysia/new_script.sh
 #
 # Exit codes:
 #   0 — 推送成功（或无变更跳过）
@@ -18,10 +19,11 @@
 # Safety:
 #   - 远端硬编码为 `fork`（非官方 origin），杜绝误推上游
 #   - 分支硬编码为 `elysias-pink-realm`，拒绝在其他分支执行
-#   - 无变更时优雅跳过，不会产生空提交
+#   - 默认仅暂存已跟踪文件（git add -u），避免捡到垃圾
+#   - 传入额外文件路径可显式添加新文件
 #
 # Author: elysias-pink-realm (Elysia's private maintenance branch)
-# Version: 1.0.0
+# Version: 1.1.0
 # Created: 2026-06-03
 # =============================================================================
 
@@ -46,19 +48,33 @@ if [ "$current" != "$BRANCH" ]; then
     exit 1
 fi
 
-# === 提交所有变更 ===
-git add .
+# === 解析参数 ===
+# $1 = commit message（必填）
+# $2... = 额外要 add 的文件路径（可选）
+COMMIT_MSG="${1:?用法: safe_push.sh \"<commit message>\" [file1 file2 ...]}"
+shift
+EXTRA_FILES=("$@")
 
-# 使用传入的 commit message，若未传入则使用默认值
-COMMIT_MSG="${1:-chore(auto): 自动提交 $(date +%Y%m%d_%H%M%S)}"
+# === 暂存变更 ===
+# 默认仅暂存已跟踪文件的修改，避免 git add . 捡到未跟踪的垃圾
+git add -u
+echo "[SafePush] 已暂存已跟踪文件的修改"
 
-# commit 返回非零表示无变更，此时跳过而非报错
-if git commit -m "$COMMIT_MSG" 2>/dev/null; then
-    echo "[SafePush] 已提交: $COMMIT_MSG"
-else
+# 如果指定了额外文件路径，显式添加
+if [ ${#EXTRA_FILES[@]} -gt 0 ]; then
+    git add "${EXTRA_FILES[@]}"
+    echo "[SafePush] 已暂存额外文件: ${EXTRA_FILES[*]}"
+fi
+
+# === 检查是否有变更 ===
+if git diff --cached --quiet; then
     echo "[SafePush] 无新变更，跳过提交"
     exit 0
 fi
+
+# === 提交 ===
+git commit -m "$COMMIT_MSG"
+echo "[SafePush] 已提交: $COMMIT_MSG"
 
 # === 推送到灾备远端 ===
 git push -u "$REMOTE" "$BRANCH"

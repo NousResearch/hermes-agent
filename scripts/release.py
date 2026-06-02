@@ -510,6 +510,7 @@ AUTHOR_MAP = {
     "101283333+batuhankocyigit@users.noreply.github.com": "batuhankocyigit",
     "255305877+ismell0992-afk@users.noreply.github.com": "ismell0992-afk",
     "cyprian@ironin.pl": "iRonin",
+    "cyprian@ironin.it": "iRonin",
     "valdi.jorge@gmail.com": "jvcl",
     "q19dcp@gmail.com": "aj-nt",
     "ebukau84@gmail.com": "UgwujaGeorge",

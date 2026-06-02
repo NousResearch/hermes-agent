@@ -427,6 +427,16 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+            finally:
+                # Close the inner SDK auth-flow generator so it can
+                # release its anyio.Lock deterministically from the
+                # owning asyncio task. Without this, the inner generator
+                # is left suspended inside ``async with self.context.lock``
+                # and Python's async generator finalizer later tries to
+                # release from a different task, causing: RuntimeError("The
+                # current task is not holding this lock"). The lock stays
+                # held permanently, deadlocking reconnect.
+                await inner.aclose()
 
     return HermesMCPOAuthProvider
 

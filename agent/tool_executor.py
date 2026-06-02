@@ -733,20 +733,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 old_text=function_args.get("old_text"),
                 store=agent._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
-                try:
-                    agent._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                        metadata=agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
-                    )
-                except Exception:
-                    pass
+            # Bridge successful writes and capacity-fallback attempts to external
+            # memory providers without mutating the flat-memory prompt snapshot.
+            from agent.memory_write_bridge import notify_external_memory_write
+            notify_external_memory_write(
+                agent,
+                function_args,
+                function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", None),
+            )
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")

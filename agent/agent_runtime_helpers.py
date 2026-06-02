@@ -1659,20 +1659,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             old_text=function_args.get("old_text"),
             store=agent._memory_store,
         )
-        # Bridge: notify external memory provider of built-in memory writes
-        if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
-            try:
-                agent._memory_manager.on_memory_write(
-                    function_args.get("action", ""),
-                    target,
-                    function_args.get("content", ""),
-                    metadata=agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            except Exception:
-                pass
+        # Bridge successful writes and capacity-fallback attempts to external
+        # memory providers without mutating the flat-memory prompt snapshot.
+        from agent.memory_write_bridge import notify_external_memory_write
+        notify_external_memory_write(
+            agent,
+            function_args,
+            result,
+            effective_task_id=effective_task_id,
+            tool_call_id=tool_call_id,
+        )
         return result
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         return agent._memory_manager.handle_tool_call(function_name, function_args)

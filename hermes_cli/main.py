@@ -201,6 +201,7 @@ if _try_termux_ultrafast_version():
     raise SystemExit(0)
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -6869,6 +6870,147 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
     return (desktop_dir / "dist" / "index.html").exists()
 
 
+# ---------------------------------------------------------------------------
+# Desktop build stamp — content-hash based skip logic
+# ---------------------------------------------------------------------------
+# The desktop Electron build is expensive.
+# Unlike the web UI (which uses mtime comparison), the desktop uses a
+# SHA-256 content hash of the source tree so that:
+#   - ``git checkout`` / ``git pull`` that touch mtimes but not content
+#     don't trigger a rebuild
+#   - ``hermes update`` can unconditionally call ``hermes desktop --build-only``
+#     and it will skip if nothing actually changed
+#   - ``hermes desktop`` (interactive launch) skips the build when the
+#     stamp matches, making repeated launches fast
+#
+# Stamp file: $HERMES_HOME/desktop-build-stamp.json
+# Schema:
+#   {
+#     "contentHash": "<sha256 hex of source files>",
+#     "sourceMode": true | false,
+#     "builtAt": "<ISO 8601>"
+#   }
+
+def _compute_desktop_content_hash(project_root: Path) -> str:
+    """Return a SHA-256 hex digest of all source files that feed the desktop build.
+
+    Covers ``apps/desktop/`` (excluding anything matched by .gitignore)
+    plus the root ``package.json`` / ``package-lock.json`` (workspace config
+    that determines dependency resolution for the desktop workspace).
+
+    Parses the repo-root ``.gitignore`` via *pathspec* so we automatically
+    skip ``node_modules/``, ``dist/``, ``*.pyc``, etc. without maintaining
+    a hardcoded skip-list.
+    """
+    h = hashlib.sha256()
+
+    def _hash_file(path: Path) -> None:
+        rel = str(path.relative_to(project_root))
+        h.update(rel.encode())
+        h.update(b"\0")
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+        except (OSError, IOError):
+            pass
+        h.update(b"\0")
+
+
+    from pathspec import PathSpec
+
+    gitignore = project_root / ".gitignore"
+    lines: list[str] = []
+    if gitignore.is_file():
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+    spec = PathSpec.from_lines("gitignore", lines)
+
+    # Root workspace config
+    for name in ("package.json", "package-lock.json"):
+        p = project_root / name
+        if p.is_file():
+            rel = str(p.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(p)
+
+    # Walk apps/desktop/ — prune ignored directories in-place
+    desktop_dir = project_root / "apps" / "desktop"
+    for dirpath, dirnames, filenames in os.walk(desktop_dir, topdown=True):
+        # Prune ignored directories so we never descend into them
+        dirnames[:] = [
+            d for d in dirnames
+            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
+        ]
+
+        for fn in sorted(filenames):
+            fp = Path(dirpath) / fn
+            rel = str(fp.relative_to(project_root))
+            if not spec.match_file(rel):
+                _hash_file(fp)
+
+    return h.hexdigest()
+
+
+def _desktop_stamp_path() -> Path:
+    """Return the path to the desktop build stamp file under $HERMES_HOME."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "desktop-build-stamp.json"
+
+
+def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
+    """Return True when the desktop build output is stale or missing.
+
+    Compares the current content hash against the saved stamp. Also returns
+    True if the expected build artifact doesn't exist (e.g. first run after
+    ``hermes update`` that pulled new source but hasn't built yet).
+    """
+    # If there's no build output at all, we definitely need to build
+    if source_mode:
+        if not _desktop_dist_exists(desktop_dir):
+            return True
+    else:
+        if _desktop_packaged_executable(desktop_dir) is None:
+            return True
+
+    stamp_file = _desktop_stamp_path()
+    if not stamp_file.is_file():
+        return True
+
+    try:
+        stamp_data = json.loads(stamp_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, KeyError):
+        return True
+
+    # If the mode changed (source vs packaged), force a rebuild
+    if stamp_data.get("sourceMode") != source_mode:
+        return True
+
+    saved_hash = stamp_data.get("contentHash")
+    if not saved_hash:
+        return True
+
+    current_hash = _compute_desktop_content_hash(project_root)
+    return current_hash != saved_hash
+
+
+def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
+    """Write the desktop build stamp after a successful build."""
+    stamp_file = _desktop_stamp_path()
+    try:
+        stamp_file.parent.mkdir(parents=True, exist_ok=True)
+        content_hash = _compute_desktop_content_hash(project_root)
+        from datetime import datetime, timezone
+        stamp_data = {
+            "contentHash": content_hash,
+            "sourceMode": source_mode,
+            "builtAt": datetime.now(timezone.utc).isoformat(),
+        }
+        stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+        # Never let stamp-writing block or fail a build
+        logger.debug("Failed to write desktop build stamp: %s", exc)
+
+
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
     release_dir = desktop_dir / "release"
@@ -6928,8 +7070,7 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
-
-def cmd_gui(args):
+def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
@@ -6954,6 +7095,8 @@ def cmd_gui(args):
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
+    force_build = getattr(args, "force_build", False)
+
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
@@ -6965,7 +7108,7 @@ def cmd_gui(args):
     else:
         npm = None
 
-    if getattr(args, "skip_build", False):
+    if skip_build:
         if source_mode:
             if not _desktop_dist_exists(desktop_dir):
                 print(f"✗ --skip-build --source was passed but no desktop dist found at: {desktop_dir / 'dist'}")
@@ -6986,27 +7129,41 @@ def cmd_gui(args):
         else:
             print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
     else:
-        print("→ Installing desktop workspace dependencies...")
-        install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False)
-        if install_result.returncode != 0:
-            print("✗ Desktop dependency install failed")
-            print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
-            sys.exit(install_result.returncode or 1)
+        # Check the content-hash stamp before doing any build work.
+        # If the source tree hasn't changed since the last successful build,
+        # skip the npm install + build entirely (saves a ton of useless work).
+        # --force-build overrides the stamp and always rebuilds.
+        build_needed = force_build or _desktop_build_needed(
+            desktop_dir, PROJECT_ROOT, source_mode=source_mode
+        )
+        if not build_needed:
+            build_label = "source build" if source_mode else "packaged app"
+            print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
+        else:
+            print("→ Installing desktop workspace dependencies...")
+            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False)
+            if install_result.returncode != 0:
+                print("✗ Desktop dependency install failed")
+                print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
+                sys.exit(install_result.returncode or 1)
 
-        build_label = "source build" if source_mode else "packaged app"
-        print(f"→ Building desktop {build_label}...")
-        build_script = "build" if source_mode else "pack"
-        build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-        if build_result.returncode != 0:
-            print("✗ Desktop GUI build failed")
-            print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
-            sys.exit(build_result.returncode or 1)
-        packaged_executable = _desktop_packaged_executable(desktop_dir)
-        if not source_mode:
-            # Locally-built apps are ad-hoc signed; make them relaunchable after
-            # an in-place self-update (otherwise macOS reports "Hermes is
-            # damaged"). No-op on non-macOS and on real-identity builds.
-            _desktop_macos_relaunchable_fixup(desktop_dir)
+            build_label = "source build" if source_mode else "packaged app"
+            print(f"→ Building desktop {build_label}...")
+            build_script = "build" if source_mode else "pack"
+            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0:
+                print("✗ Desktop GUI build failed")
+                print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
+                sys.exit(build_result.returncode or 1)
+            packaged_executable = _desktop_packaged_executable(desktop_dir)
+            if not source_mode:
+                # Locally-built apps are ad-hoc signed; make them relaunchable after
+                # an in-place self-update (otherwise macOS reports "Hermes is
+                # damaged"). No-op on non-macOS and on real-identity builds.
+                _desktop_macos_relaunchable_fixup(desktop_dir)
+
+            # Build succeeded — write the stamp so next run can skip
+            _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
 
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and then launches the desktop
@@ -9697,6 +9854,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
 
+        # Rebuild the desktop app if the source tree changed since the last
+        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
+        # internally, so this is effectively a no-op when nothing changed.
+        # Only bother if the user has a desktop app installed (indicated by
+        # an existing packaged executable or desktop dist); people who have
+        # never run ``hermes desktop`` shouldn't be forced into a full
+        # Electron build by ``hermes update``.
+        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
+            print("→ Checking if desktop app needs rebuilding...")
+            build_result = subprocess.run(
+                [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
+                cwd=PROJECT_ROOT,
+                check=False,
+            )
+            if build_result.returncode != 0:
+                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+
         print()
         print("✓ Code updated!")
 
@@ -11364,7 +11540,7 @@ def cmd_dashboard(args):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
     elif getattr(args, "skip_build", False):
-        # --skip-build trusts the caller to have pre-built the web UI.
+        # --build-mode skip trusts the caller to have pre-built the web UI.
         # Verify the dist actually exists; otherwise the server will start
         # and serve 404s with no obvious cause (issue #23817).
         _dist_root = (
@@ -14734,11 +14910,6 @@ Examples:
         ),
     )
     gui_parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
-    )
-    gui_parser.add_argument(
         "--source",
         action="store_true",
         help="Launch via `electron .` against apps/desktop/dist instead of the packaged app",
@@ -14765,6 +14936,16 @@ Examples:
     gui_parser.add_argument(
         "--cwd",
         help="Initial project directory for Desktop chat sessions (sets HERMES_DESKTOP_CWD)",
+    )
+    gui_parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
+    )
+    gui_parser.add_argument(
+        "--force-build",
+        action="store_true",
+        help="Force a full rebuild even if the content stamp matches",
     )
     gui_parser.set_defaults(func=cmd_gui)
 

@@ -342,12 +342,19 @@ def _is_image_size_error(error: Exception) -> bool:
 
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
-                              max_base64_bytes: int = _RESIZE_TARGET_BYTES) -> str:
+                              max_base64_bytes: int = _RESIZE_TARGET_BYTES,
+                              max_dimension: Optional[int] = None) -> str:
     """Convert an image to a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
     is not installed or resizing still exceeds the limit, falls back to the raw
     bytes and lets the caller handle the size check.
+
+    Args:
+        max_dimension: If set, images whose longest side exceeds this pixel
+            count are forcibly downscaled even if they're under the byte
+            budget.  Anthropic enforces an 8000 px per-side cap independently
+            of the 5 MB byte cap.
 
     Returns the base64 data URL string.
     """
@@ -355,7 +362,20 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     # Skip the expensive full-read + encode if Pillow can resize directly.
     file_size = image_path.stat().st_size
     estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
-    if estimated_b64 <= max_base64_bytes:
+    needs_resize_for_bytes = estimated_b64 > max_base64_bytes
+
+    # Check pixel dimensions even if bytes are fine.
+    needs_resize_for_dims = False
+    if max_dimension is not None:
+        try:
+            from PIL import Image as _PILQuick
+            with _PILQuick.open(image_path) as _quick_img:
+                if max(_quick_img.size) > max_dimension:
+                    needs_resize_for_dims = True
+        except Exception:
+            pass  # can't check; Pillow path below will handle or skip
+
+    if not needs_resize_for_bytes and not needs_resize_for_dims:
         # Small enough — just encode directly.
         data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         if len(data_url) <= max_base64_bytes:
@@ -373,9 +393,9 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # caller will raise the size error
 
-    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
+    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
-                max_base64_bytes / (1024 * 1024))
+                max_base64_bytes / (1024 * 1024), max_dimension)
 
     mime = mime_type or _determine_mime_type(image_path)
     # Choose output format: JPEG for photos (smaller), PNG for transparency
@@ -393,12 +413,19 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
 
-    # Strategy: halve dimensions until base64 fits, up to 4 rounds.
+    # Strategy: halve dimensions until both base64 fits AND pixel dimensions
+    # are within limits, up to 4 rounds.
     # For JPEG, also try reducing quality at each size step.
     # For PNG, quality is irrelevant — only dimension reduction helps.
     quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
     prev_dims = (img.width, img.height)
     candidate = None  # will be set on first loop iteration
+
+    def _dims_ok(w: int, h: int) -> bool:
+        """True if both pixel dimensions are within the limit."""
+        if max_dimension is None:
+            return True
+        return max(w, h) <= max_dimension
 
     for attempt in range(5):
         if attempt > 0:
@@ -430,7 +457,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             img.save(buf, **save_kwargs)
             encoded = base64.b64encode(buf.getvalue()).decode("ascii")
             candidate = f"data:{out_mime};base64,{encoded}"
-            if len(candidate) <= max_base64_bytes:
+            if len(candidate) <= max_base64_bytes and _dims_ok(img.width, img.height):
                 logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
                             len(candidate) / (1024 * 1024), q,
                             img.width, img.height)

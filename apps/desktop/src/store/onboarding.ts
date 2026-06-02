@@ -417,10 +417,18 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
 // apps/desktop/src/app/artifacts/index.tsx.
 async function openSignInUrl(url: string) {
   if (window.hermesDesktop?.openExternal) {
-    await window.hermesDesktop.openExternal(url)
-  } else {
-    window.open(url, '_blank', 'noopener,noreferrer')
+    try {
+      await window.hermesDesktop.openExternal(url)
+
+      return
+    } catch {
+      // Bridge present but failed (no OS handler, user denied, etc.). Fall
+      // through to window.open so the sign-in URL still opens and the flow
+      // doesn't strand a pending OAuth session in a waiting state.
+    }
   }
+
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {

@@ -487,6 +487,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    "ollama-cloud": "gemma4:31b",
 }
 
 # Providers whose endpoint does not accept image input, even though the
@@ -502,6 +503,17 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
+})
+
+# Providers opted in to same-provider vision model fallback.
+# When the user's main model on one of these providers is text-only,
+# the vision auto-detect chain will try to find a vision-capable model
+# on the *same* provider before falling through to external aggregators.
+# This keeps traffic on the same endpoint and API key (e.g. glm-5.1 on
+# ollama-cloud → gemma4:31b on ollama-cloud).  Providers must be
+# explicitly opted in to avoid unintended behaviour changes.
+_SAME_PROVIDER_VISION_FALLBACK: frozenset = frozenset({
+    "ollama-cloud",
 })
 
 # OpenRouter app attribution headers (base — always sent).
@@ -5212,6 +5224,60 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     return bool(supports)
 
 
+def _find_vision_model_on_provider(provider: str) -> Optional[str]:
+    """Find a vision-capable model on the same provider via models.dev.
+
+    Queries the models.dev registry for the given provider and returns the
+    ID of a suitable vision model. Resolution order:
+
+    1. ``_PROVIDER_VISION_MODELS`` preference (e.g. ollama-cloud → gemma4:31b)
+       if the preferred model is confirmed vision-capable.
+    2. The first vision+tool_call model from models.dev.
+    3. The first vision-only model from models.dev.
+
+    Returns None when no vision model is found or the provider is unknown.
+    Only called for providers opted in via ``_SAME_PROVIDER_VISION_FALLBACK``.
+    """
+    try:
+        from agent.models_dev import _get_provider_models
+    except ImportError:
+        return None
+
+    models = _get_provider_models(provider)
+    if not models:
+        return None
+
+    # 1. Check if _PROVIDER_VISION_MODELS lists a preferred model and
+    #    it's confirmed vision-capable on this provider.
+    preferred = _PROVIDER_VISION_MODELS.get(provider)
+    if preferred:
+        pref_data = models.get(preferred)
+        if pref_data:
+            mods = pref_data.get("modalities", {})
+            input_modes = mods.get("input", []) if isinstance(mods, dict) else []
+            if "image" in input_modes:
+                return preferred
+
+    # 2-3. Scan models.dev for vision-capable models, preferring tool_call.
+    vision_with_tools: list[str] = []
+    vision_without_tools: list[str] = []
+    for model_id, model_data in models.items():
+        modalities = model_data.get("modalities", {})
+        input_modes = modalities.get("input", []) if isinstance(modalities, dict) else []
+        if "image" not in input_modes:
+            continue
+        if model_data.get("tool_call", False):
+            vision_with_tools.append(model_id)
+        else:
+            vision_without_tools.append(model_id)
+
+    if vision_with_tools:
+        return vision_with_tools[0]
+    if vision_without_tools:
+        return vision_without_tools[0]
+    return None
+
+
 def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
@@ -5357,12 +5423,31 @@ def resolve_vision_provider_client(
                 # gpt-oss-120b without vision). Building a client and sending
                 # an image would produce a cryptic provider-side error like
                 # ``unknown variant `image_url`, expected `text``` (#31179).
-                # Fall through to the aggregator chain instead.
                 #
-                # Only log the provider name (not the model) — mirrors the
-                # sibling _PROVIDERS_WITHOUT_VISION branch above, and avoids
-                # CodeQL py/clear-text-logging-sensitive-data heuristic false
-                # positives on multi-value interpolations.
+                # For providers opted in to same-provider vision fallback,
+                # try to find a vision-capable model on the same provider
+                # before falling through to an external aggregator. This
+                # keeps traffic on the same endpoint and API key (e.g.
+                # glm-5.1 on ollama-cloud → gemma4:31b on ollama-cloud).
+                if main_provider in _SAME_PROVIDER_VISION_FALLBACK:
+                    same_provider_vision = _find_vision_model_on_provider(main_provider)
+                    if same_provider_vision:
+                        rpc_client, rpc_model = resolve_provider_client(
+                            main_provider, same_provider_vision,
+                            api_mode=resolved_api_mode,
+                            is_vision=True)
+                        if rpc_client is not None:
+                            logger.info(
+                                "Vision auto-detect: main model is text-only; "
+                                "using same-provider vision model %s/%s",
+                                main_provider, rpc_model or same_provider_vision,
+                            )
+                            return _finalize(
+                                main_provider, rpc_client,
+                                rpc_model or same_provider_vision)
+                # No same-provider vision model found, or provider is not
+                # opted in to same-provider fallback — fall through to the
+                # aggregator chain instead.
                 logger.debug(
                     "Vision auto-detect: skipping main provider %s "
                     "(reports no vision capability) — falling through to "

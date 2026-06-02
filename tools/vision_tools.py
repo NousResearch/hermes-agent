@@ -794,6 +794,11 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in _AGGREGATORS:
         return True
 
+    # OpenAI-compatible endpoints that accept image_url content blocks in
+    # tool-result messages for vision-capable models.
+    if p in {"ollama-cloud", "ollama"}:
+        return True
+
     # Native Anthropic
     if p in {"anthropic", "claude", "anthropic-direct"}:
         return True

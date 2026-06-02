@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kevin.hermes.dashboard.watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/kevin/codex/projects/hermes/scripts/hermes-dashboard-watchdog.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>180</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/kevin/codex/projects/hermes/.hermes-docker/logs/watchdog.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/kevin/codex/projects/hermes/.hermes-docker/logs/watchdog.launchd.err.log</string>
+</dict>
+</plist>

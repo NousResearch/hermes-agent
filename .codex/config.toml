@@ -1,0 +1,15 @@
+# Project-scoped Codex config (trusted projects only)
+project_doc_max_bytes = 32768
+
+[features]
+multi_agent = true
+undo = true
+
+[agents]
+# Non-trivial work should first run a subagent eligibility check.
+# If there is an independent reader/checker lane, prefer `main 1 + helper 1~3` after the eligibility check passes.
+# Single-lane is the opt-out or exception path for trivial, risky/destructive, blocked, overlapping-write, or runtime-limited work.
+# Users can opt out with: 이번 작업은 메인 lane 하나로만 진행해줘.
+max_threads = 8
+max_depth = 2
+job_max_runtime_seconds = 1800

@@ -2264,6 +2264,19 @@ class GatewayRunner:
                 return max(0.0, timeout)
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
 
+    @staticmethod
+    def _is_startup_conflict_error_code(error_code: Optional[str]) -> bool:
+        """Return True when startup should exit cleanly for a hard conflict.
+
+        Conflict-like failures (duplicate app/session locks, polling conflict)
+        are not recoverable in-process and should stop startup. Other fatal
+        startup errors should degrade so cron can continue running.
+        """
+        if not error_code:
+            return False
+        code = str(error_code).strip().lower()
+        return code.endswith("_lock") or code == "telegram_polling_conflict"
+
     def _platform_connect_timeout_secs(self) -> float:
         """Return the per-platform connect timeout used during startup/retry."""
         raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
@@ -4420,6 +4433,7 @@ class GatewayRunner:
         connected_count = 0
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
+        startup_conflict_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
@@ -4495,9 +4509,10 @@ class GatewayRunner:
                             if adapter.fatal_error_retryable
                             else startup_nonretryable_errors
                         )
-                        target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
-                        )
+                        error_text = f"{platform.value}: {adapter.fatal_error_message}"
+                        target.append(error_text)
+                        if self._is_startup_conflict_error_code(adapter.fatal_error_code):
+                            startup_conflict_errors.append(error_text)
                         # Queue for reconnection if the error is retryable
                         if adapter.fatal_error_retryable:
                             self._failed_platforms[platform] = {
@@ -4542,8 +4557,8 @@ class GatewayRunner:
                 }
         
         if connected_count == 0:
-            if startup_nonretryable_errors:
-                reason = "; ".join(startup_nonretryable_errors)
+            if startup_conflict_errors:
+                reason = "; ".join(startup_conflict_errors)
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
@@ -4580,6 +4595,12 @@ class GatewayRunner:
                         pass
                     # Fall through to the normal "running" state — reconnect
                     # watcher takes it from here.
+                if startup_nonretryable_errors:
+                    reason = "; ".join(startup_nonretryable_errors)
+                    logger.warning(
+                        "Gateway started with non-retryable platform errors (degrading for cron): %s",
+                        reason,
+                    )
                 # All enabled platforms had no adapter (missing library or credentials).
                 # In fleet deployments the same config.yaml is shared across nodes that
                 # may only have credentials for a subset of platforms.  Rather than

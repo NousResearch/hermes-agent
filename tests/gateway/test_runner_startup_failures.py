@@ -46,6 +46,28 @@ class _DisabledAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class _NonRetryableAuthFailureAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+
+    async def connect(self) -> bool:
+        self._set_fatal_error(
+            "telegram_auth_invalid",
+            "Telegram startup failed: invalid bot token.",
+            retryable=False,
+        )
+        return False
+
+    async def disconnect(self) -> None:
+        self._mark_disconnected()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        raise NotImplementedError
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
 class _SuccessfulAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
@@ -94,6 +116,44 @@ async def test_runner_stays_alive_for_retryable_startup_errors(monkeypatch, tmp_
     assert Platform.TELEGRAM in runner._failed_platforms
     assert state["platforms"]["telegram"]["state"] == "retrying"
     assert state["platforms"]["telegram"]["error_code"] == "telegram_connect_error"
+
+
+@pytest.mark.asyncio
+async def test_runner_stays_alive_for_nonretryable_nonconflict_startup_errors(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    monkeypatch.setattr(
+        runner,
+        "_create_adapter",
+        lambda platform, platform_config: _NonRetryableAuthFailureAdapter(),
+    )
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        ok = await runner.start()
+
+    # Non-retryable auth-like startup failures should degrade instead of
+    # exiting the process, so cron-only workloads keep running.
+    assert ok is True
+    assert runner.should_exit_cleanly is False
+    assert runner._failed_platforms == {}
+    state = read_runtime_status()
+    assert state["gateway_state"] in {"degraded", "running"}
+    assert state["platforms"]["telegram"]["state"] == "fatal"
+    assert state["platforms"]["telegram"]["error_code"] == "telegram_auth_invalid"
+    # The specific error text must appear in the log stream for operator debugging.
+    assert any(
+        "non-retryable platform errors" in record.message
+        and "invalid bot token" in record.message
+        for record in caplog.records
+    ), "Expected non-retryable error log with specific error details"
 
 
 @pytest.mark.asyncio

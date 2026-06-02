@@ -361,10 +361,17 @@ class StreamingConfig:
     #             fall back to edit-based when not.
     #   "draft" — explicitly request native drafts; falls back to edit when
     #             the platform/chat doesn't support them.
-    #   "edit"  — progressive editMessageText only (legacy/default
-    #             behaviour).
+    #   "edit"  — progressive editMessageText only (legacy behaviour).
     #   "off"   — disable streaming entirely.
-    transport: str = "edit"
+    #
+    # Default is "auto": prefer native draft streaming on platforms that
+    # support it (Telegram DMs via sendMessageDraft, Bot API 9.5+) and fall
+    # back to edit-based streaming everywhere else.  This is safe as a global
+    # default because adapters without draft support (Discord, Slack, Matrix,
+    # …) report supports_draft_streaming() == False and transparently use the
+    # edit path — so "auto" never regresses non-Telegram platforms, it only
+    # upgrades the chats that can render the smoother native preview.
+    transport: str = "auto"
     edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
     buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
     cursor: str = DEFAULT_STREAMING_CURSOR
@@ -393,7 +400,7 @@ class StreamingConfig:
             return cls()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "edit"),
+            transport=data.get("transport", "auto"),
             edit_interval=_coerce_float(
                 data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
             ),

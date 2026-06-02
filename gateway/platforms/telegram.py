@@ -2521,31 +2521,55 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
             self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
-        kwargs: Dict[str, Any] = {
-            "chat_id": int(chat_id),
-            "draft_id": int(draft_id),
-            "text": text,
-        }
         thread_id = self._metadata_thread_id(metadata)
-        if thread_id is not None:
-            kwargs["message_thread_id"] = thread_id
 
-        try:
-            ok = await self._bot.send_message_draft(**kwargs)
-            if ok:
-                # Drafts have no message_id; we report success without one
-                # so the caller knows the animation frame landed.
-                return SendResult(success=True, message_id=None)
-            return SendResult(success=False, error="draft_rejected")
-        except Exception as e:
-            # Most likely: BadRequest because this bot/chat doesn't allow
-            # drafts, or a transient server hiccup.  The caller treats any
-            # failure as "fall back to edit-based for this response".
-            logger.debug(
-                "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
-                self.name, chat_id, draft_id, e,
-            )
-            return SendResult(success=False, error=str(e))
+        # Apply the same MarkdownV2 conversion the regular ``send`` path uses
+        # so the animated draft preview renders with identical formatting to
+        # the final message.  Without this, the draft streams as raw text and
+        # the final ``sendMessage`` (which DOES use MarkdownV2) snaps into
+        # formatted output, producing a jarring visual shift at the end of the
+        # response.  We try MarkdownV2 first and fall back to plain text if a
+        # malformed escape would be rejected — mirroring the (True, False)
+        # retry the streaming send loop uses — so a single bad token never
+        # kills draft streaming for the whole response.
+        for use_markdown in (True, False):
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "draft_id": int(draft_id),
+                "text": self.format_message(text) if use_markdown else text,
+            }
+            if use_markdown:
+                kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+
+            try:
+                ok = await self._bot.send_message_draft(**kwargs)
+                if ok:
+                    # Drafts have no message_id; we report success without one
+                    # so the caller knows the animation frame landed.
+                    return SendResult(success=True, message_id=None)
+                return SendResult(success=False, error="draft_rejected")
+            except Exception as e:
+                # A MarkdownV2 parse failure (BadRequest "can't parse entities")
+                # is recoverable: retry once as plain text.  Any other failure
+                # (chat doesn't allow drafts, transient hiccup) — or a failure
+                # on the plain-text attempt — propagates to the caller, which
+                # treats it as "fall back to edit-based for this response".
+                if use_markdown and self._is_bad_request_error(e):
+                    logger.debug(
+                        "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
+                        "as plain text (chat=%s draft_id=%s): %s",
+                        self.name, chat_id, draft_id, e,
+                    )
+                    continue
+                logger.debug(
+                    "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                    self.name, chat_id, draft_id, e,
+                )
+                return SendResult(success=False, error=str(e))
+
+        return SendResult(success=False, error="draft_rejected")
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id

@@ -1003,8 +1003,11 @@ def switch_model(
     if not validation.get("accepted"):
         override = False
         if user_providers:
+            from hermes_cli.config import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
             for slug, cfg in user_providers.items():
+                if not is_provider_enabled(cfg):
+                    continue
                 if slug == target_provider:
                     cfg_models = cfg.get("models", {})
                     # Direct membership works for dict (keys) and list (strings)
@@ -1600,8 +1603,13 @@ def list_authenticated_providers(
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
+        from hermes_cli.config import is_provider_enabled
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
+                continue
+            # Honour explicit ``providers.<name>.enabled: false`` from
+            # config — these are hidden from the picker.
+            if not is_provider_enabled(ep_cfg):
                 continue
             # Skip if this slug was already emitted (e.g. canonical provider
             # with the same name) or will be picked up by section 4.

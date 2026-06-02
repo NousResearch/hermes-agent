@@ -404,7 +404,8 @@ _SENSITIVE_DATA_MARKERS = {
 }
 _PUBLIC_OR_FREE_PROVIDERS = {"nous", "openrouter", "copilot"}
 _PREMIUM_QUOTA_PRESSURE_PCT = 85.0
-_DEFAULT_ROUTING_PRESET = "front_door_or_uncertain"
+_DEFAULT_ROUTING_PRESET = "front_door"
+_UNCERTAINTY_ESCALATION_PRESET = "uncertainty_escalation"
 
 
 def _builtin_model_routing_table() -> dict[str, Any]:
@@ -412,15 +413,17 @@ def _builtin_model_routing_table() -> dict[str, Any]:
 
     A generated profile-local routing table is preferred when present. The
     built-in table keeps model_routing deterministic on fresh profiles while
-    preserving the critical privacy/uncertainty default to GPT-5.5.
+    preserving the critical privacy default to GPT-5.5 without conflating
+    ordinary front-door control-plane work with xhigh hard-reasoning lanes.
     """
     front = {
         "provider": "openai-codex",
         "model": "gpt-5.5",
-        "reasoning_effort": "xhigh",
+        "reasoning_effort": "high",
         "route_key": "openai-codex/gpt-5.5",
         "quota_mode": "always_premium",
     }
+    hard = {**front, "reasoning_effort": "xhigh"}
     cheap = {
         "provider": "nous",
         "model": "deepseek/deepseek-v4-flash:free",
@@ -435,20 +438,37 @@ def _builtin_model_routing_table() -> dict[str, Any]:
         "route_key": "deepseek/deepseek-v4-pro",
         "quota_mode": "budget_ok",
         "budget_route": dict(cheap),
-        "fallback": [_DEFAULT_ROUTING_PRESET],
+        "fallback": [_UNCERTAINTY_ESCALATION_PRESET],
     }
     lanes = {
         _DEFAULT_ROUTING_PRESET: dict(front),
-        "architecture_design": dict(front),
-        "sensitive_business": dict(front),
-        "synthesis_recommendation": dict(front),
-        "complex_debugging": dict(front),
-        "security_review": dict(front),
+        # Backwards-compatible alias: older prompts/tools may still name this
+        # lane, but it must behave like the front door (high), not like an
+        # implicit xhigh uncertainty escalation.
+        "front_door_or_uncertain": dict(front),
+        _UNCERTAINTY_ESCALATION_PRESET: dict(hard),
+        "architecture_design": dict(hard),
+        "sensitive_business": dict(hard),
+        "synthesis_recommendation": dict(hard),
+        "complex_debugging": dict(hard),
+        "security_review": dict(hard),
         "bounded_low_risk_delegate": dict(cheap),
         "verification_leaf": {**cheap, "min_scores": {"coding": 0.60, "data_scan": 0.50}, "fallback": [_DEFAULT_ROUTING_PRESET]},
         "public_research": {**cheap, "reasoning_effort": "minimal", "fallback": [_DEFAULT_ROUTING_PRESET]},
         "file_authoring_bounded": {**cheap, "fallback": [_DEFAULT_ROUTING_PRESET]},
         "simple_config_patch": {**cheap, "fallback": [_DEFAULT_ROUTING_PRESET]},
+        "repo_publish": {
+            **front,
+            "reasoning_effort": "low",
+            "fallback": [_DEFAULT_ROUTING_PRESET],
+            "data_classes_allowed": ["public", "trivial", "business", "credential-adjacent"],
+        },
+        "repo_verification": {
+            **front,
+            "reasoning_effort": "low",
+            "fallback": [_DEFAULT_ROUTING_PRESET],
+            "data_classes_allowed": ["business", "credential-adjacent"],
+        },
         "code_review_quality": {**pro, "reasoning_effort": "medium"},
         "code_implementation": pro,
         "vault_curation": {**pro, "reasoning_effort": "low"},
@@ -457,7 +477,8 @@ def _builtin_model_routing_table() -> dict[str, Any]:
         "version": 1,
         "policy": {
             "uncertainty_bias": "over_resource",
-            "default_uncertain_route": front,
+            "front_door_route": front,
+            "default_uncertain_route": hard,
             "privacy_rule": "sensitive work must not route to public/free providers",
         },
         "task_lanes": lanes,
@@ -487,11 +508,15 @@ _MODEL_ROUTING_ALIASES = {
     "config_patch": "simple_config_patch",
     "debugging_complex": "complex_debugging",
     "file_authoring": "file_authoring_bounded",
+    "frontdoor": "front_door",
+    "front_door_or_uncertain": "front_door",
     "implementation": "code_implementation",
     "implementation_routine": "code_implementation",
     "research_public": "public_research",
     "review_security": "security_review",
     "synthesis": "synthesis_recommendation",
+    "uncertain": "uncertainty_escalation",
+    "uncertainty": "uncertainty_escalation",
     "verification": "verification_leaf",
 }
 
@@ -1950,9 +1975,11 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Optional routing preset to resolve provider, model_override, "
                     "and reasoning effort from the profile model-routing table, "
-                    "e.g. 'verification_leaf', 'public_research', "
-                    "'code_implementation', 'architecture_design', or "
-                    "'front_door_or_uncertain'. Explicit model_override wins the "
+                    "e.g. 'front_door', 'repo_publish', 'repo_verification', "
+                    "'verification_leaf', 'public_research', 'code_implementation', "
+                    "'architecture_design', or 'uncertainty_escalation'. "
+                    "Legacy 'front_door_or_uncertain' resolves to front_door/high. "
+                    "Explicit model_override wins the "
                     "model id while the preset still supplies provider/effort."
                 ),
             },

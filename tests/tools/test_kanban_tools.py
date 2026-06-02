@@ -823,6 +823,12 @@ def _write_model_routing_table(home: str | os.PathLike[str], *, weak_flash: bool
         "updated_at": "2026-05-26T00:00:00Z",
         "policy": {
             "uncertainty_bias": "over_resource",
+            "front_door_route": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "high",
+                "route_key": "openai-codex/gpt-5.5",
+            },
             "default_uncertain_route": {
                 "provider": "openai-codex",
                 "model": "gpt-5.5",
@@ -833,7 +839,23 @@ def _write_model_routing_table(home: str | os.PathLike[str], *, weak_flash: bool
             "stale_after_days": 45,
         },
         "task_lanes": {
+            "front_door": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "high",
+                "route_key": "openai-codex/gpt-5.5",
+                "min_scores": {"reasoning": 0.75, "writing": 0.70},
+                "quota_mode": "always_premium",
+            },
             "front_door_or_uncertain": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "high",
+                "route_key": "openai-codex/gpt-5.5",
+                "min_scores": {"reasoning": 0.75, "writing": 0.70},
+                "quota_mode": "always_premium",
+            },
+            "uncertainty_escalation": {
                 "provider": "openai-codex",
                 "model": "gpt-5.5",
                 "reasoning_effort": "xhigh",
@@ -848,7 +870,7 @@ def _write_model_routing_table(home: str | os.PathLike[str], *, weak_flash: bool
                 "route_key": "nous/deepseek/deepseek-v4-flash:free",
                 "min_scores": {"coding": 0.60, "data_scan": 0.50},
                 "quota_mode": "normal",
-                "fallback": ["front_door_or_uncertain"],
+                "fallback": ["front_door"],
                 "data_classes_allowed": ["public", "trivial"],
             },
             "code_implementation": {
@@ -864,7 +886,7 @@ def _write_model_routing_table(home: str | os.PathLike[str], *, weak_flash: bool
                     "reasoning_effort": "low",
                     "route_key": "nous/deepseek/deepseek-v4-flash:free",
                 },
-                "fallback": ["front_door_or_uncertain"],
+                "fallback": ["uncertainty_escalation"],
             },
             "security_review": {
                 "provider": "openai-codex",
@@ -1003,11 +1025,31 @@ def test_create_model_routing_privacy_escalates_sensitive_public_lane(worker_env
     assert d["model_override"] == "gpt-5.5"
     assert d["model_routing"]["privacy_escalated"] is True
     assert d["model_routing"]["provider"] == "openai-codex"
+    assert d["model_routing"]["reasoning_effort"] == "high"
 
     with kb.connect() as conn:
         task = kb.get_task(conn, d["task_id"])
     assert task is not None
     assert task.model_override == "gpt-5.5"
+    assert task.model_reasoning_effort == "high"
+
+
+def test_legacy_front_door_or_uncertain_alias_resolves_to_front_door_high(worker_env):
+    _write_model_routing_table(os.environ["HERMES_HOME"])
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "publish and verify",
+        "assignee": "orchestrator",
+        "model_routing": "front_door_or_uncertain",
+        "data_sensitivity": "credential-adjacent",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["model_override"] == "gpt-5.5"
+    assert d["model_provider_override"] == "openai-codex"
+    assert d["model_reasoning_effort"] == "high"
+    assert d["model_routing"]["resolved_preset"] == "front_door"
 
 
 def test_create_model_routing_persists_xhigh_route_tuple(worker_env):
@@ -1086,6 +1128,7 @@ def test_create_model_routing_benchmark_failure_escalates_to_front_door(worker_e
     d = json.loads(out)
     assert d["ok"] is True
     assert d["model_override"] == "gpt-5.5"
+    assert d["model_reasoning_effort"] == "high"
     assert d["model_routing"]["fallback_applied"] is True
     assert d["model_routing"]["fallback_reason"].startswith("benchmark_failed")
 

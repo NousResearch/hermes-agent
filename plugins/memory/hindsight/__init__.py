@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import importlib
 import json
 import logging
@@ -271,14 +272,18 @@ def _get_loop() -> asyncio.AbstractEventLoop:
         return _loop
 
 
-def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
+def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT, operation_name: str = "hindsight operation"):
     """Schedule *coro* on the shared loop and block until done."""
     from agent.async_utils import safe_schedule_threadsafe
     loop = _get_loop()
     future = safe_schedule_threadsafe(coro, loop)
     if future is None:
         raise RuntimeError("Hindsight loop unavailable")
-    return future.result(timeout=timeout)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"{operation_name} timed out after {timeout}s") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1062,9 +1067,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = Hindsight(**kwargs)
         return self._client
 
-    def _run_sync(self, coro):
+    def _run_sync(self, coro, operation_name: str = "hindsight operation"):
         """Schedule *coro* on the shared loop using the configured timeout."""
-        return _run_sync(coro, timeout=self._timeout)
+        return _run_sync(coro, timeout=self._timeout, operation_name=operation_name)
 
     def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
         """Return True for stale embedded-daemon connection failures."""
@@ -1152,7 +1157,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
         client = self._get_client()
         try:
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), operation_name="hindsight client operation")
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
@@ -1163,7 +1168,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = None
             client = self._get_client()
             self._client = client
-            return self._run_sync(operation(client))
+            return self._run_sync(operation(client), operation_name="hindsight client operation retry")
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
@@ -1713,10 +1718,12 @@ class HindsightMemoryProvider(MemoryProvider):
                     tags=args.get("tags"),
                 )
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
+                retain_async = item.pop("retain_async", None)
                 item.pop("bank_id", None)
-                item.pop("retain_async", None)
-                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                             self._bank_id, len(content), context)
+                logger.debug(
+                    "Tool hindsight_retain: bank=%s, url=%s, timeout=%s, async=%s, content_len=%d, context=%s",
+                    self._bank_id, self._api_url, self._timeout, retain_async, len(content), context,
+                )
                 self._run_hindsight_operation(
                     lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
                 )
@@ -1724,7 +1731,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)
-                return tool_error(f"Failed to store memory: {e}")
+                detail = str(e) or type(e).__name__
+                return tool_error(f"Failed to store memory: {detail}")
 
         elif tool_name == "hindsight_recall":
             query = args.get("query", "")

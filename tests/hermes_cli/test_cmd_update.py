@@ -39,6 +39,42 @@ def mock_args():
     return SimpleNamespace()
 
 
+# ---------------------------------------------------------------------------
+# Managed-uv compatibility for tests that patch shutil.which
+# ---------------------------------------------------------------------------
+# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
+# instead of ``shutil.which("uv")``.  Many tests in this file patch
+# ``shutil.which`` to control whether uv is "available" — these autouse
+# fixtures make the managed_uv functions delegate to the patched
+# ``shutil.which`` so the existing test setup keeps working without
+# per-test changes.
+@pytest.fixture(autouse=True)
+def _patch_managed_uv(request):
+    """Make managed_uv helpers follow shutil.which mocking in tests."""
+    import shutil
+
+    # resolve_uv delegates to shutil.which("uv") so that test patches
+    # on shutil.which flow through naturally.
+    def _fake_resolve_uv():
+        return shutil.which("uv")
+
+    def _fake_ensure_uv():
+        path = shutil.which("uv")
+        return (path, False)  # never freshly bootstrapped in tests
+
+    def _fake_update_managed_uv():
+        return None  # never actually self-update in tests
+
+    def _fake_rebuild_venv(*args, **kwargs):
+        return True  # no-op in tests
+
+    with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
+         patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch("hermes_cli.managed_uv.rebuild_venv", side_effect=_fake_rebuild_venv):
+        yield
+
+
 class TestCmdUpdatePip:
     """Regression tests for pip-install update flows."""
 

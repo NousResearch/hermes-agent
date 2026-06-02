@@ -560,6 +560,120 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+# Feishu rejects markdown card elements over ~3400 chars and caps total
+# elements per card at 40. Leave headroom for header/footer in defaults.
+_FEISHU_MARKDOWN_ELEMENT_SOFT_LIMIT = 3000
+_FEISHU_CARD_MAX_ELEMENTS = 40
+
+
+def _split_markdown_for_card_elements(
+    content: str,
+    *,
+    soft_limit: int = _FEISHU_MARKDOWN_ELEMENT_SOFT_LIMIT,
+    max_elements: int = _FEISHU_CARD_MAX_ELEMENTS - 2,
+) -> List[str]:
+    """Split markdown into chunks that fit Feishu card markdown element limits.
+
+    Feishu rejects markdown elements over ~3400 chars and caps total elements
+    per card at 40. Split on blank lines, but never split inside a fenced code
+    block.
+    """
+    if not content:
+        return [""]
+    if len(content) <= soft_limit:
+        return [content]
+
+    lines = content.split("\n")
+    blocks: List[str] = []
+    buf: List[str] = []
+    in_code = False
+
+    def _flush(force: bool = False) -> None:
+        if buf:
+            blocks.append("\n".join(buf).rstrip())
+            buf.clear()
+        elif force:
+            blocks.append("")
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            buf.append(line)
+            continue
+        if in_code:
+            buf.append(line)
+            continue
+        # Blank line is a paragraph break — only safe split point.
+        if not stripped:
+            buf.append(line)
+            current = "\n".join(buf)
+            if len(current) >= soft_limit * 0.7:
+                _flush()
+            continue
+        buf.append(line)
+    _flush()
+
+    # Merge tiny adjacent blocks back together up to soft_limit.
+    merged: List[str] = []
+    for block in blocks:
+        if merged and len(merged[-1]) + len(block) + 2 <= soft_limit:
+            merged[-1] = merged[-1] + "\n\n" + block
+        else:
+            merged.append(block)
+
+    # Hard-cap any single block. For blocks containing fenced code, prefer to
+    # split on safe paragraph boundaries; otherwise raw-slice as last resort.
+    final: List[str] = []
+    for block in merged:
+        if len(block) <= soft_limit:
+            final.append(block)
+        else:
+            # Last resort: raw slice. Code blocks may span chunks, but Feishu
+            # markdown elements render fenced code per element, so closing
+            # fences will look slightly off — acceptable vs total truncation.
+            for i in range(0, len(block), soft_limit):
+                final.append(block[i:i + soft_limit])
+
+    if len(final) > max_elements:
+        kept = final[: max_elements - 1]
+        kept.append("_Content truncated to keep Feishu card delivery stable._")
+        final = kept
+    return final
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Wrap markdown content (which contains a table) into a minimal v2 card.
+
+    Feishu IM 'post' messages do not render markdown tables — the message
+    appears blank or as raw source. Interactive cards with `tag: markdown`
+    elements DO render tables. This builds a minimal card v2 envelope.
+
+    Falls back transparently: if the API rejects the card, the outbound
+    pipeline downgrades to post, then to text.
+    """
+    chunks = _split_markdown_for_card_elements(content)
+    elements = [{"tag": "markdown", "content": chunk} for chunk in chunks if chunk]
+    if not elements:
+        elements = [{"tag": "markdown", "content": content}]
+    card = {
+        "schema": "2.0",
+        "config": {
+            "update_multi": True,
+            "enable_forward": True,
+            "width_mode": "fill",
+        },
+        "header": {
+            "title": {"tag": "plain_text", "content": "Hermes"},
+        },
+        "body": {
+            "direction": "vertical",
+            "elements": elements,
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
@@ -4310,10 +4424,20 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Wrap into a minimal v2 interactive card (markdown elements DO render
+        # tables there). The send pipeline already falls back to post → text
+        # if the card is rejected by the API.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            try:
+                card_json = _build_table_card_payload(content)
+                return "interactive", card_json
+            except Exception:
+                logger.warning(
+                    "[Feishu] Table → card conversion failed; falling back to text",
+                    exc_info=True,
+                )
+                text_payload = {"text": content}
+                return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

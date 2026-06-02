@@ -451,6 +451,84 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(info["name"], "Hermes Group")
         self.assertEqual(info["type"], "group")
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_wraps_table_into_v2_card(self):
+        """A markdown table must produce a v2 interactive card with
+        tag:markdown elements, not a degraded plain-text payload."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "Here are the rows:\n\n"
+            "| Name | Code | Qty |\n"
+            "|---|---|---|\n"
+            "| Alpha | 001 | 100 |\n"
+            "| Beta  | 002 | 200 |\n"
+        )
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertEqual(card["schema"], "2.0")
+        elements = card["body"]["elements"]
+        self.assertTrue(elements)
+        self.assertTrue(all(el["tag"] == "markdown" for el in elements))
+        self.assertIn("| Name | Code | Qty |", elements[0]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_falls_back_to_text_when_card_build_fails(self):
+        """If card construction raises, fall back to plain text rather than
+        crashing the send pipeline."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "| Name | Code |\n"
+            "|---|---|\n"
+            "| Alpha | 001 |\n"
+        )
+
+        with patch(
+            "gateway.platforms.feishu._build_table_card_payload",
+            side_effect=RuntimeError("boom"),
+        ):
+            msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": content})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_non_table_markdown_still_uses_post(self):
+        """Markdown without tables must still use the existing post-payload
+        path (regression guard for the table-card branch)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "Here is **bold** and a [link](https://example.com)."
+
+        msg_type, _payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_plain_text_unchanged(self):
+        """Plain text (no markdown hints, no table) stays as text."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "Just a plain reply, nothing fancy."
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": content})
+
+
 class TestAdapterModule(unittest.TestCase):
     def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):
         from gateway.platforms.feishu import FeishuAdapter

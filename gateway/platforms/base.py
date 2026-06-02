@@ -1404,17 +1404,16 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
 
 
 # ---------------------------------------------------------------------------
-# Media-delivery extension allowlist — SINGLE SOURCE OF TRUTH
+# Media-delivery extension allowlists
 #
-# Both extractors that turn response text into native attachments derive their
-# extension set from this tuple:
-#   * ``extract_media()``       — explicit ``MEDIA:<path>`` tags
-#   * ``extract_local_files()`` — bare absolute/home paths the agent mentions
+# Explicit ``MEDIA:<path>`` tags use the broad MEDIA_DELIVERY_EXTS set: a tag is
+# an intentional upload instruction, so generated YAML/JSON/etc. should still be
+# deliverable. Bare path auto-attach uses BARE_LOCAL_FILE_EXTS, a narrower subset
+# that excludes YAML/YML and runs an additional sensitive-path guard before any
+# file is uploaded.
 #
-# Historically these two carried independently-maintained extension lists.
-# ``extract_media`` had a narrow list (no .md/.json/.yaml/.xml/.html/...) while
-# ``extract_local_files`` had a broad one. Combined with the unconditional
-# ``MEDIA:\\s*\\S+`` cleanup at the dispatch sites, that mismatch created a
+# Historically ``extract_media`` had a narrow list (no .md/.json/.yaml/.xml/.html/...)
+# while ``extract_local_files`` had a broad one. Combined with the unconditional
 # silent black hole: a ``MEDIA:/report.md`` tag failed the narrow extract_media
 # match, got stripped from the body by the loose cleanup regex, and was then
 # invisible to extract_local_files — the file was never delivered (issue
@@ -1447,6 +1446,49 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Web / rendered output
     ".html", ".htm",
 )
+
+# Bare-path auto-attach is intentionally narrower than explicit MEDIA: tags.
+# YAML is overwhelmingly configuration, not a safe generated artifact. Agents can
+# still intentionally send YAML with an explicit MEDIA: tag, which uses
+# MEDIA_DELIVERY_EXTS above.
+BARE_LOCAL_FILE_EXTS: Tuple[str, ...] = tuple(
+    ext for ext in MEDIA_DELIVERY_EXTS if ext not in {".yaml", ".yml"}
+)
+
+_SENSITIVE_BARE_FILE_NAMES = frozenset({
+    "config.yaml",
+    "config.yml",
+    ".env",
+    "auth.json",
+    "credentials.json",
+    "secrets.json",
+    "known_hosts",
+})
+_SENSITIVE_BARE_FILE_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+_SENSITIVE_BARE_FILE_PREFIXES = ("id_rsa", "id_ed25519", ".env")
+_SENSITIVE_BARE_FILE_SUBSTRINGS = ("secret", "credential", "token", "password")
+
+
+def _is_sensitive_bare_local_file_path(path: str) -> bool:
+    """Return True when a bare path should never be auto-attached.
+
+    This guard applies only to automatic bare-path extraction. Explicit MEDIA:
+    tags remain the deliberate escape hatch for attachments that happen to look
+    config-like.
+    """
+    lowered = os.path.expanduser(path).lower()
+    parts = {part for part in re.split(r"[/\\]+", lowered) if part}
+    name = next((part for part in reversed(re.split(r"[/\\]+", lowered)) if part), "")
+
+    if ".hermes" in parts:
+        return True
+    if name in _SENSITIVE_BARE_FILE_NAMES:
+        return True
+    if name.endswith(_SENSITIVE_BARE_FILE_SUFFIXES):
+        return True
+    if name.startswith(_SENSITIVE_BARE_FILE_PREFIXES):
+        return True
+    return any(marker in name for marker in _SENSITIVE_BARE_FILE_SUBSTRINGS)
 
 # Regex alternation fragment of bare extensions (no leading dot), e.g.
 # ``png|jpe?g|...``. ``jpe?g`` collapses jpg/jpeg into one branch. Sorted
@@ -3712,6 +3754,11 @@ class BasePlatformAdapter(ABC):
         document extensions route through ``send_document``.  The dispatch
         partition lives in ``gateway/run.py``.
 
+        The bare-path allow-list is intentionally narrower than explicit
+        ``MEDIA:`` tags: YAML/YML is excluded, and config/credential-looking
+        paths (including anything under a ``.hermes`` directory) are never
+        auto-attached. Use explicit ``MEDIA:`` for intentional uploads.
+
         Paths inside fenced code blocks (``` ... ```) and inline code
         (`...`) are ignored so that code samples are never mutilated.
 
@@ -3719,7 +3766,7 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = MEDIA_DELIVERY_EXTS
+        _LOCAL_MEDIA_EXTS = BARE_LOCAL_FILE_EXTS
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
@@ -3747,6 +3794,8 @@ class BasePlatformAdapter(ABC):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
+            if _is_sensitive_bare_local_file_path(expanded):
+                continue
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
             else:

@@ -409,6 +409,7 @@ class TestTickProfilePartition:
 
     def test_profile_jobs_run_sequentially(self, isolated_cron_profile_home, monkeypatch):
         import threading
+        import time
         import cron.scheduler as sched
 
         profile_job = {"id": "a", "name": "A", "profile": "default"}
@@ -418,9 +419,13 @@ class TestTickProfilePartition:
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
 
         calls: list[tuple[str, str]] = []
+        job_done = threading.Event()
 
         def fake_run_job(job):
             calls.append((job["id"], threading.current_thread().name))
+            if job["id"] == "b":
+                # Signal that the parallel job has started — safe to check.
+                job_done.set()
             return True, "output", "response", None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
@@ -431,8 +436,16 @@ class TestTickProfilePartition:
         n = sched.tick(verbose=False)
 
         assert n == 2
+        # Tick returns immediately (fire-and-forget) — wait for both jobs
+        # to complete before inspecting the calls list.
+        job_done.wait(timeout=5)
+        time.sleep(0.2)
+
         ids = [job_id for job_id, _thread_name in calls]
         assert ids.index("a") < ids.index("b")
-        main_thread_name = threading.current_thread().name
-        profile_thread_name = next(thread for job_id, thread in calls if job_id == "a")
-        assert profile_thread_name == main_thread_name
+        # Sequential jobs run on the module-level _sequential_pool thread,
+        # NOT the main thread (fire-and-forget dispatch).
+        seq_thread = next(thread for job_id, thread in calls if job_id == "a")
+        par_thread = next(thread for job_id, thread in calls if job_id == "b")
+        assert seq_thread.startswith("cron-seq"), f"Expected cron-seq thread, got {seq_thread}"
+        assert par_thread.startswith("cron-par"), f"Expected cron-par thread, got {par_thread}"

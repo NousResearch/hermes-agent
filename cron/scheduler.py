@@ -170,6 +170,47 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+# Module-level single-thread executor for sequential (env-mutating) cron
+# jobs.  Persists across ticks so jobs queue correctly even when ticks
+# overlap — a fresh per-tick pool could accept work from a newer tick
+# while an older tick's jobs are still running.
+_sequential_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="cron-seq",
+)
+# Pending futures from fire-and-forget dispatch — used by _drain_pending()
+# so tests can wait for background jobs without arbitrary sleeps.
+_pending_futures: list = []
+
+
+def _drain_pending(timeout: float = 10.0) -> None:
+    """Wait for all pending cron jobs to complete.  Intended for testing."""
+    for f in list(_pending_futures):
+        try:
+            f.result(timeout=timeout)
+        except Exception:
+            pass
+    _pending_futures.clear()
+
+
+
+
+def _release_lock(fd) -> None:
+    """Release the file lock without closing the file descriptor."""
+    if fd is None:
+        return
+    if fcntl:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except (OSError, IOError):
+            pass
+    elif msvcrt:
+        try:
+            msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+        except (OSError, IOError):
+            pass
+
+
 @contextmanager
 def _job_profile_context(job_id: str, profile: Optional[str]):
     """Temporarily run a job under a specific Hermes profile.
@@ -1841,19 +1882,26 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
-    """
-    Check and run all due jobs.
-    
-    Uses a file lock so only one tick runs at a time, even if the gateway's
-    in-process ticker and a standalone daemon or manual tick overlap.
-    
+    """Check and run all due jobs.
+
+    Uses a file lock so only one tick dispatches at a time, even if the
+    gateway's in-process ticker and a standalone daemon or manual tick
+    overlap.
+
+    Dispatch is decoupled from completion: the file lock is released and
+    futures are returned immediately so the ticker thread is never blocked
+    by slow jobs.  Sequential (env-mutating) jobs are queued to a module-
+    level single-thread executor to preserve ordering.  Parallel jobs are
+    submitted to a per-tick pool and run in the background.  MCP orphan
+    cleanup runs as a done-callback on the last parallel future.
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+
     Returns:
-        Number of jobs executed (0 if another tick is already running)
+        Number of jobs dispatched (0 if another tick is already running)
     """
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
@@ -1886,6 +1934,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         # before any execution begins.  This preserves at-most-once semantics.
         for job in due_jobs:
             advance_next_run(job["id"])
+
+        # Release the file lock immediately after advance_next_run.
+        # advance_next_run already set next_run_at for all due jobs so
+        # at-most-once semantics are preserved even when a second tick
+        # starts before these jobs finish.
+        _release_lock(lock_fd)
+        lock_fd = None  # prevent double-release in finally
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -1974,51 +2029,59 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
         ]
 
-        _results: list = []
-
         # Sequential pass for env/context-mutating jobs.
-        for job in sequential_jobs:
-            _ctx = contextvars.copy_context()
-            _results.append(_ctx.run(_process_job, job))
+        # Queued to a module-level single-thread executor so they run one
+        # at a time without blocking the ticker thread.
+        if sequential_jobs:
+            for job in sequential_jobs:
+                _ctx = contextvars.copy_context()
+                _sequential_pool.submit(_ctx.run, _process_job, job)
 
-        # Parallel pass for the rest — same behaviour as before.
+        # Parallel pass for the rest — submit without blocking on
+        # completion.  The tick returns immediately so the ticker thread
+        # can dispatch the next batch on schedule.
+        _parallel_futures: list = []
         if parallel_jobs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-                _futures = []
-                for job in parallel_jobs:
-                    _ctx = contextvars.copy_context()
-                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                for f in concurrent.futures.as_completed(_futures, timeout=600):
-                    try:
-                        _results.append(f.result())
-                    except Exception as exc:
-                        logger.error("Parallel cron job future failed: %s", exc)
-                        _results.append(False)
+            _tick_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_max_workers,
+                thread_name_prefix="cron-par",
+            )
+            for job in parallel_jobs:
+                _ctx = contextvars.copy_context()
+                _parallel_futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
+            _pending_futures.extend(_parallel_futures)
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown during this tick.  Runs AFTER every job has
-        # finished so active sessions (including live user chats) are
-        # never touched — only PIDs explicitly detected as orphans in
-        # tools.mcp_tool._run_stdio's finally block are reaped.
-        try:
-            from tools.mcp_tool import _kill_orphaned_mcp_children
-            _kill_orphaned_mcp_children()
-        except Exception as _e:
-            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+        # session teardown.  Runs once after ALL parallel futures complete,
+        # via a done-callback so the tick returns immediately.
+        if _parallel_futures:
+            _pending = [len(_parallel_futures)]
 
-        return sum(_results)
+            def _mcp_cleanup_done(_f: concurrent.futures.Future) -> None:
+                _pending[0] -= 1
+                if _pending[0] <= 0:
+                    try:
+                        from tools.mcp_tool import _kill_orphaned_mcp_children
+                        _kill_orphaned_mcp_children()
+                    except Exception as _e:
+                        logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+
+            for _f in _parallel_futures:
+                _f.add_done_callback(_mcp_cleanup_done)
+        else:
+            # No parallel jobs — still sweep orphans (e.g. from sequential).
+            try:
+                from tools.mcp_tool import _kill_orphaned_mcp_children
+                _kill_orphaned_mcp_children()
+            except Exception as _e:
+                logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
+
+        return len(due_jobs)
     finally:
-        if fcntl:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+        # lock_fd may be None if already released after advance_next_run.
+        if lock_fd is not None:
+            _release_lock(lock_fd)
+            lock_fd.close()
 
 
 if __name__ == "__main__":

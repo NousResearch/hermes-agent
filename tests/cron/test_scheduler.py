@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _drain_pending
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -1298,6 +1298,7 @@ class TestRunJobSessionPersistence:
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("cron.scheduler.run_job", return_value=(True, "output", "", None)):
             tick(verbose=False)
+            _drain_pending()
 
         # Should be called with success=False because final_response is empty
         mock_mark.assert_called_once()
@@ -1813,6 +1814,7 @@ class TestSilentDelivery:
             from cron.scheduler import tick
             with caplog.at_level(logging.INFO, logger="cron.scheduler"):
                 tick(verbose=False)
+                _drain_pending()
         deliver_mock.assert_not_called()
         assert any(SILENT_MARKER in r.message for r in caplog.records)
 
@@ -1824,6 +1826,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
+            _drain_pending()
         deliver_mock.assert_not_called()
 
     def test_silent_trailing_suppresses_delivery(self):
@@ -1836,6 +1839,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
+            _drain_pending()
         deliver_mock.assert_not_called()
 
     def test_silent_is_case_insensitive(self):
@@ -1846,6 +1850,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
+            _drain_pending()
         deliver_mock.assert_not_called()
 
     def test_failed_job_always_delivers(self):
@@ -1857,6 +1862,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
+            _drain_pending()
         deliver_mock.assert_called_once()
 
     def test_output_saved_even_when_delivery_suppressed(self):
@@ -1868,6 +1874,7 @@ class TestSilentDelivery:
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
             tick(verbose=False)
+            _drain_pending()
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
 
@@ -1880,6 +1887,7 @@ class TestSilentDelivery:
              patch("cron.scheduler.mark_job_run") as mark_mock:
             from cron.scheduler import tick
             tick(verbose=False)
+            _drain_pending()
 
         deliver_mock.assert_not_called()
         mark_mock.assert_called_once_with(
@@ -2310,6 +2318,7 @@ class TestParallelTick:
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             result = tick(verbose=False)
+            _drain_pending()
 
         assert result == 2
         # Both starts happened before both ends — proof of concurrency
@@ -2355,6 +2364,7 @@ class TestParallelTick:
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
+            _drain_pending()
 
         assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
         assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
@@ -2384,6 +2394,7 @@ class TestParallelTick:
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             result = tick(verbose=False)
+            _drain_pending()
 
         assert result == 2
         # With max_workers=1, second job starts after first ends

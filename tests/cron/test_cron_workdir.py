@@ -217,11 +217,15 @@ class TestTickWorkdirPartition:
 
         # Record call order / thread context.
         import threading
-        calls: list[tuple[str, bool]] = []
+        import time
+        calls: list[tuple[str, str]] = []
+        job_done = threading.Event()
 
         def fake_run_job(job):
             # Return a minimal tuple matching run_job's signature.
             calls.append((job["id"], threading.current_thread().name))
+            if job["id"] == "b":
+                job_done.set()
             return True, "output", "response", None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
@@ -234,14 +238,19 @@ class TestTickWorkdirPartition:
         n = sched.tick(verbose=False)
         assert n == 2
 
+        # Tick returns immediately (fire-and-forget) — wait for jobs.
+        job_done.wait(timeout=5)
+        time.sleep(0.2)
+
         ids = [c[0] for c in calls]
         # Workdir jobs always come before parallel jobs.
         assert ids.index("a") < ids.index("b")
 
-        # The workdir job must run on the main thread (sequential pass).
-        main_thread_name = threading.current_thread().name
+        # The workdir job runs on the module-level _sequential_pool thread,
+        # NOT the main thread (fire-and-forget dispatch).
         workdir_thread_name = next(t for jid, t in calls if jid == "a")
-        assert workdir_thread_name == main_thread_name
+        assert workdir_thread_name.startswith("cron-seq"), \
+            f"Expected cron-seq thread, got {workdir_thread_name}"
 
 
 # ---------------------------------------------------------------------------

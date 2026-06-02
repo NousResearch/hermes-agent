@@ -2195,6 +2195,8 @@ DEFAULT_CONFIG = {
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            "prompt_file": "",     # optional UTF-8 file with a reusable transcription prompt
+            "hotwords": "",        # optional endpoint-specific vocabulary hints (e.g. Speaches)
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602

@@ -1346,6 +1346,38 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _get_openai_stt_prompt(
+    openai_cfg: Optional[dict] = None,
+    prompt: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve an OpenAI-compatible STT prompt with inline input first.
+
+    The optional ``prompt`` argument is the dynamic/static value threaded by
+    the generic STT prompt work in #65632.  ``stt.openai.prompt_file`` is a
+    provider-specific fallback for reusable, version-controlled vocabulary
+    hints.  Reading the file at transcription time lets edits take effect
+    without restarting Hermes.
+    """
+    inline_prompt = str(prompt or "").strip()
+    if inline_prompt:
+        return inline_prompt
+
+    if openai_cfg is None:
+        openai_cfg = _load_stt_config().get("openai", {})
+    if not isinstance(openai_cfg, dict):
+        openai_cfg = {}
+
+    prompt_file = str(openai_cfg.get("prompt_file") or "").strip()
+    if not prompt_file:
+        return None
+
+    try:
+        return Path(prompt_file).expanduser().read_text(encoding="utf-8").strip() or None
+    except OSError as exc:
+        logger.warning("Configured STT prompt file '%s' could not be read: %s", prompt_file, exc)
+        return None
+
+
 def _transcribe_openai(
     file_path: str,
     model_name: str,
@@ -1353,6 +1385,7 @@ def _transcribe_openai(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     provider_label: str = "openai",
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape.
 
@@ -1379,15 +1412,35 @@ def _transcribe_openai(
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
 
+    # Provider-specific file/hotword settings belong only to the configured
+    # ``openai`` backend.  Shared users of this helper (DeepInfra, plugins)
+    # receive only arguments their caller explicitly passes.
+    openai_cfg = _load_stt_config().get("openai", {}) if provider_label == "openai" else {}
+    if not isinstance(openai_cfg, dict):
+        openai_cfg = {}
+
+    create_kwargs: Dict[str, Any] = {
+        "model": model_name,
+        "response_format": "text" if model_name == "whisper-1" else "json",
+    }
+    resolved_prompt = _get_openai_stt_prompt(openai_cfg, prompt)
+    if resolved_prompt:
+        create_kwargs["prompt"] = resolved_prompt
+    hotwords = str(openai_cfg.get("hotwords") or "").strip()
+    if hotwords:
+        # ``hotwords`` is a Speaches extension, not a generated OpenAI SDK
+        # parameter.  extra_body merges it into the multipart request while
+        # keeping the call valid for the stock SDK.
+        create_kwargs["extra_body"] = {"hotwords": hotwords}
+
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
-                    model=model_name,
                     file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
+                    **create_kwargs,
                 )
 
             transcript_text = _extract_transcript_text(transcription)

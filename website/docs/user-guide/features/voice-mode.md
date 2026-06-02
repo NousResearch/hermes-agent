@@ -403,6 +403,10 @@ stt:
   provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
+  openai:
+    model: "whisper-1"               # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+    prompt_file: ""                  # optional UTF-8 file with a reusable prompt
+    hotwords: ""                     # optional endpoint-specific vocabulary hints (e.g. Speaches)
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -446,6 +450,8 @@ ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
 DISCORD_BOT_TOKEN=...
 DISCORD_ALLOWED_USERS=...
 ```
+
+For OpenAI-compatible STT providers, use `stt.openai.prompt_file` when vocabulary hints are shared across machines or version-controlled; Hermes reads the UTF-8 file at transcription time. A prompt supplied by the generic STT prompt pipeline takes precedence over the file. Some compatible endpoints, including Speaches, also accept `stt.openai.hotwords`; Hermes sends these as an endpoint extension rather than assuming the official OpenAI API supports them.
 
 ### STT Provider Comparison
 

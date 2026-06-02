@@ -1030,6 +1030,8 @@ stt:
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    # prompt_file: ""          # optional UTF-8 file with a reusable prompt
+    # hotwords: ""             # optional endpoint-specific vocabulary hints (e.g. Speaches)
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # deepinfra:

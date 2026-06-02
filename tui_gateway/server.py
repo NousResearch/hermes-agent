@@ -3904,9 +3904,16 @@ def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
         return False
     if evt_key == str(session.get("session_key") or ""):
         return False
+    try:
+        snapshot = list(_sessions.values())
+    except Exception:
+        # If we can't safely enumerate live sessions, fail open so we don't
+        # crash the poller thread or drop the event.
+        return False
+
     return any(
         s is not session and str(s.get("session_key") or "") == evt_key
-        for s in list(_sessions.values())
+        for s in snapshot
     )
 
 

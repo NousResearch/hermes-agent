@@ -143,6 +143,7 @@ class TestGoldenFixtureReview:
     REVIEW_ARTIFACTS = [
         "scan.json", "imports.json", "graph.json",
         "validation.json", "manifest.json", "summary.json",
+        "runtime-readiness.json",
     ]
     # These are optional — depend on upstream enrichers
     OPTIONAL_ARTIFACTS = [
@@ -377,3 +378,229 @@ class TestFullModeMatrix:
         manifest = load_json(Path(delta_out) / "manifest.json")
         assert manifest["mode"] == "delta"
         assert "delta_summary" in manifest
+
+
+# ── Phase 1 E2E Gate: Full artifact contract ───────────────────────────────
+
+class TestPhase1E2EGate:
+    """Phase 1 end-to-end gate: verify the full Phase 1 artifact contract.
+
+    These tests exercise the complete UA pipeline through the CLI, asserting:
+    1. Bundle includes all required Phase 1 artifacts (structure + full modes).
+    2. Manifest includes target-cleanliness fields.
+    3. Manifest status is 'complete' for successful runs.
+    4. Default run does not create target-local UA cache directories.
+    5. Project-state append is recorded only when a project with existing
+       .hermes/PROJECT_STATE.md is targeted with --record-project-state.
+    6. Project-state is NOT recorded by default (no opt-in flag).
+    """
+
+    # All required artifacts for structure mode (Phase 1 canonical minimum)
+    STRUCTURE_ARTIFACTS = [
+        "manifest.json",
+        "scan.json",
+        "imports.json",
+        "graph.json",
+        "validation.json",
+        "summary.json",
+        "runtime-readiness.json",
+    ]
+
+    # Additional artifacts for full mode
+    FULL_ONLY_ARTIFACTS = [
+        "analytics.json",
+        "subagent-context.json",
+        "REPORT.md",
+        "runtime-readiness.md",
+    ]
+
+    # Target cleanliness fields that must appear in manifest
+    CLEANLINESS_FIELDS = [
+        "target_dirty_before",
+        "target_dirty_after",
+        "target_dirty_files_before",
+        "target_dirty_files_after",
+        "unexpected_target_changes",
+        "target_cleanliness_status",
+    ]
+
+    # ── Artifact contract ────────────────────────────────────────
+
+    def test_structure_mode_artifact_contract(self, tmp_path: Path):
+        """Structure mode must produce the full Phase 1 artifact set."""
+        target = fixture_abs("tiny_py_package")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure run failed: {stderr}"
+
+        bundle = Path(out)
+        for fname in self.STRUCTURE_ARTIFACTS:
+            p = bundle / fname
+            assert p.exists(), f"Missing required artifact: {fname}"
+
+    def test_full_mode_artifact_contract(self, tmp_path: Path):
+        """Full mode must produce all artifacts including enrichers."""
+        target = fixture_abs("tiny_py_package")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="full")
+        assert rc == 0, f"full run failed: {stderr}"
+
+        bundle = Path(out)
+        for fname in self.STRUCTURE_ARTIFACTS:
+            p = bundle / fname
+            assert p.exists(), f"Missing required artifact in full mode: {fname}"
+
+        # Full mode should also include optional enricher artifacts
+        for fname in self.FULL_ONLY_ARTIFACTS:
+            p = bundle / fname
+            assert p.exists(), f"Missing full-mode artifact: {fname}"
+
+    # ── Manifest cleanliness fields ──────────────────────────────
+
+    def test_manifest_has_target_cleanliness_fields(self, tmp_path: Path):
+        """Manifest must include all target-cleanliness tracking fields."""
+        target = fixture_abs("tiny_py_package")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure run failed: {stderr}"
+
+        manifest = load_json(Path(out) / "manifest.json")
+        for field in self.CLEANLINESS_FIELDS:
+            assert field in manifest, f"Manifest missing cleanliness field: {field}"
+
+    # ── Manifest status ──────────────────────────────────────────
+
+    def test_manifest_status_complete_on_success(self, tmp_path: Path):
+        """Successful run must report status 'complete' in manifest."""
+        target = fixture_abs("tiny_py_package")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure run failed: {stderr}"
+
+        manifest = load_json(Path(out) / "manifest.json")
+        assert manifest["status"] == "complete", (
+            f"Expected status='complete' for successful run, got {manifest.get('status')}"
+        )
+
+    # ── Default run: no target-local UA cache ────────────────────
+
+    def test_default_run_no_target_cache(self, tmp_path: Path):
+        """Default run (no flags) must not create target-local UA cache dirs."""
+        src = fixture_abs("tiny_py_package")
+        target = str(tmp_path / "target")
+        shutil.copytree(src, target)
+
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure run failed: {stderr}"
+
+        # No .hermes directory in the target copy
+        target_hermes = Path(target) / ".hermes"
+        assert not target_hermes.exists(), (
+            "Default run created .hermes directory in target"
+        )
+        # Also check the bundle's cache is external, not in target
+        bundle_cache = Path(out) / "cache"
+        assert bundle_cache.exists(), "Bundle should have external cache dir"
+
+    # ── Project-state append: only with existing ledger ──────────
+
+    _PS_FIXTURES = PROJECT_ROOT / "tests" / "code_scan" / "fixtures" / "project_state"
+
+    def test_project_state_append_with_existing_ledger(self, tmp_path: Path):
+        """Project-state should be recorded when ledger exists and opt-in is set."""
+        # Copy the with_ledger fixture to an isolated temp directory
+        src = str(self._PS_FIXTURES / "with_ledger")
+        target = str(tmp_path / "target_with_ledger")
+        shutil.copytree(src, target)
+
+        out = str(tmp_path / "bundle")
+        # Note: the fixture is not a standalone git repo (copied without .git),
+        # so _get_git_dirty_files returns [] — that's fine for this test.
+        rc, _, stderr = run_ua(
+            target, out, mode="structure",
+            extra_args=["--record-project-state", "--project-root", target],
+        )
+        assert rc == 0, f"project-state run failed: {stderr}"
+
+        manifest = load_json(Path(out) / "manifest.json")
+        assert manifest["project_state_recorded"] is True, (
+            "project_state_recorded should be True when ledger exists and opt-in is set"
+        )
+        assert manifest.get("project_state_append_status") == "success", (
+            f"Expected 'success', got {manifest.get('project_state_append_status')}"
+        )
+
+    def test_project_state_append_without_ledger(self, tmp_path: Path):
+        """Project-state should NOT be recorded when ledger is absent."""
+        src = str(self._PS_FIXTURES / "without_ledger")
+        target = str(tmp_path / "target_no_ledger")
+        shutil.copytree(src, target)
+
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(
+            target, out, mode="structure",
+            extra_args=["--record-project-state", "--project-root", target],
+        )
+        assert rc == 0, f"project-state run failed: {stderr}"
+
+        manifest = load_json(Path(out) / "manifest.json")
+        assert manifest["project_state_recorded"] is False, (
+            "project_state_recorded should be False when ledger is absent"
+        )
+        assert manifest.get("project_state_append_status") == "not_attempted", (
+            f"Expected 'not_attempted', got {manifest.get('project_state_append_status')}"
+        )
+
+    def test_project_state_not_attempted_by_default(self, tmp_path: Path):
+        """Project-state should not be recorded without explicit opt-in flag."""
+        src = str(self._PS_FIXTURES / "with_ledger")
+        target = str(tmp_path / "target_with_ledger_no_optin")
+        shutil.copytree(src, target)
+
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="structure")
+        assert rc == 0, f"structure run failed: {stderr}"
+
+        manifest = load_json(Path(out) / "manifest.json")
+        assert manifest["project_state_recorded"] is False, (
+            "project_state_recorded should be False by default (no opt-in)"
+        )
+        assert manifest.get("project_state_append_status") == "not_attempted", (
+            f"Expected 'not_attempted' by default, got {manifest.get('project_state_append_status')}"
+        )
+
+
+# ── UA-P1-005: Docs must not overclaim runtime test success ────────────────
+
+class TestDocsNoOverclaim:
+    """UA-P1-005: SKILL.md wording must not claim runtime tests passed merely
+    because toolchain readiness is available.
+
+    The runtime-readiness check only verifies tool availability; it never runs
+    tests or builds.  Documentation must not conflate readiness with test success.
+    """
+
+    OVERCLAIM_PATTERNS = [
+        "runtime tests passed",
+        "tests passed because readiness",
+        "tests passed since readiness",
+        "tests passed as readiness",
+        "tests passed due to readiness",
+        "readiness means tests passed",
+        "readiness implies tests passed",
+    ]
+
+    def test_skill_md_no_test_pass_overclaims(self):
+        """SKILL.md must not contain phrases implying runtime tests passed
+        merely because runtime-readiness is available."""
+        skill_path = PROJECT_ROOT / "skills" / "code-analysis" / "code-scan" / "SKILL.md"
+        assert skill_path.exists(), f"SKILL.md not found at {skill_path}"
+
+        content = skill_path.read_text().lower()
+
+        for phrase in self.OVERCLAIM_PATTERNS:
+            assert phrase.lower() not in content, (
+                f"SKILL.md contains testing overclaim: '{phrase}' — "
+                "runtime-readiness only checks tool availability, never runs tests"
+            )

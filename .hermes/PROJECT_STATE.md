@@ -164,3 +164,27 @@ Committed: `24356edcd` | Tests: 80 passed
 - Reviewer verdict: PASS; non-blocking coverage/code-quality notes only.
 - Handoff: `.hermes/handoffs/2026-06-02-0009-ua-p1-004-complete.md`.
 - Approval gate: JC pre-approved sequential autonomous commit/push for UA-P1-003/004/005 if all gates pass. No merge, deploy, or production mutation performed.
+
+## UA Phase 1 Hardening — UA-P1-005 Completion Checkpoint
+- Timestamp: 2026-06-02T00:44:32Z.
+- Source plan package: `/home/jarrad/work/plans/ua-phase1-execution`.
+- Executed bead: `UA-P1-005 - Phase 1 End-to-End Gate and Skill Docs Alignment`.
+- Live branch: `feat/ua-001-run-bundle` tracking `jc-fork/feat/ua-001-run-bundle`.
+- Base commit before bead: `a4dc73f10 feat(code-scan): harden project state append`.
+- Changed in-scope files:
+  - `tests/code_scan/test_e2e_ua_workflow.py`
+  - `skills/code-analysis/code-scan/SKILL.md`
+- Known out-of-scope dirty files preserved/excluded:
+  - `tests/tools/test_skills_sync.py`
+  - `tools/skills_sync.py`
+- Coder evidence: initial coder timed out after partial work; Hermes inspected partial changes; targeted recovery coder added missing docs-overclaim assertion.
+- Hermes E2E verification: `python -m pytest tests/code_scan/test_e2e_ua_workflow.py -q` — PASS, `52 passed in 51.35s`.
+- Hermes full code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `539 passed in 96.73s (0:01:36)`.
+- Optional repo-level gate: `scripts/run_tests.sh` attempted but timed out after 300s with unrelated repo-wide failures outside `tests/code_scan` (`acp` module missing, pytest async plugin issues, auxiliary-client failures); not treated as a UA-P1-005 blocker.
+- Diff hygiene: scoped `git diff --check` — PASS.
+- Added-lines secret scan: PASS.
+- Stale-language check: matches only intentional negative docs-overclaim assertions.
+- Diff artifact: `/tmp/ua-p1-005-phase1-diff.patch` — 802 lines / 36904 bytes.
+- Reviewer verdict: PASS, no blockers.
+- Handoff: `.hermes/handoffs/2026-06-02-0044-ua-p1-phase-gate.md`.
+- Approval gate: JC pre-approved sequential autonomous commit/push for UA-P1-003/004/005 if all gates pass. No merge, deploy, or production mutation performed.

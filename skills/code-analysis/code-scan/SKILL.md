@@ -35,9 +35,9 @@ python scripts/code-scan/run_ua.py --target <dir> --out <bundle_dir> [--mode <mo
   also runs the validation gate and writes `validation.json`.
 - **Quick modes avoid unnecessary graph analytics.** `inventory` and `structure`
   do not produce `analytics.json` or `subagent-context.json`.
-- **Missing enrichers are recorded as skipped.** When upstream beads (UA-002/003/004)
-  are not present, optional artifacts are omitted and noted in `artifacts_missing`
-  metadata — nothing is fabricated.
+- **Missing optional enrichers are recorded as skipped.** When an optional deterministic
+  enricher is unavailable in the current environment, its artifact is omitted and noted
+  in `artifacts_missing` metadata — nothing is fabricated.
 - **Default mode is `structure`**, preserving backward compatibility with the
   existing pipeline behavior (scan → imports → graph → validation).
 
@@ -69,15 +69,17 @@ Every UA run bundle produced by `run_ua.py` is a directory containing:
 
 | Artifact | Description |
 |----------|-------------|
-| `manifest.json` | Run metadata: `run_id`, `mode`, `timestamp`, `target_path`, `target_git_head`, `bundle_dir`, `command_flags`, `artifact_paths`, `script_versions`, `target_mutation_allowed`, `artifacts_missing` (when upstream enrichers are absent), `project_state_recorded`, `ledger_path`. |
+| `manifest.json` | Run metadata: `run_id`, `status` (`"complete"` or `"failed"`), `mode`, `timestamp`, `target_path`, `target_git_head`, `bundle_dir`, `command_flags`, `artifact_paths`, `script_versions`, `target_mutation_allowed`, target cleanliness fields (`target_dirty_before`, `target_dirty_after`, `target_dirty_files_before`, `target_dirty_files_after`, `target_cleanliness_status`, `unexpected_target_changes`), `artifacts_missing` (when upstream enrichers are absent), `project_state_recorded`, `ledger_path`, `project_state_append_status`, `project_state_append_error`. |
 | `scan.json` | Deterministic file inventory and language distribution. |
 | `imports.json` | Deterministic import map with schema version and totals. |
 | `graph.json` | Dependency graph (`nodes` + `edges`) — present in all modes except `inventory` and `delta`. |
 | `validation.json` | Deterministic validation results (`issues`, `warnings`, `severity_summary`, `severity_classified_warnings`) — present whenever graph is built. |
+| `runtime-readiness.json` | Runtime/toolchain readiness detection (`detected_stacks`, `required_commands`, `suggested_verification`, `verification_status`, `blockers`). Only checks tool availability — never runs build or test commands. Present in `structure`, `review`, `preflight`, and `full` modes. |
 | `analytics.json` | Graph analytics (centrality, hubs, etc.) — present only when `analyze_graph` is available and mode produces analytics (`review`, `full`). Recorded in `artifacts_missing` otherwise. |
 | `subagent-context.json` | Subagent context envelope — present only when `build_context_bundle` is available and mode produces context (`review`, `preflight`, `full`). Recorded in `artifacts_missing` otherwise. |
 | `summary.json` | Compact aggregate summary of all produced stages. |
 | `REPORT.md` | Human-readable markdown report — present only in `review` and `full` modes. |
+| `runtime-readiness.md` | Human-readable runtime readiness report (counterpart to runtime-readiness.json). Same availability as runtime-readiness.json. |
 | `cache/` (optional) | External fingerprint cache directory when `--external-cache-dir` is used. |
 
 **Read-only target guarantee:** The target directory is **never mutated** by the UA pipeline. All artifacts are written exclusively to the `--out` bundle directory. The only exception is when `--in-repo-cache` is explicitly passed, which writes fingerprints inside the target repo's `.hermes/code-state/`. By default, fingerprints use an external cache under `<bundle>/cache/`, leaving the target fully read-only.

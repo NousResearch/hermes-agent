@@ -7200,6 +7200,155 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _find_dashboard_pids_windows_wmic(
+    patterns_lc: tuple[str, ...], self_pid: int
+) -> list[int] | None:
+    """wmic-based dashboard PID scanner. Returns None on tool failure, [] on success.
+
+    Microsoft deprecated wmic as a Windows Feature on Demand starting in
+    Windows 11 22H2 and it is not installed by default on clean Windows 11
+    24H2+ images. Distinguish "wmic was missing/failed" (None, caller should
+    fall back) from "wmic ran fine and found nothing" ([]).
+    """
+    try:
+        # wmic may emit text in the system code page (for example cp936
+        # on zh-CN systems), not UTF-8. In text mode, subprocess output
+        # decoding depends on Python's configuration (locale-dependent
+        # by default, or UTF-8 in UTF-8 mode). The important protection
+        # here is errors="ignore": it prevents a reader-thread
+        # UnicodeDecodeError from leaving result.stdout=None and turning
+        # the later .split() into an AttributeError (#17049).
+        result = subprocess.run(
+            ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0 or result.stdout is None:
+        return None
+    return _parse_windows_process_table(result.stdout, patterns_lc, self_pid)
+
+
+def _parse_windows_process_table(
+    stdout: str, patterns_lc: tuple[str, ...], self_pid: int
+) -> list[int]:
+    """Extract dashboard PIDs from a multi-line Windows process dump.
+
+    Tolerates two different output shapes:
+
+    * wmic /FORMAT:LIST emits one record per process as
+      ``CommandLine=...\\nProcessId=N\\n`` separated by blank lines.
+    * Get-CimInstance custom tab-separated dump emits one record per
+      process as ``N\\tcmdline`` per line.
+
+    Matching is token-aware, not raw substring: a command line matches
+    when it contains the pattern's words as separate tokens (whitespace
+    or quote boundary between them). This covers the real Windows shapes
+    where ``hermes`` and ``dashboard`` end up as separate argv elements,
+    e.g. ``python "C:\\path\\to\\hermes" dashboard --port 9119`` (#37593).
+    """
+    out: list[int] = []
+    current_cmd = ""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            current_cmd = ""
+            continue
+        if "\t" in line:
+            # Tab-separated dump: ``N\tcmdline``
+            pid_str, _, _cmd = line.partition("\t")
+            cmd_lc = _cmd.lower()
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+        elif line.startswith("CommandLine="):
+            current_cmd = line[len("CommandLine=") :]
+            continue
+        elif line.startswith("ProcessId="):
+            pid_str = line[len("ProcessId=") :]
+            cmd_lc = current_cmd.lower()
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+        else:
+            continue
+        if pid == self_pid:
+            continue
+        if _cmdline_matches_dashboard(cmd_lc, patterns_lc):
+            out.append(pid)
+    return out
+
+
+def _cmdline_matches_dashboard(cmdline_lc: str, patterns_lc: tuple[str, ...]) -> bool:
+    """True when ``cmdline_lc`` matches one of the dashboard patterns as
+    separate tokens. Tolerates the Windows wrapper case where ``hermes``
+    and ``dashboard`` are adjacent in some cmdlines and separated by a
+    closing quote in others (#37593)."""
+    import re
+
+    # Tokenise on whitespace and quote boundaries so "hermes dashboard",
+    # '"C:\path\hermes" dashboard' and 'hermes_cli.main dashboard' all
+    # produce a list whose substring search finds the pattern.
+    tokens = re.split(r'[\s"]+', cmdline_lc)
+    joined = " ".join(tokens)
+    return any(p in joined for p in patterns_lc)
+
+
+def _find_dashboard_pids_windows_powershell(
+    patterns_lc: tuple[str, ...], self_pid: int
+) -> list[int]:
+    """PowerShell-based dashboard PID scanner. PowerShell ships with every
+    supported Windows version and is used as the fallback when wmic is
+    missing (#37593).
+
+    Returns an empty list on any scan error — caller's parent already
+    treats empty as "nothing found", which is safer than blocking the
+    user from running their next command.
+    """
+    # PowerShell's own -like match handles the quote-boundary case in
+    # the cmdline natively ("*hermes dashboard*" still matches
+    # '"C:\path\hermes" dashboard --port 9119' because -like is a glob
+    # not a substring search, but our token-aware post-filter in the
+    # parser catches anything the glob over-matches).
+    pattern_clause = " -or ".join(
+        f'$_.CommandLine -like "*{p}*"' for p in patterns_lc
+    )
+    script = (
+        "$ErrorActionPreference = 'SilentlyContinue';"
+        "Get-CimInstance Win32_Process"
+        f" | Where-Object {{ {pattern_clause} }}"
+        " | ForEach-Object { $_.ProcessId.ToString() + \"`t\" + $_.CommandLine }"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0 or not result.stdout:
+        return []
+    return _parse_windows_process_table(result.stdout, patterns_lc, self_pid)
+
+
 def _find_stale_dashboard_pids() -> list[int]:
     """Return PIDs of ``hermes dashboard`` processes other than ourselves.
 
@@ -7227,38 +7376,20 @@ def _find_stale_dashboard_pids() -> list[int]:
 
     try:
         if sys.platform == "win32":
-            # wmic may emit text in the system code page (for example cp936
-            # on zh-CN systems), not UTF-8. In text mode, subprocess output
-            # decoding depends on Python's configuration (locale-dependent
-            # by default, or UTF-8 in UTF-8 mode). The important protection
-            # here is errors="ignore": it prevents a reader-thread
-            # UnicodeDecodeError from leaving result.stdout=None and turning
-            # the later .split() into an AttributeError (#17049).
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                encoding="utf-8",
-                errors="ignore",
-            )
-            if result.returncode != 0 or result.stdout is None:
-                return []
-            current_cmd = ""
-            for line in result.stdout.split("\n"):
-                line = line.strip()
-                if line.startswith("CommandLine="):
-                    current_cmd = line[len("CommandLine=") :]
-                elif line.startswith("ProcessId="):
-                    pid_str = line[len("ProcessId=") :]
-                    if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
-                    ):
-                        try:
-                            dashboard_pids.append(int(pid_str))
-                        except ValueError:
-                            pass
+            patterns_lc = tuple(p.lower() for p in patterns)
+            self_pid = os.getpid()
+            # First try wmic. Microsoft deprecated wmic as a Windows Feature
+            # on Demand starting in Windows 11 22H2 and it is not installed by
+            # default on clean Windows 11 24H2+ images — so the call below
+            # routinely returns FileNotFoundError or a non-zero exit code on
+            # modern Windows, leaving `hermes dashboard --status/--stop` blind
+            # to a live listener (#37593). Fall back to PowerShell, which ships
+            # with every supported Windows version and exposes the same
+            # CommandLine + ProcessId fields via Get-CimInstance.
+            pids = _find_dashboard_pids_windows_wmic(patterns_lc, self_pid)
+            if pids is None:
+                pids = _find_dashboard_pids_windows_powershell(patterns_lc, self_pid)
+            return pids or []
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps

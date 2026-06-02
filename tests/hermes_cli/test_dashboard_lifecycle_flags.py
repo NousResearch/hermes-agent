@@ -179,3 +179,179 @@ class TestArgparseWiring:
              pytest.raises(SystemExit) as exc:
             mod.cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
+
+
+class TestWindowsDashboardScannerFallback:
+    """Regression for #37593: on Windows 11 24H2+ `wmic` is not installed
+    by default, so the dashboard PID scanner must fall back to PowerShell
+    (Get-CimInstance Win32_Process) to detect a live listener."""
+
+    PATTERNS_LC = ("hermes dashboard", "hermes_cli.main dashboard", "hermes_cli/main.py dashboard")
+
+    def test_wmic_missing_falls_back_to_powershell(self, monkeypatch):
+        """wmic returns None on FileNotFoundError -> caller should use
+        the PowerShell path and pick up its PIDs."""
+        from hermes_cli.main import (
+            _find_dashboard_pids_windows_wmic,
+            _find_dashboard_pids_windows_powershell,
+        )
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("wmic missing")),
+        )
+        assert _find_dashboard_pids_windows_wmic(self.PATTERNS_LC, 99999) is None
+
+    def test_wmic_nonzero_exit_falls_back(self, monkeypatch):
+        from hermes_cli.main import _find_dashboard_pids_windows_wmic
+
+        class _R:
+            returncode = 1
+            stdout = None
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        assert _find_dashboard_pids_windows_wmic(self.PATTERNS_LC, 99999) is None
+
+    def test_wmic_empty_stdout_treated_as_failure(self, monkeypatch):
+        """wmic can return rc 0 with empty stdout when no rows match the
+        LIST format filter, but if it returns 0 with no stdout at all the
+        scanner is broken (e.g. /FORMAT:LIST not understood). Fall back."""
+        from hermes_cli.main import _find_dashboard_pids_windows_wmic
+
+        class _R:
+            returncode = 0
+            stdout = None
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        assert _find_dashboard_pids_windows_wmic(self.PATTERNS_LC, 99999) is None
+
+    def test_wmic_parses_classic_list_format(self, monkeypatch):
+        """When wmic works, the parser still extracts PIDs from the
+        /FORMAT:LIST output correctly — including the real-world case
+        where ``hermes`` and ``dashboard`` are separate argv elements
+        separated by a closing quote (#37593)."""
+        from hermes_cli.main import _find_dashboard_pids_windows_wmic
+
+        sample = (
+            "CommandLine=python \"C:\\path\\to\\hermes\" dashboard --host 127.0.0.1 --port 9119\r\n"
+            "ProcessId=42424\r\n"
+            "\r\n"
+            "CommandLine=unrelated cmdline\r\n"
+            "ProcessId=11111\r\n"
+            "\r\n"
+            "CommandLine=\"C:\\other\\python.exe\" hermes_cli.main dashboard --port 9000\r\n"
+            "ProcessId=50505\r\n"
+        )
+
+        class _R:
+            returncode = 0
+            stdout = sample
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        pids = _find_dashboard_pids_windows_wmic(self.PATTERNS_LC, 99999)
+        assert pids is not None
+        assert sorted(pids) == [42424, 50505]
+
+    def test_wmic_excludes_self_pid(self, monkeypatch):
+        from hermes_cli.main import _find_dashboard_pids_windows_wmic
+
+        sample = (
+            "CommandLine=hermes dashboard\r\n"
+            "ProcessId=99999\r\n"
+            "CommandLine=hermes dashboard\r\n"
+            "ProcessId=12345\r\n"
+        )
+
+        class _R:
+            returncode = 0
+            stdout = sample
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        assert _find_dashboard_pids_windows_wmic(self.PATTERNS_LC, 99999) == [12345]
+
+    def test_powershell_parses_tab_separated_output(self, monkeypatch):
+        """PowerShell path: `pid<TAB>cmdline` per line, one process per row."""
+        from hermes_cli.main import _find_dashboard_pids_windows_powershell
+
+        sample = (
+            "42424\t\"C:\\path\\to\\hermes\" dashboard --host 127.0.0.1 --port 9119\r\n"
+            "99999\thermes dashboard --self\r\n"
+            "50505\tpython -m hermes_cli.main dashboard --port 9000\r\n"
+        )
+
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            class _R:
+                returncode = 0
+                stdout = sample
+            return _R()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        pids = _find_dashboard_pids_windows_powershell(self.PATTERNS_LC, 99999)
+        assert sorted(pids) == [42424, 50505]
+        # Sanity check the PS script: must invoke Get-CimInstance (modern
+        # non-deprecated replacement for Get-WmiObject) and pass
+        # -ExecutionPolicy Bypass to avoid a user-prompted hang.
+        assert captured["args"][0] == "powershell.exe"
+        assert "-ExecutionPolicy" in captured["args"]
+        assert "Bypass" in captured["args"]
+        joined = " ".join(captured["args"])
+        assert "Get-CimInstance" in joined
+        assert "Win32_Process" in joined
+
+    def test_powershell_handles_no_matches(self, monkeypatch):
+        from hermes_cli.main import _find_dashboard_pids_windows_powershell
+
+        class _R:
+            returncode = 0
+            stdout = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        assert _find_dashboard_pids_windows_powershell(self.PATTERNS_LC, 99999) == []
+
+    def test_powershell_handles_nonzero_exit(self, monkeypatch):
+        """PS may exit non-zero when the ExecutionPolicy or CIM subsystem
+        blocks the query. Return [] so the caller reports 'no dashboards'
+        rather than crashing — the user can re-run after fixing the env."""
+        from hermes_cli.main import _find_dashboard_pids_windows_powershell
+
+        class _R:
+            returncode = 1
+            stdout = "Access denied"
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        assert _find_dashboard_pids_windows_powershell(self.PATTERNS_LC, 99999) == []
+
+    def test_powershell_handles_powershell_missing(self, monkeypatch):
+        """Defence in depth: if PowerShell itself is missing (stripped
+        Windows image), the scanner returns [] instead of crashing."""
+        from hermes_cli.main import _find_dashboard_pids_windows_powershell
+
+        def fake_run(*a, **kw):
+            raise FileNotFoundError("powershell.exe missing")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        assert _find_dashboard_pids_windows_powershell(self.PATTERNS_LC, 99999) == []
+
+    def test_windows_dispatch_falls_back_to_powershell_when_wmic_missing(self, monkeypatch):
+        """End-to-end: on win32, with wmic missing, the public scanner
+        should return the PIDs discovered via PowerShell."""
+        from hermes_cli import main as hermes_main
+
+        monkeypatch.setattr("hermes_cli.main.sys.platform", "win32")
+
+        # wmic missing -> helper returns None
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("wmic missing")),
+        )
+
+        ps_pids = [42424]
+        monkeypatch.setattr(
+            "hermes_cli.main._find_dashboard_pids_windows_powershell",
+            lambda patterns_lc, self_pid: list(ps_pids),
+        )
+
+        assert hermes_main._find_stale_dashboard_pids() == [42424]

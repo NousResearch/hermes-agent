@@ -1,0 +1,20 @@
+name: web_browser
+version: 0.1.0
+description: "Wrap the agent-browser CLI (https://npmjs.com/package/agent-browser) so the Hermes agent can drive a real browser via subprocess JSON calls. Mirrors the google_meet plugin pattern: each tool shells out to `agent-browser <subcommand> --json` and returns structured dicts. First-use of any browse_* tool emits a canonical approval.request per the Hermes prompt-flow protocol (operator chooses once|session|always|deny). See: docs/web_browser-plugin.md."
+author: agente-meta
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - browser_navigate
+  - browser_screenshot
+  - browser_snapshot
+  - browser_click
+  - browser_fill
+  - browser_type
+  - browser_press
+  - browser_get
+  - browser_find
+  - browser_close

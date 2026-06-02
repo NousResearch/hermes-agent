@@ -269,6 +269,26 @@ Help me refactor the auth module please             2h ago        cli    2025030
 What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
+### 浏览 Session
+
+使用交互式浏览器搜索并恢复 session：
+
+```bash
+hermes sessions browse
+
+# 在 picker 中加载更多 session
+hermes sessions browse --limit 1000
+
+# 浏览指定平台/source
+hermes sessions browse --source telegram
+
+# 优先显示最近活跃/续接过的对话
+hermes sessions browse --sort last-active
+```
+
+默认情况下，`browse` 保持历史的 `started` 排序。需要把压缩后续接、最近继续过的
+session 顶上来时，可以使用 `--sort last-active`。
+
 ### 导出 Session
 
 `hermes sessions export` 是所有导出格式的统一入口，用 `--format` 选择：

@@ -6,11 +6,12 @@ Covers:
 - Argument parser registration
 """
 
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
 
-from hermes_cli.main import _session_browse_picker
+from hermes_cli.main import _session_browse_order_by_last_active, _session_browse_picker
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -409,11 +410,66 @@ class TestSessionBrowseArgparse:
         args = parser.parse_args(["browse", "--limit", "42"])
         assert args.limit == 42
 
+    def test_browse_sort_maps_started_to_default_order(self):
+        """The browse sort helper should preserve current start-time ordering by default."""
+        assert _session_browse_order_by_last_active("started") is False
+
+    def test_browse_sort_maps_last_active_to_activity_order(self):
+        """--sort last-active should request activity-time ordering from SessionDB."""
+        assert _session_browse_order_by_last_active("last-active") is True
+
+    def test_browse_sort_rejects_unknown_values(self):
+        """Invalid sort values should fail before reaching the database."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Unsupported session browse sort"):
+            _session_browse_order_by_last_active("title")
+
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────
 
 class TestCmdSessionsBrowse:
     """Integration tests for the 'browse' action in cmd_sessions."""
+
+    @staticmethod
+    def _run_browse_command(monkeypatch, *extra_args):
+        """Run the real parser and command handler with an isolated SessionDB."""
+        import hermes_cli.main as cli_main
+
+        db = MagicMock()
+        db.list_sessions_rich.return_value = []
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+        monkeypatch.setattr(cli_main, "_prepare_agent_startup", lambda _args: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["hermes", "sessions", "browse", *extra_args],
+        )
+
+        cli_main.main()
+        return db
+
+    def test_browse_command_defaults_to_started_order(self, monkeypatch):
+        """The real default command path should preserve started-time ordering."""
+        db = self._run_browse_command(monkeypatch)
+
+        db.list_sessions_rich.assert_called_once_with(
+            source=None,
+            exclude_sources=["tool"],
+            limit=500,
+            order_by_last_active=False,
+        )
+
+    def test_browse_command_forwards_last_active_order(self, monkeypatch):
+        """The real command path should forward --sort last-active to SessionDB."""
+        db = self._run_browse_command(monkeypatch, "--sort", "last-active")
+
+        db.list_sessions_rich.assert_called_once_with(
+            source=None,
+            exclude_sources=["tool"],
+            limit=500,
+            order_by_last_active=True,
+        )
 
     def test_browse_no_sessions_prints_message(self, capsys):
         """When no sessions exist, _session_browse_picker returns None and prints message."""

@@ -913,6 +913,20 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+def _session_browse_order_by_last_active(sort: str) -> bool:
+    """Return whether sessions browse should order by last activity.
+
+    ``started`` preserves the historical browse ordering by session start time.
+    ``last-active`` surfaces recently continued/touched conversations first.
+    """
+    normalized = (sort or "started").strip().lower()
+    if normalized == "started":
+        return False
+    if normalized == "last-active":
+        return True
+    raise ValueError(f"Unsupported session browse sort: {sort}")
+
+
 def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
@@ -13796,6 +13810,12 @@ def main():
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
+    sessions_browse.add_argument(
+        "--sort",
+        choices=("started", "last-active"),
+        default="started",
+        help="Sort sessions by start time or last activity (default: started)",
+    )
 
     def _confirm_prompt(prompt: str) -> bool:
         """Prompt for y/N confirmation, safe against non-TTY environments."""
@@ -14491,8 +14511,19 @@ def main():
             limit = getattr(args, "limit", 500) or 500
             source = getattr(args, "source", None)
             _browse_exclude = None if source else ["tool"]
+            try:
+                order_by_last_active = _session_browse_order_by_last_active(
+                    getattr(args, "sort", "started")
+                )
+            except ValueError as e:
+                print(f"Error: {e}")
+                db.close()
+                return
             sessions = db.list_sessions_rich(
-                source=source, exclude_sources=_browse_exclude, limit=limit
+                source=source,
+                exclude_sources=_browse_exclude,
+                limit=limit,
+                order_by_last_active=order_by_last_active,
             )
             db.close()
             if not sessions:

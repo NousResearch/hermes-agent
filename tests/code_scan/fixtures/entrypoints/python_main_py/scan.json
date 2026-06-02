@@ -1,0 +1,28 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_main_py",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 2,
+  "total_lines": 14,
+  "languages": {"python": 2},
+  "categories": {"code": 2},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_main_py/src/__main__.py",
+      "relative_path": "src/__main__.py",
+      "language": "python",
+      "category": "code",
+      "lines": 10,
+      "size_bytes": 137
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_main_py/src/subpkg/runner.py",
+      "relative_path": "src/subpkg/runner.py",
+      "language": "python",
+      "category": "code",
+      "lines": 4,
+      "size_bytes": 55
+    }
+  ],
+  "warnings": []
+}

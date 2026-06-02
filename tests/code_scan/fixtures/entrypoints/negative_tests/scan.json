@@ -1,0 +1,44 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/negative_tests",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 4,
+  "total_lines": 40,
+  "languages": {"python": 3, "markdown": 1},
+  "categories": {"code": 2, "doc": 2},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/negative_tests/src/helpers.py",
+      "relative_path": "src/helpers.py",
+      "language": "python",
+      "category": "code",
+      "lines": 15,
+      "size_bytes": 296
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/negative_tests/docs/README.md",
+      "relative_path": "docs/README.md",
+      "language": "markdown",
+      "category": "doc",
+      "lines": 14,
+      "size_bytes": 364
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/negative_tests/src/config_loader.py",
+      "relative_path": "src/config_loader.py",
+      "language": "python",
+      "category": "code",
+      "lines": 13,
+      "size_bytes": 265
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/negative_tests/docs/ARCHITECTURE.md",
+      "relative_path": "docs/ARCHITECTURE.md",
+      "language": "markdown",
+      "category": "doc",
+      "lines": 6,
+      "size_bytes": 176
+    }
+  ],
+  "warnings": []
+}

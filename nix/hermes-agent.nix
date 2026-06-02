@@ -11,6 +11,8 @@
   callPackage,
   python312,
   nodejs_22,
+  agent-browser,
+  chromium,
   electron,
   ripgrep,
   git,
@@ -34,6 +36,7 @@
   # Overridable parameters
   extraPythonPackages ? [ ],
   extraDependencyGroups ? [ ],
+  withBrowser ? false,
 }:
 let
   nodejs = nodejs_22;
@@ -97,6 +100,10 @@ let
   ++ lib.optionals stdenv.isLinux [
     wl-clipboard
     xclip
+  ]
+  ++ lib.optionals (withBrowser && stdenv.isLinux) [
+    agent-browser
+    chromium
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;
@@ -170,25 +177,34 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/ui-tui
     cp -r ${hermesTui}/lib/hermes-tui/* $out/ui-tui/
 
-    ${lib.concatMapStringsSep "\n"
-      (name: ''
-        makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-          --suffix PATH : "${runtimePath}" \
-          --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
-          --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
-          --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
-          --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
-          --set HERMES_TUI_DIR $out/ui-tui \
-          --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-          --set HERMES_NODE ${lib.getExe nodejs} \
-          ${lib.optionalString (rev != null) ''--set HERMES_REVISION ${rev} \''}
-          ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
-      '')
-      [
-        "hermes"
-        "hermes-agent"
-        "hermes-acp"
-      ]
+    ${
+      let
+        wrapperArgs =
+          [
+            ''--suffix PATH : "${runtimePath}"''
+            "--set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills"
+            "--set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins"
+            "--set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales"
+            "--set HERMES_WEB_DIST $out/share/hermes-agent/web_dist"
+            "--set HERMES_TUI_DIR $out/ui-tui"
+            "--set HERMES_PYTHON ${hermesVenv}/bin/python3"
+            "--set HERMES_NODE ${lib.getExe nodejs}"
+          ]
+          ++ lib.optional (withBrowser && stdenv.isLinux)
+            "--set AGENT_BROWSER_EXECUTABLE_PATH ${lib.getExe chromium}"
+          ++ lib.optional (rev != null) "--set HERMES_REVISION ${rev}"
+          ++ lib.optional (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"'';
+      in
+      lib.concatMapStringsSep "\n"
+        (name: ''
+          makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
+            ${lib.concatStringsSep " \\\n" wrapperArgs}
+        '')
+        [
+          "hermes"
+          "hermes-agent"
+          "hermes-acp"
+        ]
     }
 
     ${lib.optionalString (extraPythonPackages != [ ]) ''
@@ -211,6 +227,7 @@ stdenv.mkDerivation (finalAttrs: {
         hermesNpmLib
         hermesVenv
         ;
+      agentBrowser = agent-browser;
 
       # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
       # derivation, after all overrides are applied) so the desktop wrapper

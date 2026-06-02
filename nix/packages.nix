@@ -58,6 +58,11 @@
         tui = full.hermesTui;
         web = full.hermesWeb;
         desktop = full.hermesDesktop;
+      } // lib.optionalAttrs pkgs.stdenv.isLinux {
+        # Local browser tools with the Nixpkgs agent-browser CLI and Chromium.
+        browser = full.override {
+          withBrowser = true;
+        };
       };
     };
 }

@@ -29,9 +29,12 @@
   let
     cfg = config.services.hermes-agent;
     effectivePackage =
-      if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ]
+      if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ] && !cfg.enableBrowser
       then cfg.package
-      else cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
+      else cfg.package.override {
+        inherit (cfg) extraPythonPackages extraDependencyGroups;
+        withBrowser = cfg.enableBrowser;
+      };
     hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
@@ -216,6 +219,16 @@
         type = types.package;
         default = hermes-agent;
         description = "The hermes-agent package to use.";
+      };
+
+      enableBrowser = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Include the Nixpkgs agent-browser CLI and Chromium for local browser
+          tools. Chromium remains opt-in because it significantly increases the
+          package closure size.
+        '';
       };
 
       # ── Service identity ─────────────────────────────────────────────────

@@ -1383,6 +1383,30 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+    resolved = str(path.resolve())
+    # Fast path: already initialized in this process — skip the cross-process
+    # flock entirely.  Post-init connections only need WAL + busy_timeout
+    # (which already serialize safely under SQLite).  The flock is only
+    # required for genuine first-open: header validation, integrity probe,
+    # schema init.  (#36644)
+    if resolved in _INITIALIZED_PATHS:
+        conn = _sqlite_connect(path)
+        try:
+            conn.row_factory = sqlite3.Row
+            with _INIT_LOCK:
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute("PRAGMA wal_autocheckpoint=100")
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA secure_delete=ON")
+                conn.execute("PRAGMA cell_size_check=ON")
+        except Exception:
+            conn.close()
+            raise
+        return conn
+    # Slow path: first-open — serialize cross-process for header validation,
+    # integrity probe, WAL activation, and schema migration.
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.

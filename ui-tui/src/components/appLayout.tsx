@@ -252,12 +252,12 @@ const ComposerPane = memo(function ComposerPane({
           cols={composer.cols}
           compIdx={composer.compIdx}
           completions={composer.completions}
-          onActiveSessionSelect={actions.activateLiveSession}
           onActiveSessionClose={actions.closeLiveSession}
+          onActiveSessionSelect={actions.activateLiveSession}
           onModelSelect={actions.onModelSelect}
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}
-          onPickerSelect={actions.resumeById}
+          onResumeSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
 

@@ -59,7 +59,7 @@ const DESKTOP_ALIASES = new Map([
 
 const DESKTOP_COMMAND_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(DESKTOP_COMMAND_META)
 
-const PICKER_OWNED_COMMANDS = new Set(['/model', '/provider'])
+const PICKER_OWNED_COMMANDS = new Set(['/model'])
 
 const TERMINAL_ONLY_COMMANDS = new Set([
   '/browser',

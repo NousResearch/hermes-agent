@@ -6,7 +6,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [music, audio, generation, ai, heartmula, heartcodec, lyrics, songs]
-    related_skills: [audiocraft]
+    related_skills: [audiocraft-audio-generation]
 ---
 
 # HeartMuLa - Open-Source Music Generation

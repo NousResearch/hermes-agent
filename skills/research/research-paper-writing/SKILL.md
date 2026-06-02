@@ -11,7 +11,7 @@ metadata:
   hermes:
     tags: [Research, Paper Writing, Experiments, ML, AI, NeurIPS, ICML, ICLR, ACL, AAAI, COLM, LaTeX, Citations, Statistical Analysis]
     category: research
-    related_skills: [arxiv, ml-paper-writing, subagent-driven-development, plan]
+    related_skills: [arxiv, subagent-driven-development, plan]
     requires_toolsets: [terminal, files]
 
 ---
@@ -824,7 +824,7 @@ Every successful ML paper centers on what Neel Nanda calls "the narrative": a sh
 
 ### The Sources Behind This Guidance
 
-This skill synthesizes writing philosophy from researchers who have published extensively at top venues. The writing philosophy layer was originally compiled by [Orchestra Research](https://github.com/orchestra-research) as the `ml-paper-writing` skill.
+This skill synthesizes writing philosophy from researchers who have published extensively at top venues. The writing philosophy layer was originally compiled by [Orchestra Research](https://github.com/orchestra-research) for ML paper-writing workflows.
 
 | Source | Key Contribution | Link |
 |--------|-----------------|------|
@@ -2131,7 +2131,7 @@ Compose this skill with other Hermes skills for specific phases:
 | **diagramming** | Phase 4-5: creating Excalidraw-based figures and architecture diagrams | `skill_view("diagramming")` |
 | **data-science** | Phase 4 (Analysis): Jupyter live kernel for interactive analysis and visualization | `skill_view("data-science")` |
 
-**This skill supersedes `ml-paper-writing`** — it contains all of ml-paper-writing's content plus the full experiment/analysis pipeline and autoreason methodology.
+**This skill supersedes the earlier ML paper-writing workflow** — it adds the full experiment/analysis pipeline and autoreason methodology.
 
 ### Hermes Tools Reference
 

@@ -13736,6 +13736,10 @@ Examples:
             from hermes_cli.tools_config import tools_disable_enable_command
 
             tools_disable_enable_command(args)
+        elif getattr(args, "summary", False):
+            from hermes_cli.tools_config import tools_command
+
+            tools_command(args)
         else:
             _require_tty("tools")
             from hermes_cli.tools_config import tools_command

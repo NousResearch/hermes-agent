@@ -234,7 +234,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     bar: w >= 72,
     duration: w >= 76,
     compressions: w >= 80,
-    voice: w >= 84,
+    voice: w >= 80,
     bg: w >= 88,
     subagents: w >= 92,
     cost: w >= 96

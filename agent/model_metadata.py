@@ -200,12 +200,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
-    # MiniMax — M3 is 1M context (max output 512K); M2.x series is 204,800.
+    # MiniMax — M3 is 512K context (max output 131,072); M2.x series is 204,800.
+    # Source: models.dev lists 512,000; the live MiniMax API rejects prompts
+    # exceeding ~520K tokens, confirming the documented limit empirically.
     # Keys use substring matching (longest-first), so "minimax-m3" wins over
     # the generic "minimax" catch-all for the M3 slug on every surface
     # (native MiniMax-M3, OpenRouter/Nous minimax/minimax-m3).
     # https://platform.minimax.io/docs/api-reference/text-chat-openai
-    "minimax-m3": 1000000,
+    "minimax-m3": 512000,
     "minimax": 204800,
     # GLM
     "glm": 202752,
@@ -1553,8 +1555,8 @@ def get_model_context_length(
                 _invalidate_cached_context_length(model, base_url)
             # Invalidate stale ≤204,800 cache entries for MiniMax-M3.  Pre-catalog
             # builds resolved M3 via the generic ``minimax`` catch-all (204,800)
-            # and persisted it before the ``minimax-m3`` (1M) entry existed; that
-            # stale value would otherwise stick forever here at step 1.  M3 is 1M,
+            # and persisted it before the ``minimax-m3`` (512K) entry existed; that
+            # stale value would otherwise stick forever here at step 1.  M3 is 512K,
             # so any sub-256K cached value for an M3 slug is a leftover — drop it
             # and fall through to the hardcoded default.
             elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):

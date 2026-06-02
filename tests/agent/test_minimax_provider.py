@@ -6,7 +6,7 @@ from unittest.mock import patch
 class TestMinimaxContextLengths:
     """Verify context length entries match official docs.
 
-    M2.x series is 204,800; M3 is 1M (max output 512K).
+    M2.x series is 204,800; M3 is 512K (max output 131,072).
     Source: https://platform.minimax.io/docs/api-reference/text-anthropic-api
     """
 
@@ -21,20 +21,28 @@ class TestMinimaxContextLengths:
             ctx = get_model_context_length(model, "")
             assert ctx == 204_800, f"{model} expected 204800, got {ctx}"
 
-    def test_minimax_m3_resolves_to_1m(self):
+    def test_minimax_m3_hardcoded_catalog_is_512k(self):
+        # Hardcoded fallback for native MiniMax-M3 must be 512,000 — the value
+        # confirmed by models.dev, the TUI status bar, and the live API (which
+        # rejects prompts > ~520K tokens). The previous 1,000,000 was wrong
+        # and could cause Hermes to mis-budget compression / send prompts the
+        # server will reject. See issue #37289.
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+        assert DEFAULT_CONTEXT_LENGTHS["minimax-m3"] == 512_000
+
+    def test_minimax_m3_resolves_above_catch_all(self):
         from agent.model_metadata import get_model_context_length
-        # M3 must beat the generic "minimax" catch-all (204,800) and resolve to
-        # a 1M-class context. The exact value depends on the source: our
-        # hardcoded catalog says 1,000,000; the OpenRouter catalog reports
-        # 1,048,576 (1024²). Either is correct — assert "≥ 1M, not 204,800".
+        # Regardless of which catalog path wins (hardcoded 512K vs an external
+        # registry like OpenRouter that may report 1,048,576), the M3 slug must
+        # beat the generic "minimax" catch-all (204,800).
         for model in ("MiniMax-M3", "minimax/minimax-m3", "minimax-m3"):
             ctx = get_model_context_length(model, "")
-            assert ctx >= 1_000_000, f"{model} expected 1M-class, got {ctx}"
+            assert ctx > 204_800, f"{model} fell back to catch-all, got {ctx}"
 
 
 class TestMinimaxM3StaleCacheGuard:
     """Pre-catalog builds resolved M3 via the generic 'minimax' catch-all
-    (204,800) and persisted it before the 'minimax-m3' (1M) catalog entry
+    (204,800) and persisted it before the 'minimax-m3' (512K) catalog entry
     existed.  The step-1 cache guard must drop that stale value and re-resolve
     to 1M, while leaving correct M2.x entries (204,800) untouched.
     """
@@ -70,11 +78,11 @@ class TestMinimaxM3StaleCacheGuard:
         import agent.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.minimaxi.com/anthropic"
-        mm.save_context_length("MiniMax-M3", base, 1_000_000)
+        mm.save_context_length("MiniMax-M3", base, 512_000)
         ctx = mm.get_model_context_length(
             "MiniMax-M3", base_url=base, api_key="", provider="minimax-cn"
         )
-        assert ctx == 1_000_000
+        assert ctx == 512_000
 
     def test_m2_cache_not_clobbered(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

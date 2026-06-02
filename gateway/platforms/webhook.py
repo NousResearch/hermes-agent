@@ -59,6 +59,19 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
+_UNRESOLVED_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+
+
+def _looks_unresolved_secret(secret: str) -> bool:
+    """True when ``secret`` is an unresolved ``${VAR}`` placeholder.
+
+    A misconfigured deployment may leave the literal ``${WEBHOOK_SECRET}``
+    string in config when the env var is missing. Treating that as a real
+    HMAC secret silently weakens auth — any attacker who can guess the
+    placeholder name can forge a valid signature. Reject it explicitly.
+    """
+    return bool(_UNRESOLVED_PLACEHOLDER_RE.fullmatch((secret or "").strip()))
+
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -590,6 +603,12 @@ class WebhookAdapter(BasePlatformAdapter):
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
         """Validate webhook signature (GitHub, GitLab, generic HMAC-SHA256)."""
+        if _looks_unresolved_secret(secret):
+            logger.warning(
+                "[webhook] Unresolved placeholder secret configured (e.g. ${WEBHOOK_SECRET}) — rejecting"
+            )
+            return False
+
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
         if gh_sig:

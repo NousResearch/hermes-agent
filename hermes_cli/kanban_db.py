@@ -1400,10 +1400,10 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                     ),
                 )
-                for pid in parents:
-                    conn.execute(
+                if parents:
+                    conn.executemany(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-                        (pid, task_id),
+                        [(pid, task_id) for pid in parents],
                     )
                 _append_event(
                     conn,
@@ -3754,6 +3754,12 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    # Reap zombie children only for PIDs we know are kanban workers, never
+    # via waitpid(-1). The gateway process owns many non-kanban children
+    # (npm, agent-browser, etc.) whose callers rely on their own
+    # Popen.wait() / subprocess.run() exit status — a global reap would
+    # steal that status. Windows has no zombies / no os.WNOHANG so the
+    # helper is a no-op there.
     _reap_known_worker_children()
 
     result = DispatchResult()

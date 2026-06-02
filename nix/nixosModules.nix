@@ -490,7 +490,7 @@
         type = types.listOf types.package;
         default = [ ];
         description = ''
-          Python packages to add to PYTHONPATH for entry-point plugin discovery.
+          Python packages to expose to Hermes for entry-point plugin discovery without adding them to startup PYTHONPATH.
           These are pip-packaged plugins that register via the
           hermes_agent.plugins entry-point group. Each package must be built
           with the same Python interpreter as hermes (python312).

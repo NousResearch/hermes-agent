@@ -1012,11 +1012,17 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
+    # Resolve effective credentials: config override > parent inherit.
+    # A configured child base_url must not silently inherit the parent key: the
+    # parent key may belong to an unrelated provider and would be sent to the
+    # override endpoint as its Authorization credential.
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
-    effective_api_key = override_api_key or parent_api_key
+    if override_base_url and not override_api_key:
+        effective_api_key = None
+    else:
+        effective_api_key = override_api_key or parent_api_key
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
@@ -2327,11 +2333,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     If ``delegation.base_url`` is configured, subagents use that direct
     OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
-    parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    omitted, ``OPENAI_API_KEY`` is used for backwards compatibility. Parent
+    agent credentials are never inherited for a configured direct endpoint
+    because they may belong to an unrelated provider.
 
     Otherwise, if ``delegation.provider`` is configured, the full credential
     bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
@@ -2349,13 +2353,14 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
     if configured_base_url:
-        # When delegation.api_key is not set, return None so _build_child_agent
-        # falls back to the parent agent's API key via the credential inheritance
-        # path (effective_api_key = override_api_key or parent_api_key). This
-        # lets providers that store their key in a non-OPENAI_API_KEY env var
-        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
-        # callers to duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
+        api_key = configured_api_key or (os.getenv("OPENAI_API_KEY") or "").strip()
+        if not api_key:
+            raise ValueError(
+                "delegation.base_url is set but no delegation.api_key or "
+                "OPENAI_API_KEY is configured. Set delegation.api_key for the "
+                "direct endpoint, or use delegation.provider to resolve a "
+                "provider-specific credential."
+            )
 
         base_lower = configured_base_url.lower()
         provider = "custom"

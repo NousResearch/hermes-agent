@@ -225,6 +225,10 @@ class QQAdapter(BasePlatformAdapter):
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
 
+        # Throttle the "gateway runner not attached" warning so a missing wire-up
+        # doesn't spam logs on every inbound attachment.
+        self._warned_no_runner: bool = False
+
         # Inline-keyboard interaction routing. The callback (if set) is invoked
         # for every INTERACTION_CREATE event after the adapter has already
         # ACKed it. Callers (gateway wiring for approvals / update prompts)
@@ -1115,6 +1119,63 @@ class QQAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to write update response: %s", exc)
 
+    def _is_source_authorized_for_attachment_processing(self, source) -> bool:
+        """Check gateway authorization before attachment network I/O.
+
+        QQ attachment URLs are HTTPS endpoints that the agent must download
+        before they can be sent to the model. An unauthorized sender could
+        otherwise force the bot to fetch arbitrary external content (SSRF
+        amplification, large-file DoS, attacker-controlled redirects). Gate
+        every attachment-processing path on the gateway's user-allowlist
+        check, and fail closed when the runner isn't wired up yet.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if not callable(auth_fn):
+            if not self._warned_no_runner:
+                logger.warning(
+                    "[%s] Blocking QQ attachment processing before gateway authorization: "
+                    "gateway runner is not attached",
+                    self._log_tag,
+                )
+                self._warned_no_runner = True
+            else:
+                logger.debug(
+                    "[%s] Blocking QQ attachment processing: gateway runner still not attached",
+                    self._log_tag,
+                )
+            return False
+        try:
+            return bool(auth_fn(source))
+        except Exception as exc:
+            logger.warning(
+                "[%s] Blocking QQ attachment processing after authorization check failed: %s",
+                self._log_tag,
+                exc,
+            )
+            return False
+
+    async def _forward_message_without_attachments(
+            self,
+            *,
+            source,
+            text: str,
+            raw_message: Dict[str, Any],
+            message_id: str,
+            timestamp: str,
+    ) -> None:
+        """Forward text-only metadata so gateway auth can reject or pair safely."""
+        await self.handle_message(MessageEvent(
+            source=source,
+            text=text,
+            message_type=MessageType.TEXT,
+            raw_message=raw_message,
+            message_id=message_id,
+            media_urls=[],
+            media_types=[],
+            timestamp=self._parse_qq_timestamp(timestamp),
+        ))
+
     async def _handle_c2c_message(
             self,
             d: Dict[str, Any],
@@ -1131,6 +1192,11 @@ class QQAdapter(BasePlatformAdapter):
             return
 
         text = content
+        source = self.build_source(
+            chat_id=user_openid,
+            user_id=user_openid,
+            chat_type="dm",
+        )
         attachments_raw = d.get("attachments")
         logger.info(
             "[%s] C2C message: id=%s content=%r attachments=%s",
@@ -1154,6 +1220,20 @@ class QQAdapter(BasePlatformAdapter):
                         str(_att.get("url", ""))[:80],
                         _att.get("filename", ""),
                     )
+
+        if (
+            isinstance(attachments_raw, list)
+            and attachments_raw
+            and not self._is_source_authorized_for_attachment_processing(source)
+        ):
+            await self._forward_message_without_attachments(
+                source=source,
+                text=text,
+                raw_message=d,
+                message_id=msg_id,
+                timestamp=timestamp,
+            )
+            return
 
         # Process all attachments uniformly (images, voice, files)
         att_result = await self._process_attachments(attachments_raw)
@@ -1195,11 +1275,7 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[user_openid] = "c2c"
         event = MessageEvent(
-            source=self.build_source(
-                chat_id=user_openid,
-                user_id=user_openid,
-                chat_type="dm",
-            ),
+            source=source,
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
@@ -1229,7 +1305,26 @@ class QQAdapter(BasePlatformAdapter):
 
         # Strip the @bot mention prefix from content
         text = self._strip_at_mention(content)
-        att_result = await self._process_attachments(d.get("attachments"))
+        source = self.build_source(
+            chat_id=group_openid,
+            user_id=str(author.get("member_openid", "")),
+            chat_type="group",
+        )
+        attachments_raw = d.get("attachments")
+        if (
+            isinstance(attachments_raw, list)
+            and attachments_raw
+            and not self._is_source_authorized_for_attachment_processing(source)
+        ):
+            await self._forward_message_without_attachments(
+                source=source,
+                text=text,
+                raw_message=d,
+                message_id=msg_id,
+                timestamp=timestamp,
+            )
+            return
+        att_result = await self._process_attachments(attachments_raw)
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
@@ -1260,11 +1355,7 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[group_openid] = "group"
         event = MessageEvent(
-            source=self.build_source(
-                chat_id=group_openid,
-                user_id=str(author.get("member_openid", "")),
-                chat_type="group",
-            ),
+            source=source,
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
@@ -1302,9 +1393,29 @@ class QQAdapter(BasePlatformAdapter):
 
         member = d.get("member") if isinstance(d.get("member"), dict) else {}
         nick = str(member.get("nick", "")) or str(author.get("username", ""))
+        source = self.build_source(
+            chat_id=channel_id,
+            user_id=str(author.get("id", "")),
+            user_name=nick or None,
+            chat_type="group",
+        )
 
         text = content
-        att_result = await self._process_attachments(d.get("attachments"))
+        attachments_raw = d.get("attachments")
+        if (
+            isinstance(attachments_raw, list)
+            and attachments_raw
+            and not self._is_source_authorized_for_attachment_processing(source)
+        ):
+            await self._forward_message_without_attachments(
+                source=source,
+                text=text,
+                raw_message=d,
+                message_id=msg_id,
+                timestamp=timestamp,
+            )
+            return
+        att_result = await self._process_attachments(attachments_raw)
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
@@ -1334,12 +1445,7 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[channel_id] = "guild"
         event = MessageEvent(
-            source=self.build_source(
-                chat_id=channel_id,
-                user_id=str(author.get("id", "")),
-                user_name=nick or None,
-                chat_type="group",
-            ),
+            source=source,
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,
@@ -1375,7 +1481,26 @@ class QQAdapter(BasePlatformAdapter):
             return
 
         text = content
-        att_result = await self._process_attachments(d.get("attachments"))
+        source = self.build_source(
+            chat_id=guild_id,
+            user_id=str(author.get("id", "")),
+            chat_type="dm",
+        )
+        attachments_raw = d.get("attachments")
+        if (
+            isinstance(attachments_raw, list)
+            and attachments_raw
+            and not self._is_source_authorized_for_attachment_processing(source)
+        ):
+            await self._forward_message_without_attachments(
+                source=source,
+                text=text,
+                raw_message=d,
+                message_id=msg_id,
+                timestamp=timestamp,
+            )
+            return
+        att_result = await self._process_attachments(attachments_raw)
         image_urls = att_result["image_urls"]
         image_media_types = att_result["image_media_types"]
         voice_transcripts = att_result["voice_transcripts"]
@@ -1405,11 +1530,7 @@ class QQAdapter(BasePlatformAdapter):
 
         self._chat_type_map[guild_id] = "dm"
         event = MessageEvent(
-            source=self.build_source(
-                chat_id=guild_id,
-                user_id=str(author.get("id", "")),
-                chat_type="dm",
-            ),
+            source=source,
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),
             raw_message=d,

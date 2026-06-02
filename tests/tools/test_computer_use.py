@@ -33,6 +33,16 @@ def noop_backend():
     return _get_backend()
 
 
+@pytest.fixture
+def approve_computer_use():
+    """Approve one computer_use action so routing tests can reach the backend."""
+    from tools.computer_use.tool import set_approval_callback
+
+    set_approval_callback(lambda action, args, summary: "approve_once")
+    yield
+    set_approval_callback(None)
+
+
 # ---------------------------------------------------------------------------
 # Schema & registration
 # ---------------------------------------------------------------------------
@@ -127,7 +137,7 @@ class TestDispatch:
         assert parsed["ok"] is True
         assert parsed["action"] == "wait"
 
-    def test_click_without_target_returns_error(self, noop_backend):
+    def test_click_without_target_returns_error(self, noop_backend, approve_computer_use):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({"action": "click"})
         parsed = json.loads(out)
@@ -135,7 +145,7 @@ class TestDispatch:
         # for the cua backend. Just make sure the noop path doesn't crash.
         assert "action" in parsed or "error" in parsed
 
-    def test_click_by_element_routes_to_backend(self, noop_backend):
+    def test_click_by_element_routes_to_backend(self, noop_backend, approve_computer_use):
         from tools.computer_use.tool import handle_computer_use
         handle_computer_use({"action": "click", "element": 7})
         call_names = [c[0] for c in noop_backend.calls]
@@ -143,17 +153,46 @@ class TestDispatch:
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw.get("element") == 7
 
-    def test_double_click_sets_click_count(self, noop_backend):
+    def test_double_click_sets_click_count(self, noop_backend, approve_computer_use):
         from tools.computer_use.tool import handle_computer_use
         handle_computer_use({"action": "double_click", "element": 3})
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw["click_count"] == 2
 
-    def test_right_click_sets_button(self, noop_backend):
+    def test_right_click_sets_button(self, noop_backend, approve_computer_use):
         from tools.computer_use.tool import handle_computer_use
         handle_computer_use({"action": "right_click", "element": 3})
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw["button"] == "right"
+
+
+# ---------------------------------------------------------------------------
+# Destructive action approval
+# ---------------------------------------------------------------------------
+
+class TestApprovalGate:
+    def test_destructive_action_without_callback_fails_closed(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "type", "text": "APPROVAL_BYPASS_SENTINEL"})
+        parsed = json.loads(out)
+
+        assert parsed == {
+            "error": "approval required but no approval callback is registered",
+            "action": "type",
+        }
+        assert noop_backend.calls == []
+
+    def test_destructive_action_with_approval_callback_routes_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use, set_approval_callback
+
+        set_approval_callback(lambda action, args, summary: "approve_once")
+        out = handle_computer_use({"action": "type", "text": "approved"})
+        parsed = json.loads(out)
+
+        assert parsed["ok"] is True
+        assert parsed["action"] == "type"
+        assert ("type", {"text": "approved"}) in noop_backend.calls
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +227,13 @@ class TestSafetyGuards:
         assert "error" in parsed
         assert "blocked key combo" in parsed["error"]
 
-    def test_safe_key_combos_pass(self, noop_backend):
+    def test_safe_key_combos_pass(self, noop_backend, approve_computer_use):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({"action": "key", "keys": "cmd+s"})
         parsed = json.loads(out)
         assert "error" not in parsed
 
-    def test_type_with_empty_string_is_allowed(self, noop_backend):
+    def test_type_with_empty_string_is_allowed(self, noop_backend, approve_computer_use):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({"action": "type", "text": ""})
         parsed = json.loads(out)

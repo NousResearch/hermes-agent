@@ -58,6 +58,18 @@ jobs:
         with:
           submodules: recursive
 
+      # The image bundles a large Python venv (ctranslate2, torch, etc.) and
+      # `load: true` imports the whole thing into the local daemon, which can
+      # exhaust the runner's ~14 GB free disk and fail with "no space left on
+      # device".  Reclaim space from preinstalled toolchains we don't use.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/local/lib/node_modules \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
 
@@ -145,6 +157,16 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           submodules: recursive
+
+      # See build-amd64: free space before `load: true` imports the large
+      # venv-bearing image into the local daemon.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/local/lib/node_modules \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          df -h
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4

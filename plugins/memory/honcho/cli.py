@@ -430,7 +430,7 @@ def cmd_setup(args) -> None:
     if new_ai:
         hermes_host["aiPeer"] = new_ai
 
-    current_workspace = hermes_host.get("workspace") or cfg.get("workspace", "hermes")
+    current_workspace = hermes_host.get("workspace") or cfg.get("workspace") or _host_key()
     new_workspace = _prompt("Workspace ID", default=current_workspace)
     if new_workspace:
         hermes_host["workspace"] = new_workspace

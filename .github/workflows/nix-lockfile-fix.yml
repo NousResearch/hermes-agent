@@ -119,7 +119,7 @@ jobs:
           echo "::error::Failed to push after 3 rebase attempts"
           exit 1
 
-  # ── PR fix (manual dispatch) ─────────────────────────────────────
+  # ── PR fix (manual dispatch) ───────────────────────────────────────
   fix:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -130,8 +130,7 @@ jobs:
         uses: actions/github-script@d746ffe35508b1917358783b479e04febd2b8f71  # v9
         with:
           script: |
-            // 1. Verify the actor has write access — applies to both checkbox
-            //    clicks and manual dispatch.
+            // 1. Verify the actor has write access for manual dispatch.
             const { data: perm } =
               await github.rest.repos.getCollaboratorPermissionLevel({
                 owner: context.repo.owner,

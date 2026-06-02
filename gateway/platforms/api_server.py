@@ -703,7 +703,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
-        self._response_store = ResponseStore()
+        self._response_store: Optional["ResponseStore"] = ResponseStore()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -4195,7 +4195,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
-        """Stop the aiohttp web server."""
+        """Stop the aiohttp web server and release database resources."""
         self._mark_disconnected()
         if self._site:
             await self._site.stop()
@@ -4204,6 +4204,13 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        # Close the ResponseStore sqlite3 connection (+ WAL file) so that
+        # failed reconnect attempts do not accumulate file descriptors.
+        # disconnect() is called on every failed connect attempt via
+        # _safe_adapter_disconnect(); without this each cycle leaks 2 fds
+        # (db + WAL), exhausting the process fd limit after ~12 h uptime.
+        if self._response_store is not None:
+            self._response_store.close()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

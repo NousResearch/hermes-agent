@@ -6200,6 +6200,7 @@ class GatewayRunner:
                             "Reconnect %s: non-retryable error (%s), removing from retry queue",
                             platform.value, adapter.fatal_error_message,
                         )
+                        await self._safe_adapter_disconnect(adapter, platform)
                         del self._failed_platforms[platform]
                     else:
                         self._update_platform_runtime_status(
@@ -6208,6 +6209,7 @@ class GatewayRunner:
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message or "failed to reconnect",
                         )
+                        await self._safe_adapter_disconnect(adapter, platform)
                         backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                         info["attempts"] = attempt
                         info["next_retry"] = time.monotonic() + backoff
@@ -6230,6 +6232,11 @@ class GatewayRunner:
                         error_code=None,
                         error_message=str(e),
                     )
+                    # Dispose the adapter created at the top of this attempt.
+                    # If _connect_adapter_with_timeout raised before `adapter`
+                    # was assigned we are already in the except block with the
+                    # adapter from the try block still in scope, so this is safe.
+                    await self._safe_adapter_disconnect(adapter, platform)
                     backoff = min(30 * (2 ** (attempt - 1)), _BACKOFF_CAP)
                     info["attempts"] = attempt
                     info["next_retry"] = time.monotonic() + backoff

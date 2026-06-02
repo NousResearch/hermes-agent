@@ -77,123 +77,123 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
 }
 
 export const FIELD_LABELS: Record<string, string> = {
-  model: 'Default Model',
-  model_context_length: 'Context Window',
-  fallback_providers: 'Fallback Models',
-  toolsets: 'Enabled Toolsets',
-  timezone: 'Timezone',
-  'display.personality': 'Personality',
-  'display.show_reasoning': 'Reasoning Blocks',
-  'agent.max_turns': 'Max Agent Steps',
-  'agent.image_input_mode': 'Image Attachments',
-  'terminal.cwd': 'Working Directory',
-  'terminal.backend': 'Execution Backend',
-  'terminal.timeout': 'Command Timeout',
-  'terminal.persistent_shell': 'Persistent Shell',
-  'terminal.env_passthrough': 'Environment Passthrough',
-  file_read_max_chars: 'File Read Limit',
-  'tool_output.max_bytes': 'Terminal Output Limit',
-  'tool_output.max_lines': 'File Page Limit',
-  'tool_output.max_line_length': 'Line Length Limit',
-  'code_execution.mode': 'Code Execution Mode',
-  'approvals.mode': 'Approval Mode',
-  'approvals.timeout': 'Approval Timeout',
-  'approvals.mcp_reload_confirm': 'Confirm MCP Reloads',
-  command_allowlist: 'Command Allowlist',
-  'security.redact_secrets': 'Redact Secrets',
-  'security.allow_private_urls': 'Allow Private URLs',
-  'browser.allow_private_urls': 'Browser Private URLs',
-  'browser.auto_local_for_private_urls': 'Local Browser For Private URLs',
-  'checkpoints.enabled': 'File Checkpoints',
-  'checkpoints.max_snapshots': 'Checkpoint Limit',
-  'voice.record_key': 'Voice Shortcut',
-  'voice.max_recording_seconds': 'Max Recording Length',
-  'voice.auto_tts': 'Read Responses Aloud',
-  'stt.enabled': 'Speech To Text',
-  'stt.provider': 'Speech-To-Text Provider',
-  'stt.local.model': 'Local Transcription Model',
-  'stt.local.language': 'Transcription Language',
-  'stt.elevenlabs.model_id': 'ElevenLabs STT Model',
-  'stt.elevenlabs.language_code': 'ElevenLabs Language',
-  'stt.elevenlabs.tag_audio_events': 'Tag Audio Events',
-  'stt.elevenlabs.diarize': 'Speaker Diarization',
-  'tts.provider': 'Text-To-Speech Provider',
-  'tts.edge.voice': 'Edge Voice',
-  'tts.openai.model': 'OpenAI TTS Model',
-  'tts.openai.voice': 'OpenAI Voice',
-  'tts.elevenlabs.voice_id': 'ElevenLabs Voice',
-  'tts.elevenlabs.model_id': 'ElevenLabs Model',
-  'memory.memory_enabled': 'Persistent Memory',
-  'memory.user_profile_enabled': 'User Profile',
-  'memory.memory_char_limit': 'Memory Budget',
-  'memory.user_char_limit': 'Profile Budget',
-  'memory.provider': 'Memory Provider',
-  'context.engine': 'Context Engine',
-  'compression.enabled': 'Auto-Compression',
-  'compression.threshold': 'Compression Threshold',
-  'compression.target_ratio': 'Compression Target',
-  'compression.protect_last_n': 'Protected Recent Messages',
-  'agent.api_max_retries': 'API Retries',
-  'agent.service_tier': 'Service Tier',
-  'agent.tool_use_enforcement': 'Tool-Use Enforcement',
-  'delegation.model': 'Subagent Model',
-  'delegation.provider': 'Subagent Provider',
-  'delegation.max_iterations': 'Subagent Turn Limit',
-  'delegation.max_concurrent_children': 'Parallel Subagents',
-  'delegation.child_timeout_seconds': 'Subagent Timeout',
-  'delegation.reasoning_effort': 'Subagent Reasoning Effort'
+  model: 'settings:field.model',
+  model_context_length: 'settings:field.model_context_length',
+  fallback_providers: 'settings:field.fallback_providers',
+  toolsets: 'settings:field.toolsets',
+  timezone: 'settings:field.timezone',
+  'display.personality': 'settings:field.display.personality',
+  'display.show_reasoning': 'settings:field.display.show_reasoning',
+  'agent.max_turns': 'settings:field.agent.max_turns',
+  'agent.image_input_mode': 'settings:field.agent.image_input_mode',
+  'terminal.cwd': 'settings:field.terminal.cwd',
+  'terminal.backend': 'settings:field.terminal.backend',
+  'terminal.timeout': 'settings:field.terminal.timeout',
+  'terminal.persistent_shell': 'settings:field.terminal.persistent_shell',
+  'terminal.env_passthrough': 'settings:field.terminal.env_passthrough',
+  file_read_max_chars: 'settings:field.file_read_max_chars',
+  'tool_output.max_bytes': 'settings:field.tool_output.max_bytes',
+  'tool_output.max_lines': 'settings:field.tool_output.max_lines',
+  'tool_output.max_line_length': 'settings:field.tool_output.max_line_length',
+  'code_execution.mode': 'settings:field.code_execution.mode',
+  'approvals.mode': 'settings:field.approvals.mode',
+  'approvals.timeout': 'settings:field.approvals.timeout',
+  'approvals.mcp_reload_confirm': 'settings:field.approvals.mcp_reload_confirm',
+  command_allowlist: 'settings:field.command_allowlist',
+  'security.redact_secrets': 'settings:field.security.redact_secrets',
+  'security.allow_private_urls': 'settings:field.security.allow_private_urls',
+  'browser.allow_private_urls': 'settings:field.browser.allow_private_urls',
+  'browser.auto_local_for_private_urls': 'settings:field.browser.auto_local_for_private_urls',
+  'checkpoints.enabled': 'settings:field.checkpoints.enabled',
+  'checkpoints.max_snapshots': 'settings:field.checkpoints.max_snapshots',
+  'voice.record_key': 'settings:field.voice.record_key',
+  'voice.max_recording_seconds': 'settings:field.voice.max_recording_seconds',
+  'voice.auto_tts': 'settings:field.voice.auto_tts',
+  'stt.enabled': 'settings:field.stt.enabled',
+  'stt.provider': 'settings:field.stt.provider',
+  'stt.local.model': 'settings:field.stt.local.model',
+  'stt.local.language': 'settings:field.stt.local.language',
+  'stt.elevenlabs.model_id': 'settings:field.stt.elevenlabs.model_id',
+  'stt.elevenlabs.language_code': 'settings:field.stt.elevenlabs.language_code',
+  'stt.elevenlabs.tag_audio_events': 'settings:field.stt.elevenlabs.tag_audio_events',
+  'stt.elevenlabs.diarize': 'settings:field.stt.elevenlabs.diarize',
+  'tts.provider': 'settings:field.tts.provider',
+  'tts.edge.voice': 'settings:field.tts.edge.voice',
+  'tts.openai.model': 'settings:field.tts.openai.model',
+  'tts.openai.voice': 'settings:field.tts.openai.voice',
+  'tts.elevenlabs.voice_id': 'settings:field.tts.elevenlabs.voice_id',
+  'tts.elevenlabs.model_id': 'settings:field.tts.elevenlabs.model_id',
+  'memory.memory_enabled': 'settings:field.memory.memory_enabled',
+  'memory.user_profile_enabled': 'settings:field.memory.user_profile_enabled',
+  'memory.memory_char_limit': 'settings:field.memory.memory_char_limit',
+  'memory.user_char_limit': 'settings:field.memory.user_char_limit',
+  'memory.provider': 'settings:field.memory.provider',
+  'context.engine': 'settings:field.context.engine',
+  'compression.enabled': 'settings:field.compression.enabled',
+  'compression.threshold': 'settings:field.compression.threshold',
+  'compression.target_ratio': 'settings:field.compression.target_ratio',
+  'compression.protect_last_n': 'settings:field.compression.protect_last_n',
+  'agent.api_max_retries': 'settings:field.agent.api_max_retries',
+  'agent.service_tier': 'settings:field.agent.service_tier',
+  'agent.tool_use_enforcement': 'settings:field.agent.tool_use_enforcement',
+  'delegation.model': 'settings:field.delegation.model',
+  'delegation.provider': 'settings:field.delegation.provider',
+  'delegation.max_iterations': 'settings:field.delegation.max_iterations',
+  'delegation.max_concurrent_children': 'settings:field.delegation.max_concurrent_children',
+  'delegation.child_timeout_seconds': 'settings:field.delegation.child_timeout_seconds',
+  'delegation.reasoning_effort': 'settings:field.delegation.reasoning_effort'
 }
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = {
-  model: 'Used for new chats unless you pick a different model in the composer.',
-  model_context_length: "Leave at 0 to use the selected model's detected context window.",
-  fallback_providers: 'Backup provider:model entries to try if the default model fails.',
-  'display.personality': 'Default assistant style for new sessions.',
-  timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
-  'display.show_reasoning': 'Show reasoning sections when the backend provides them.',
-  'agent.image_input_mode': 'Controls how image attachments are sent to the model.',
-  'terminal.cwd': 'Default project folder for tool and terminal work.',
-  'code_execution.mode': 'How strictly code execution is scoped to the current project.',
-  'terminal.persistent_shell': 'Keep shell state between commands when the backend supports it.',
-  'terminal.env_passthrough': 'Environment variables to pass into tool execution.',
-  file_read_max_chars: 'Maximum characters Hermes can read from one file request.',
-  'approvals.mode': 'How Hermes handles commands that need explicit approval.',
-  'approvals.timeout': 'How long approval prompts wait before timing out.',
-  'security.redact_secrets': 'Hide detected secrets from model-visible content when possible.',
-  'checkpoints.enabled': 'Create rollback snapshots before file edits.',
-  'memory.memory_enabled': 'Save durable memories that can help future sessions.',
-  'memory.user_profile_enabled': 'Maintain a compact profile of user preferences.',
-  'context.engine': 'Strategy for managing long conversations near the context limit.',
-  'compression.enabled': 'Summarize older context when conversations get large.',
-  'voice.auto_tts': 'Automatically speak assistant responses.',
-  'stt.enabled': 'Enable local or provider-backed speech transcription.',
-  'stt.elevenlabs.language_code': 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.',
-  'agent.max_turns': 'Upper bound for tool-calling turns before Hermes stops a run.'
+  model: 'settings:fieldDesc.model',
+  model_context_length: 'settings:fieldDesc.model_context_length',
+  fallback_providers: 'settings:fieldDesc.fallback_providers',
+  'display.personality': 'settings:fieldDesc.display.personality',
+  timezone: 'settings:fieldDesc.timezone',
+  'display.show_reasoning': 'settings:fieldDesc.display.show_reasoning',
+  'agent.image_input_mode': 'settings:fieldDesc.agent.image_input_mode',
+  'terminal.cwd': 'settings:fieldDesc.terminal.cwd',
+  'code_execution.mode': 'settings:fieldDesc.code_execution.mode',
+  'terminal.persistent_shell': 'settings:fieldDesc.terminal.persistent_shell',
+  'terminal.env_passthrough': 'settings:fieldDesc.terminal.env_passthrough',
+  file_read_max_chars: 'settings:fieldDesc.file_read_max_chars',
+  'approvals.mode': 'settings:fieldDesc.approvals.mode',
+  'approvals.timeout': 'settings:fieldDesc.approvals.timeout',
+  'security.redact_secrets': 'settings:fieldDesc.security.redact_secrets',
+  'checkpoints.enabled': 'settings:fieldDesc.checkpoints.enabled',
+  'memory.memory_enabled': 'settings:fieldDesc.memory.memory_enabled',
+  'memory.user_profile_enabled': 'settings:fieldDesc.memory.user_profile_enabled',
+  'context.engine': 'settings:fieldDesc.context.engine',
+  'compression.enabled': 'settings:fieldDesc.compression.enabled',
+  'voice.auto_tts': 'settings:fieldDesc.voice.auto_tts',
+  'stt.enabled': 'settings:fieldDesc.stt.enabled',
+  'stt.elevenlabs.language_code': 'settings:fieldDesc.stt.elevenlabs.language_code',
+  'agent.max_turns': 'settings:fieldDesc.agent.max_turns'
 }
 
 // Curated desktop config surface: only fields a user might tune from the app.
 export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
-    label: 'Model',
+    label: 'settings:section.model',
     icon: Sparkles,
     keys: ['model_context_length', 'fallback_providers']
   },
   {
     id: 'chat',
-    label: 'Chat',
+    label: 'settings:section.chat',
     icon: MessageCircle,
     keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
   },
   {
     id: 'appearance',
-    label: 'Appearance',
+    label: 'settings:section.appearance',
     icon: Palette,
     keys: []
   },
   {
     id: 'workspace',
-    label: 'Workspace',
+    label: 'settings:section.workspace',
     icon: Monitor,
     keys: [
       'terminal.cwd',
@@ -205,7 +205,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'safety',
-    label: 'Safety',
+    label: 'settings:section.safety',
     icon: Lock,
     keys: [
       'approvals.mode',
@@ -221,7 +221,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'memory',
-    label: 'Memory & Context',
+    label: 'settings:section.memory',
     icon: Brain,
     keys: [
       'memory.memory_enabled',
@@ -238,7 +238,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'voice',
-    label: 'Voice',
+    label: 'settings:section.voice',
     icon: Mic,
     keys: [
       'tts.provider',
@@ -262,7 +262,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'advanced',
-    label: 'Advanced',
+    label: 'settings:section.advanced',
     icon: Wrench,
     keys: [
       'toolsets',
@@ -288,22 +288,39 @@ export const SECTIONS: DesktopConfigSection[] = [
 
 export interface ModeOption {
   id: ThemeMode
-  label: string
-  description: string
+  /** i18n key under the `settings` namespace. */
+  labelKey: string
+  /** i18n key under the `settings` namespace. */
+  descriptionKey: string
   icon: IconComponent
 }
 
 export const MODE_OPTIONS: ModeOption[] = [
-  { id: 'light', label: 'Light', description: 'Bright desktop surfaces', icon: Sun },
-  { id: 'dark', label: 'Dark', description: 'Low-glare workspace', icon: Moon },
-  { id: 'system', label: 'System', description: 'Follow OS appearance', icon: Monitor }
+  {
+    id: 'light',
+    labelKey: 'settings:appearance.mode.light',
+    descriptionKey: 'settings:appearance.mode.lightDescription',
+    icon: Sun
+  },
+  {
+    id: 'dark',
+    labelKey: 'settings:appearance.mode.dark',
+    descriptionKey: 'settings:appearance.mode.darkDescription',
+    icon: Moon
+  },
+  {
+    id: 'system',
+    labelKey: 'settings:appearance.mode.system',
+    descriptionKey: 'settings:appearance.mode.systemDescription',
+    icon: Monitor
+  }
 ]
 
-export const SEARCH_PLACEHOLDER: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string> = {
-  about: 'About Hermes Desktop',
-  config: 'Search settings...',
-  gateway: 'Gateway connection...',
-  keys: 'Search API keys...',
-  mcp: 'Search MCP servers...',
-  sessions: 'Search archived sessions...'
+export const SEARCH_PLACEHOLDER: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions' | 'tools',string> = {
+  about: 'settings:search.about',
+  config: 'settings:search.placeholder',
+  gateway: 'settings:search.gateway',
+  keys: 'settings:search.keys',
+  mcp: 'settings:search.mcp',
+  sessions: 'settings:search.sessions'
 }

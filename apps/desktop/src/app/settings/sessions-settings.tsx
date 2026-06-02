@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
@@ -31,6 +32,7 @@ function workspaceLabel(cwd: null | string | undefined): string {
 }
 
 export function SessionsSettings({ query }: SearchProps) {
+  const { t } = useTranslation()
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -42,50 +44,56 @@ export function SessionsSettings({ query }: SearchProps) {
       const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
-      notifyError(err, 'Could not load archived sessions')
+      notifyError(err, t('settings:sessions.unarchiveFailed'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const unarchive = useCallback(async (session: SessionInfo) => {
-    setBusyId(session.id)
+  const unarchive = useCallback(
+    async (session: SessionInfo) => {
+      setBusyId(session.id)
 
-    try {
-      await setSessionArchived(session.id, false)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      // Surface it again in the sidebar without waiting for a full refresh.
-      setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
-      triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: 'Restored' })
-    } catch (err) {
-      notifyError(err, 'Unarchive failed')
-    } finally {
-      setBusyId(null)
-    }
-  }, [])
+      try {
+        await setSessionArchived(session.id, false)
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        // Surface it again in the sidebar without waiting for a full refresh.
+        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
+        triggerHaptic('selection')
+        notify({ durationMs: 2_000, kind: 'success', message: t('settings:sessions.restored') })
+      } catch (err) {
+        notifyError(err, t('settings:sessions.unarchiveFailed'))
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [t]
+  )
 
-  const remove = useCallback(async (session: SessionInfo) => {
-    if (!window.confirm(`Permanently delete "${sessionTitle(session)}"? This cannot be undone.`)) {
-      return
-    }
+  const remove = useCallback(
+    async (session: SessionInfo) => {
+      if (!window.confirm(t('settings:sessions.deleteConfirm', { title: sessionTitle(session) }))) {
+        return
+      }
 
-    setBusyId(session.id)
+      setBusyId(session.id)
 
-    try {
-      await deleteSession(session.id)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      triggerHaptic('warning')
-    } catch (err) {
-      notifyError(err, 'Delete failed')
-    } finally {
-      setBusyId(null)
-    }
-  }, [])
+      try {
+        await deleteSession(session.id)
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        triggerHaptic('warning')
+      } catch (err) {
+        notifyError(err, t('settings:sessions.deleteFailed'))
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [t]
+  )
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -100,7 +108,7 @@ export function SessionsSettings({ query }: SearchProps) {
   }, [query, sessions])
 
   if (loading) {
-    return <LoadingState label="Loading archived sessions…" />
+    return <LoadingState label={t('settings:sessions.loading')} />
   }
 
   return (
@@ -110,17 +118,16 @@ export function SessionsSettings({ query }: SearchProps) {
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
-        title="Archived sessions"
+        title={t('settings:sessions.title')}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to
-        archive it.
+        {t('settings:sessions.description')}
       </p>
 
       {filtered.length === 0 ? (
         <EmptyState
-          description={query.trim() ? 'No archived chats match your search.' : 'Archive a chat to hide it here.'}
-          title="Nothing archived"
+          description={query.trim() ? t('settings:sessions.empty.search') : t('settings:sessions.empty.idle')}
+          title={t('settings:sessions.empty.title')}
         />
       ) : (
         <div className="divide-y divide-border/30">
@@ -140,15 +147,15 @@ export function SessionsSettings({ query }: SearchProps) {
                       variant="outline"
                     >
                       {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                      <span>Unarchive</span>
+                      <span>{t('settings:sessions.unarchive')}</span>
                     </Button>
                     <Button
-                      aria-label="Delete permanently"
+                      aria-label={t('settings:sessions.delete')}
                       className="text-muted-foreground hover:text-destructive"
                       disabled={busy}
                       onClick={() => void remove(session)}
                       size="icon"
-                      title="Delete permanently"
+                      title={t('settings:sessions.delete')}
                       type="button"
                       variant="ghost"
                     >
@@ -157,7 +164,11 @@ export function SessionsSettings({ query }: SearchProps) {
                   </div>
                 }
                 description={session.preview || undefined}
-                hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
+                hint={
+                  label
+                    ? `${label} · ${t('common:messages', { count: session.message_count })}`
+                    : t('common:messages', { count: session.message_count })
+                }
                 key={session.id}
                 title={sessionTitle(session)}
               />

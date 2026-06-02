@@ -2188,11 +2188,18 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
             candidates.append(entry)
 
     result: list[str] = []
-    seen = set(path_entries)
+
+    def _dedupe_key(entry: str) -> str:
+        return entry.rstrip("/") if entry.startswith("/mnt/") else entry
+
+    seen = {_dedupe_key(entry) for entry in path_entries}
     for entry in candidates:
-        if entry and entry not in seen:
-            seen.add(entry)
-            result.append(entry)
+        if not entry:
+            continue
+        key = _dedupe_key(entry)
+        if key not in seen:
+            seen.add(key)
+            result.append(key)
     return result
 
 

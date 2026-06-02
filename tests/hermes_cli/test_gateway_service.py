@@ -38,6 +38,19 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    def test_wsl_interop_paths_dedupe_trailing_slash_variants(self, monkeypatch):
+        powershell_dir = "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0"
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv("PATH", f"/usr/bin{os.pathsep}{powershell_dir}")
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda executable: None)
+        monkeypatch.setattr(gateway_cli.Path, "exists", lambda self: str(self).startswith("/mnt/c/WINDOWS"))
+
+        paths = gateway_cli._build_wsl_interop_paths([])
+
+        assert powershell_dir in paths
+        assert f"{powershell_dir}/" not in paths
+        assert paths.count(powershell_dir) == 1
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")

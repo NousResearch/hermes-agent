@@ -87,6 +87,7 @@ export interface Translations {
       achievements: string;
       analytics: string;
       chat: string;
+      channels: string;
       config: string;
       cron: string;
       documentation: string;
@@ -94,11 +95,15 @@ export interface Translations {
       kanban: string;
       keys: string;
       logs: string;
+      mcp: string;
       models: string;
+      pairing: string;
       profiles: string;
       plugins: string;
       sessions: string;
       skills: string;
+      system: string;
+      webhooks: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
@@ -267,6 +272,40 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+  };
+
+  // ── Channels page ──
+  channels: {
+    changesSaved: string;
+    configure: string;
+    configureTitle: string;
+    configuredSummary: string;
+    enablePlatform: string;
+    errorToast: string;
+    failedToRestart: string;
+    failedToSave: string;
+    gatewayNotRunning: string;
+    gatewayRestarting: string;
+    keepExistingPlaceholder: string;
+    nothingToSave: string;
+    platformMessage: string;
+    requiredField: string;
+    restartGateway: string;
+    restartingGateway: string;
+    restartNow: string;
+    saveAndEnable: string;
+    saved: string;
+    setupGuide: string;
+    test: string;
+    state: {
+      connected: string;
+      pendingRestart: string;
+      gatewayStopped: string;
+      disconnected: string;
+      notConfigured: string;
+      disabled: string;
+      fatal: string;
+    };
   };
 
   // ── Cron page ──

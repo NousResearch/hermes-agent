@@ -321,5 +321,5 @@ export const SEARCH_PLACEHOLDER: Record<
   keys: 'Search API keys...',
   mcp: 'Search MCP servers...',
   sessions: 'Search archived sessions...',
-  tools: 'Search skills and tools...'
+  tools: 'Search tools...'
 }

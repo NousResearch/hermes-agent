@@ -143,7 +143,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
           <OverlayNavItem
             active={activeView === 'tools'}
             icon={Package}
-            label="Skills & Tools"
+            label="Tools"
             onClick={() => setActiveView('tools')}
           />
           <OverlayNavItem

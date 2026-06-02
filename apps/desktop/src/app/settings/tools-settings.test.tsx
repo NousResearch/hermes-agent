@@ -1,15 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const getSkills = vi.fn()
 const getToolsets = vi.fn()
-const toggleSkill = vi.fn()
 const toggleToolset = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getSkills: () => getSkills(),
   getToolsets: () => getToolsets(),
-  toggleSkill: (name: string, enabled: boolean) => toggleSkill(name, enabled),
   toggleToolset: (name: string, enabled: boolean) => toggleToolset(name, enabled)
 }))
 
@@ -33,7 +29,6 @@ function toolset(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   toggleToolset.mockResolvedValue({ ok: true, name: 'web', enabled: false })
 })
@@ -62,5 +57,13 @@ describe('ToolsSettings toolset toggle', () => {
 
     await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
     expect(screen.getByText('Configured')).toBeTruthy()
+  })
+
+  it('does not render a Skills section (skills live on the /skills page)', async () => {
+    const { ToolsSettings } = await import('./tools-settings')
+    render(<ToolsSettings query="" />)
+
+    await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
+    expect(screen.queryByText('Skills')).toBeNull()
   })
 })

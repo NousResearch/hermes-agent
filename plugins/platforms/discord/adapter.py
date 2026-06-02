@@ -4566,6 +4566,13 @@ class DiscordAdapter(BasePlatformAdapter):
         Open-ended mode (``choices`` empty/None): renders the question as
         plain embed text — no buttons. The gateway's text-intercept captures
         the next message in this session and resolves the clarify.
+
+        Choice normalisation: ``choices`` may contain bare strings OR dicts
+        (LLMs sometimes emit ``[{"description": "..."}]`` instead of bare
+        strings, which would otherwise render as raw Python repr on the
+        button label). Dict choices are unwrapped against the canonical
+        LLM tool-call keys ``label``, ``description``, ``text``, ``title``
+        in that order. Dicts with none of those keys are dropped.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -4591,8 +4598,37 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.orange(),
             )
 
+            # Normalise choices: LLMs sometimes emit `[{"description": "..."}]`
+            # instead of bare strings, which would render as raw Python repr on
+            # the button label. Unwrap the common shapes, then stringify.
+            def _flatten_choice(c):
+                if c is None:
+                    return ""
+                if isinstance(c, str):
+                    return c.strip()
+                if isinstance(c, dict):
+                    # Prefer the canonical LLM tool-call user-facing keys
+                    # in the order the LLM is most likely to emit them.
+                    # 'name' and 'value' are deliberately NOT here: they're
+                    # Discord-component-shaped fields that could appear in
+                    # dicts that aren't meant to be choices (e.g., a
+                    # developer-error wiring that passes a Button-shaped
+                    # object). Picking them would leak raw enum values
+                    # or 4-char model identifiers onto user-facing buttons.
+                    # If a dict has none of the canonical keys, drop it
+                    # rather than picking some random field — a garbage
+                    # button label is worse than no button at all.
+                    for key in ("label", "description", "text", "title"):
+                        v = c.get(key)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+                    return ""
+                if isinstance(c, (list, tuple)):
+                    return " ".join(_flatten_choice(x) for x in c).strip()
+                return str(c).strip()
+
             clean_choices = [
-                str(c).strip() for c in (choices or []) if c is not None and str(c).strip()
+                s for s in (_flatten_choice(c) for c in (choices or [])) if s
             ]
             # Discord allows up to 5 buttons per row, 5 rows per view = 25.
             # We reserve one slot for the "Other" button, so cap at 24 choices.
@@ -6129,10 +6165,47 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars.
-                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
+                # Discord button labels are capped at 80 chars. On mobile the
+                # visible width is much narrower (often <40 chars before it
+                # wraps to 2 lines and the second line gets cut off), so we
+                # cap aggressively and cut at a word boundary when possible
+                # to keep the trailing text readable.
+                #
+                # Cut strategy (most-preferred to least-preferred):
+                #   1. Last space in the trailing half of the budget
+                #      (cleanest word boundary)
+                #   2. Last soft boundary in the trailing half of the
+                #      budget (hyphen, comma, period, paren)
+                #   3. Hard cut at the budget limit (last resort)
+                prefix = f"{index + 1}. "
+                budget = 80 - len(prefix)
+                if len(choice) <= budget:
+                    label_body = choice
+                else:
+                    truncated = choice[: budget - 1].rstrip()
+                    cut_at = -1
+                    # 1. Last space in the trailing half of the budget.
+                    space = truncated.rfind(" ")
+                    if space >= budget // 2:
+                        cut_at = space
+                    # 2. Soft boundary — only if no word boundary found.
+                    # Find the latest soft boundary in the trailing half
+                    # of the budget; that maximizes preserved text length.
+                    # Cut AT the soft boundary (inclusive) so the label
+                    # ends on the soft char (e.g. "-" or ",") rather than
+                    # on the alpha char that followed it.
+                    if cut_at < 0:
+                        latest_soft = max(
+                            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
+                            default=-1,
+                        )
+                        if latest_soft >= budget // 2:
+                            cut_at = latest_soft + 1
+                    if cut_at > 0:
+                        truncated = truncated[:cut_at]
+                    label_body = truncated.rstrip() + "…"
                 button = discord.ui.Button(
-                    label=f"{index + 1}. {label_body}",
+                    label=f"{prefix}{label_body}",
                     style=discord.ButtonStyle.primary,
                     custom_id=f"clarify:{clarify_id}:{index}",
                 )

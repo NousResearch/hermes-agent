@@ -5,6 +5,37 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DASHBOARD_RUN = REPO_ROOT / "docker" / "s6-rc.d" / "dashboard" / "run"
+MAIN_WRAPPER = REPO_ROOT / "docker" / "main-wrapper.sh"
+
+
+def test_main_wrapper_preserves_docker_workdir() -> None:
+    """The main-wrapper MUST save and restore the original working
+    directory so the container starts in the Docker ``-w`` directory,
+    not /opt/data.  Regression test for #35472.
+    """
+    text = MAIN_WRAPPER.read_text(encoding="utf-8")
+
+    # Must save original cwd before cd /opt/data.
+    assert "_hermes_orig_cwd" in text, (
+        "main-wrapper.sh must save the original cwd before cd /opt/data"
+    )
+    assert 'HERMES_ORIG_CWD:-$PWD' in text, (
+        "main-wrapper.sh must capture PWD as the fallback original cwd"
+    )
+
+    # Must cd to /opt/data for init (existing behaviour preserved).
+    assert "cd /opt/data" in text
+
+    # Must restore original cwd before exec'ing the user command.
+    # The restore cd must appear AFTER venv activation but BEFORE the
+    # first exec / if-block.
+    activate_idx = text.index("/opt/hermes/.venv/bin/activate")
+    restore_idx = text.index('cd "$_hermes_orig_cwd"')
+    exec_idx = text.index("if [ $# -eq 0 ]")
+    assert activate_idx < restore_idx < exec_idx, (
+        "cd $_hermes_orig_cwd must appear after venv activation and "
+        "before the exec routing block"
+    )
 
 
 def test_dashboard_run_resets_home_before_dropping_privileges() -> None:

@@ -301,7 +301,7 @@ function applyTheme(theme: DashboardTheme) {
   // Terminal background — read by ChatPage via useTheme(); also available as CSS var.
   root.style.setProperty(
     "--theme-terminal-background",
-    theme.terminalBackground ?? "#0d2626",
+    theme.terminalBackground ?? "#000000",
   );
 }
 

@@ -163,7 +163,7 @@ export interface DashboardTheme {
   componentStyles?: ThemeComponentStyles;
   colorOverrides?: ThemeColorOverrides;
   /** Background color for the embedded terminal pane (xterm.js).
-   *  Hex string. Defaults to `"#0d2626"` when absent. */
+   *  Hex string. Defaults to `"#000000"` when absent. */
   terminalBackground?: string;
 }
 

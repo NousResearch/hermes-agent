@@ -335,7 +335,14 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Collect results from all (or filtered) sources in parallel.
     # Per-source limits are generous — parallelism + 30s timeout cap prevents hangs.
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    # NOTE: when the centralized index is available, parallel_search_sources
+    # skips the external API sources and serves everything from "hermes-index".
+    # That source MUST therefore carry a high limit, or browse silently caps
+    # the entire hub at the default (50) — it shipped that way and surfaced
+    # ~136 of 88k skills. The external-source limits below only apply when the
+    # index is unavailable (offline / first run before the cache populates).
     _PER_SOURCE_LIMIT = {
+        "hermes-index": 5000,
         "official": 200, "skills-sh": 200, "well-known": 50,
         "github": 200, "clawhub": 500, "claude-marketplace": 100,
         "lobehub": 500, "browse-sh": 500,
@@ -396,18 +403,22 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Build table
     table = Table(show_header=True, header_style="bold")
     table.add_column("#", style="dim", width=4, justify="right")
-    table.add_column("Name", style="bold cyan", max_width=25)
-    table.add_column("Description", max_width=50)
+    table.add_column("Name", style="bold cyan", max_width=22)
+    table.add_column("Description", max_width=44)
     table.add_column("Source", style="dim", width=12)
     table.add_column("Trust", width=10)
+    # The identifier is what you pass to `hermes skills install`. Browse used
+    # to omit it entirely, so users couldn't act on what they saw without a
+    # second `search`. overflow="fold" keeps long slugs copy-pasteable.
+    table.add_column("Identifier", style="dim", overflow="fold", no_wrap=False)
 
     for i, r in enumerate(page_items, start=start + 1):
         trust_style = {"builtin": "bright_cyan", "trusted": "green",
                        "community": "yellow"}.get(r.trust_level, "dim")
         trust_label = "★ official" if r.source == "official" else r.trust_level
 
-        desc = r.description[:50]
-        if len(r.description) > 50:
+        desc = r.description[:44]
+        if len(r.description) > 44:
             desc += "..."
 
         table.add_row(
@@ -416,6 +427,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
             desc,
             r.source,
             f"[{trust_style}]{trust_label}[/]",
+            r.identifier,
         )
 
     c.print(table)
@@ -439,7 +451,9 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print(f"  [yellow]⚡ Slow sources skipped: {', '.join(timed_out)} "
                 f"— run again for cached results[/]")
 
-    c.print("[dim]Tip: 'hermes skills search <query>' searches deeper across all registries[/]\n")
+    c.print("[dim]Tip: 'hermes skills inspect <identifier>' to preview, "
+            "'hermes skills install <identifier>' to install, "
+            "'hermes skills search <query>' to search deeper[/]\n")
 
 
 def do_install(identifier: str, category: str = "", force: bool = False,
@@ -725,24 +739,27 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
 
     Returns ``{"items": [...], "page": int, "total_pages": int, "total": int}``.
     """
-    from tools.skills_hub import GitHubAuth, create_source_router
+    from tools.skills_hub import (
+        GitHubAuth, create_source_router, parallel_search_sources,
+    )
 
     page_size = max(1, min(page_size, 100))
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
-    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
+    # "hermes-index" must carry a high limit: when the index is available the
+    # router skips external API sources and serves everything from it, so a
+    # low cap here silently truncates the whole hub (see do_browse note).
+    _PER_SOURCE_LIMIT = {"hermes-index": 5000, "official": 100, "skills-sh": 100,
+                         "well-known": 25, "github": 100, "clawhub": 50,
                          "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500}
     auth = GitHubAuth()
     sources = create_source_router(auth)
-    all_results: list = []
-    for src in sources:
-        sid = src.source_id()
-        if source != "all" and sid != source and sid != "official":
-            continue
-        try:
-            limit = _PER_SOURCE_LIMIT.get(sid, 50)
-            all_results.extend(src.search("", limit=limit))
-        except Exception:
-            continue
+    # Delegate to the shared parallel walker so this inherits the index-aware
+    # source-skip logic — querying hermes-index AND the external APIs at once
+    # would double-count every skill.
+    all_results, _counts, _timed_out = parallel_search_sources(
+        sources, query="", per_source_limits=_PER_SOURCE_LIMIT,
+        source_filter=source, overall_timeout=30,
+    )
     if not all_results:
         return {"items": [], "page": 1, "total_pages": 1, "total": 0}
     seen: dict = {}
@@ -759,7 +776,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     page_items = deduped[start : min(start + page_size, total)]
     return {
         "items": [{"name": r.name, "description": r.description, "source": r.source,
-                    "trust": r.trust_level} for r in page_items],
+                    "trust": r.trust_level, "identifier": r.identifier} for r in page_items],
         "page": page,
         "total_pages": total_pages,
         "total": total,

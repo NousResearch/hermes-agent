@@ -48,7 +48,7 @@ CATEGORY_LABELS = {
     "data-science": "Data Science",
     "devops": "DevOps",
     "dogfood": "Dogfood",
-    "domain": "Domain",
+    "domain": "Business & Finance",
     "email": "Email",
     "gaming": "Gaming",
     "gifs": "GIFs",
@@ -191,6 +191,60 @@ def _install_command(source: str, identifier: str, name: str) -> str:
     if src == "well-known":
         return f"hermes skills install {identifier}"
     return f"hermes skills install {identifier}"
+
+
+def _source_url(source: str, identifier: str, extra: dict) -> str:
+    """Best-effort clickable URL to the skill's origin (repo / detail page).
+
+    Community skills have no generated docs page, so without this the
+    expanded card on the Skills Hub gives users nowhere to go to read the
+    actual SKILL.md before installing. We prefer an explicit URL the source
+    adapter already collected (``extra.detail_url`` / ``extra.repo_url``),
+    then fall back to synthesizing one from the identifier shape.
+    """
+    extra = extra or {}
+    for key in ("detail_url", "source_url", "repo_url", "url", "index_url"):
+        val = extra.get(key)
+        if isinstance(val, str) and val.startswith("http"):
+            return val
+
+    if not identifier:
+        return ""
+    src = (source or "").lower()
+
+    # GitHub-backed taps (openai/anthropic/nvidia/hf/gstack/VoltAgent/...):
+    # identifier is "owner/repo/<path...>" — link to the directory on GitHub.
+    if src in {"github", "openai", "anthropic", "huggingface", "nvidia",
+               "gstack", "voltagent", "minimax", "claude marketplace",
+               "claude-marketplace"}:
+        parts = [p for p in identifier.split("/") if p]
+        if len(parts) >= 2:
+            owner, repo = parts[0], parts[1]
+            sub = "/".join(parts[2:])
+            base = f"https://github.com/{owner}/{repo}"
+            return f"{base}/tree/main/{sub}" if sub else base
+        return ""
+
+    if src == "clawhub":
+        # identifier is a bare slug (the "clawhub/" prefix is added at install time)
+        slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
+        return f"https://clawhub.ai/skills/{slug}"
+
+    if src in {"skills.sh", "skills-sh"}:
+        # "skills-sh/owner/repo/skill" -> the skills.sh detail page
+        rest = identifier[len("skills-sh/"):] if identifier.startswith("skills-sh/") else identifier
+        return f"https://skills.sh/skills/{rest}"
+
+    if src == "lobehub":
+        slug = identifier[len("lobehub/"):] if identifier.startswith("lobehub/") else identifier
+        return f"https://lobehub.com/agent/{slug}"
+
+    if src in {"browse.sh", "browse-sh"}:
+        # "browse-sh/<hostname>/<task-id>" -> browse.sh task page
+        rest = identifier[len("browse-sh/"):] if identifier.startswith("browse-sh/") else identifier
+        return f"https://browse.sh/skills/{rest}"
+
+    return ""
 
 
 def extract_local_skills():
@@ -361,6 +415,7 @@ def extract_unified_index_skills():
                 author = repo.split("/")[0]
 
         install_cmd = _install_command(source_id, identifier, name)
+        source_url = _source_url(source_id, identifier, extra)
 
         out.append({
             "name": name,
@@ -380,6 +435,7 @@ def extract_unified_index_skills():
             "docsPath": "",
             "identifier": identifier,
             "installCmd": install_cmd,
+            "sourceUrl": source_url,
         })
 
     return out, meta
@@ -460,26 +516,60 @@ for _cat, _tags in {
     "software-development": [
         "programming", "code", "coding", "software-development",
         "frontend-development", "backend-development", "web-development",
-        "react", "python", "typescript", "java", "rust",
+        "react", "python", "typescript", "java", "rust", "cli",
+        "developer-tools", "development", "api", "database", "debugging",
+        "documentation", "testing", "test", "architecture",
     ],
-    "creative": ["writing", "design", "creative", "art", "image-generation"],
-    "research": ["education", "academic", "research"],
-    "social-media": ["marketing", "seo", "social-media"],
-    "productivity": ["productivity", "business"],
-    "data-science": ["data", "data-science"],
-    "mlops": ["machine-learning", "deep-learning"],
-    "devops": ["devops"],
+    "autonomous-ai-agents": [
+        "ai", "agent", "agents", "ai-agent", "ai-agents", "agentic",
+        "agentic-ai", "ai-assistant", "assistant", "multi-agent",
+        "autonomous", "llm", "rag", "prompt", "prompts", "a2a", "acp",
+    ],
+    "creative": [
+        "writing", "design", "creative", "art", "image-generation",
+        "image", "content", "video-editing", "content-creation",
+    ],
+    "research": ["education", "academic", "academic-writing", "research", "knowledge"],
+    "social-media": ["marketing", "seo", "social-media", "advertising", "creator"],
+    "productivity": [
+        "productivity", "business", "automation", "calendar", "email",
+        "document", "documents", "office", "notes", "note-taking",
+        "collaboration", "workflow", "crm",
+    ],
+    "data-science": ["data", "data-science", "analytics", "analysis", "visualization"],
+    "mlops": ["machine-learning", "deep-learning", "mlops", "training", "fine-tuning"],
+    "devops": ["devops", "docker", "kubernetes", "infrastructure", "deployment", "monitoring", "ci-cd"],
     "gaming": ["gaming", "game", "game-development"],
-    "media": ["music", "media", "video"],
-    "health": ["health", "fitness"],
-    "translation": ["translation", "language-learning"],
-    "security": ["security", "cybersecurity"],
+    "media": ["music", "media", "video", "audio", "podcast", "youtube"],
+    "health": ["health", "fitness", "medical", "wellness"],
+    "translation": ["translation", "language-learning", "i18n", "localization"],
+    "security": ["security", "cybersecurity", "auth", "compliance", "audit", "privacy"],
+    "blockchain": [
+        "blockchain", "crypto", "cryptocurrency", "defi", "web3",
+        "bitcoin", "ethereum", "nft", "trading", "arbitrage",
+    ],
+    "communication": ["communication", "chat", "messaging", "slack", "discord"],
+    "domain": [
+        "finance", "accounting", "banking", "ecommerce", "e-commerce",
+        "shopping", "travel", "booking", "real-estate", "legal",
+        "government", "b2b", "b2b-sales", "entrepreneur", "budget",
+    ],
 }.items():
     for _t in _tags:
         TAG_TO_CATEGORY[_t] = _cat
 
 
 def _guess_category(tags: list) -> str:
+    """Map a skill's tags to a curated category, or 'uncategorized'.
+
+    Previously this fell back to ``tags[0]`` verbatim, which produced
+    hundreds of junk one-off "categories" in the sidebar (e.g.
+    "Doramagic Crystal", "0.10.7 Dev", "Ap2") — version strings, brand
+    names, and tag noise. We now ONLY accept categories that map to a
+    known curated bucket; everything else becomes "uncategorized", which
+    _consolidate_small_categories folds into "Other". Sidecar-declared
+    categories (skills.sh groupings) bypass this entirely via fixedCategory.
+    """
     if not tags:
         return "uncategorized"
     for tag in tags:
@@ -488,8 +578,12 @@ def _guess_category(tags: list) -> str:
         cat = TAG_TO_CATEGORY.get(tag.lower())
         if cat:
             return cat
-    first = tags[0] if isinstance(tags[0], str) else ""
-    return first.lower().replace(" ", "-") if first else "uncategorized"
+        # Also accept a tag that's already a known curated category key
+        # (e.g. a skill tagged literally "security" or "devops").
+        normalized = tag.lower().replace(" ", "-")
+        if normalized in CATEGORY_LABELS and normalized != "other":
+            return normalized
+    return "uncategorized"
 
 
 MIN_CATEGORY_SIZE = 4

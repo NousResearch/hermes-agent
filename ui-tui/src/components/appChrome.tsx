@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle, Notice } from '../app/interfaces.js'
+import { DEFAULT_STATUS_BAR_FIELDS, type IndicatorStyle, type Notice, type StatusBarField } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -220,6 +220,7 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
+  cost: boolean
   duration: boolean
   subagents: boolean
   voice: boolean
@@ -235,7 +236,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    subagents: w >= 92
+    subagents: w >= 92,
+    cost: w >= 96
   }
 }
 
@@ -397,28 +399,33 @@ export function StatusRule({
   bgCount,
   lastTurnEndedAt,
   sessionStartedAt,
+  showCost = false,
   turnStartedAt,
   voiceLabel,
+  fields = DEFAULT_STATUS_BAR_FIELDS,
   t
 }: StatusRuleProps) {
+  const hasField = (field: StatusBarField) => fields.includes(field)
+  const showCwd = hasField('cwd')
   const segs = statusBarSegments(cols)
 
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`). The visual percentage bar is intentionally hidden.
-  const ctxLabel = usage.context_max
-    ? segs.compactCtx
-      ? `${fmtK(usage.context_used ?? 0)} tok`
-      : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
-    : usage.total > 0
-      ? `${fmtK(usage.total)} tok`
-      : ''
+  const ctxLabel =
+    hasField('context') && usage.context_max
+      ? segs.compactCtx
+        ? `${fmtK(usage.context_used ?? 0)} tok`
+        : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+      : hasField('context') && usage.total > 0
+        ? `${fmtK(usage.total)} tok`
+        : ''
 
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = hasField('model') ? modelLabel(model, modelReasoningEffort, modelFast) : ''
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
   // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
-  const showNotice = !busy && !!notice?.text
+  const showNotice = hasField('status') && !busy && !!notice?.text
   // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
   // only a small bounded width for it in the essentials budget — enough that
   // a short notice never gets crushed, but a long one ellipsizes instead of
@@ -432,20 +439,21 @@ export function StatusRule({
   // yields first. The busy face width depends on the active /indicator style
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
-  const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
-    : showNotice
-      ? noticeReserve
-      : stringWidth(status)
+  const slotWidth = hasField('status')
+    ? busy
+      ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+      : showNotice
+        ? noticeReserve
+        : stringWidth(status)
+    : 0
 
   const essentialWidth =
     stringWidth('─ ') +
     slotWidth +
-    stringWidth(' │ ') +
-    stringWidth(modelText) +
+    (modelText ? stringWidth(' │ ') + stringWidth(modelText) : 0) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
-  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, showCwd ? cwdLabel : '', essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
@@ -466,6 +474,7 @@ export function StatusRule({
   }
 
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -476,17 +485,20 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
-  const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
-
+  const showDuration = hasField('session_duration') && segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
   const showIdle =
-    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
-
-  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
-  const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
-  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+    hasField('session_duration') &&
+    segs.duration &&
+    !busy &&
+    lastTurnEndedAt != null &&
+    fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+  const showCompressions =
+    hasField('compressions') && segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+  const showVoice = hasField('voice') && segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showBg = hasField('background') && segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
 
@@ -500,10 +512,10 @@ export function StatusRule({
     subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
-  // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
-  // so it consumes tail budget LAST and drops first on a narrow terminal.
+  const showCostSeg = hasField('cost') && segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
+  // No segs flag / no showCost coupling — dev credits are server-gated and lowest priority,
+  // so they consume tail budget LAST and drop first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
-
 
   return (
     <Box height={1}>
@@ -514,13 +526,15 @@ export function StatusRule({
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
-          ) : showNotice ? null : (
-            <Text color={statusColor} wrap="truncate-end">
-              {status}
-            </Text>
-          )}
+          {hasField('status') ? (
+            busy ? (
+              <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+            ) : showNotice ? null : (
+              <Text color={statusColor} wrap="truncate-end">
+                {status}
+              </Text>
+            )
+          ) : null}
         </Box>
         {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
             flexShrink={1} box with truncate-end so it yields/ellipsizes
@@ -539,10 +553,12 @@ export function StatusRule({
               {' (dev credits)'}
             </Text>
           ) : null}
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {modelText}
-          </Text>
+          {modelText ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {modelText}
+            </Text>
+          ) : null}
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
@@ -598,6 +614,12 @@ export function StatusRule({
             {resumeHintText}
           </Text>
         ) : null}
+        {showCostSeg ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {costText}
+          </Text>
+        ) : null}
         {showDevCredits ? (
           <Text color={t.color.accent} wrap="truncate-end">
             {' │ '}
@@ -607,7 +629,7 @@ export function StatusRule({
         {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
             renders last — any overflow truncates the HUD itself rather than the
             budgeted segments before it. It self-hides when no delegation runs. */}
-        <SpawnHud t={t} />
+        {hasField('delegation') ? <SpawnHud t={t} /> : null}
       </Box>
 
       {rightWidth > 0 ? (
@@ -729,12 +751,14 @@ interface StatusRuleProps {
   busy: boolean
   cols: number
   cwdLabel: string
+  fields?: readonly StatusBarField[]
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
+  showCost?: boolean
   status: string
   statusColor: string
   t: Theme

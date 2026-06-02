@@ -28,6 +28,21 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export const STATUS_BAR_FIELDS = [
+  'status',
+  'model',
+  'context',
+  'session_duration',
+  'compressions',
+  'delegation',
+  'voice',
+  'background',
+  'cost',
+  'cwd'
+] as const
+export type StatusBarField = (typeof STATUS_BAR_FIELDS)[number]
+export const DEFAULT_STATUS_BAR_FIELDS: readonly StatusBarField[] = STATUS_BAR_FIELDS
+
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
 export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
@@ -178,6 +193,7 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  statusBarFields: readonly StatusBarField[]
   streaming: boolean
   theme: Theme
   usage: Usage

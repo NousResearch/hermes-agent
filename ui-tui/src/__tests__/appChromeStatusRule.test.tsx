@@ -2,7 +2,13 @@ import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { StatusRule } from '../components/appChrome.js'
+import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+type ElementProps = {
+  children?: React.ReactNode
+  onClick?: unknown
+}
 
 type ReactNodeLike = React.ReactNode
 
@@ -19,14 +25,16 @@ const textContent = (node: ReactNodeLike): string => {
     return node.map(textContent).join('')
   }
 
-  if (React.isValidElement(node)) {
-    return textContent(node.props.children)
+  if (React.isValidElement<ElementProps>(node)) {
+    const element = node as React.ReactElement<ElementProps>
+
+    return textContent(element.props.children)
   }
 
   return ''
 }
 
-const findClickableWithText = (node: ReactNodeLike, needle: string): React.ReactElement | null => {
+const findClickableWithText = (node: ReactNodeLike, needle: string): React.ReactElement<ElementProps> | null => {
   if (node === null || node === undefined || typeof node === 'boolean') {
     return null
   }
@@ -43,15 +51,17 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
     return null
   }
 
-  if (!React.isValidElement(node)) {
+  if (!React.isValidElement<ElementProps>(node)) {
     return null
   }
 
-  if (typeof node.props.onClick === 'function' && textContent(node).includes(needle)) {
-    return node
+  const element = node as React.ReactElement<ElementProps>
+
+  if (typeof element.props.onClick === 'function' && textContent(element).includes(needle)) {
+    return element
   }
 
-  return findClickableWithText(node.props.children, needle)
+  return findClickableWithText(element.props.children, needle)
 }
 
 // Find the innermost element whose own (direct) text content includes the
@@ -196,7 +206,7 @@ describe('StatusRule live session count', () => {
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: { total: 0 },
+      usage: ZERO,
       voiceLabel: ''
     })
 
@@ -222,15 +232,7 @@ describe('StatusRule live session count', () => {
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: {
-        calls: 0,
-        context_max: 200_000,
-        context_percent: 25,
-        context_used: 50_000,
-        input: 0,
-        output: 0,
-        total: 50_000
-      },
+      usage: { ...ZERO, context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
       voiceLabel: 'voice off'
     })
 
@@ -241,6 +243,48 @@ describe('StatusRule live session count', () => {
     expect(rendered).toContain('opus 4.8')
     // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
+  })
+
+  it('filters status rule fields from config', () => {
+    const element = StatusRule({
+      bgCount: 2,
+      busy: false,
+      cols: 120,
+      cwdLabel: '~/repo',
+      fields: ['status', 'model', 'context', 'delegation', 'background', 'cwd'],
+      liveSessionCount: 3,
+      model: 'gpt-5.5',
+      sessionStartedAt: Date.now() - 60_000,
+      showCost: true,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: {
+        ...ZERO,
+        compressions: 2,
+        context_max: 20_000,
+        context_percent: 50,
+        context_used: 10_000,
+        cost_usd: 0.1234,
+        total: 12_000
+      },
+      voiceLabel: '◯ voice'
+    })
+
+    const text = textContent(element)
+
+    expect(text).toContain('ready')
+    expect(text).toContain('gpt 5.5')
+    expect(text).toContain('10k/20k')
+    expect(text).not.toContain('[█████░░░░░] 50%')
+    expect(text).not.toContain('50%')
+    expect(text).toContain('2 bg')
+    expect(text).toContain('~/repo')
+    expect(text).not.toContain('3 sessions')
+    expect(text).not.toContain('cmp 2')
+    expect(text).not.toContain('$0.1234')
+    expect(text).not.toContain('voice')
   })
 })
 

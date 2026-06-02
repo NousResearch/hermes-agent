@@ -7,7 +7,8 @@ import {
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
-  normalizeStatusBar
+  normalizeStatusBar,
+  normalizeStatusBarFields
 } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
@@ -28,7 +29,8 @@ describe('applyDisplay', () => {
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
-            tui_statusbar: false
+            tui_statusbar: false,
+            tui_statusbar_fields: ['status', 'model', 'context', 'delegation', 'background', 'cwd']
           }
         }
       },
@@ -42,6 +44,7 @@ describe('applyDisplay', () => {
     expect(s.inlineDiffs).toBe(false)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
+    expect(s.statusBarFields).toEqual(['status', 'model', 'context', 'delegation', 'background', 'cwd'])
     expect(s.streaming).toBe(false)
   })
 
@@ -188,6 +191,27 @@ describe('normalizeStatusBar', () => {
     expect(normalizeStatusBar('TOP')).toBe('top')
     expect(normalizeStatusBar('  on  ')).toBe('top')
     expect(normalizeStatusBar('OFF')).toBe('off')
+  })
+})
+
+describe('normalizeStatusBarFields', () => {
+  it('defaults missing or invalid values to the full field set', () => {
+    expect(normalizeStatusBarFields(undefined)).toContain('session_duration')
+    expect(normalizeStatusBarFields('nonsense')).toContain('cost')
+  })
+
+  it('normalizes aliases, comma strings, and duplicate values', () => {
+    expect(normalizeStatusBarFields('status, model, tokens, bg, path, status')).toEqual([
+      'status',
+      'model',
+      'context',
+      'background',
+      'cwd'
+    ])
+  })
+
+  it('ignores unsupported fields without dropping valid ones', () => {
+    expect(normalizeStatusBarFields(['status', 'token-bar', 'sessions', 'bg'])).toEqual(['status', 'background'])
   })
 })
 

@@ -375,6 +375,47 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_edit_discord_message_uses_thread_channel(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch(
+                 "tools.send_message_tool._edit_discord_message",
+                 return_value={"success": True, "message_id": "m1", "channel_id": "456", "content": "수정됨"},
+             ) as edit_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "edit",
+                        "target": "discord:123:456",
+                        "message_id": "m1",
+                        "message": "수정됨",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "456"
+        edit_mock.assert_called_once_with("discord-token", "456", "m1", "수정됨")
+
+    def test_edit_requires_message_id(self):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "edit",
+                    "target": "discord:123",
+                    "message": "수정됨",
+                }
+            )
+        )
+        assert "error" in result
+        assert "message_id" in result["error"]
+
     def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
         # This test exercises the strict-allowlist path; force strict mode on
         # and disable recency trust so the freshly-written tmp_path file is

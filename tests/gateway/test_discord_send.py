@@ -1,4 +1,5 @@
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -258,6 +259,36 @@ async def test_send_to_forum_sends_remaining_chunks():
     assert result.message_id == "500"
     # Should have sent at least one follow-up chunk
     assert thread_ch.send.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_send_auto_threads_regular_text_channel(monkeypatch):
+    """Regular text channels should get launcher -> thread -> thread body."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    thread_msg = SimpleNamespace(id=7001)
+    thread_ch = SimpleNamespace(id=8001, send=AsyncMock(return_value=thread_msg))
+
+    starter_msg = SimpleNamespace(id=6001, create_thread=AsyncMock(return_value=thread_ch))
+    channel = SimpleNamespace(send=AsyncMock(return_value=starter_msg))
+
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+
+    result = await adapter.send("555", "hello thread world")
+
+    assert result.success is True
+    assert result.raw_response["thread_id"] == "8001"
+    assert result.message_id == "7001"
+    assert channel.send.await_count == 1
+    assert starter_msg.create_thread.await_count == 1
+    assert thread_ch.send.await_count == 1
+    assert channel.send.await_args.kwargs["content"].startswith("🧵 ")
+    assert thread_ch.send.await_args.kwargs["content"] == "hello thread world"
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,8 @@ description: "Set up Hermes Agent as a Discord bot"
 
 Hermes Agent integrates with Discord as a bot, letting you chat with your AI assistant through direct messages or server channels. The bot receives your messages, processes them through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, voice messages, file attachments, and slash commands.
 
+For durable records, prefer thread-first storage: keep the parent channel as an index or launcher, and put the actual record in a thread.
+
 Before setup, here's the part most people want to know: how Hermes behaves once it's in your server.
 
 ## How Hermes Behaves
@@ -15,9 +17,9 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | Context | Behavior |
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
-| **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
-| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
-| **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
+| **Server channels** | By default, Hermes only responds when you `@mention` it. For durable records, use the channel as an index/launcher and keep the actual record in a thread. |
+| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline, but long-form records should still move into a thread. |
+| **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads are the canonical place for durable Discord records and stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
 
@@ -47,6 +49,8 @@ By default:
 - each user in a shared channel gets their own session inside that channel
 
 So if Alice and Bob both talk to Hermes in `#research`, Hermes treats those as separate conversations by default even though they are using the same visible Discord channel.
+
+For Discord records, treat the thread as the storage unit and the parent channel as an index or entry point.
 
 This is controlled by `config.yaml`:
 

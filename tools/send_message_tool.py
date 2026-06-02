@@ -80,6 +80,25 @@ def _error(message: str) -> dict:
     return {"error": _sanitize_error_text(message)}
 
 
+def _edit_discord_message(token: str, channel_id: str, message_id: str, message: str) -> dict:
+    """Edit an existing Discord message via REST API."""
+    from tools.discord_tool import _discord_request
+
+    edited = _discord_request(
+        "PATCH",
+        f"/channels/{channel_id}/messages/{message_id}",
+        token,
+        body={"content": message},
+    )
+    return {
+        "success": True,
+        "message_id": edited.get("id", message_id),
+        "channel_id": edited.get("channel_id", channel_id),
+        "content": edited.get("content", message),
+        "edited_timestamp": edited.get("edited_timestamp"),
+    }
+
+
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
@@ -138,8 +157,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "edit"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns available targets. 'edit' edits an existing message (currently Discord only)."
             },
             "target": {
                 "type": "string",
@@ -147,7 +166,11 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send, or the replacement text when action='edit'. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "Existing platform message ID to edit when action='edit' (currently Discord only)."
             }
         },
         "required": []
@@ -161,6 +184,9 @@ def send_message_tool(args, **kw):
 
     if action == "list":
         return _handle_list()
+
+    if action == "edit":
+        return _handle_edit(args)
 
     return _handle_send(args)
 
@@ -349,6 +375,90 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _handle_edit(args):
+    """Edit an existing platform message."""
+    target = args.get("target", "")
+    message = args.get("message", "")
+    message_id = args.get("message_id", "")
+    if not target or not message or not message_id:
+        return tool_error("'target', 'message', and 'message_id' are required when action='edit'")
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    thread_id = None
+
+    if target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    else:
+        is_explicit = False
+
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Use send_message(action='list') to see available targets."
+                })
+        except Exception:
+            return json.dumps({
+                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                f"Try using a numeric channel ID instead."
+            })
+
+    if platform_name != "discord":
+        return tool_error("send_message(action='edit') currently supports only Discord targets")
+
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return tool_error("Interrupted")
+
+    try:
+        from gateway.config import load_gateway_config, Platform, PlatformConfig
+        config = load_gateway_config()
+    except Exception as e:
+        return json.dumps(_error(f"Failed to load gateway config: {e}"))
+
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
+
+    pconfig = config.platforms.get(platform)
+    if not pconfig or not pconfig.enabled:
+        token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+        if token:
+            pconfig = PlatformConfig(enabled=True, token=token, extra={})
+        else:
+            return tool_error("Platform 'discord' is not configured. Set DISCORD_BOT_TOKEN or enable Discord in gateway config.")
+
+    if not chat_id:
+        home = config.get_home_channel(platform)
+        if home:
+            chat_id = home.chat_id
+        else:
+            return json.dumps({
+                "error": "No Discord channel was resolved for editing. Specify a target like 'discord:<channel_id>' or 'discord:<channel_id>:<thread_id>'."
+            })
+
+    try:
+        effective_channel_id = thread_id or chat_id
+        token = getattr(pconfig, "token", None)
+        if not token:
+            return tool_error("Discord bot token is missing for edit operation")
+        result = _edit_discord_message(token, effective_channel_id, message_id, message)
+        if thread_id:
+            result["thread_id"] = thread_id
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps(_error(f"Edit failed: {e}"))
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

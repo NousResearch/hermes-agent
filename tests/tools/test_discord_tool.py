@@ -440,6 +440,33 @@ class TestPinUnpinDelete:
         assert "deleted" in result["message"]
         mock_req.assert_called_once_with("DELETE", "/channels/11/messages/500", "test-token")
 
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_message(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "500",
+            "channel_id": "11",
+            "content": "수정된 본문",
+            "edited_timestamp": "2026-06-02T12:34:56Z",
+        }
+        result = json.loads(
+            discord_core(
+                action="edit_message",
+                channel_id="11",
+                message_id="500",
+                content="수정된 본문",
+            )
+        )
+        assert result["success"] is True
+        assert result["content"] == "수정된 본문"
+        assert result["message_id"] == "500"
+        mock_req.assert_called_once_with(
+            "PATCH",
+            "/channels/11/messages/500",
+            "test-token",
+            body={"content": "수정된 본문"},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Action: create_thread
@@ -558,14 +585,14 @@ class TestRegistration:
         from tools.registry import registry
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == {"fetch_messages", "search_members", "create_thread"}
+        assert actions == {"fetch_messages", "search_members", "create_thread", "edit_message"}
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
         from tools.registry import registry
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread", "edit_message"}
         assert actions == expected_admin
 
     def test_all_actions_covered(self):
@@ -589,6 +616,7 @@ class TestRegistration:
         assert "fetch_messages(channel_id)" in desc
         assert "search_members(guild_id, query)" in desc
         assert "create_thread(channel_id, name)" in desc
+        assert "edit_message(channel_id, message_id, content)" in desc
         # Admin actions should NOT be in core description
         assert "list_guilds()" not in desc
         assert "add_role(" not in desc
@@ -604,6 +632,7 @@ class TestRegistration:
         # Core actions should NOT be in admin description
         assert "fetch_messages(" not in desc
         assert "create_thread(" not in desc
+        assert "edit_message(" not in desc
 
     def test_handler_callable(self):
         from tools.registry import registry

@@ -1445,9 +1445,62 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
-            # Format and split message if needed
+            # Format and split message if needed.
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+            # Thread-first outgoing mode: for regular text channels, send a
+            # short launcher message in the parent channel, create a thread
+            # anchored to it, and place the actual content inside the thread.
+            # This keeps the parent channel as an index while preserving the
+            # real record in the thread.
+            auto_thread_outgoing = (
+                os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+                and reply_to is None
+                and not isinstance(channel, discord.DMChannel)
+                and not isinstance(channel, discord.Thread)
+            )
+            if auto_thread_outgoing:
+                thread_name = _derive_forum_thread_name(formatted)
+                launcher_content = f"🧵 {thread_name}"
+                try:
+                    starter_msg = await channel.send(content=launcher_content)
+                    if hasattr(starter_msg, "create_thread"):
+                        thread = await starter_msg.create_thread(name=thread_name)
+                    elif hasattr(channel, "create_thread"):
+                        thread = await channel.create_thread(name=thread_name, message=starter_msg)
+                    else:
+                        raise RuntimeError("Thread creation is not supported for this Discord channel")
+                except Exception as e:
+                    logger.error("[%s] Failed to create outgoing thread in %s: %s", self.name, chat_id, e)
+                    return SendResult(success=False, error=f"Thread creation failed: {e}")
+
+                thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+                if thread_channel is None:
+                    return SendResult(success=False, error="Thread creation failed: no thread channel returned")
+
+                message_ids = []
+                for chunk in chunks:
+                    try:
+                        msg = await thread_channel.send(content=chunk)
+                    except Exception as e:
+                        logger.error("[%s] Failed to send content to auto-created thread %s: %s", self.name, getattr(thread, 'id', '?'), e)
+                        return SendResult(success=False, error=str(e))
+                    message_ids.append(str(msg.id))
+
+                thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+                if message_ids:
+                    self._last_self_message_id[thread_id or chat_id] = message_ids[-1]
+
+                return SendResult(
+                    success=True,
+                    message_id=message_ids[0] if message_ids else str(getattr(starter_msg, "id", "")),
+                    raw_response={
+                        "message_ids": message_ids,
+                        "thread_id": thread_id,
+                        "parent_message_id": str(getattr(starter_msg, "id", "")),
+                    },
+                )
 
             message_ids = []
             reference = None
@@ -5838,6 +5891,7 @@ async def _standalone_send(
         media_files = media_files or []
         last_data = None
         warnings = []
+        auto_thread_parent_id = None
 
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
@@ -5950,7 +6004,48 @@ async def _standalone_send(
                     result["warnings"] = warnings
                 return result
 
-            url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+            # Thread-first outgoing mode for ordinary text channels: send a
+            # launcher message, create a thread from it, then post the actual
+            # content inside the thread.
+            auto_thread_outgoing = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            if auto_thread_outgoing and not thread_id:
+                parent_url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+                thread_name = _derive_forum_thread_name(message)
+                launcher_content = f"🧵 {thread_name}"
+
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
+                    async with session.post(parent_url, headers=json_headers, json={"content": launcher_content}, **_req_kw) as resp:
+                        if resp.status not in {200, 201}:
+                            body = await resp.text()
+                            return {"error": f"Discord launcher send error ({resp.status}): {body}"}
+                        parent_msg = await resp.json()
+
+                    parent_message_id = parent_msg.get("id")
+                    if not parent_message_id:
+                        return {"error": "Discord launcher send succeeded but no parent message id was returned"}
+
+                    thread_create_url = f"https://discord.com/api/v10/channels/{chat_id}/messages/{parent_message_id}/threads"
+                    async with session.post(
+                        thread_create_url,
+                        headers=json_headers,
+                        json={"name": thread_name},
+                        **_req_kw,
+                    ) as resp:
+                        if resp.status not in {200, 201}:
+                            body = await resp.text()
+                            return {"error": f"Discord thread creation error ({resp.status}): {body}"}
+                        data = await resp.json()
+
+                thread_id_created = data.get("id")
+                if not thread_id_created:
+                    return {"error": "Discord thread creation succeeded but no thread id was returned"}
+
+                url = f"https://discord.com/api/v10/channels/{thread_id_created}/messages"
+                thread_id = thread_id_created
+                auto_thread_parent_id = parent_message_id
+            else:
+                url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+                auto_thread_parent_id = None
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
@@ -5993,6 +6088,10 @@ async def _standalone_send(
             return {"error": error}
 
         result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
+        if thread_id:
+            result["thread_id"] = thread_id
+        if auto_thread_parent_id:
+            result["parent_message_id"] = auto_thread_parent_id
         if warnings:
             result["warnings"] = warnings
         return result

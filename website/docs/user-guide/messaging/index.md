@@ -498,6 +498,20 @@ The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. I
 - **VIRTUAL_ENV** — points to the Python virtualenv so tools can resolve packages correctly.
 - **HERMES_HOME** — scopes the gateway to your Hermes installation.
 
+To run a preflight executable before the supervised gateway starts, set an
+absolute executable path in `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  service_wrapper: /opt/hermes/bin/gateway-preflight
+```
+
+The wrapper receives the normal gateway command as arguments and should end
+with `exec "$@"`. Hermes keeps this configured wrapper at the front of the
+launchd `ProgramArguments` array whenever it compares or regenerates the plist.
+Missing, relative, or non-executable wrapper paths are ignored. This behavior
+has no `HERMES_*` environment-variable configuration surface.
+
 :::tip PATH changes after install
 launchd plists are static — if you install new tools (e.g. a new Node.js version via nvm, or ffmpeg via Homebrew) after setting up the gateway, run `hermes gateway install` again to capture the updated PATH. The gateway will detect the stale plist and reload automatically.
 :::

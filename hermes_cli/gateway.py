@@ -17,6 +17,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -1773,6 +1774,25 @@ def _profile_arg_for_target_user(hermes_home: str, target_home_dir: str) -> str:
         return _profile_arg(hermes_home, default_root=target_root)
     except ValueError:
         return _profile_arg(hermes_home)
+
+
+def _configured_gateway_service_wrapper() -> str:
+    """Return the executable configured to wrap supervised gateway commands."""
+    try:
+        cfg = read_raw_config() or {}
+    except Exception:
+        return ""
+    gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else {}
+    raw = gateway_cfg.get("service_wrapper") if isinstance(gateway_cfg, dict) else ""
+    if not isinstance(raw, str):
+        return ""
+    wrapper = raw.strip()
+    if not wrapper or any(char in wrapper for char in ("\x00", "\n", "\r")):
+        return ""
+    path = Path(wrapper).expanduser()
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        return ""
+    return str(path)
 
 
 def get_service_name() -> str:
@@ -3907,12 +3927,19 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
+    # Build ProgramArguments array, including --profile when using a named profile.
+    # A service wrapper can perform credential/runtime preflight before execing
+    # the normal gateway command; preserve it when comparing or regenerating
+    # service definitions.
+    service_wrapper = _configured_gateway_service_wrapper()
+    prog_args = []
+    if service_wrapper:
+        prog_args.append(f"<string>{xml_escape(service_wrapper)}</string>")
+    prog_args.extend([
         f"<string>{python_path}</string>",
         "<string>-m</string>",
         "<string>hermes_cli.main</string>",
-    ]
+    ])
     if profile_arg:
         for part in profile_arg.split():
             prog_args.append(f"<string>{part}</string>")

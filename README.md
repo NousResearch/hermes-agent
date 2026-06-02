@@ -206,6 +206,7 @@ scripts/run_tests.sh
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+- 🔌 [Nowledge Mem for Hermes](https://github.com/nowledge-co/community/tree/main/nowledge-mem-hermes) — Standalone memory provider that connects Hermes to a cross-tool knowledge graph, with Working Memory bootstrap, pre-turn recall, native `nmem_*` tools, and Hermes transcript capture.
 
 ---
 

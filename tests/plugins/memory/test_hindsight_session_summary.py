@@ -92,6 +92,42 @@ def test_stale_cas_write_is_dropped_without_overwrite(tmp_path):
     store.close()
 
 
+def test_cross_connection_interleaved_stale_cas_write_is_dropped(tmp_path, monkeypatch):
+    db_path = tmp_path / "summary.sqlite"
+    stale_store = SessionSummaryStore(db_path)
+    current_store = SessionSummaryStore(db_path)
+    stale_store.upsert(_write(last_input_hash="hash-1", summary_text="one"))
+
+    original_get = stale_store.get
+    did_interleave = False
+
+    def interleaving_get(summary_key):
+        nonlocal did_interleave
+        record = original_get(summary_key)
+        if not did_interleave and record is not None and record.version == 1:
+            did_interleave = True
+            current_store.upsert(
+                _write(expected_version=1, last_input_hash="hash-2", summary_text="two")
+            )
+        return record
+
+    monkeypatch.setattr(stale_store, "get", interleaving_get)
+
+    stale = stale_store.upsert(
+        _write(expected_version=1, last_input_hash="hash-3", summary_text="stale")
+    )
+
+    assert did_interleave is True
+    assert stale.stale is True
+    assert stale.updated is False
+    record = original_get("bank/session")
+    assert record is not None
+    assert record.summary_text == "two"
+    assert record.version == 2
+    stale_store.close()
+    current_store.close()
+
+
 def test_same_input_hash_is_idempotent(tmp_path):
     store = SessionSummaryStore(tmp_path / "summary.sqlite")
     store.upsert(_write(last_input_hash="same", summary_text="first"))

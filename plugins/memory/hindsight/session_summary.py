@@ -125,26 +125,57 @@ class SessionSummaryStore:
                 idempotent=False,
             )
 
-        self._conn.execute(
-            """
-            UPDATE session_summaries
-               SET identity_scope = :identity_scope,
-                   summary_json = :summary_json,
-                   summary_text = :summary_text,
-                   schema_version = :schema_version,
-                   version = version + 1,
-                   turn = :turn,
-                   turn_hash = :turn_hash,
-                   last_input_hash = :last_input_hash,
-                   parent_summary_key = :parent_summary_key,
-                   status = :status,
-                   last_error = :last_error,
-                   updated_at = :updated_at
-             WHERE summary_key = :summary_key
-            """,
-            params,
-        )
+        if write.expected_version is None:
+            cursor = self._conn.execute(
+                """
+                UPDATE session_summaries
+                   SET identity_scope = :identity_scope,
+                       summary_json = :summary_json,
+                       summary_text = :summary_text,
+                       schema_version = :schema_version,
+                       version = version + 1,
+                       turn = :turn,
+                       turn_hash = :turn_hash,
+                       last_input_hash = :last_input_hash,
+                       parent_summary_key = :parent_summary_key,
+                       status = :status,
+                       last_error = :last_error,
+                       updated_at = :updated_at
+                 WHERE summary_key = :summary_key
+                """,
+                params,
+            )
+        else:
+            cursor = self._conn.execute(
+                """
+                UPDATE session_summaries
+                   SET identity_scope = :identity_scope,
+                       summary_json = :summary_json,
+                       summary_text = :summary_text,
+                       schema_version = :schema_version,
+                       version = version + 1,
+                       turn = :turn,
+                       turn_hash = :turn_hash,
+                       last_input_hash = :last_input_hash,
+                       parent_summary_key = :parent_summary_key,
+                       status = :status,
+                       last_error = :last_error,
+                       updated_at = :updated_at
+                 WHERE summary_key = :summary_key
+                   AND version = :expected_version
+                """,
+                {**params, "expected_version": write.expected_version},
+            )
         self._conn.commit()
+        if cursor.rowcount == 0:
+            current = self.get(write.summary_key)
+            return SessionSummaryWriteResult(
+                record=current,
+                inserted=False,
+                updated=False,
+                stale=True,
+                idempotent=False,
+            )
         return SessionSummaryWriteResult(
             record=self.get(write.summary_key),
             inserted=False,

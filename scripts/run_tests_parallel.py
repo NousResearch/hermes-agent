@@ -69,7 +69,7 @@ _DEFAULT_ROOTS = ["tests"]
 #                        pytest-timeout cap (set by tests/docker/conftest.py),
 #                        so the build is guaranteed to die in fixture
 #                        setup. The dedicated job sidesteps both costs.
-_SKIP_PARTS = {"integration", "e2e", "docker"}
+_SKIP_PARTS = {"integration", "e2e", "docker", "fixtures"}
 
 # Per-file wall-clock cap. Generous default — pytest-timeout still
 # enforces per-test caps inside each subprocess; this is just an outer

@@ -12,6 +12,7 @@ whether the package is importable; the plugin still registers either way so
 
 from __future__ import annotations
 
+import concurrent.futures as _cf
 import logging
 from typing import Any, Dict
 
@@ -77,7 +78,6 @@ class DDGSWebSearchProvider(WebSearchProvider):
         # own.  We enforce one here via concurrent.futures so the provider
         # always returns within a bounded time regardless of ddgs internals.
         _SEARCH_TIMEOUT = 30  # seconds; covers the full text() call
-        import concurrent.futures as _cf
 
         def _search_sync() -> list:
             results = []

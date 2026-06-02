@@ -297,6 +297,12 @@ function applyTheme(theme: DashboardTheme) {
   injectFontStylesheet(theme.typography.fontUrl);
   applyCustomCSS(theme.customCSS);
   applyLayoutVariant(theme.layoutVariant);
+
+  // Terminal background — read by ChatPage via useTheme(); also available as CSS var.
+  root.style.setProperty(
+    "--theme-terminal-background",
+    theme.terminalBackground ?? "#0d2626",
+  );
 }
 
 // ---------------------------------------------------------------------------

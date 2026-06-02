@@ -46,6 +46,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from agent.secret_sources.disk_cache import (
+    disk_cache_path,
+    read_secret_cache,
+    write_secret_cache,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,9 +97,7 @@ def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
     `home_path` is what `load_hermes_dotenv()` already resolved; falling back
     to `$HERMES_HOME` / `~/.hermes` keeps direct callers working too.
     """
-    if home_path is None:
-        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    return home_path / "cache" / _DISK_CACHE_BASENAME
+    return disk_cache_path(_DISK_CACHE_BASENAME, home_path)
 
 
 def _cache_key_str(cache_key: _CacheKey) -> str:
@@ -110,28 +114,16 @@ def _read_disk_cache(cache_key: _CacheKey, ttl_seconds: float,
     """
     if ttl_seconds <= 0:
         return None
-    path = _disk_cache_path(home_path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    cached = read_secret_cache(
+        cache_basename=_DISK_CACHE_BASENAME,
+        cache_key=_cache_key_str(cache_key),
+        ttl_seconds=ttl_seconds,
+        home_path=home_path,
+    )
+    if cached is None:
         return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("key") != _cache_key_str(cache_key):
-        return None
-    secrets = payload.get("secrets")
-    fetched_at = payload.get("fetched_at")
-    if not isinstance(secrets, dict) or not isinstance(fetched_at, (int, float)):
-        return None
-    # Coerce all values to strings — JSON allows numbers but env vars need strings
-    typed_secrets: Dict[str, str] = {
-        k: v for k, v in secrets.items() if isinstance(k, str) and isinstance(v, str)
-    }
-    entry = _CachedFetch(secrets=typed_secrets, fetched_at=float(fetched_at))
-    if not entry.is_fresh(ttl_seconds):
-        return None
-    return entry
+    secrets, fetched_at = cached
+    return _CachedFetch(secrets=secrets, fetched_at=fetched_at)
 
 
 def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
@@ -141,32 +133,14 @@ def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
     Best-effort: any I/O error is swallowed (the next invocation will just
     re-fetch). We never want disk cache failures to break startup.
     """
-    path = _disk_cache_path(home_path)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "key": _cache_key_str(cache_key),
-            "secrets": entry.secrets,
-            "fetched_at": entry.fetched_at,
-        }
-        # Write to a temp file in the same directory and atomic-rename.
-        # tempfile honors os.umask, so we explicitly chmod 0600 before rename.
-        fd, tmp = tempfile.mkstemp(
-            prefix=".bws_cache_", suffix=".tmp", dir=str(path.parent)
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        pass  # best-effort — disk cache miss on next invocation is fine
+    write_secret_cache(
+        cache_basename=_DISK_CACHE_BASENAME,
+        cache_key=_cache_key_str(cache_key),
+        secrets=entry.secrets,
+        fetched_at=entry.fetched_at,
+        temp_prefix=".bws_cache_",
+        home_path=home_path,
+    )
 
 
 @dataclass

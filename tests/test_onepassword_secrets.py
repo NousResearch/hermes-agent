@@ -50,6 +50,30 @@ def test_fetch_happy_path(monkeypatch, tmp_path):
     assert calls[0][0] == [str(fake_binary), "read", "op://Private/OpenAI/credential"]
 
 
+def test_fetch_child_env_is_limited(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "op"
+    fake_binary.write_text("")
+    captured_env = {}
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "unrelated-secret")
+    monkeypatch.setenv("OP_SESSION_my", "session-token")
+
+    def fake_run(_cmd, **kwargs):
+        captured_env.update(kwargs["env"])
+        return mock.Mock(returncode=0, stdout="value\n", stderr="")
+
+    monkeypatch.setattr(op_secret.subprocess, "run", fake_run)
+
+    op_secret.fetch_onepassword_secrets(
+        references={"KEY": "op://Vault/Item/field"},
+        binary=fake_binary,
+        use_cache=False,
+    )
+
+    assert captured_env["NO_COLOR"] == "1"
+    assert captured_env["OP_SESSION_my"] == "session-token"
+    assert "AWS_SECRET_ACCESS_KEY" not in captured_env
+
+
 def test_fetch_account_flag(monkeypatch, tmp_path):
     fake_binary = tmp_path / "op"
     fake_binary.write_text("")
@@ -138,6 +162,45 @@ def test_fetch_op_failure(monkeypatch, tmp_path):
     )
 
     with pytest.raises(RuntimeError, match="not signed in"):
+        op_secret.fetch_onepassword_secrets(
+            references={"KEY": "op://Vault/Item/field"},
+            binary=fake_binary,
+            use_cache=False,
+        )
+
+
+def test_fetch_op_failure_does_not_echo_stdout(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "op"
+    fake_binary.write_text("")
+
+    monkeypatch.setattr(
+        op_secret.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(returncode=1, stdout="secret-value", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        op_secret.fetch_onepassword_secrets(
+            references={"KEY": "op://Vault/Item/field"},
+            binary=fake_binary,
+            use_cache=False,
+        )
+
+    assert "secret-value" not in str(exc_info.value)
+    assert "status 1" in str(exc_info.value)
+
+
+def test_fetch_empty_op_read_is_error(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "op"
+    fake_binary.write_text("")
+
+    monkeypatch.setattr(
+        op_secret.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout="\n", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError, match="empty value"):
         op_secret.fetch_onepassword_secrets(
             references={"KEY": "op://Vault/Item/field"},
             binary=fake_binary,
@@ -324,6 +387,29 @@ def test_apply_override_existing(monkeypatch, tmp_path):
     assert os.environ["OPENAI_API_KEY"] == "from-1password"
 
 
+def test_apply_empty_read_does_not_clobber_existing(monkeypatch, tmp_path):
+    fake_binary = tmp_path / "op"
+    fake_binary.write_text("")
+    monkeypatch.setattr(op_secret, "find_op", lambda: fake_binary)
+    monkeypatch.setenv("OPENAI_API_KEY", "existing-good-value")
+    monkeypatch.setattr(
+        op_secret.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout="\n", stderr=""),
+    )
+
+    result = op_secret.apply_onepassword_secrets(
+        enabled=True,
+        references={"OPENAI_API_KEY": "op://Vault/Item/field"},
+        override_existing=True,
+    )
+
+    assert not result.ok
+    assert result.error is not None
+    assert "empty value" in result.error
+    assert os.environ["OPENAI_API_KEY"] == "existing-good-value"
+
+
 def test_apply_skips_service_account_token_env(monkeypatch, tmp_path):
     fake_binary = tmp_path / "op"
     fake_binary.write_text("")
@@ -396,7 +482,9 @@ def test_fetch_disk_cache_is_written_0600_without_auth_material(monkeypatch, tmp
     cache_path = tmp_path / "cache" / "op_cache.json"
     payload = json.loads(cache_path.read_text())
     mode = stat.S_IMODE(cache_path.stat().st_mode)
+    dir_mode = stat.S_IMODE(cache_path.parent.stat().st_mode)
 
+    assert dir_mode == 0o700
     assert mode == 0o600
     assert payload["secrets"] == {"KEY": "value"}
     assert "ops_secret_token" not in cache_path.read_text()
@@ -440,6 +528,31 @@ def test_fetch_ignores_stale_disk_cache(monkeypatch, tmp_path):
 
     assert secrets == {"KEY": "fresh"}
     assert calls["n"] == 1
+
+
+def test_auth_fingerprint_includes_named_op_sessions(monkeypatch):
+    for name in list(os.environ):
+        if name.startswith("OP_"):
+            monkeypatch.delenv(name, raising=False)
+
+    without_session = op_secret._auth_fingerprint()
+    monkeypatch.setenv("OP_SESSION_my", "session-token")
+    with_session = op_secret._auth_fingerprint()
+
+    assert without_session == ""
+    assert with_session
+    assert with_session != without_session
+
+
+def test_reset_cache_for_tests_clears_default_disk_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cache_path = tmp_path / "cache" / "op_cache.json"
+    cache_path.parent.mkdir()
+    cache_path.write_text("{}", encoding="utf-8")
+
+    op_secret._reset_cache_for_tests()
+
+    assert not cache_path.exists()
 
 
 def test_apply_skips_existing_without_contacting_op_when_not_overriding(monkeypatch, tmp_path):

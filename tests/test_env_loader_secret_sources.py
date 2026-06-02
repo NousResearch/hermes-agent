@@ -218,3 +218,38 @@ def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monk
         env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
         == " (from 1Password)"
     )
+
+
+def test_invalid_onepassword_cache_ttl_does_not_block_startup(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    cache_ttl_seconds: definitely-not-a-number\n"
+        "    env:\n"
+        "      ANTHROPIC_API_KEY: op://Vault/Item/field\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources.onepassword import FetchResult
+
+    captured = {}
+    fake_result = FetchResult(
+        secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
+        applied=["ANTHROPIC_API_KEY"],
+    )
+
+    def _fake_apply(**kwargs):
+        captured.update(kwargs)
+        return fake_result
+
+    import agent.secret_sources.onepassword as op_module
+
+    monkeypatch.setattr(op_module, "apply_onepassword_secrets", _fake_apply)
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert captured["cache_ttl_seconds"] == 300
+    assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "onepassword"

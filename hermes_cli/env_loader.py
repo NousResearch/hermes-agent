@@ -318,7 +318,7 @@ def _apply_bitwarden_secret_source(cfg: dict, home_path: Path) -> None:
         access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
         project_id=bw_cfg.get("project_id", ""),
         override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+        cache_ttl_seconds=_coerce_cache_ttl(bw_cfg.get("cache_ttl_seconds", 300)),
         auto_install=bool(bw_cfg.get("auto_install", True)),
         server_url=str(bw_cfg.get("server_url", "") or "").strip(),
         home_path=home_path,
@@ -342,7 +342,7 @@ def _apply_onepassword_secret_source(cfg: dict, home_path: Path) -> None:
         enabled=True,
         references=op_cfg.get("env") or op_cfg.get("references") or {},
         override_existing=bool(op_cfg.get("override_existing", True)),
-        cache_ttl_seconds=float(op_cfg.get("cache_ttl_seconds", 300)),
+        cache_ttl_seconds=_coerce_cache_ttl(op_cfg.get("cache_ttl_seconds", 300)),
         account=str(op_cfg.get("account", "") or "").strip(),
         service_account_token_env=op_cfg.get(
             "service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN"
@@ -352,6 +352,18 @@ def _apply_onepassword_secret_source(cfg: dict, home_path: Path) -> None:
     _record_secret_source_result(
         result, source="onepassword", display_name="1Password"
     )
+
+
+def _coerce_cache_ttl(value, default: float = 300) -> float:  # noqa: ANN001
+    """Parse cache TTL config without letting bad YAML crash startup."""
+
+    try:
+        ttl = float(value)
+    except (TypeError, ValueError):
+        return default
+    if ttl < 0:
+        return default
+    return ttl
 
 
 def _load_secrets_config(home_path: Path) -> dict:

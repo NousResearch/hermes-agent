@@ -175,7 +175,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     table.add_row("Token env var", token_env)
     table.add_row("Token in env", _yn(bool(os.environ.get(token_env))))
     table.add_row("References", str(len(refs) if isinstance(refs, dict) else 0))
-    table.add_row("Override existing", _yn(bool(op_cfg.get("override_existing", False))))
+    table.add_row("Override existing", _yn(bool(op_cfg.get("override_existing", True))))
     table.add_row("Cache TTL (s)", str(op_cfg.get("cache_ttl_seconds", 300)))
     console.print(Panel(table, title="1Password", border_style="cyan"))
 
@@ -205,40 +205,43 @@ def cmd_sync(args: argparse.Namespace) -> int:
         console.print("[red]No 1Password references configured.[/red]")
         return 1
 
-    try:
-        secrets, warnings = op_secret.fetch_onepassword_secrets(
-            references=refs,
-            account=str(op_cfg.get("account", "") or ""),
-            service_account_token_env=str(
-                op_cfg.get("service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN")
-            ),
-            use_cache=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Fetch failed: {exc}[/red]")
-        return 1
-
     token_env = op_cfg.get("service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN")
-    override = bool(op_cfg.get("override_existing", False))
-    _print_resolved_table(
-        console,
-        secrets,
-        warnings,
-        apply=bool(args.apply),
-        override_existing=override,
-        token_env=token_env,
-    )
+    override = bool(op_cfg.get("override_existing", True))
     if args.apply:
-        applied = 0
-        for key, value in secrets.items():
-            if key == token_env:
-                continue
-            if os.environ.get(key) and not override:
-                continue
-            os.environ[key] = value
-            applied += 1
-        console.print(f"\n[green]Exported {applied} secret(s) into current process.[/green]")
+        result = op_secret.apply_onepassword_secrets(
+            enabled=True,
+            references=refs,
+            override_existing=override,
+            cache_ttl_seconds=_coerce_cache_ttl(op_cfg.get("cache_ttl_seconds", 300)),
+            account=str(op_cfg.get("account", "") or ""),
+            service_account_token_env=str(token_env),
+        )
+        _print_apply_result_table(console, result)
+        if result.error:
+            console.print(f"[red]Fetch failed: {result.error}[/red]")
+            return 1
+        console.print(
+            f"\n[green]Exported {len(result.applied)} secret(s) into current process.[/green]"
+        )
     else:
+        try:
+            secrets, warnings = op_secret.fetch_onepassword_secrets(
+                references=refs,
+                account=str(op_cfg.get("account", "") or ""),
+                service_account_token_env=str(token_env),
+                use_cache=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Fetch failed: {exc}[/red]")
+            return 1
+        _print_resolved_table(
+            console,
+            secrets,
+            warnings,
+            apply=False,
+            override_existing=override,
+            token_env=str(token_env),
+        )
         console.print(
             "\nThis was a dry-run — secrets are picked up automatically on the next "
             "[cyan]hermes[/cyan] invocation. Re-run with [cyan]--apply[/cyan] "
@@ -258,14 +261,15 @@ def cmd_set(args: argparse.Namespace) -> int:
     cfg = load_config()
     op_cfg = cfg.setdefault("secrets", {}).setdefault("onepassword", {})
     op_cfg["env"] = _merged_refs(op_cfg)
-    op_cfg["env"][args.env_var] = args.reference
+    env_var, reference = next(iter(valid.items()))
+    op_cfg["env"][env_var] = reference
     op_cfg.setdefault("cache_ttl_seconds", 300)
     op_cfg.setdefault("override_existing", True)
     op_cfg.setdefault("service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN")
     if args.enable:
         op_cfg["enabled"] = True
     save_config(cfg)
-    console.print(f"[green]✓[/green] mapped {args.env_var} → {args.reference}")
+    console.print(f"[green]✓[/green] mapped {env_var} → {reference}")
     return 0
 
 
@@ -357,6 +361,29 @@ def _print_resolved_table(
     console.print(table)
     for warning in warnings:
         console.print(f"[yellow]warning:[/yellow] {warning}")
+
+
+def _print_apply_result_table(console: Console, result: op_secret.FetchResult) -> None:
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name", style="cyan")
+    table.add_column("Action")
+    for key in sorted(result.applied):
+        table.add_row(key, "[green]exported[/green]")
+    for key in sorted(result.skipped):
+        table.add_row(key, "[dim]skip[/dim]")
+    console.print(table)
+    for warning in result.warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
+
+
+def _coerce_cache_ttl(value, default: float = 300) -> float:  # noqa: ANN001
+    try:
+        ttl = float(value)
+    except (TypeError, ValueError):
+        return default
+    if ttl < 0:
+        return default
+    return ttl
 
 
 def _yn(value: bool) -> str:

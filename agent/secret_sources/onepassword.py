@@ -29,16 +29,20 @@ Design summary
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import shutil
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Tuple
+
+from agent.secret_sources.disk_cache import (
+    disk_cache_path,
+    read_secret_cache,
+    write_secret_cache,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +65,7 @@ _DISK_CACHE_BASENAME = "op_cache.json"
 def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
     """Return the 1Password cache path under hermes_home/cache/."""
 
-    if home_path is None:
-        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    return home_path / "cache" / _DISK_CACHE_BASENAME
+    return disk_cache_path(_DISK_CACHE_BASENAME, home_path)
 
 
 def _cache_key_str(cache_key: _CacheKey) -> str:
@@ -84,27 +86,16 @@ def _read_disk_cache(
 
     if ttl_seconds <= 0:
         return None
-    path = _disk_cache_path(home_path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    cached = read_secret_cache(
+        cache_basename=_DISK_CACHE_BASENAME,
+        cache_key=_cache_key_str(cache_key),
+        ttl_seconds=ttl_seconds,
+        home_path=home_path,
+    )
+    if cached is None:
         return None
-    if not isinstance(payload, dict) or payload.get("key") != _cache_key_str(cache_key):
-        return None
-    secrets = payload.get("secrets")
-    fetched_at = payload.get("fetched_at")
-    if not isinstance(secrets, dict) or not isinstance(fetched_at, (int, float)):
-        return None
-    typed_secrets = {
-        key: value
-        for key, value in secrets.items()
-        if isinstance(key, str) and isinstance(value, str)
-    }
-    entry = _CachedFetch(secrets=typed_secrets, fetched_at=float(fetched_at))
-    if not entry.is_fresh(ttl_seconds):
-        return None
-    return entry
+    secrets, fetched_at = cached
+    return _CachedFetch(secrets=secrets, fetched_at=fetched_at)
 
 
 def _write_disk_cache(
@@ -114,30 +105,14 @@ def _write_disk_cache(
 ) -> None:
     """Persist a cache entry atomically with mode 0600; best effort only."""
 
-    path = _disk_cache_path(home_path)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "key": _cache_key_str(cache_key),
-            "secrets": entry.secrets,
-            "fetched_at": entry.fetched_at,
-        }
-        fd, tmp = tempfile.mkstemp(
-            prefix=".op_cache_", suffix=".tmp", dir=str(path.parent)
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except OSError:
-        pass
+    write_secret_cache(
+        cache_basename=_DISK_CACHE_BASENAME,
+        cache_key=_cache_key_str(cache_key),
+        secrets=entry.secrets,
+        fetched_at=entry.fetched_at,
+        temp_prefix=".op_cache_",
+        home_path=home_path,
+    )
 
 
 @dataclass
@@ -301,6 +276,7 @@ def apply_onepassword_secrets(
                 result.warnings
             )
             return result
+        return result
 
     binary = find_op()
     result.binary_path = binary
@@ -359,8 +335,13 @@ def _run_op_read(
     cmd = [str(op), "read", reference]
     if account:
         cmd.extend(["--account", account])
-    env = os.environ.copy()
-    env.setdefault("NO_COLOR", "1")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith("OP_")
+        or key in {"PATH", "HOME", "USER", "USERNAME", "SystemRoot"}
+    }
+    env["NO_COLOR"] = "1"
     if service_account_token_env != "OP_SERVICE_ACCOUNT_TOKEN":
         custom_token = os.environ.get(service_account_token_env)
         if custom_token:
@@ -371,6 +352,7 @@ def _run_op_read(
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=_OP_RUN_TIMEOUT,
         )
     except subprocess.TimeoutExpired as exc:
@@ -381,26 +363,26 @@ def _run_op_read(
         raise RuntimeError(f"failed to invoke op: {exc}") from exc
 
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip().replace("\x1b", "")
+        err = (proc.stderr or "").strip().replace("\x1b", "")
+        if not err:
+            err = f"op exited with status {proc.returncode}"
         raise RuntimeError(f"op read failed for {reference!r}: {err[:200]}")
 
     # `op read` prints a trailing newline in normal terminal use. Preserve all
     # other characters in the secret value.
-    return (proc.stdout or "").rstrip("\r\n")
+    value = (proc.stdout or "").rstrip("\r\n")
+    if value == "":
+        raise RuntimeError(f"op read returned an empty value for {reference!r}")
+    return value
 
 
 def _auth_fingerprint(service_account_token_env: str = "OP_SERVICE_ACCOUNT_TOKEN") -> str:
-    material = "\0".join(
-        os.environ.get(name, "")
-        for name in (
-            "OP_SERVICE_ACCOUNT_TOKEN",
-            service_account_token_env,
-            "OP_SESSION",
-            "OP_ACCOUNT",
-        )
-    )
-    if not material:
+    names = {"OP_SERVICE_ACCOUNT_TOKEN", service_account_token_env, "OP_ACCOUNT"}
+    names.update(name for name in os.environ if name.startswith("OP_SESSION_"))
+    values = [os.environ.get(name, "") for name in sorted(names)]
+    if not any(values):
         return ""
+    material = "\0".join(values)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
@@ -412,7 +394,11 @@ def _is_valid_env_name(name: str) -> bool:
     return all(c.isalnum() or c == "_" for c in name)
 
 
-def _reset_cache_for_tests() -> None:
-    """Clear in-process cache for hermetic tests."""
+def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
+    """Clear in-process and default disk cache for hermetic tests."""
 
     _CACHE.clear()
+    try:
+        _disk_cache_path(home_path).unlink()
+    except OSError:
+        pass

@@ -10,6 +10,17 @@ import pytest
 import hermes_cli.doctor as doctor_mod
 
 
+def _set_real_user_home(monkeypatch, tmp_path):
+    """Point the doctor at tmp_path as the OS login home."""
+    import pwd
+
+    monkeypatch.setattr(
+        pwd,
+        "getpwuid",
+        lambda uid: types.SimpleNamespace(pw_dir=str(tmp_path)),
+    )
+
+
 def _setup_doctor_env(monkeypatch, tmp_path, venv_name="venv"):
     """Create a minimal HERMES_HOME + PROJECT_ROOT for doctor tests."""
     home = tmp_path / ".hermes"
@@ -79,7 +90,8 @@ class TestDoctorCommandInstallation:
         cmd_link = cmd_link_dir / "hermes"
         cmd_link.symlink_to(hermes_bin)
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / ".hermes" / "home")
 
         out = _run_doctor(fix=False)
         assert "Command Installation" in out
@@ -90,7 +102,7 @@ class TestDoctorCommandInstallation:
     def test_missing_symlink_shows_fail(self, monkeypatch, tmp_path):
         home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
         # Don't create the symlink — it should be missing
 
         out = _run_doctor(fix=False)
@@ -103,7 +115,7 @@ class TestDoctorCommandInstallation:
     def test_fix_creates_missing_symlink(self, monkeypatch, tmp_path):
         home, project, hermes_bin = _setup_doctor_env(monkeypatch, tmp_path)
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
 
         out = _run_doctor(fix=True)
         assert "Command Installation" in out
@@ -126,7 +138,7 @@ class TestDoctorCommandInstallation:
         wrong_target.write_text("#!/usr/bin/env python\n")
         cmd_link.symlink_to(wrong_target)
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
 
         out = _run_doctor(fix=False)
         assert "Command Installation" in out
@@ -144,7 +156,7 @@ class TestDoctorCommandInstallation:
         wrong_target.write_text("#!/usr/bin/env python\n")
         cmd_link.symlink_to(wrong_target)
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
 
         out = _run_doctor(fix=True)
         assert "Fixed symlink" in out
@@ -166,7 +178,7 @@ class TestDoctorCommandInstallation:
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
 
         fake_model_tools = types.SimpleNamespace(
             check_tool_availability=lambda *a, **kw: ([], []),
@@ -201,7 +213,7 @@ class TestDoctorCommandInstallation:
         cmd_link = cmd_link_dir / "hermes"
         cmd_link.symlink_to(hermes_bin)
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
 
         out = _run_doctor(fix=False)
         assert "Venv entry point exists" in out
@@ -217,7 +229,7 @@ class TestDoctorCommandInstallation:
         cmd_link = cmd_link_dir / "hermes"
         cmd_link.write_text("#!/bin/sh\nexec python -m hermes_cli.main \"$@\"\n")
 
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
 
         out = _run_doctor(fix=False)
         assert "non-symlink" in out
@@ -233,7 +245,7 @@ class TestDoctorCommandInstallation:
 
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", str(prefix_dir))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _set_real_user_home(monkeypatch, tmp_path)
 
         out = _run_doctor(fix=False)
         assert "Command Installation" in out

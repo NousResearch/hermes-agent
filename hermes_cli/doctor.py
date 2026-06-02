@@ -77,6 +77,25 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _real_user_home() -> Path:
+    """Return the OS login home directory, ignoring Hermes HOME overrides.
+
+    Hermes can remap ``Path.home()`` / ``$HOME`` to a profile-scoped directory
+    at runtime. The command-installation check needs the real shell home,
+    because ``~/.local/bin/hermes`` is installed for the OS user, not for the
+    Hermes profile.
+    """
+    if sys.platform == "win32":
+        return Path.home()
+
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return Path.home()
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1135,7 +1154,7 @@ def run_doctor(args):
             _cmd_link_dir = Path(_prefix) / "bin"
             _cmd_link_display = "$PREFIX/bin"
         else:
-            _cmd_link_dir = Path.home() / ".local" / "bin"
+            _cmd_link_dir = _real_user_home() / ".local" / "bin"
             _cmd_link_display = "~/.local/bin"
         _cmd_link = _cmd_link_dir / "hermes"
 

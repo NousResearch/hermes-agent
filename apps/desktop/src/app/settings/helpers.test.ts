@@ -2,9 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { getNested, setNested } from './helpers'
+import { enumOptionsFor, getNested, setNested } from './helpers'
 
 describe('settings helpers', () => {
+  it('lists Hindsight as a built-in desktop memory provider option', () => {
+    const options = enumOptionsFor('memory.provider', '', {})
+
+    expect(options).toContain('hindsight')
+  })
+
   it('reads and writes nested config paths', () => {
     const config: HermesConfigRecord = { display: { theme: 'mono' } }
     const next = setNested(config, 'display.theme', 'slate')

@@ -454,11 +454,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                         if pid == my_pid or pid in exclude_pids:
                             continue
                         try:
-                            cmdline = (
-                                open(f"/proc/{pid}/cmdline", "rb")
-                                .read()
-                                .decode("utf-8", errors="replace")
-                            )
+                            with open(f"/proc/{pid}/cmdline", "rb") as _f:
+                                cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
                             cmdline_lc = cmdline.lower()
                             if any(p in cmdline_lc for p in patterns) and (
@@ -5834,6 +5831,12 @@ def _block_forever_until_signal() -> None:
     threading.Event().wait()
 
 
+def _block_until_terminated() -> None:
+    """Keep the s6 CMD process alive until the container is stopped."""
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
+    _block_forever_until_signal()
+
+
 def gateway_command(args):
     """Handle gateway subcommands."""
     try:
@@ -5914,12 +5917,10 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
         file=sys.stderr,
         flush=True,
     )
-    # Block until the container is signalled. The supervised gateway's
-    # lifetime is independent of this process — s6-supervise restarts
-    # it on crash, and we don't want the container to exit when the
-    # gateway flaps. `sleep infinity` matches the static main-hermes
-    # service's pattern (see docker/s6-rc.d/main-hermes/run): the CMD
-    # process is a no-op heartbeat that keeps /init alive until
+    # Keep the CMD process alive as a no-op heartbeat. The supervised
+    # gateway's lifetime is independent of this process — s6-supervise
+    # restarts it on crash, and we don't want the container to exit when
+    # the gateway flaps. The CMD process keeps /init alive until
     # `docker stop` sends SIGTERM, at which point /init runs stage 3
     # shutdown (which tears down the supervised gateway cleanly).
     try:
@@ -5931,7 +5932,7 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
             file=sys.stderr,
             flush=True,
         )
-        _block_forever_until_signal()
+        _block_until_terminated()
     return True
 
 

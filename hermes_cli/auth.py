@@ -6235,6 +6235,7 @@ def _prompt_model_selection(
             selected=default_idx,
             cancel_returns=-1,
             description=description,
+            searchable=True,
         )
         if idx < 0:
             return None

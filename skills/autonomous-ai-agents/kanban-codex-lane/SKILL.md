@@ -1,6 +1,6 @@
 ---
 name: kanban-codex-lane
-description: Use when a Hermes Kanban worker wants to run Codex CLI as an isolated implementation lane while Hermes keeps ownership of task lifecycle, reconciliation, testing, and handoff.
+description: Run Codex as an isolated Kanban build lane.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -18,6 +18,8 @@ This skill defines the lightweight Hermes+Codex dual-lane convention for Kanban 
 
 The convention exists so a Hermes worker can use Codex for bounded implementation help without changing the dispatcher. The dispatcher must still spawn Hermes workers. A worker may optionally spawn Codex inside its own run, then accept, partially accept, or reject the lane after independent review and tests.
 
+The skill-local helper at `scripts/codex_goal_lane.py` provides the operator controls for a concrete Hermes -> Codex builder -> Claude reviewer -> Hermes verifier lane. It intentionally lives with this skill instead of core dispatcher code so Hermes can reuse the existing worker-lane pattern while still getting `preflight`, `run`, `status`, `logs`, `stop`, `review`, and `verify` controls.
+
 ## When to Use
 
 Use the Codex lane when all of these are true:
@@ -32,10 +34,61 @@ Do not use the Codex lane when any of these are true:
 
 - The task requires human judgment that is not already captured in the Kanban body.
 - The worker lacks repo access, Codex auth, or time to reconcile the result.
-- The change touches secrets, credential stores, private user data, or production order-entry systems.
+- The task requires raw secret disclosure, credential rewriting, private user data export, or production order-entry changes outside the explicit objective.
 - A small direct edit is faster and safer than spawning another agent.
 - The task is research-only and should produce a written handoff rather than a diff.
 - The worker would be tempted to mark Done based only on Codex self-report.
+
+## Prerequisites
+
+- `git` is available and the target repo has a valid HEAD.
+- `codex` is installed and authenticated through an existing CLI session, `OPENAI_API_KEY`, or Codex OAuth state.
+- `claude` is installed and authenticated through an existing Claude Code session or supported API credentials.
+- The task can run in an isolated worktree/branch and has clear acceptance criteria.
+- Hermes has enough time to run independent verification after Codex and Claude finish.
+
+Credentials may be used by Codex, Claude, GitHub, package registries, browser automation, or local developer tools when the task requires them. Raw secret values must not be printed, copied into logs, committed, or rewritten unless the explicit task is credential repair. If credential repair is required, stop the lane and report the exact credential/tool that failed without exposing the secret value.
+
+## How to Run
+
+Use the helper for a fully tracked lane:
+
+```bash
+LANE=skills/autonomous-ai-agents/kanban-codex-lane/scripts/codex_goal_lane.py
+REPO=/path/to/repo
+TASK_ID=t_manual
+GOAL_FILE=/tmp/codex-goal.txt
+
+python "$LANE" preflight --repo "$REPO"
+python "$LANE" run --repo "$REPO" --task-id "$TASK_ID" --goal-file "$GOAL_FILE" --mode auto --autonomy yolo
+python "$LANE" status --run-id "<run_id>"
+python "$LANE" logs --run-id "<run_id>"
+python "$LANE" review --run-id "<run_id>"
+python "$LANE" verify --run-id "<run_id>" --command "scripts/run_tests.sh tests/tools/test_x.py" --accept
+python "$LANE" stop --run-id "<run_id>"
+```
+
+Use `--simulate` for dry-runs and tests when live Codex or Claude should not be invoked:
+
+```bash
+python "$LANE" run --repo "$REPO" --task-id "$TASK_ID" --goal-file "$GOAL_FILE" --mode goal --autonomy yolo --simulate
+python "$LANE" review --run-id "<run_id>" --simulate --simulate-verdict pass
+python "$LANE" verify --run-id "<run_id>" --simulate-pass --accept
+```
+
+The helper writes lane state under `$HERMES_HOME/codex-goal-lanes/<run_id>/` by default. Use `--state-root <dir>` for tests or a project-specific operator workspace.
+
+## Quick Reference
+
+| Command | Purpose |
+|---|---|
+| `codex_goal_lane.py preflight` | Check git, Codex, Claude, auth hints, and worktree support without printing secrets. |
+| `codex_goal_lane.py run` | Create/select the isolated worktree and start or simulate the Codex builder phase. |
+| `codex_goal_lane.py status` | Show persisted state, including process ownership and phase evidence. |
+| `codex_goal_lane.py logs` | Read builder, review, and verifier logs. |
+| `codex_goal_lane.py stop` | Stop the tracked Codex process group and mark the lane stopped. |
+| `codex_goal_lane.py review` | Run or simulate non-interactive Claude Code review. |
+| `codex_goal_lane.py verify` | Run Hermes-owned verification and make the accept/human-review decision. |
 
 ## Ownership Rules
 
@@ -125,6 +178,8 @@ Run the requested verification commands and report exact outputs. Stop after pro
 
 Do not use `--yolo` for prediction-market-bot or safety-sensitive repos. Prefer `--full-auto` inside the isolated worktree, then rely on Hermes reconciliation.
 
+For operator-approved maximum-autonomy lanes outside PMB or other safety-sensitive repos, `--autonomy yolo` is allowed only inside the isolated worktree/branch. This maps to the current Codex CLI's full bypass flag when the helper runs live `codex exec`. Keep the blast radius external: the worktree is the sandbox, Hermes still owns final verification, and raw secret values still cannot appear in logs, diffs, commits, or handoff text.
+
 ## Prompt Construction
 
 Use the linked template at `templates/pmb-codex-lane-prompt.md` for prediction-market-bot work. For other repos, keep the same structure and replace the PMB-specific safety block with repo-specific invariants.
@@ -135,7 +190,7 @@ Every Codex prompt must include:
 - Repo path, worktree path, branch name, and allowed file scope.
 - Explicit statement: Hermes owns Kanban lifecycle; Codex is an input lane only.
 - Required output: concise summary, files changed, commits, tests run, and known risks.
-- Prohibited actions: secrets access, external messaging, board mutation, unrelated refactors, dependency upgrades unless required.
+- Prohibited actions: raw secret disclosure, external messaging, board mutation, unrelated refactors, dependency upgrades unless required.
 - Verification commands Codex may run and commands Hermes will run afterward.
 
 For PMB, include these mandatory safety constraints verbatim:
@@ -152,6 +207,16 @@ PMB safety constraints:
 ```
 
 ## Monitoring, Timeout, and Kill Behavior
+
+When using the helper, prefer its persisted controls:
+
+```bash
+python "$LANE" status --run-id "<run_id>"
+python "$LANE" logs --run-id "<run_id>" --phase builder
+python "$LANE" stop --run-id "<run_id>"
+```
+
+`stop` targets the tracked process group when the platform supports it and records the outcome in the lane state. A stopped or timed-out lane is not accepted; Hermes must inspect artifacts and either verify a safe partial result or park the task in Human Review.
 
 Start long Codex lanes in the background with PTY and completion notification:
 
@@ -212,6 +277,8 @@ Acceptance outcomes:
 - `partial`: Some Codex work was accepted after edits or cherry-picks; rejected parts are documented.
 - `rejected`: No Codex changes were accepted; reason is documented.
 - `timed_out`: Codex exceeded the lane budget; useful artifacts may or may not exist.
+- `human_review`: Hermes could not safely accept or rework automatically; exact evidence is recorded.
+- `rework`: Claude or Hermes found actionable implementation issues that should go back to Codex.
 
 ## kanban_complete Metadata Schema
 
@@ -221,11 +288,14 @@ Include this object under `metadata.codex_lane` for every task where the lane wa
 {
   "codex_lane": {
     "used": true,
-    "mode": "exec | goal | skipped",
+    "mode": "auto | exec | goal | skipped",
+    "run_id": "t_caa69668-20260508100000-abcdef12",
     "worktree": "/absolute/path/to/codex/worktree",
     "branch": "codex/t_caa69668/20260508100000",
     "command": "codex exec --full-auto ...",
-    "result": "accepted | rejected | partial | timed_out",
+    "reviewer": "claude-code",
+    "hermes_verification": "required",
+    "result": "accepted | rejected | partial | timed_out | human_review | rework",
     "accepted_commits": ["<sha1>", "<sha2>"],
     "rejected_reason": "empty when fully accepted; otherwise concrete reason",
     "tests_run": [

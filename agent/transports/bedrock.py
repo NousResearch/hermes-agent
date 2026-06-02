@@ -41,21 +41,32 @@ class BedrockTransport(ProviderTransport):
         Calls convert_messages and convert_tools internally.
 
         params:
-            max_tokens: int — output token limit (default 4096)
+            max_tokens: int | None — output token limit. When unset, Anthropic
+                Bedrock models use the same native output ceiling as the direct
+                Anthropic transport instead of a small transport-local cap.
             temperature: float | None
             guardrail_config: dict | None — Bedrock guardrails
             region: str — AWS region (default 'us-east-1')
         """
+        from agent.anthropic_adapter import _resolve_anthropic_messages_max_tokens
         from agent.bedrock_adapter import build_converse_kwargs
 
         region = params.get("region", "us-east-1")
         guardrail = params.get("guardrail_config")
+        model_lower = model.lower()
+        if "anthropic." in model_lower or "claude-" in model_lower:
+            max_tokens = _resolve_anthropic_messages_max_tokens(
+                params.get("max_tokens"), model
+            )
+        else:
+            requested_max_tokens = params.get("max_tokens")
+            max_tokens = requested_max_tokens if requested_max_tokens is not None else 4096
 
         kwargs = build_converse_kwargs(
             model=model,
             messages=messages,
             tools=tools,
-            max_tokens=params.get("max_tokens", 4096),
+            max_tokens=max_tokens,
             temperature=params.get("temperature"),
             guardrail_config=guardrail,
         )

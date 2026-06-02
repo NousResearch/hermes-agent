@@ -560,7 +560,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
-            max_tokens=agent.max_tokens or 4096,
+            max_tokens=agent.max_tokens,
             region=region,
             guardrail_config=guardrail,
         )

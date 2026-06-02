@@ -3144,7 +3144,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            result_preview = str(result_text or "").strip()
+            result_lower = result_preview.lower()
+            if result_lower.startswith(("error", "❌")):
+                answer_text = "Model switch failed."
+            elif "agent is running" in result_lower:
+                answer_text = "Wait for the current response."
+            else:
+                answer_text = "Model switched!"
+            await query.answer(text=answer_text)
 
             # Clean up state
             self._model_picker_state.pop(chat_id, None)

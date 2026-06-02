@@ -147,6 +147,41 @@ class TestTelegramModelPicker:
         assert "12345" not in adapter._model_picker_state
 
     @pytest.mark.asyncio
+    async def test_model_selected_reports_running_agent_wait_state(self):
+        adapter = _make_adapter()
+        callback = AsyncMock(
+            return_value="Agent is running — wait or /stop first, then switch models."
+        )
+        adapter._model_picker_state["12345"] = {
+            "providers": [
+                {
+                    "slug": "openai",
+                    "name": "OpenAI",
+                    "total_models": 1,
+                    "is_current": True,
+                }
+            ],
+            "current_model": "model_1",
+            "current_provider": "openai",
+            "session_key": "s",
+            "on_model_selected": callback,
+            "selected_provider": "openai",
+            "model_list": ["gpt-5"],
+            "msg_id": 42,
+        }
+
+        query = AsyncMock()
+        query.data = "mm:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        await adapter._handle_model_picker_callback(query, "mm:0", "12345")
+
+        query.answer.assert_awaited_once_with(text="Wait for the current response.")
+
+    @pytest.mark.asyncio
     async def test_provider_group_folds_and_drills_down(self, monkeypatch):
         """A provider family (e.g. MiniMax) collapses to one mpg: button at
         the top level; tapping it expands to its authenticated members as

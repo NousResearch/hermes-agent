@@ -15,6 +15,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -242,3 +243,56 @@ class TestIsIntentionalModelSwitch:
         }
 
         assert runner._is_intentional_model_switch(sk, "gpt-5.4") is False
+
+
+@pytest.mark.asyncio
+async def test_model_picker_refuses_switch_while_agent_running(monkeypatch):
+    """Interactive gateway pickers must match typed /model's mid-turn guard."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    source = _make_source()
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+
+    captured = {}
+
+    class _PickerAdapter:
+        async def send_model_picker(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(success=True)
+
+    runner.adapters = {Platform.TELEGRAM: _PickerAdapter()}
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "old-model", "provider": "openrouter"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers",
+        lambda **_kwargs: [
+            {
+                "slug": "openrouter",
+                "name": "OpenRouter",
+                "models": ["new-model"],
+                "total_models": 1,
+                "is_current": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_kwargs: pytest.fail("switch_model must not run mid-turn"),
+    )
+
+    event = SimpleNamespace(source=source, get_command_args=lambda: "")
+
+    result = await runner._handle_model_command(event)
+
+    assert result is None
+    callback = captured["on_model_selected"]
+    callback_result = await callback(source.chat_id, "new-model", "openrouter")
+
+    assert callback_result == "Agent is running — wait or /stop first, then switch models."
+    assert session_key not in runner._session_model_overrides

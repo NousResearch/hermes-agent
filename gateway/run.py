@@ -10888,6 +10888,10 @@ class GatewayRunner:
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
+                        running_agent = getattr(_self, "_running_agents", {}).get(_session_key)
+                        if running_agent is not None:
+                            return "Agent is running — wait or /stop first, then switch models."
+
                         result = _switch_model(
                             raw_input=model_id,
                             current_provider=_cur_provider,

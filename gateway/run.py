@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Callable, Dict, Optional, Any, List, Union, cast
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -3511,19 +3511,46 @@ class GatewayRunner:
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-        try:
-            await adapter._send_with_retry(
-                chat_id=event.source.chat_id,
-                content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
-                metadata=thread_meta,
+        reply_to = (
+            reply_anchor
+            if event.source.platform == Platform.TELEGRAM
+            and event.source.chat_type == "dm"
+            and event.source.thread_id
+            else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+        )
+
+        async def _stop_from_busy_ack(stop_session_key: str) -> str:
+            await self._interrupt_and_clear_session(
+                stop_session_key,
+                event.source,
+                interrupt_reason=_INTERRUPT_REASON_STOP,
+                invalidation_reason="busy_ack_stop_button",
             )
+            logger.info(
+                "STOP (busy ack button) for session %s — agent interrupted, session lock released",
+                stop_session_key,
+            )
+            return t("gateway.stop.stopped")
+
+        try:
+            send_busy_ack_with_stop = getattr(adapter, "send_busy_ack_with_stop", None)
+            if event.source.platform == Platform.DISCORD and callable(send_busy_ack_with_stop):
+                send_busy_ack_with_stop = cast(Callable[..., Any], send_busy_ack_with_stop)
+                await send_busy_ack_with_stop(
+                    chat_id=event.source.chat_id,
+                    content=message,
+                    session_key=session_key,
+                    stop_callback=_stop_from_busy_ack,
+                    reply_to=reply_to,
+                    metadata=thread_meta,
+                )
+            else:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=message,
+                    reply_to=reply_to,
+                    metadata=thread_meta,
+                )
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 

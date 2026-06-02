@@ -1448,6 +1448,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            discord_view = metadata.get("discord_view") if isinstance(metadata, dict) else None
 
             message_ids = []
             reference = None
@@ -1468,10 +1469,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if discord_view is not None and i == 0:
+                        send_kwargs["view"] = discord_view
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -1490,10 +1494,13 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        retry_kwargs = {
+                            "content": chunk,
+                            "reference": None,
+                        }
+                        if discord_view is not None and i == 0:
+                            retry_kwargs["view"] = discord_view
+                        msg = await channel.send(**retry_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -1513,6 +1520,45 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def send_busy_ack_with_stop(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        session_key: str,
+        stop_callback: Callable[[str], Any],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a busy acknowledgement with a Discord Stop button.
+
+        The button is UI sugar for the gateway's existing `/stop` path.  The
+        adapter owns only Discord component rendering/auth; the gateway-owned
+        callback performs the actual session interruption.
+        """
+        if not DISCORD_AVAILABLE:
+            return await self._send_with_retry(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+
+        view = StopTaskView(
+            session_key=session_key,
+            stop_callback=stop_callback,
+            allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        view_metadata: Dict[str, Any] = dict(metadata or {})
+        view_metadata["discord_view"] = view
+        return await self._send_with_retry(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=view_metadata,
+        )
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -5040,7 +5086,75 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, StopTaskView
+
+    class StopTaskView(discord.ui.View):  # type: ignore[union-attr]
+        """Single-button view that maps Discord busy-ack clicks to `/stop`."""
+
+        def __init__(
+            self,
+            session_key: str,
+            stop_callback: Callable[[str], Any],
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=3600)
+            self.session_key = session_key
+            self.stop_callback = stop_callback
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+
+            button = discord.ui.Button(  # type: ignore[union-attr]
+                label="Stop",
+                style=getattr(discord.ButtonStyle, "red"),  # type: ignore[union-attr]
+                custom_id=f"busy-stop:{hashlib.sha256(session_key.encode()).hexdigest()[:16]}",
+            )
+            button.callback = self._on_stop
+            self.add_item(button)
+
+        def _check_auth(self, interaction: Any) -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        async def _on_stop(self, interaction: Any) -> None:
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This task has already been stopped~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to stop this task~", ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+            for child in self.children:
+                setattr(child, "disabled", True)
+
+            try:
+                callback_result = self.stop_callback(self.session_key)
+                if asyncio.iscoroutine(callback_result):
+                    callback_result = await callback_result
+                text = str(callback_result or "Stop requested — current task cancelled.")
+            except Exception as exc:
+                logger.error("Discord busy-stop callback failed for %s: %s", self.session_key, exc, exc_info=True)
+                text = "Stop failed — please send /stop."
+
+            try:
+                await interaction.response.edit_message(content=f"🛑 {text}", view=self)
+            except Exception:
+                try:
+                    await interaction.response.send_message(f"🛑 {text}", ephemeral=True)
+                except Exception:
+                    pass
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                setattr(child, "disabled", True)
 
     class ExecApprovalView(discord.ui.View):
         """

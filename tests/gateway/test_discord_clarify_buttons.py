@@ -28,6 +28,7 @@ if _repo not in sys.path:
 from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
     DiscordAdapter,
+    StopTaskView,
 )
 from gateway.config import PlatformConfig  # noqa: E402
 
@@ -404,3 +405,73 @@ class TestDiscordSendClarify:
         # Only 1 real choice + 1 Other = 2 children
         assert len(view.children) == 2
         assert "real-choice" in view.children[0].label
+
+
+class TestDiscordBusyStopButton:
+    @pytest.mark.asyncio
+    async def test_send_busy_ack_with_stop_attaches_view(self):
+        adapter = _make_adapter(allowed_users={"42"})
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 555
+        channel.send = AsyncMock(return_value=sent_msg)
+        client = MagicMock()
+        client.get_channel = MagicMock(return_value=channel)
+        adapter._client = client
+
+        metadata = {"thread_id": "7777", "kept": "yes"}
+        await adapter.send_busy_ack_with_stop(
+            chat_id="9001",
+            content="busy",
+            session_key="discord:9001:user1",
+            stop_callback=AsyncMock(return_value="Stopped."),
+            metadata=metadata,
+        )
+
+        client.get_channel.assert_called_once_with(7777)
+        kwargs = channel.send.call_args.kwargs
+        assert kwargs["content"] == "busy"
+        view = kwargs["view"]
+        assert isinstance(view, StopTaskView)
+        assert len(view.children) == 1
+        button = view.children[0]
+        assert getattr(button, "label") == "Stop"
+        assert getattr(button, "custom_id").startswith("busy-stop:")
+        # Caller metadata is copied before injecting the view.
+        assert "discord_view" not in metadata
+
+    @pytest.mark.asyncio
+    async def test_stop_view_authorizes_and_invokes_callback(self):
+        callback = AsyncMock(return_value="Stopped.")
+        view = StopTaskView(
+            session_key="sk-1",
+            stop_callback=callback,
+            allowed_user_ids={"42"},
+        )
+        interaction = _make_interaction(user_id="42")
+        button = view.children[0]
+
+        await getattr(button, "callback")(interaction)
+
+        callback.assert_awaited_once_with("sk-1")
+        interaction.response.edit_message.assert_awaited_once()
+        assert view.resolved is True
+        assert getattr(button, "disabled") is True
+
+    @pytest.mark.asyncio
+    async def test_stop_view_rejects_unauthorized_user(self):
+        callback = AsyncMock(return_value="Stopped.")
+        view = StopTaskView(
+            session_key="sk-1",
+            stop_callback=callback,
+            allowed_user_ids={"42"},
+        )
+        interaction = _make_interaction(user_id="99")
+        button = view.children[0]
+
+        await getattr(button, "callback")(interaction)
+
+        callback.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once()
+        assert view.resolved is False
+        assert getattr(button, "disabled") is False

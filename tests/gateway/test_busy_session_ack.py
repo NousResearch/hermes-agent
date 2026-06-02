@@ -30,6 +30,7 @@ from gateway.platforms.base import (
     SessionSource,
     build_session_key,
 )
+from gateway.config import Platform
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +87,34 @@ def _make_adapter(platform_val="telegram"):
     adapter._text_debounce = {}
     adapter._busy_text_debounce_seconds = 0.6
     return adapter
+
+
+def _make_discord_event(text="hello", chat_id="123"):
+    """Build a minimal Discord MessageEvent with the real Platform enum."""
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id=chat_id,
+        chat_type="channel",
+        user_id="user1",
+    )
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg1",
+    )
+
+
+class _DiscordBusyAckAdapter:
+    def __init__(self):
+        self._pending_messages = {}
+        self.send_busy_ack_with_stop = AsyncMock()
+        self._send_with_retry = AsyncMock()
+        self.config = MagicMock()
+        self.config.extra = {}
+        self.platform = Platform.DISCORD
+        self._text_debounce = {}
+        self._busy_text_debounce_seconds = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +187,61 @@ class TestBusySessionAck:
 
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
+
+    @pytest.mark.asyncio
+    async def test_discord_busy_ack_uses_stop_button_sender(self):
+        """Discord busy acks should use the adapter Stop-button path."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _DiscordBusyAckAdapter()
+
+        event = _make_discord_event(text="queue this")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[Platform.DISCORD] = adapter  # type: ignore[assignment]
+
+        with patch("gateway.run.merge_pending_message_event"):
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter.send_busy_ack_with_stop.assert_called_once()
+        adapter._send_with_retry.assert_not_called()
+        call_kwargs = adapter.send_busy_ack_with_stop.call_args.kwargs
+        assert call_kwargs["chat_id"] == "123"
+        assert call_kwargs["session_key"] == sk
+        assert callable(call_kwargs["stop_callback"])
+        assert "Queued for the next turn" in call_kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_discord_busy_stop_callback_interrupts_and_clears_session(self):
+        """The Stop button callback is wired to the gateway interrupt path."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _DiscordBusyAckAdapter()
+
+        event = _make_discord_event(text="queue this")
+        sk = build_session_key(event.source)
+        runner._running_agents[sk] = MagicMock()
+        runner.adapters[Platform.DISCORD] = adapter  # type: ignore[assignment]
+
+        runner._interrupt_and_clear_session = AsyncMock(return_value=None)
+
+        with patch("gateway.run.merge_pending_message_event"), patch(
+            "gateway.run.t", lambda key: "Stopped."
+        ):
+            await runner._handle_active_session_busy_message(event, sk)
+            stop_callback = adapter.send_busy_ack_with_stop.call_args.kwargs["stop_callback"]
+            text = await stop_callback(sk)
+
+        assert text == "Stopped."
+        runner._interrupt_and_clear_session.assert_awaited_once_with(
+            sk,
+            event.source,
+            interrupt_reason="Stop requested",
+            invalidation_reason="busy_ack_stop_button",
+        )
 
     @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):

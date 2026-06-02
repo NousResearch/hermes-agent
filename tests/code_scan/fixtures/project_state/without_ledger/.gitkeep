@@ -1,0 +1,2 @@
+# Empty directory sentinel for the without_ledger fixture.
+# The test uses this dir to represent a project with no .hermes/PROJECT_STATE.md ledger.

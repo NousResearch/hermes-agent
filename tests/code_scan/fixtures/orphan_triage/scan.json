@@ -1,0 +1,69 @@
+{
+  "files": [
+    {
+      "path": "/project/src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python"
+    },
+    {
+      "path": "/project/src/core.py",
+      "relative_path": "src/core.py",
+      "language": "python"
+    },
+    {
+      "path": "/project/docs/guide.md",
+      "relative_path": "docs/guide.md",
+      "language": "markdown"
+    },
+    {
+      "path": "/project/config.yaml",
+      "relative_path": "config.yaml",
+      "language": "yaml"
+    },
+    {
+      "path": "/project/tests/test_core.py",
+      "relative_path": "tests/test_core.py",
+      "language": "python"
+    },
+    {
+      "path": "/project/fixtures/sample.json",
+      "relative_path": "fixtures/sample.json",
+      "language": "json"
+    },
+    {
+      "path": "/project/src/legacy.py",
+      "relative_path": "src/legacy.py",
+      "language": "python"
+    },
+    {
+      "path": "/project/src/utils.py",
+      "relative_path": "src/utils.py",
+      "language": "python"
+    },
+    {
+      "path": "/project/src/cli.py",
+      "relative_path": "src/cli.py",
+      "language": "python"
+    },
+    {
+      "path": "/project/src/compiled.dat",
+      "relative_path": "src/compiled.dat",
+      "language": "binary"
+    },
+    {
+      "path": "/project/.github/workflows/ci.yml",
+      "relative_path": ".github/workflows/ci.yml",
+      "language": "yaml"
+    },
+    {
+      "path": "/project/assets/logo.png",
+      "relative_path": "assets/logo.png",
+      "language": "unknown"
+    },
+    {
+      "path": "/project/templates/index.html",
+      "relative_path": "templates/index.html",
+      "language": "html"
+    }
+  ]
+}

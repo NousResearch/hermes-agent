@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/fake/project",
+  "captured_at": "2026-06-02T00:00:00Z",
+  "files": {
+    "src/main.py": {
+      "content_hash": "sha256:aaa_modified",
+      "line_count": 45,
+      "size_bytes": 1350,
+      "functions": ["main", "setup"],
+      "classes": ["App"],
+      "imports": ["os", "sys"]
+    },
+    "src/utils.py": {
+      "content_hash": "sha256:bbb",
+      "line_count": 30,
+      "size_bytes": 900,
+      "functions": ["util_fn"],
+      "classes": [],
+      "imports": ["json"]
+    },
+    "src/config.js": {
+      "content_hash": "sha256:ccc2",
+      "line_count": 25,
+      "size_bytes": 700,
+      "functions": ["getConfig", "setConfig"],
+      "classes": [],
+      "imports": ["lodash"]
+    },
+    "src/new_module.py": {
+      "content_hash": "sha256:ddd",
+      "line_count": 15,
+      "size_bytes": 450,
+      "functions": ["process"],
+      "classes": ["Handler"],
+      "imports": ["asyncio"]
+    }
+  }
+}

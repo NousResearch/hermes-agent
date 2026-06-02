@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "project_root": "/fake/project",
+  "scanned_at": "2026-06-01T00:00:00Z",
+  "total_files": 5,
+  "total_lines": 100,
+  "languages": {"python": 3, "javascript": 1, "markdown": 1},
+  "categories": {"code": 4, "docs": 1},
+  "frameworks": ["fastapi"],
+  "files": [
+    {"path": "/fake/project/src/main.py", "relative_path": "src/main.py", "language": "python", "category": "code", "lines": 40, "size_bytes": 1200},
+    {"path": "/fake/project/src/utils.py", "relative_path": "src/utils.py", "language": "python", "category": "code", "lines": 30, "size_bytes": 900},
+    {"path": "/fake/project/src/config.js", "relative_path": "src/config.js", "language": "javascript", "category": "code", "lines": 20, "size_bytes": 600},
+    {"path": "/fake/project/src/helpers.py", "relative_path": "src/helpers.py", "language": "python", "category": "code", "lines": 10, "size_bytes": 300},
+    {"path": "/fake/project/README.md", "relative_path": "README.md", "language": "markdown", "category": "docs", "lines": 0, "size_bytes": 500}
+  ],
+  "warnings": []
+}

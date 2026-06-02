@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "entrypoints": [
+    {
+      "file": "src/cli.py",
+      "language": "python",
+      "type": "python_cli",
+      "signals": ["click_command", "argparse_parser"],
+      "confidence": 0.92
+    }
+  ],
+  "totals": {
+    "entrypoints_found": 1,
+    "by_type": {
+      "python_cli": 1
+    }
+  }
+}

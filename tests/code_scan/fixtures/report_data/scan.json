@@ -1,0 +1,30 @@
+{
+  "project_root": "/tmp/test_project",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 10,
+  "total_lines": 500,
+  "languages": {
+    "python": 7,
+    "json": 2,
+    "markdown": 1
+  },
+  "categories": {
+    "source": 7,
+    "config": 2,
+    "docs": 1
+  },
+  "frameworks": [],
+  "files": [
+    {"path": "src/app.py", "relative_path": "src/app.py", "language": "python", "category": "source", "lines": 100, "size_bytes": 3000},
+    {"path": "src/main.py", "relative_path": "src/main.py", "language": "python", "category": "source", "lines": 50, "size_bytes": 1500},
+    {"path": "src/utils.py", "relative_path": "src/utils.py", "language": "python", "category": "source", "lines": 80, "size_bytes": 2400},
+    {"path": "src/helpers.py", "relative_path": "src/helpers.py", "language": "python", "category": "source", "lines": 60, "size_bytes": 1800},
+    {"path": "src/models.py", "relative_path": "src/models.py", "language": "python", "category": "source", "lines": 70, "size_bytes": 2100},
+    {"path": "src/orphan_file.py", "relative_path": "src/orphan_file.py", "language": "python", "category": "source", "lines": 40, "size_bytes": 1200},
+    {"path": "src/suspicious.py", "relative_path": "src/suspicious.py", "language": "python", "category": "source", "lines": 30, "size_bytes": 900},
+    {"path": "config.json", "relative_path": "config.json", "language": "json", "category": "config", "lines": 20, "size_bytes": 600},
+    {"path": "package.json", "relative_path": "package.json", "language": "json", "category": "config", "lines": 30, "size_bytes": 900},
+    {"path": "README.md", "relative_path": "README.md", "language": "markdown", "category": "docs", "lines": 20, "size_bytes": 600}
+  ],
+  "warnings": []
+}

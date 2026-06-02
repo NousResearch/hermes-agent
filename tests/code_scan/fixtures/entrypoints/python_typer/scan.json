@@ -1,0 +1,20 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_typer",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 1,
+  "total_lines": 14,
+  "languages": {"python": 1},
+  "categories": {"code": 1},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/python_typer/src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "code",
+      "lines": 14,
+      "size_bytes": 200
+    }
+  ],
+  "warnings": []
+}

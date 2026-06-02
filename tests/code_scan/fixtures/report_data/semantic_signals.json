@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0.0",
+  "files": {
+    "src/app.py": {
+      "language": "python",
+      "symbols": [
+        {"kind": "class", "name": "App"},
+        {"kind": "function", "name": "run"},
+        {"kind": "function", "name": "setup"}
+      ],
+      "docstrings": ["Main application class"],
+      "decorators": [],
+      "warnings": [],
+      "truncated": false
+    },
+    "src/main.py": {
+      "language": "python",
+      "symbols": [
+        {"kind": "function", "name": "main"}
+      ],
+      "docstrings": [],
+      "decorators": [],
+      "warnings": [],
+      "truncated": false
+    },
+    "src/models.py": {
+      "language": "python",
+      "symbols": [
+        {"kind": "class", "name": "Model"},
+        {"kind": "class", "name": "Record"}
+      ],
+      "docstrings": ["Data models"],
+      "decorators": [],
+      "warnings": [],
+      "truncated": false
+    }
+  },
+  "totals": {
+    "files_processed": 3,
+    "symbols": 6,
+    "warnings": 0
+  }
+}

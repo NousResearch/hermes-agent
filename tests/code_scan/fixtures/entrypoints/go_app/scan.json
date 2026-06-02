@@ -1,0 +1,28 @@
+{
+  "project_root": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/go_app",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 2,
+  "total_lines": 28,
+  "languages": {"go": 2},
+  "categories": {"code": 2},
+  "frameworks": [],
+  "files": [
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/go_app/main.go",
+      "relative_path": "main.go",
+      "language": "go",
+      "category": "code",
+      "lines": 17,
+      "size_bytes": 277
+    },
+    {
+      "path": "/home/jarrad/.hermes/hermes-agent/tests/code_scan/fixtures/entrypoints/go_app/cmd/tool.go",
+      "relative_path": "cmd/tool.go",
+      "language": "go",
+      "category": "code",
+      "lines": 11,
+      "size_bytes": 126
+    }
+  ],
+  "warnings": []
+}

@@ -1,0 +1,100 @@
+{
+  "nodes": [
+    {
+      "node_id": "file:src/main.py",
+      "node_type": "file",
+      "filePath": "src/main.py",
+      "language": "python"
+    },
+    {
+      "node_id": "file:src/core.py",
+      "node_type": "file",
+      "filePath": "src/core.py",
+      "language": "python"
+    },
+    {
+      "node_id": "file:docs/guide.md",
+      "node_type": "file",
+      "filePath": "docs/guide.md",
+      "language": "markdown"
+    },
+    {
+      "node_id": "file:config.yaml",
+      "node_type": "file",
+      "filePath": "config.yaml",
+      "language": "yaml"
+    },
+    {
+      "node_id": "file:tests/test_core.py",
+      "node_type": "file",
+      "filePath": "tests/test_core.py",
+      "language": "python"
+    },
+    {
+      "node_id": "file:fixtures/sample.json",
+      "node_type": "file",
+      "filePath": "fixtures/sample.json",
+      "language": "json"
+    },
+    {
+      "node_id": "file:src/legacy.py",
+      "node_type": "file",
+      "filePath": "src/legacy.py",
+      "language": "python"
+    },
+    {
+      "node_id": "file:src/utils.py",
+      "node_type": "file",
+      "filePath": "src/utils.py",
+      "language": "python"
+    },
+    {
+      "node_id": "file:src/cli.py",
+      "node_type": "file",
+      "filePath": "src/cli.py",
+      "language": "python"
+    },
+    {
+      "node_id": "module:os",
+      "node_type": "module",
+      "filePath": null,
+      "language": "unknown"
+    },
+    {
+      "node_id": "file:src/compiled.dat",
+      "node_type": "file",
+      "filePath": "src/compiled.dat",
+      "language": "binary"
+    },
+    {
+      "node_id": "file:.github/workflows/ci.yml",
+      "node_type": "file",
+      "filePath": ".github/workflows/ci.yml",
+      "language": "yaml"
+    },
+    {
+      "node_id": "file:assets/logo.png",
+      "node_type": "file",
+      "filePath": "assets/logo.png",
+      "language": "unknown"
+    },
+    {
+      "node_id": "file:templates/index.html",
+      "node_type": "file",
+      "filePath": "templates/index.html",
+      "language": "html"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:src/main.py",
+      "target": "file:src/core.py",
+      "edge_type": "imports"
+    },
+    {
+      "source": "file:src/core.py",
+      "target": "file:src/core.py",
+      "edge_type": "self"
+    }
+  ]
+}

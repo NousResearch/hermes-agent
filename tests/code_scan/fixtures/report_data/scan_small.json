@@ -1,0 +1,21 @@
+{
+  "project_root": "/tmp/test_project",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 5,
+  "total_lines": 250,
+  "languages": {
+    "python": 5
+  },
+  "categories": {
+    "source": 5
+  },
+  "frameworks": [],
+  "files": [
+    {"path": "src/app.py", "relative_path": "src/app.py", "language": "python", "category": "source", "lines": 100, "size_bytes": 3000},
+    {"path": "src/main.py", "relative_path": "src/main.py", "language": "python", "category": "source", "lines": 50, "size_bytes": 1500},
+    {"path": "src/utils.py", "relative_path": "src/utils.py", "language": "python", "category": "source", "lines": 80, "size_bytes": 2400},
+    {"path": "src/helpers.py", "relative_path": "src/helpers.py", "language": "python", "category": "source", "lines": 60, "size_bytes": 1800},
+    {"path": "src/models.py", "relative_path": "src/models.py", "language": "python", "category": "source", "lines": 70, "size_bytes": 2100}
+  ],
+  "warnings": []
+}

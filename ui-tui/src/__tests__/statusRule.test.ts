@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { statusRuleWidths } from '../components/appChrome.js'
+import { statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
 
 describe('statusRuleWidths', () => {
   it('keeps the status rule within the terminal width', () => {
@@ -28,5 +28,78 @@ describe('statusRuleWidths', () => {
 
     expect(widths.leftWidth + widths.separatorWidth + widths.rightWidth).toBeLessThanOrEqual(30)
     expect(widths.rightWidth).toBeGreaterThan('目录/分支'.length)
+  })
+
+  it('reserves the high-priority left content so the cwd/branch yields first', () => {
+    const cwd = '~/src/hermes-agent/apps/desktop (bb/tui-statusbar-responsive)'
+
+    const greedy = statusRuleWidths(70, cwd) // legacy behaviour: cwd hogs the row
+    const reserved = statusRuleWidths(70, cwd, 40) // reserve indicator+model+ctx
+
+    expect(reserved.leftWidth).toBeGreaterThanOrEqual(40)
+    expect(reserved.leftWidth).toBeGreaterThan(greedy.leftWidth)
+    expect(reserved.rightWidth).toBeLessThan(greedy.rightWidth)
+    expect(reserved.leftWidth + reserved.separatorWidth + reserved.rightWidth).toBeLessThanOrEqual(70)
+  })
+
+  it('drops the cwd entirely when the essential left content needs the whole row', () => {
+    expect(statusRuleWidths(40, '~/some/cwd (branch)', 60)).toEqual({
+      leftWidth: 40,
+      rightWidth: 0,
+      separatorWidth: 0
+    })
+  })
+
+  it('keeps the default (no reservation) behaviour identical for legacy callers', () => {
+    const cwd = '~/src/hermes-agent/main (some-long-branch-name)'
+
+    expect(statusRuleWidths(80, cwd, 0)).toEqual(statusRuleWidths(80, cwd))
+  })
+})
+
+describe('statusBarSegments', () => {
+  it('shows every segment on a wide terminal', () => {
+    const s = statusBarSegments(120)
+
+    expect(s).toEqual({
+      compactCtx: false,
+      bar: true,
+      duration: true,
+      compressions: true,
+      voice: true,
+      bg: true,
+      cost: true
+    })
+  })
+
+  it('collapses the context bar to a token count on narrow terminals', () => {
+    const s = statusBarSegments(60)
+
+    expect(s.compactCtx).toBe(true)
+    expect(s.bar).toBe(false)
+    expect(s.duration).toBe(false)
+    expect(s.cost).toBe(false)
+  })
+
+  it('sheds tail segments in priority order as the terminal narrows', () => {
+    // cost is the first to go, the context bar the last of the tail.
+    const order: (keyof ReturnType<typeof statusBarSegments>)[] = [
+      'bar',
+      'duration',
+      'compressions',
+      'voice',
+      'bg',
+      'cost'
+    ]
+
+    let prevCount = Infinity
+
+    for (const cols of [120, 95, 87, 83, 79, 75, 71]) {
+      const s = statusBarSegments(cols)
+      const visible = order.filter(k => s[k]).length
+
+      expect(visible).toBeLessThanOrEqual(prevCount)
+      prevCount = visible
+    }
   })
 })

@@ -2982,6 +2982,33 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
 
+def test_request_review_task_moves_running_task_to_review(kanban_home):
+    """PR handoff should enter review, not blocked, and target default reviewer."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs PR review", assignee="coder")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None
+        ok = kb.request_review_task(
+            conn,
+            t,
+            summary="PR ready",
+            metadata={"pr_url": "https://github.com/org/repo/pull/123"},
+            expected_run_id=claimed.current_run_id,
+        )
+        assert ok is True
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "review"
+        assert task.assignee == "default"
+        assert task.claim_lock is None
+        run = kb.latest_run(conn, t)
+        assert run is not None
+        assert run.outcome == "review"
+        assert run.summary == "PR ready"
+        assert run.metadata is not None
+        assert run.metadata["pr_url"].endswith("/123")
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

@@ -4043,6 +4043,79 @@ def block_task(
 
 
 
+def request_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    review_assignee: str = "default",
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Transition ``running|ready -> review`` for PR/code review handoff.
+
+    Review is not a blocker: it is executable downstream work. The current
+    worker's run is closed with outcome ``review`` and the task is reassigned
+    to ``review_assignee`` (default profile by convention) so the dispatcher
+    can spawn a review agent from the review column.
+    """
+    assignee = (review_assignee or "default").strip() or "default"
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'review',
+                       assignee     = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """,
+                (assignee, task_id),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'review',
+                       assignee     = ?,
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                   AND current_run_id = ?
+                """,
+                (assignee, task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn, task_id,
+            outcome="review", status="review",
+            summary=summary,
+            metadata=metadata,
+        )
+        if run_id is None and (summary or metadata):
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="review",
+                summary=summary,
+                metadata=metadata,
+            )
+        _append_event(
+            conn,
+            task_id,
+            "review_requested",
+            {"summary": summary, "assignee": assignee},
+            run_id=run_id,
+        )
+        return True
+
+
+
 def promote_task(
     conn: sqlite3.Connection,
     task_id: str,

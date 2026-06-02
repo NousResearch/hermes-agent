@@ -114,8 +114,26 @@ def slack_manifest_command(args) -> int:
       --slashes-only  Emit only the ``features.slash_commands`` array (for
                       merging into an existing manifest manually)
     """
-    name = getattr(args, "name", None) or "Hermes"
-    description = getattr(args, "description", None) or "Your Hermes agent on Slack"
+    # Resolve bot name: CLI --name > config.yaml gateway.bot_name > "Hermes"
+    name = getattr(args, "name", None)
+    if not name:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            name = (cfg.get("gateway") or {}).get("bot_name")
+        except Exception:
+            name = None
+    name = name or "Hermes"
+
+    description = getattr(args, "description", None)
+    if not description:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            description = (cfg.get("gateway") or {}).get("bot_description")
+        except Exception:
+            description = None
+    description = description or "Your Hermes agent on Slack"
 
     if getattr(args, "slashes_only", False):
         from hermes_cli.commands import slack_app_manifest

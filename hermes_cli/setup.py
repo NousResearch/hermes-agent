@@ -1741,6 +1741,12 @@ def _setup_slack():
     # events / slash commands one at a time.
     _write_slack_manifest_and_instruct()
 
+    # Offer optional advanced Slack customization (bot name, descriptions).
+    # Gate with a single yes/no so users who don't care can skip in one keystroke.
+    print()
+    if prompt_yes_no("Customize advanced Slack settings (bot name, descriptions)?", False):
+        _configure_advanced_slack_settings()
+
     print()
     bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
     if not bot_token:
@@ -1776,6 +1782,43 @@ def _setup_slack():
         save_env_value("SLACK_HOME_CHANNEL", home_channel.strip())
 
 
+def _configure_advanced_slack_settings():
+    """Optional advanced customization for Slack bot identity.
+
+    Prompts for bot display name, bot description, and assistant description.
+    Saves non-empty values to config.yaml under the ``gateway`` section so
+    ``_write_slack_manifest_and_instruct()`` and ``hermes slack manifest``
+    pick them up automatically.
+    """
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config() or {}
+    gw = config.setdefault("gateway", {})
+
+    print()
+    print_info("Configure bot identity (press Enter to keep defaults):")
+    print()
+
+    current_name = gw.get("bot_name") or "Hermes"
+    bot_name = prompt(f"Bot display name", default=current_name)
+    if bot_name and bot_name != "Hermes":
+        gw["bot_name"] = bot_name
+        print_success(f'Bot name set to "{bot_name}"')
+
+    current_desc = gw.get("bot_description") or "Your Hermes agent on Slack"
+    bot_desc = prompt("Bot description", default=current_desc)
+    if bot_desc and bot_desc != "Your Hermes agent on Slack":
+        gw["bot_description"] = bot_desc
+        print_success(f"Bot description updated")
+
+    save_config(config)
+
+    # Re-generate manifest with the new settings
+    print()
+    print_info("Regenerating Slack manifest with updated settings...")
+    _write_slack_manifest_and_instruct()
+
+
 def _write_slack_manifest_and_instruct():
     """Generate the Slack manifest, write it under HERMES_HOME, and print
     paste-into-Slack instructions.
@@ -1790,9 +1833,20 @@ def _write_slack_manifest_and_instruct():
         from hermes_cli.slack_cli import _build_full_manifest
         from hermes_constants import get_hermes_home
 
+        # Resolve bot identity: config.yaml gateway.bot_name/bot_description > defaults
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config() or {}
+            _gw = _cfg.get("gateway") or {}
+            _bot_name = _gw.get("bot_name") or "Hermes"
+            _bot_desc = _gw.get("bot_description") or "Your Hermes agent on Slack"
+        except Exception:
+            _bot_name = "Hermes"
+            _bot_desc = "Your Hermes agent on Slack"
+
         manifest = _build_full_manifest(
-            bot_name="Hermes",
-            bot_description="Your Hermes agent on Slack",
+            bot_name=_bot_name,
+            bot_description=_bot_desc,
         )
         target = Path(get_hermes_home()) / "slack-manifest.json"
         target.parent.mkdir(parents=True, exist_ok=True)

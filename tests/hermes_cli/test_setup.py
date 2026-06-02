@@ -509,3 +509,61 @@ def test_setup_slack_home_channel_empty_not_saved(monkeypatch):
     setup_mod._setup_slack()
 
     assert "SLACK_HOME_CHANNEL" not in saved
+
+
+def test_setup_slack_advanced_settings_gate_shown(monkeypatch):
+    """_setup_slack() offers advanced settings customization."""
+    prompt_yes_no_calls = []
+
+    def track_prompt_yes_no(question, default=False):
+        prompt_yes_no_calls.append(question)
+        if "Customize advanced" in question:
+            return False  # Skip advanced settings
+        return False  # Default: don't reconfigure, don't regenerate
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: None)
+    monkeypatch.setattr(setup_mod, "prompt", lambda *_a, **_kw: "")
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", track_prompt_yes_no)
+    monkeypatch.setattr(setup_mod, "_write_slack_manifest_and_instruct", lambda: None)
+
+    setup_mod._setup_slack()
+
+    # The advanced settings gate should appear
+    assert any("Customize advanced" in q for q in prompt_yes_no_calls)
+
+
+def test_setup_slack_advanced_settings_yes_saves_config(monkeypatch):
+    """_setup_slack() advanced settings saves bot_name to config."""
+    saved_config = {}
+
+    def track_prompt(question, **kwargs):
+        if "Bot display name" in question:
+            return "Elysia"
+        if "Bot description" in question:
+            return kwargs.get("default", "")
+        return ""
+
+    def track_prompt_yes_no(question, default=False):
+        if "Customize advanced" in question:
+            return True  # Yes, customize
+        return False
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: None)
+    monkeypatch.setattr(setup_mod, "prompt", track_prompt)
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", track_prompt_yes_no)
+    monkeypatch.setattr(setup_mod, "print_info", lambda *_a: None)
+    monkeypatch.setattr(setup_mod, "print_success", lambda *_a: None)
+    monkeypatch.setattr(setup_mod, "print_header", lambda *_a: None)
+    monkeypatch.setattr(setup_mod, "_write_slack_manifest_and_instruct", lambda: None)
+
+    # Patch at the source module — _configure_advanced_slack_settings uses lazy import
+    from hermes_cli import config as config_mod
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "save_config", lambda c: saved_config.update(c))
+
+    setup_mod._setup_slack()
+
+    # Verify bot_name was saved to config
+    assert saved_config.get("gateway", {}).get("bot_name") == "Elysia"

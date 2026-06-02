@@ -203,6 +203,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -9336,6 +9337,233 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+_UPDATE_HIGHLIGHT_CATEGORIES = (
+    {
+        "key": "gateway",
+        "name": "Messaging gateway and alert delivery",
+        "summary": "updates to Slack/Telegram/Discord routing, threaded replies, gateway commands, or status delivery",
+        "paths": ("gateway/",),
+        "keywords": ("gateway", "slack", "telegram", "discord", "thread", "reply", "alert", "update notification", "message"),
+    },
+    {
+        "key": "agent",
+        "name": "Agent runtime and model behavior",
+        "summary": "agent loop, providers, context handling, memory, reasoning, or model-routing improvements",
+        "paths": ("agent/", "run_agent.py", "model_tools.py", "toolsets.py"),
+        "keywords": ("agent", "model", "provider", "context", "memory", "reasoning", "compression", "tool"),
+    },
+    {
+        "key": "cli_config",
+        "name": "CLI, setup, and configuration",
+        "summary": "command-line workflows, setup/config migration, install/update, auth, profile, or environment fixes",
+        "paths": ("hermes_cli/", "scripts/", "hermes_constants.py", "hermes_logging.py"),
+        "keywords": ("cli", "config", "setup", "install", "update", "profile", "auth", "env", "migration"),
+    },
+    {
+        "key": "tools_integrations",
+        "name": "Tools and integrations",
+        "summary": "tool implementations, MCP/plugins, browser/media/web access, cron, or external service integrations",
+        "paths": ("tools/", "plugins/", "cron/", "mcp/"),
+        "keywords": ("tool", "mcp", "plugin", "cron", "browser", "web", "image", "tts", "search"),
+    },
+    {
+        "key": "ui",
+        "name": "Dashboard, desktop, and TUI",
+        "summary": "dashboard, desktop app, website, terminal UI, and user-interface polish",
+        "paths": ("apps/", "ui-tui/", "website/", "web/"),
+        "keywords": ("dashboard", "desktop", "tui", "ui", "website", "frontend", "display"),
+    },
+    {
+        "key": "skills_docs",
+        "name": "Skills and documentation",
+        "summary": "bundled skills, documentation, examples, and user-facing guidance",
+        "paths": ("skills/", "optional-skills/", "docs/", "README", "AGENTS.md"),
+        "keywords": ("skill", "docs", "documentation", "guide", "readme", "example"),
+    },
+    {
+        "key": "quality",
+        "name": "Quality, tests, and reliability",
+        "summary": "tests, regression coverage, safety guards, and reliability hardening",
+        "paths": ("tests/",),
+        "keywords": ("test", "regression", "reliability", "guard", "fix", "race", "crash", "timeout"),
+    },
+)
+
+
+def _clean_update_subject(subject: str) -> str:
+    """Normalize a commit subject into a human-readable detail phrase."""
+    text = (subject or "").strip()
+    text = re.sub(r"^\w+(?:\([^)]*\))?!?:\s*", "", text)
+    text = re.sub(r"\s*\(#\d+\)\s*$", "", text)
+    text = text.strip(" .")
+    if not text:
+        return "maintenance and reliability fixes"
+    return text[:1].upper() + text[1:]
+
+
+def _category_for_update_commit(subject: str, files: list[str]) -> dict:
+    """Choose the best highlight category for one incoming update commit."""
+    path_scores = {cat["key"]: 0 for cat in _UPDATE_HIGHLIGHT_CATEGORIES}
+    for file_path in files:
+        for cat in _UPDATE_HIGHLIGHT_CATEGORIES:
+            if any(file_path == prefix or file_path.startswith(prefix) for prefix in cat["paths"]):
+                path_scores[cat["key"]] += 2
+    subject_lc = subject.lower()
+    for cat in _UPDATE_HIGHLIGHT_CATEGORIES:
+        if any(keyword in subject_lc for keyword in cat["keywords"]):
+            path_scores[cat["key"]] += 1
+    best_key = max(path_scores, key=lambda key: path_scores[key])
+    if path_scores[best_key] <= 0:
+        return _UPDATE_HIGHLIGHT_CATEGORIES[-1]
+    return next(cat for cat in _UPDATE_HIGHLIGHT_CATEGORIES if cat["key"] == best_key)
+
+
+def _parse_update_git_log(raw_log: str) -> list[dict]:
+    """Parse ``git log --name-only`` output used for gateway update summaries."""
+    commits: list[dict] = []
+    for record in raw_log.split("\x1e"):
+        record = record.strip("\n")
+        if not record.strip():
+            continue
+        lines = [line.strip() for line in record.splitlines() if line.strip()]
+        if not lines:
+            continue
+        header = lines[0]
+        parts = header.split("\x1f", 1)
+        if len(parts) != 2:
+            continue
+        sha, subject = parts
+        files = [line for line in lines[1:] if "\x1f" not in line]
+        commits.append({"sha": sha, "subject": subject, "files": files})
+    return commits
+
+
+def _target_version_from_ref(git_cmd, repo_root: Path, ref: str) -> str | None:
+    """Read hermes_cli.__version__ from a remote ref without checking it out."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["show", f"{ref}:hermes_cli/__init__.py"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        match = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)['\"]", result.stdout, re.MULTILINE)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
+def _build_gateway_update_summary(
+    *,
+    git_cmd,
+    repo_root: Path,
+    compare_range: str,
+    branch: str,
+    target_ref: str,
+    from_sha: str | None,
+    commit_count: int,
+) -> dict | None:
+    """Create a structured, non-raw-commit update summary for gateway alerts.
+
+    The gateway completion notification reads this JSON and posts the detailed
+    highlight list as a reply to the success alert.  Keep this deterministic and
+    local-only: update runs before the new code is trusted, so it should not
+    depend on an LLM or network services.
+    """
+    try:
+        log_result = subprocess.run(
+            git_cmd + [
+                "log",
+                "--reverse",
+                "--name-only",
+                "--pretty=format:%x1e%H%x1f%s",
+                compare_range,
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if log_result.returncode != 0:
+            return None
+        commits = _parse_update_git_log(log_result.stdout)
+        if not commits:
+            return None
+
+        diff_result = subprocess.run(
+            git_cmd + ["diff", "--name-only", compare_range],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        changed_files = [
+            line.strip()
+            for line in (diff_result.stdout if diff_result.returncode == 0 else "").splitlines()
+            if line.strip()
+        ]
+
+        buckets: dict[str, dict] = {}
+        for commit in commits:
+            category = _category_for_update_commit(commit["subject"], commit["files"])
+            bucket = buckets.setdefault(
+                category["key"],
+                {
+                    "key": category["key"],
+                    "name": category["name"],
+                    "summary": category["summary"],
+                    "commit_count": 0,
+                    "file_count": 0,
+                    "highlights": [],
+                    "_files": set(),
+                },
+            )
+            bucket["commit_count"] += 1
+            bucket["_files"].update(commit["files"])
+            phrase = _clean_update_subject(commit["subject"])
+            if phrase not in bucket["highlights"] and len(bucket["highlights"]) < 4:
+                bucket["highlights"].append(phrase)
+
+        categories = []
+        for bucket in buckets.values():
+            bucket["file_count"] = len(bucket.pop("_files"))
+            categories.append(bucket)
+        categories.sort(key=lambda item: (-item["commit_count"], item["name"]))
+
+        return {
+            "schema": 1,
+            "branch": branch,
+            "target_ref": target_ref,
+            "from_sha": from_sha,
+            "to_sha": commits[-1]["sha"],
+            "current_version": __version__,
+            "target_version": _target_version_from_ref(git_cmd, repo_root, target_ref),
+            "commit_count": commit_count,
+            "files_changed_count": len(changed_files),
+            "categories": categories,
+            "generated_from": "git log subjects plus touched source paths",
+        }
+    except Exception as exc:
+        logger.debug("Could not build gateway update summary: %s", exc)
+        return None
+
+
+def _write_gateway_update_summary(summary: dict | None) -> None:
+    """Persist the update summary for the gateway completion notifier."""
+    if not summary:
+        return
+    try:
+        summary_path = get_hermes_home() / ".update_summary.json"
+        tmp_path = summary_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(summary_path)
+    except Exception as exc:
+        logger.debug("Could not write gateway update summary: %s", exc)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9697,6 +9925,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # every user who ran ``hermes update`` for the 7 minutes between
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
+        if gateway_mode:
+            _write_gateway_update_summary(
+                _build_gateway_update_summary(
+                    git_cmd=git_cmd,
+                    repo_root=PROJECT_ROOT,
+                    compare_range=f"HEAD..origin/{branch}",
+                    branch=branch,
+                    target_ref=f"origin/{branch}",
+                    from_sha=pre_pull_sha,
+                    commit_count=commit_count,
+                )
+            )
         try:
             pull_result = subprocess.run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],

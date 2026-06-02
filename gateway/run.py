@@ -1597,6 +1597,158 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _load_update_summary(summary_path: Path) -> dict | None:
+    """Load a structured update-summary marker written by ``hermes update``."""
+    try:
+        if not summary_path.exists():
+            return None
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("schema") == 1:
+            return data
+    except Exception as exc:
+        logger.debug("Could not read update summary marker: %s", exc)
+    return None
+
+
+def _short_sha(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[:10] if text else "unknown"
+
+
+def _format_update_highlight_reply(summary: dict | None, output: str = "") -> str | None:
+    """Render the detailed update-info reply from structured summary data.
+
+    This intentionally avoids dumping raw commit subjects.  The updater groups
+    incoming commits by touched product area and stores representative cleaned
+    phrases, so the alert reads like release highlights instead of git log.
+    """
+    if not summary:
+        return None
+
+    commit_count = int(summary.get("commit_count") or 0)
+    if commit_count <= 0:
+        return None
+
+    current_version = summary.get("current_version") or "current"
+    target_version = summary.get("target_version") or "latest"
+    branch = summary.get("branch") or "main"
+    file_count = int(summary.get("files_changed_count") or 0)
+    from_sha = _short_sha(summary.get("from_sha"))
+    to_sha = _short_sha(summary.get("to_sha"))
+
+    lines = [
+        f"*Update info — Hermes v{current_version} → v{target_version}*",
+        f"Pulled {commit_count} commit{'s' if commit_count != 1 else ''} on `{branch}` ({from_sha} → {to_sha}), touching {file_count} file{'s' if file_count != 1 else ''}.",
+        "",
+        "*Highlights*",
+    ]
+
+    categories = summary.get("categories") if isinstance(summary.get("categories"), list) else []
+    if categories:
+        for category in categories[:8]:
+            if not isinstance(category, dict):
+                continue
+            name = category.get("name") or "Updated area"
+            commits = int(category.get("commit_count") or 0)
+            files = int(category.get("file_count") or 0)
+            area_summary = category.get("summary") or "related improvements"
+            highlights = [
+                str(item).strip().rstrip(".")
+                for item in (category.get("highlights") or [])
+                if str(item).strip()
+            ]
+            detail = area_summary
+            if highlights:
+                detail = "; ".join(highlights[:3])
+            lines.append(
+                f"• *{name}* — {commits} commit{'s' if commits != 1 else ''}, {files} file{'s' if files != 1 else ''}: {detail}."
+            )
+    else:
+        lines.append("• Version updated successfully; no per-area highlight data was available.")
+
+    lines.extend([
+        "",
+        "_Generated from changed source areas and cleaned commit subjects; raw update logs are kept out of the alert unless the update fails._",
+    ])
+    return "\n".join(lines)
+
+
+def _metadata_for_update_detail_reply(
+    platform: Platform,
+    base_metadata: dict | None,
+    success_message_id: str | None,
+    chat_type: str | None = None,
+) -> dict | None:
+    """Route detailed update info as a reply to the success alert when possible."""
+    if not success_message_id:
+        return base_metadata
+    metadata = dict(base_metadata or {})
+    if platform == Platform.SLACK:
+        # Slack threads are keyed by thread_ts.  Prefer the success alert's ts
+        # so the main visible alert can say "check the reply" and the detailed
+        # information hangs off that alert instead of the triggering command.
+        return {"thread_id": success_message_id}
+    if platform == Platform.TELEGRAM:
+        if chat_type == "dm" and metadata.get("thread_id"):
+            metadata["telegram_dm_topic_reply_fallback"] = True
+            metadata["telegram_reply_to_message_id"] = success_message_id
+            return metadata
+        return metadata
+    return metadata or None
+
+
+async def _send_update_completion_messages(
+    *,
+    adapter: Any,
+    chat_id: str,
+    platform: Platform,
+    chat_type: str | None,
+    exit_code: int,
+    metadata: dict | None,
+    output: str,
+    summary: dict | None,
+) -> None:
+    """Send final update status, with success details in a follow-up reply."""
+    if exit_code != 0:
+        await adapter.send(
+            chat_id,
+            "❌ Hermes update failed (exit code {}).".format(exit_code),
+            metadata=metadata,
+        )
+        return
+
+    detail = _format_update_highlight_reply(summary, output)
+    if not detail:
+        await adapter.send(chat_id, "✅ Hermes update finished successfully.", metadata=metadata)
+        return
+
+    main_result = await adapter.send(
+        chat_id,
+        "✅ Hermes update finished successfully. Check the reply for update info.",
+        metadata=metadata,
+    )
+    success_message_id = getattr(main_result, "message_id", None)
+    reply_metadata = _metadata_for_update_detail_reply(
+        platform,
+        metadata,
+        success_message_id,
+        chat_type=chat_type,
+    )
+    try:
+        await adapter.send(
+            chat_id,
+            detail,
+            reply_to=success_message_id,
+            metadata=reply_metadata,
+        )
+    except TypeError:
+        # Some plugin adapters expose send(chat_id, content, metadata=...) only.
+        await adapter.send(chat_id, detail, metadata=reply_metadata)
+    except Exception as exc:
+        logger.debug("Update detail reply failed; retrying in original thread: %s", exc)
+        await adapter.send(chat_id, detail, metadata=metadata)
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
@@ -14753,6 +14905,7 @@ class GatewayRunner:
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        summary_path = _hermes_home / ".update_summary.json"
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -14770,6 +14923,7 @@ class GatewayRunner:
         _tmp_pending.write_text(json.dumps(pending))
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
+        summary_path.unlink(missing_ok=True)
 
         # Spawn `hermes update --gateway` detached so it survives gateway restart.
         # --gateway enables file-based IPC for interactive prompts (stash
@@ -14894,6 +15048,7 @@ class GatewayRunner:
         claimed_path = _hermes_home / ".update_pending.claimed.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        summary_path = _hermes_home / ".update_summary.json"
         prompt_path = _hermes_home / ".update_prompt.json"
 
         loop = asyncio.get_running_loop()
@@ -14902,6 +15057,8 @@ class GatewayRunner:
         # Resolve the adapter and chat_id for sending messages
         adapter = None
         chat_id = None
+        chat_type = None
+        platform = None
         session_key = None
         metadata = None
         for path in (claimed_path, pending_path):
@@ -14991,21 +15148,32 @@ class GatewayRunner:
                 try:
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
-                    if exit_code == 0:
-                        await adapter.send(chat_id, "✅ Hermes update finished.", metadata=metadata)
-                    else:
-                        await adapter.send(
-                            chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
-                            metadata=metadata,
-                        )
+                    summary = _load_update_summary(summary_path)
+                    full_output = ""
+                    if output_path.exists():
+                        try:
+                            full_output = _strip_ansi(output_path.read_text()).strip()
+                        except OSError:
+                            full_output = ""
+                    if platform is None:
+                        raise RuntimeError("update watcher resolved adapter without platform")
+                    await _send_update_completion_messages(
+                        adapter=adapter,
+                        chat_id=chat_id,
+                        platform=platform,
+                        chat_type=chat_type,
+                        exit_code=exit_code,
+                        metadata=metadata,
+                        output=full_output,
+                        summary=summary,
+                    )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
 
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
-                          exit_code_path, prompt_path):
+                          exit_code_path, summary_path, prompt_path):
                     p.unlink(missing_ok=True)
                 (_hermes_home / ".update_response").unlink(missing_ok=True)
                 self._update_prompt_pending.pop(session_key, None)
@@ -15090,7 +15258,7 @@ class GatewayRunner:
             except Exception:
                 pass
             for p in (pending_path, claimed_path, output_path,
-                      exit_code_path, prompt_path):
+                      exit_code_path, summary_path, prompt_path):
                 p.unlink(missing_ok=True)
             (_hermes_home / ".update_response").unlink(missing_ok=True)
             self._update_prompt_pending.pop(session_key, None)
@@ -15109,6 +15277,7 @@ class GatewayRunner:
         claimed_path = _hermes_home / ".update_pending.claimed.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        summary_path = _hermes_home / ".update_summary.json"
 
         if not pending_path.exists() and not claimed_path.exists():
             return False
@@ -15162,18 +15331,31 @@ class GatewayRunner:
                 )
                 # Strip ANSI escape codes for clean display
                 output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
-                if output:
-                    if len(output) > 3500:
-                        output = "…" + output[-3500:]
-                    if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
-                    else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
-                elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                summary = _load_update_summary(summary_path)
+                if summary and exit_code == 0:
+                    await _send_update_completion_messages(
+                        adapter=adapter,
+                        chat_id=chat_id,
+                        platform=platform,
+                        chat_type=chat_type,
+                        exit_code=exit_code,
+                        metadata=metadata,
+                        output=output,
+                        summary=summary,
+                    )
                 else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(chat_id, msg, metadata=metadata)
+                    if output:
+                        if len(output) > 3500:
+                            output = "…" + output[-3500:]
+                        if exit_code == 0:
+                            msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                        else:
+                            msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                    elif exit_code == 0:
+                        msg = "✅ Hermes update finished successfully."
+                    else:
+                        msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    await adapter.send(chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
                     platform_str,
@@ -15188,6 +15370,7 @@ class GatewayRunner:
                 claimed_path.unlink(missing_ok=True)
                 output_path.unlink(missing_ok=True)
                 exit_code_path.unlink(missing_ok=True)
+                summary_path.unlink(missing_ok=True)
 
         return True
 

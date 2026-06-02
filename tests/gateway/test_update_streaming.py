@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
 
 
@@ -286,6 +286,78 @@ class TestWatchUpdateProgress:
         assert mock_adapter.send.call_count >= 1
         all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
         assert "update finished" in all_sent.lower()
+
+    @pytest.mark.asyncio
+    async def test_success_with_summary_posts_main_alert_then_detail_reply(self, tmp_path):
+        """A successful version update posts compact main alert + detailed reply."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "slack",
+            "chat_id": "C111",
+            "user_id": "U222",
+            "session_key": "agent:main:slack:dm:C111",
+        }
+        summary = {
+            "schema": 1,
+            "branch": "main",
+            "from_sha": "abc123456789",
+            "to_sha": "def987654321",
+            "current_version": "0.15.1",
+            "target_version": "0.15.2",
+            "commit_count": 4,
+            "files_changed_count": 12,
+            "categories": [
+                {
+                    "name": "Messaging gateway and alert delivery",
+                    "summary": "threaded alerts and delivery polish",
+                    "commit_count": 2,
+                    "file_count": 5,
+                    "highlights": [
+                        "Thread update summaries under the success alert",
+                        "Preserve Slack reply metadata",
+                    ],
+                },
+                {
+                    "name": "Tools and integrations",
+                    "summary": "tooling updates",
+                    "commit_count": 2,
+                    "file_count": 7,
+                    "highlights": ["Improve browser and cron integration summaries"],
+                },
+            ],
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("")
+        (hermes_home / ".update_summary.json").write_text(json.dumps(summary))
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock(side_effect=[
+            SendResult(success=True, message_id="1710000000.000100"),
+            SendResult(success=True, message_id="1710000000.000200"),
+        ])
+        runner.adapters = {Platform.SLACK: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        assert mock_adapter.send.call_count == 2
+        main_call = mock_adapter.send.call_args_list[0]
+        reply_call = mock_adapter.send.call_args_list[1]
+        assert "Check the reply for update info" in main_call.args[1]
+        assert "Hermes v0.15.1 → v0.15.2" in reply_call.args[1]
+        assert "Messaging gateway and alert delivery" in reply_call.args[1]
+        assert "Pulled 4 commits" in reply_call.args[1]
+        assert reply_call.kwargs["reply_to"] == "1710000000.000100"
+        assert reply_call.kwargs["metadata"] == {"thread_id": "1710000000.000100"}
+        assert not (hermes_home / ".update_summary.json").exists()
 
     @pytest.mark.asyncio
     async def test_detects_and_forwards_prompt(self, tmp_path):

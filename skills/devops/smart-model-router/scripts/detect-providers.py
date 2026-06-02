@@ -18,7 +18,6 @@ Usage:
 import argparse
 import copy
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -183,40 +182,65 @@ def load_hermes_config():
     p = Path.home() / ".hermes" / "config.yaml"
     return yaml.safe_load(p.read_text()) if p.exists() else None
 
-def load_hermes_env():
-    """Return a set of Hermes-relevant auth env var names that are set.
-
-    Only checks presence (bool), never reads or stores secret values.
-    Reads from os.environ which Hermes already loaded from .env at startup.
-    Avoids parsing .env directly to keep secrets out of script memory.
-    """
-    relevant_vars = set()
-    for meta in PROVIDER_CATALOG.values():
-        for var in meta.get("auth_env_vars", []):
-            relevant_vars.add(var)
-    # Also check AWS keys
-    relevant_vars.add("AWS_ACCESS_KEY_ID")
-    return {var: True for var in relevant_vars if os.getenv(var)}
-
 def detect_configured_providers():
+    """Detect all providers configured in Hermes config.yaml.
+
+    Detection is config-driven: if a provider appears in model.provider,
+    fallback_providers, or custom_providers, it is considered configured.
+    Live reachability (LM Studio HTTP check, custom provider /health) is
+    used as a secondary signal but does not gate inclusion.
+
+    Does NOT read .env or check API keys — auth configuration is out of scope.
+    If credentials are missing, Hermes failover handles 401s automatically.
+    """
     config = load_hermes_config()
-    env = load_hermes_env()
     if not config:
         return {}
     found = {}
+
+    # Build a set of configured provider names from config.yaml
+    configured_names = set()
+
+    # Primary model provider
+    primary_provider = config.get("model", {}).get("provider", "")
+    if primary_provider:
+        configured_names.add(primary_provider)
+
+    # Fallback providers
+    for entry in config.get("fallback_providers", []) or []:
+        if isinstance(entry, dict):
+            prov = entry.get("provider", "")
+            if prov:
+                configured_names.add(prov)
+
+    # Custom providers
+    for i, entry in enumerate(config.get("custom_providers", []) or []):
+        if isinstance(entry, dict):
+            cname = entry.get("name", f"custom-{i}")
+            configured_names.add(f"custom:{cname}")
+
+    # Credential pool providers (if configured)
+    for key in (config.get("credential_pool_strategies") or {}):
+        configured_names.add(key)
+
+    # Catalog-based detection for known providers
     for name, meta in PROVIDER_CATALOG.items():
         detected = False
-        if meta.get("check_func") == "check_lmstudio":
+        # Check if provider name appears in config
+        if name in configured_names:
+            detected = True
+        # Check for local services by reachability
+        elif meta.get("check_func") == "check_lmstudio":
             detected = check_lmstudio()
+        # Check for OAuth providers via auth.json key presence
         elif meta.get("auth_type") == "oauth":
             detected = check_oauth_provider(name)
-        elif meta.get("auth_type") == "aws":
-            detected = bool(env.get("AWS_ACCESS_KEY_ID") or config.get("bedrock", {}).get("region"))
-        elif meta.get("auth_env_vars"):
-            detected = any(env.get(var) for var in meta["auth_env_vars"])
+
         if detected:
-            found[name] = {**meta, "provider_key": name, "source": "catalog"}
-    # Custom providers
+            found[name] = {**meta, "provider_key": name,
+                          "source": "config" if name in configured_names else "auto"}
+
+    # Always add custom providers (from config)
     for i, entry in enumerate(config.get("custom_providers", []) or []):
         if not isinstance(entry, dict):
             continue
@@ -225,22 +249,16 @@ def detect_configured_providers():
         key = f"custom:{cname}"
         found[key] = {
             "display_name": f"Custom: {cname}", "provider_key": key,
-            "source": "custom_providers", "base_url": base_url, "is_running": is_running,
-            "tiers": ["light", "medium"], "models": {"light": f"{cname}/auto", "medium": f"{cname}/auto"},
-            "cost": "unknown", "notes": f"Custom at {base_url}", "auto_detected": True,
+            "source": "custom_providers", "base_url": base_url,
+            "is_running": is_running,
+            "tiers": ["light", "medium"],
+            "models": {"light": f"{cname}/auto", "medium": f"{cname}/auto"},
+            "cost": "unknown", "notes": f"Custom at {base_url}",
+            "auto_detected": True,
         }
-    # Primary model provider
-    mc = config.get("model", {})
-    pp = mc.get("provider", "")
-    if pp and pp not in found:
-        found[pp] = {
-            "display_name": f"Primary: {pp}", "provider_key": pp,
-            "source": "model_config", "base_url": mc.get("base_url", ""),
-            "tiers": ["light", "medium", "heavy"],
-            "models": {t: mc.get("default", f"{pp}/default") for t in ["light", "medium", "heavy"]},
-            "cost": "unknown", "notes": "Primary from model.provider", "auto_detected": True,
-        }
+
     return found
+
 
 def get_routing_table_path():
     # Works for both in-repo and user-local installs
@@ -252,6 +270,7 @@ def get_routing_table_path():
         if p.parent.exists():
             return p
     return candidates[0]
+
 
 def load_routing_table():
     p = get_routing_table_path()

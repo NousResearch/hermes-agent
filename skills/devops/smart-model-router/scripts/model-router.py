@@ -15,14 +15,8 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
-
-try:
-    import yaml
-except ImportError:
-    yaml = None
 
 
 ROUTING_TABLE = {
@@ -57,17 +51,14 @@ ROUTING_TABLE = {
 
 
 def detect_available_providers():
-    """Check which providers have credentials configured.
+    """Check which providers are configured.
 
-    Uses os.environ (already loaded from .env by Hermes) instead of
-    parsing .env directly. Only checks key presence, never reads values.
+    Only checks config-driven providers and local service reachability.
+    Does NOT read .env or check API key presence — if credentials are
+    missing, Hermes failover handles 401s automatically.
     """
     avail = {
-        "anthropic": bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_OAUTH_TOKEN")),
-        "openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
-        "opencode-zen": bool(os.getenv("OPENCODE_ZEN_API_KEY")),
         "lmstudio": False,
-        "groq": bool(os.getenv("GROQ_API_KEY")),
     }
     try:
         import urllib.request

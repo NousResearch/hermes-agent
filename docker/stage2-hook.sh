@@ -84,23 +84,22 @@ if [ "$needs_chown" = true ]; then
     # is remapped — otherwise:
     #   - .venv: lazy_deps.py cannot install platform packages (discord.py,
     #     telegram, slack, etc.) with EACCES (#15012, #21100)
-    #   - node_modules: root-level dependencies (agent-browser, web tooling)
+    #   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
+    #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
+    #     is set) and writes to ui-tui/dist/. Without this chown the new
+    #     hermes UID can't write the build output (#28851).
+    #   - node_modules: root-level dependencies (puppeteer, web tooling)
     #     that runtime code may walk/update.
-    #   - .playwright: Playwright Chromium install dir; hermes user needs
-    #     read/exec access to the browser binary.
-    # These three dirs are created by 00-bootstrap-deps on first container
-    # start — they may not yet exist when HERMES_UID changes on a container
-    # that was created but never bootstrapped. Guard with [ -d ] so the
-    # chown loop doesn't fail. These are under $INSTALL_DIR (not
-    # $HERMES_HOME), so the bind-mount concern doesn't apply — recursive is
-    # fine. ui-tui is no longer installed in this image (no frontend needed).
-    for tree in .venv node_modules .playwright; do
-        if [ -d "$INSTALL_DIR/$tree" ]; then
-            chown -R hermes:hermes "$INSTALL_DIR/$tree" \
-                2>/dev/null || \
-                echo "[stage2] Warning: chown $INSTALL_DIR/$tree failed (rootless container?) — continuing"
-        fi
-    done
+    # The set mirrors the build-time `chown -R hermes:hermes` line in the
+    # Dockerfile — keep them in sync if the Dockerfile chown set changes.
+    # These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
+    # concern doesn't apply — recursive is fine.
+    chown -R hermes:hermes \
+        "$INSTALL_DIR/.venv" \
+        "$INSTALL_DIR/ui-tui" \
+        "$INSTALL_DIR/node_modules" \
+        2>/dev/null || \
+        echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"
 fi
 
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
@@ -184,7 +183,7 @@ fi
 # skills_sync.py doesn't depend on any environment exports beyond what
 # the python binary's own bin-stub already sets up (sys.path is rooted
 # at the venv's site-packages by virtue of running .venv/bin/python).
-if [ -d "$INSTALL_DIR/skills" ] && [ -f "$INSTALL_DIR/.venv/bin/python" ]; then
+if [ -d "$INSTALL_DIR/skills" ]; then
     s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi

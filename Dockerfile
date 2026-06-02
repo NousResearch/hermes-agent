@@ -94,27 +94,98 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
 
 WORKDIR /opt/hermes
 
-# ---------- Source code ----------
-# All dependency installation (npm install, uv sync, playwright install,
-# frontend build) is deferred to the first container start via
-# docker/cont-init.d/00-bootstrap-deps. This keeps the Docker build fast
-# (< 5 min) and avoids CI timeouts on the licloud platform.
+# ---------- Layer-cached dependency install ----------
+# Copy only package manifests first so npm install + Playwright are cached
+# unless the lockfiles themselves change.
 #
-# .dockerignore excludes node_modules and .venv so host artifacts never
-# shadow the runtime-installed dependencies.
+# ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
+# because it is referenced as a `file:` workspace dependency from
+# ui-tui/package.json.  Copying the tree up front lets npm resolve the
+# workspace to real content instead of stopping at a bare package.json.
+COPY package.json package-lock.json ./
+COPY web/package.json web/package-lock.json web/
+COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
+COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+
+# `npm_config_install_links=false` forces npm to install `file:` deps as
+# symlinks instead of copies.  This is the default since npm 10+, which is
+# what the image ships now (via the node:22 source stage).  We set it
+# explicitly anyway as defense-in-depth: the previous Debian-bundled npm
+# 9.x defaulted to install-as-copy, which produced a hidden
+# node_modules/.package-lock.json that permanently disagreed with the root
+# lock on the @hermes/ink entry, tripped the TUI launcher's
+# `_tui_need_npm_install()` check on every startup, and triggered a
+# runtime `npm install` that then failed with EACCES.  Keeping the env
+# guards against a future regression if the source npm version changes.
+ENV npm_config_install_links=false
+
+RUN npm install --prefer-offline --no-audit && \
+    npx playwright install --with-deps chromium --only-shell && \
+    (cd web && npm install --prefer-offline --no-audit) && \
+    (cd ui-tui && npm install --prefer-offline --no-audit) && \
+    npm cache clean --force
+
+# ---------- Layer-cached Python dependency install ----------
+# Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
+# download + native-extension compile layer is cached unless those inputs
+# change.  Before this split the Python install sat after `COPY . .`, so
+# every source-only commit re-did ~4-5 min of dep work on cold builds.
+#
+# README.md is referenced by pyproject.toml's `readme =` field, but it's
+# excluded from the build context by .dockerignore's `*.md`.  uv's build
+# frontend stats the readme path during dep resolution, so we `touch` an
+# empty placeholder — the real README is restored by `COPY . .` below.
+#
+# `uv sync --frozen --no-install-project --extra all --extra messaging`
+# installs the deps reachable through the composite `[all]` extra
+# (handpicked set intended for the production image), plus gateway
+# messaging adapters that should work in the published image without a
+# first-boot lazy install.  We do NOT use `--all-extras`:
+# that would pull in `[rl]` (atroposlib + tinker + torch + wandb from
+# git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
+# redundancy), none of which belong in the published container.
+#
+# Provider packages (anthropic, bedrock, azure-identity) are included
+# so Docker users can use these providers without requiring runtime
+# lazy-install access to PyPI (often blocked in containerized envs).
+#
+# The editable link is created after the source copy below.
+COPY pyproject.toml uv.lock ./
+RUN touch ./README.md
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity
+
+# ---------- Source code ----------
+# .dockerignore excludes node_modules, so the installs above survive.
 COPY --chown=hermes:hermes . .
+
+# Build browser dashboard and terminal UI assets.
+RUN cd web && npm run build && \
+    cd ../ui-tui && npm run build
 
 # ---------- Permissions ----------
 # Make install dir world-readable so any HERMES_UID can read it at runtime.
-# .venv, node_modules, and .playwright do NOT exist yet at build time —
-# they are created by docker/cont-init.d/00-bootstrap-deps on first start.
-# That bootstrap script sets correct ownership after each install step.
+# The venv needs to be traversable too.
+# node_modules trees additionally need to be writable by the hermes user
+# so the runtime `npm install` triggered by _tui_need_npm_install() in
+# hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
+# only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
+# not chowned here.
+# The .venv MUST remain hermes-writable so lazy_deps.py can install
+# remaining optional platform packages and future pin bumps at first use.
+# Without this, `uv pip install` fails with EACCES and adapters silently
+# fail to load.  See tools/lazy_deps.py.
 USER root
-RUN chmod -R a+rX /opt/hermes
+RUN chmod -R a+rX /opt/hermes && \
+    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
+
+# ---------- Link hermes-agent itself (editable) ----------
+# Deps are already installed in the cached layer above; `--no-deps` makes
+# this a fast (~1s) egg-link creation with no resolution or downloads.
+RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # ---------- Bake build-time git revision ----------
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
@@ -159,7 +230,6 @@ RUN mkdir -p /etc/cont-init.d && \
     printf '#!/command/with-contenv sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
         > /etc/cont-init.d/01-hermes-setup && \
     chmod +x /etc/cont-init.d/01-hermes-setup
-COPY --chmod=0755 docker/cont-init.d/00-bootstrap-deps /etc/cont-init.d/00-bootstrap-deps
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
 COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
 

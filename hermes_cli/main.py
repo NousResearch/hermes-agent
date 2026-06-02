@@ -13861,9 +13861,10 @@ Examples:
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")
     mcp_add_p.add_argument(
         "--env",
-        nargs="*",
+        action="append",
         default=[],
-        help="Environment variables for stdio servers (KEY=VALUE)",
+        help="Environment variables for stdio servers (KEY=VALUE). "
+        "Repeat for multiple variables, e.g. --env KEY1=VAL1 --env KEY2=VAL2",
     )
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")

@@ -210,6 +210,18 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_skips_when_title_generation_disabled(self):
+        """auxiliary.title_generation.enabled=false disables automatic titles."""
+        config = {"auxiliary": {"title_generation": {"enabled": False}}}
+
+        with (
+            patch("agent.title_generator.load_config_readonly", return_value=config),
+            patch("agent.title_generator.call_llm") as mock_call_llm,
+        ):
+            assert generate_title("question", "answer") is None
+
+        mock_call_llm.assert_not_called()
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
@@ -346,6 +358,23 @@ class TestMaybeAutoTitle:
                 main_runtime=None,
                 title_callback=None,
             )
+
+    def test_skips_when_title_generation_disabled(self):
+        """Disabled title generation should not even start the background worker."""
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        config = {"auxiliary": {"title_generation": {"enabled": False}}}
+
+        with (
+            patch("agent.title_generator.load_config_readonly", return_value=config),
+            patch("agent.title_generator.auto_title_session") as mock_auto,
+        ):
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history)
+
+        mock_auto.assert_not_called()
 
     def test_forwards_failure_callback_to_worker(self):
         """maybe_auto_title must forward failure_callback into the thread."""

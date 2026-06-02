@@ -1643,6 +1643,7 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
         "title_generation": {
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",

@@ -541,6 +541,8 @@ class AgentRunSmokeCreate(BaseModel):
     failed_agent_id: str = "deepseek-tui"
     failed_model_ref: str = "opencode_go_deepseek_flash"
     classification: str = "timeout"
+    taxonomy_confidence: str | None = None
+    
 
 
 class AgentEvalRunCreate(BaseModel):
@@ -3017,6 +3019,7 @@ def _run_external_agent_eval(body: AgentEvalRunCreate) -> Dict[str, Any]:
 
 
 def _run_kernelization_smoke(body: Any) -> Dict[str, Any]:
+    from agent.managed_agents.execution_policy import TaskType
     project = (body.project or "staam").strip() or "staam"
     task_id = f"kernel-smoke-{uuid.uuid4().hex[:10]}"
     seed = _append_smoke_seed_run(
@@ -3086,6 +3089,14 @@ def _run_kernelization_smoke(body: Any) -> Dict[str, Any]:
             "agent_run_completed",
             "run_ledger_lifecycle_recorded",
         ],
+        "task_taxonomy": (lambda tt: {
+            "task_type": TaskType.from_task_type(tt).value,
+            "taxonomy_confidence": (
+                "unknown" if tt and TaskType.from_task_type(tt).value == "investigation"
+                and tt not in ("investigation", "tests", "code_review", "architecture_review")
+                else "high"
+            ),
+        })(body.task_type),
     }
 
 
@@ -5685,6 +5696,7 @@ async def create_agent_run(agent_id: str, body: AgentRunCreate):
         raise HTTPException(status_code=400, detail="prompt is required")
 
     from agent.managed_agents.registry import load_agent_registry
+
 
     registry = load_agent_registry(_AGENTS_CONFIG_PATH)
     resolved_agent_id = registry.resolve_agent_id(requested_id) or requested_id

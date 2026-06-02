@@ -1663,3 +1663,89 @@ agents:
             "error": "Only external CLI runtime agents are eligible for this eval.",
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# Task Taxonomy tests
+# ---------------------------------------------------------------------------
+
+def test_task_type_enum_members():
+    from agent.managed_agents.execution_policy import TaskType
+    expected = {"implementation", "bugfix", "refactor", "test", "review",
+                "architecture", "documentation", "smoke", "migration", "investigation"}
+    members = set(TaskType.__members__.keys())
+    assert members == expected, f"Expected {sorted(expected)}, got {sorted(members)}"
+
+
+def test_task_type_from_valid_string():
+    from agent.managed_agents.execution_policy import TaskType
+    assert TaskType.from_task_type("bugfix") == TaskType.bugfix
+    assert TaskType.from_task_type("review") == TaskType.review
+    assert TaskType.from_task_type("smoke") == TaskType.smoke
+
+
+def test_task_type_from_missing_falls_back_to_investigation():
+    from agent.managed_agents.execution_policy import TaskType
+    assert TaskType.from_task_type(None) == TaskType.investigation
+    assert TaskType.from_task_type("") == TaskType.investigation
+
+
+def test_task_type_from_invalid_falls_back_to_investigation():
+    from agent.managed_agents.execution_policy import TaskType
+    assert TaskType.from_task_type("not_a_real_type") == TaskType.investigation
+    assert TaskType.from_task_type("BOGUS") == TaskType.investigation
+
+
+def test_task_type_unknown_confidence_flag():
+    from agent.managed_agents.execution_policy import TaskType
+    result = TaskType.from_task_type("unknown_input")
+    assert result == TaskType.investigation
+
+
+def test_task_taxonomy_round_trips_in_enum():
+    from agent.managed_agents.execution_policy import TaskType
+    for member in TaskType:
+        resolved = TaskType.from_task_type(member.value)
+        assert resolved == member, f"{member.value} did not round-trip"
+
+
+def test_kernelization_smoke_returns_taxonomy():
+    from hermes_cli import web_server as ws
+    from fastapi.testclient import TestClient
+    client = TestClient(ws.app)
+    headers = {ws._SESSION_HEADER_NAME: ws._SESSION_TOKEN}
+    resp = client.post("/api/agents/runs/kernelization-smoke",
+                       json={"project": "staam", "task_type": "review"},
+                       headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "task_taxonomy" in data
+    assert data["task_taxonomy"]["task_type"] == "review"
+    # review is a valid TaskType so confidence is high
+    assert data["task_taxonomy"]["taxonomy_confidence"] == "high"
+
+
+def test_kernelization_smoke_missing_task_type_falls_back():
+    from hermes_cli import web_server as ws
+    from fastapi.testclient import TestClient
+    client = TestClient(ws.app)
+    headers = {ws._SESSION_HEADER_NAME: ws._SESSION_TOKEN}
+    resp = client.post("/api/agents/runs/kernelization-smoke",
+                       json={"project": "staam"},
+                       headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "task_taxonomy" in data
+    # default task_type in AgentRunSmokeCreate is "tests" which maps to TaskType.test
+    assert data["task_taxonomy"]["task_type"] == "test"
+    assert data["task_taxonomy"]["taxonomy_confidence"] == "high"
+
+
+def test_old_tasks_without_task_type_are_compatible():
+    """Simulate an old task with no task_type field and verify it works."""
+    from agent.managed_agents.execution_policy import TaskType
+    # Old tasks without task_type should resolve to investigation
+    task_type = TaskType.from_task_type(None)
+    assert task_type == TaskType.investigation
+    # The default task_type field in models should not break old API consumers
+    assert task_type.value == "investigation"

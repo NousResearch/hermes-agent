@@ -21,6 +21,40 @@ REVISION_CLASSIFICATIONS = {"revision_needed", "needs_revision"}
 UNKNOWN_STOP_CLASSIFICATIONS = {"manual_review", "blocked", "rejected"}
 
 
+from enum import Enum
+
+
+class TaskType(str, Enum):
+    implementation = "implementation"
+    bugfix = "bugfix"
+    refactor = "refactor"
+    test = "test"
+    review = "review"
+    architecture = "architecture"
+    documentation = "documentation"
+    smoke = "smoke"
+    migration = "migration"
+    investigation = "investigation"
+
+    @staticmethod
+    def from_task_type(value: str | None) -> "TaskType":
+        default = TaskType.investigation
+        if not value:
+            return default
+        # Backward-compatible aliases for common legacy abbreviations
+        _aliases = {
+            "tests": TaskType.test,
+            "code_review": TaskType.review,
+            "architecture_review": TaskType.architecture,
+        }
+        if value in _aliases:
+            return _aliases[value]
+        try:
+            return TaskType(value)
+        except ValueError:
+            return default
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionPolicyDecision:
     task_id: str

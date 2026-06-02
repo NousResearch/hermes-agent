@@ -14,6 +14,34 @@ function readBasePath(): string {
   return withLead.replace(/\/+$/, "");
 }
 
+/** Hermes task taxonomy types. */
+export type TaskType =
+  | "implementation"
+  | "bugfix"
+  | "refactor"
+  | "test"
+  | "review"
+  | "architecture"
+  | "documentation"
+  | "smoke"
+  | "migration"
+  | "investigation";
+
+export const TASK_TYPE_LABELS: Record<TaskType, string> = {
+  implementation: "Implementation",
+  bugfix: "Bug Fix",
+  refactor: "Refactor",
+  test: "Test",
+  review: "Review",
+  architecture: "Architecture",
+  documentation: "Documentation",
+  smoke: "Smoke",
+  migration: "Migration",
+  investigation: "Investigation",
+};
+
+export const DEFAULT_TASK_TYPE: TaskType = "investigation";
+
 export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 

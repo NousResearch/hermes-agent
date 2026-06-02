@@ -335,6 +335,8 @@ def get_read_block_error(path: str) -> Optional[str]:
 # other code change.
 PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
 
+PROFILE_STATE_FILES = ("SOUL.md", "config.yaml", ".env", "auth.json")
+
 
 def _resolve_active_profile_name() -> str:
     """Return the active profile name derived from HERMES_HOME.
@@ -408,9 +410,19 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
         # ``<root>/profiles/<name>/<area>/...`` → named profile.
         target_profile = parts[1]
         area = parts[2]
+    elif parts[0] in PROFILE_STATE_FILES:
+        target_profile = "default"
+        area = parts[0]
+    elif (
+        parts[0] == "profiles"
+        and len(parts) >= 3
+        and parts[2] in PROFILE_STATE_FILES
+    ):
+        target_profile = parts[1]
+        area = parts[2]
+
     else:
         return None
-
     active_profile = _resolve_active_profile_name()
     if target_profile == active_profile:
         # In-profile write — not a cross-profile event.
@@ -451,3 +463,4 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
         f"``cross_profile=True``. (Defense-in-depth — not a security "
         f"boundary; the terminal tool can still bypass.)"
     )
+

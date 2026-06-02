@@ -1,0 +1,18 @@
+* b9646276f (origin/main, origin/HEAD) fix(utils): guard os.fchmod for Windows in atomic_json_write
+* a5371b3e6 chore: add benfrank241 to AUTHOR_MAP (#36898)
+* ef3a650f0 chore(release): map Subway2023 for PR #14639 salvage
+* 4e9d886d9 fix(approval): pair terminal-side gate for ~/.hermes/config.yaml writes
+* 8f2931e3e fix(file_tools): block agent writes to ~/.hermes/config.yaml to prevent silent approval bypass
+| * 8e5b7eeff (origin/ethie/lockfile) fix(node/nix): use single workspace lockfile
+| | * c98b5b3d3 (origin/hermes/hermes-a963c25d) docs(dashboard): document the comprehensive admin pass + fresh screenshots
+| | * 5d7659d2e test(dashboard): cover catalog, toggles, hook CRUD, system stats, webhook toggle
+| | * 7f4b0dd33 feat(dashboard): MCP catalog UI, enable/disable toggles, hook create, system stats
+| | * b5d255a54 feat(dashboard): MCP catalog + enable/disable, webhook toggle, hook create/delete, system stats
+| |/  
+|/|   
+| | * e56f0ae31 (origin/feat/blank-slate-setup) feat(setup): Blank Slate setup mode — minimal agent, opt in to everything
+| |/  
+|/|   
+| | * 762b68142 (origin/hermes/curator-usage-cli) feat(curator): add `hermes curator usage` — all-skills usage view
+| |/  
+|/|   

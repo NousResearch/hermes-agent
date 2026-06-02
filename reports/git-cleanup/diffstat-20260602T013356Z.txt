@@ -1,0 +1,27 @@
+ .gitignore                                         |  23 +++
+ agent/lsp/client.py                                | 108 +++++++++---
+ agent/lsp/eventlog.py                              |  15 ++
+ agent/lsp/manager.py                               |  28 +++
+ agent/tool_executor.py                             | 136 +++++++++++++--
+ cron/scheduler.py                                  |  57 ++++++-
+ gateway/run.py                                     |  39 +++--
+ hermes_cli/commands.py                             |  67 ++++----
+ hermes_cli/gateway.py                              |  12 +-
+ plugins/platforms/discord/adapter.py               | 111 +++++++++++-
+ skills/autonomous-ai-agents/hermes-agent/SKILL.md  |  10 ++
+ .../subagent-driven-development/SKILL.md           |   3 +-
+ tests/agent/lsp/test_service.py                    |  34 ++++
+ .../hermes_cli/test_discord_skill_clamp_warning.py | 111 ++++++++----
+ tests/hermes_cli/test_gateway_service.py           |  12 ++
+ tests/tools/test_checkpoint_manager.py             |  15 ++
+ tests/tools/test_code_execution.py                 |  26 +++
+ tests/tools/test_file_tools.py                     |  12 +-
+ tests/tools/test_memory_tool.py                    |  26 ++-
+ tools/checkpoint_manager.py                        |  13 ++
+ tools/discord_tool.py                              | 163 +++++++++++++++---
+ tools/file_tools.py                                |  11 +-
+ tools/mcp_tool.py                                  | 189 +++++++++++++++++++--
+ tools/memory_tool.py                               |  94 ++++++++--
+ tools/terminal_tool.py                             | 115 ++++++++++++-
+ uv.lock                                            |  20 +--
+ 26 files changed, 1223 insertions(+), 227 deletions(-)

@@ -1,0 +1,36 @@
+ M .gitignore
+ M agent/lsp/client.py
+ M agent/lsp/eventlog.py
+ M agent/lsp/manager.py
+ M agent/tool_executor.py
+ M cron/scheduler.py
+ M gateway/run.py
+ M hermes_cli/commands.py
+ M hermes_cli/gateway.py
+ M plugins/platforms/discord/adapter.py
+ M skills/autonomous-ai-agents/hermes-agent/SKILL.md
+ M skills/software-development/subagent-driven-development/SKILL.md
+ M tests/agent/lsp/test_service.py
+ M tests/hermes_cli/test_discord_skill_clamp_warning.py
+ M tests/hermes_cli/test_gateway_service.py
+ M tests/tools/test_checkpoint_manager.py
+ M tests/tools/test_code_execution.py
+ M tests/tools/test_file_tools.py
+ M tests/tools/test_memory_tool.py
+ M tools/checkpoint_manager.py
+ M tools/discord_tool.py
+ M tools/file_tools.py
+ M tools/mcp_tool.py
+ M tools/memory_tool.py
+ M tools/terminal_tool.py
+ M uv.lock
+?? agent/utils/
+?? reports/
+?? scripts/hermes_ops_smoke.py
+?? skills/software-development/subagent-driven-development/references/live-bd-subagent-test.md
+?? tests/agent/lsp/test_resilience.py
+?? tests/agent/lsp/test_write_drain_race.py
+?? tests/agent/test_tool_executor_log_preview.py
+?? tests/scripts/test_hermes_ops_smoke.py
+?? tests/tools/test_mcp_stderr_sink.py
+?? tests/tools/test_terminal_foreground_background_guidance.py

@@ -50,16 +50,17 @@ export function useCwdActions({
       }
 
       if (!activeSessionId) {
+        setCurrentCwd(trimmed)
+
         try {
           const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {
             key: 'project',
             cwd: trimmed
           })
 
-          setCurrentCwd(info.cwd || trimmed)
           setCurrentBranch(info.branch || '')
-        } catch (err) {
-          notifyError(err, 'Working directory change failed')
+        } catch {
+          setCurrentBranch('')
         }
 
         return

@@ -809,11 +809,21 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = None
 
 
+def _cwd_for_session_key(session_key: str) -> str:
+    """Reverse-map session_key to the session's logical cwd."""
+    if not session_key:
+        return ""
+    for sess in _sessions.values():
+        if sess.get("session_key") == session_key:
+            return str(sess.get("cwd") or "")
+    return ""
+
+
 def _set_session_context(session_key: str) -> list:
     try:
         from gateway.session_context import set_session_vars
 
-        return set_session_vars(session_key=session_key)
+        return set_session_vars(session_key=session_key, cwd=_cwd_for_session_key(session_key))
     except Exception:
         return []
 
@@ -2764,6 +2774,7 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
     except Exception:
         explicit_cwd = False
+    resolved_cwd = _completion_cwd(params)
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2782,7 +2793,7 @@ def _(rid, params: dict) -> dict:
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
-        "cwd": _completion_cwd(params),
+        "cwd": resolved_cwd,
         "inflight_turn": None,
         "last_active": now,
         "pending_title": title or None,

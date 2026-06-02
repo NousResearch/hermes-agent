@@ -3,9 +3,14 @@ import { atom } from 'nanostores'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { persistString, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
+
+const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
+
+export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
 
 interface AppAtom<T> {
   get: () => T
@@ -39,7 +44,7 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
-export const $currentCwd = atom('')
+export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
   calls: 0,
@@ -73,7 +78,16 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
-export const setCurrentCwd = (next: Updater<string>) => updateAtom($currentCwd, next)
+
+export const setCurrentCwd = (next: Updater<string>) => {
+  updateAtom($currentCwd, next)
+  const value = $currentCwd.get().trim()
+
+  if (value) {
+    persistString(WORKSPACE_CWD_KEY, value)
+  }
+}
+
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)

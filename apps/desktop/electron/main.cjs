@@ -3222,6 +3222,36 @@ function createWindow() {
     openExternalUrl(url)
   })
 
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
+
+    if (details?.reason === 'crashed' || details?.reason === 'oom') {
+      setImmediate(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        try {
+          mainWindow.webContents.reload()
+        } catch (err) {
+          rememberLog(`[renderer] reload after crash failed: ${err?.message || err}`)
+        }
+      })
+    }
+  })
+
+  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+
+  mainWindow.webContents.on('console-message', (eventOrLevel, message, line, sourceId) => {
+    const isObjectForm = eventOrLevel && typeof eventOrLevel === 'object'
+    const level = isObjectForm ? eventOrLevel.level : eventOrLevel
+    const isError = level === 'error' || level === 3
+
+    if (!isError) return
+
+    const text = isObjectForm ? eventOrLevel.message : message
+    const src = isObjectForm ? eventOrLevel.sourceId : sourceId
+    const lineNo = isObjectForm ? eventOrLevel.lineNumber : line
+    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+  })
+
   if (DEV_SERVER) {
     mainWindow.loadURL(DEV_SERVER)
   } else {
@@ -3372,13 +3402,21 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
-  const properties = ['openFile']
-  if (options?.directories) properties.push('openDirectory')
+  const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')
+
+  let resolvedDefaultPath
+  if (options?.defaultPath) {
+    try {
+      resolvedDefaultPath = path.resolve(String(options.defaultPath))
+    } catch {
+      resolvedDefaultPath = undefined
+    }
+  }
 
   const result = await dialog.showOpenDialog(mainWindow, {
     title: options?.title || 'Add context',
-    defaultPath: options?.defaultPath ? path.resolve(String(options.defaultPath)) : undefined,
+    defaultPath: resolvedDefaultPath,
     properties,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
   })

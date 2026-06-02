@@ -514,6 +514,44 @@ export default function OperationsPage() {
     });
   }, [agentRuns, agents, effectiveness, routing, watchdog]);
 
+  const stabilityStats = useMemo(() => {
+    const stats: Record<string, {
+      total: number;
+      ok: number;
+      timeout: number;
+      failed: number;
+      lastState: string;
+      lastTime: string | null;
+      timeoutRate: number;
+      okRate: number;
+    }> = {};
+    for (const agentId of EXTERNAL_AGENT_IDS) {
+      const runs = agentRuns.filter((r) => r.agent_id === agentId);
+      if (!runs.length) {
+        stats[agentId] = { total: 0, ok: 0, timeout: 0, failed: 0, lastState: "no sample", lastTime: null, timeoutRate: 0, okRate: 0 };
+        continue;
+      }
+      const sorted = [...runs].sort((a, b) => {
+        const aTime = runObservedAt(a) ? new Date(runObservedAt(a) as string).getTime() : 0;
+        const bTime = runObservedAt(b) ? new Date(runObservedAt(b) as string).getTime() : 0;
+        return bTime - aTime;
+      });
+      const last = sorted[0];
+      const classification = runClassification(last);
+      stats[agentId] = {
+        total: runs.length,
+        ok: runs.filter((r) => runClassification(r) === "ok" || r.status === "completed").length,
+        timeout: runs.filter((r) => runClassification(r) === "timeout" || (r.error && r.error.toLowerCase().includes("timeout"))).length,
+        failed: runs.filter((r) => r.status === "failed" || runClassification(r) === "failed").length,
+        lastState: classification,
+        lastTime: runObservedAt(last) ?? null,
+        timeoutRate: runs.length > 0 ? (runs.filter((r) => runClassification(r) === "timeout" || (r.error && r.error.toLowerCase().includes("timeout"))).length / runs.length) * 100 : 0,
+        okRate: runs.length > 0 ? (runs.filter((r) => runClassification(r) === "ok" || r.status === "completed").length / runs.length) * 100 : 0,
+      };
+    }
+    return stats;
+  }, [agentRuns]);
+
   const allAlerts = useMemo(
     () => operations.flatMap((agent) => agent.alerts.map((alert) => ({ ...alert, agent_id: agent.agent_id }))),
     [operations],
@@ -1093,31 +1131,98 @@ export default function OperationsPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="grid gap-2">
-              {agentRuns.slice(0, 8).map((run) => (
-                <div key={run.run_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3 text-sm">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone={evalTone(runClassification(run) as EvalState)}>{runClassification(run)}</Badge>
-                      <span className="font-mono text-xs normal-case">{run.agent_id}</span>
-                      <span className="text-xs normal-case text-muted-foreground">{run.status}</span>
+            <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+              {EXTERNAL_AGENT_IDS.map((agentId) => {
+                const stat = stabilityStats[agentId];
+                if (!stat) return null;
+                const tone =
+                  stat.lastState === "ok" ? "success"
+                  : stat.lastState.includes("timeout") ? "warning"
+                  : stat.total === 0 ? "secondary"
+                  : "destructive";
+                const cardBorder =
+                  tone === "success" ? "border-l-green-500"
+                  : tone === "warning" ? "border-l-amber-500"
+                  : tone === "destructive" ? "border-l-destructive"
+                  : "border-l-border";
+                return (
+                  <div key={agentId} className={"rounded-md border border-border p-3 text-xs border-l-4 " + cardBorder}>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="font-mono font-medium text-[11px] normal-case">{agentId}</span>
+                      <Button
+                        size="sm"
+                        outlined
+                        className="h-6 px-1.5 text-[10px]"
+                        onClick={async () => {
+                          const selectedProject = project.trim() || DEFAULT_PROJECT;
+                          setBusyAction("eval:" + agentId);
+                          try {
+                            const resp = await api.runExternalAgentEval({
+                              project: selectedProject,
+                              agent_ids: [agentId],
+                              timeout_seconds: 8,
+                              prompt: "Hermes collaboration smoke: respond with one short readiness line. Do not edit files.",
+                            });
+                            setActionResult(agentId + " smoke " + (resp.results[0]?.classification ?? "recorded"));
+                            await load();
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : String(e));
+                          } finally {
+                            setBusyAction(null);
+                          }
+                        }}
+                        disabled={busyAction !== null}
+                        title={"Smoke " + agentId}
+                      >
+                        {busyAction === "eval:" + agentId ? <Spinner /> : <Play className="h-2.5 w-2.5" />}
+                      </Button>
                     </div>
-                    <div className="mt-1 max-w-[32rem] truncate text-[11px] normal-case text-muted-foreground">
-                      {runSource(run)} · {runObservedAt(run) ? isoTimeAgo(runObservedAt(run) as string) : run.started_at ? timeAgo(run.started_at) : "unknown time"} · {run.error || run.result_summary || "no summary"}
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <Badge tone={tone}>{stat.lastState}</Badge>
+                      <span className="text-[10px] text-muted-foreground">
+                        {stat.lastTime ? isoTimeAgo(stat.lastTime) : "never"}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex gap-2 text-[10px] text-muted-foreground">
+                      <span title="Success rate">{Math.round(stat.okRate)}% ok</span>
+                      <span title="Timeout rate">{Math.round(stat.timeoutRate)}% timeout</span>
+                      <span title="Total samples">{stat.total} samples</span>
                     </div>
                   </div>
-                  <Button size="sm" outlined onClick={() => navigate("/runs")}>
-                    View
-                  </Button>
-                </div>
-              ))}
-              {!agentRuns.length ? (
-                <div className="flex items-center gap-2 py-8 text-sm normal-case text-muted-foreground">
-                  <HelpCircle className="h-4 w-4" />
-                  No collaboration samples are available yet. Run Collaboration Smoke to create a bounded ledger sample.
-                </div>
-              ) : null}
+                );
+              })}
             </div>
+            {agentRuns.length ? (
+              <details className="group">
+                <summary className="cursor-pointer py-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
+                  Recent samples ({agentRuns.slice(0, 12).length} shown)
+                </summary>
+                <div className="mt-2 grid gap-2">
+                  {agentRuns.slice(0, 12).map((run) => (
+                    <div key={run.run_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3 text-sm">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge tone={evalTone(runClassification(run) as EvalState)}>{runClassification(run)}</Badge>
+                          <span className="font-mono text-xs normal-case">{run.agent_id}</span>
+                          <span className="text-xs normal-case text-muted-foreground">{run.status}</span>
+                        </div>
+                        <div className="mt-1 max-w-[32rem] truncate text-[11px] normal-case text-muted-foreground">
+                          {runSource(run)} · {runObservedAt(run) ? isoTimeAgo(runObservedAt(run) as string) : run.started_at ? timeAgo(run.started_at) : "unknown time"} · {run.error || run.result_summary || "no summary"}
+                        </div>
+                      </div>
+                      <Button size="sm" outlined onClick={() => navigate("/runs")}>
+                        View
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : (
+              <div className="flex items-center gap-2 py-8 text-sm normal-case text-muted-foreground">
+                <HelpCircle className="h-4 w-4" />
+                No collaboration samples are available yet. Run Collaboration Smoke to create a bounded ledger sample.
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               <Button size="sm" outlined onClick={() => navigate("/delegations")}>
                 Delegations

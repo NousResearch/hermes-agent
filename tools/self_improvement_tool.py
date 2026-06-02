@@ -39,6 +39,79 @@ _EXECUTION_LOOP_MANY_COMPLETED_THRESHOLD = 3
 _EXECUTION_LOOP_MIN_JOURNAL_FOLLOW_THROUGH_RATE = 0.5
 _THROUGHPUT_CODEX_COMPLETION_MIN = _EXECUTION_LOOP_MANY_COMPLETED_THRESHOLD
 _THROUGHPUT_JOURNAL_RATIO_MIN = _EXECUTION_LOOP_MIN_JOURNAL_FOLLOW_THROUGH_RATE
+_CAPACITY_SPARE_KEYS = {
+    "available_capacity",
+    "available_slots",
+    "parallel_slots_available",
+    "remaining_capacity",
+    "spare_capacity",
+    "spare_slots",
+}
+_CAPACITY_MAX_KEYS = {
+    "concurrency_limit",
+    "desired_parallelism",
+    "max_capacity",
+    "max_concurrent",
+    "max_parallelism",
+    "target_capacity",
+}
+_CAPACITY_ACTIVE_KEYS = {
+    "active_count",
+    "active_execution_count",
+    "active_worker_count",
+    "running_count",
+}
+_BACKLOG_CANDIDATE_KEYS = {
+    "backlog_candidates",
+    "candidate_backlog_items",
+    "candidate_issues",
+    "linear_backlog_candidates",
+    "linear_candidate_issues",
+    "repo_backed_candidates",
+    "safe_repo_backed_candidates",
+}
+_SELECTED_WORK_KEYS = {
+    "active_selected_work",
+    "current_selected_work",
+    "selected_backlog_item",
+    "selected_issue",
+    "selected_work",
+}
+_REPO_BACKED_KEYS = {
+    "repo",
+    "repo_name",
+    "repo_path",
+    "repository",
+    "repository_name",
+    "repository_path",
+    "workspace",
+    "workspace_path",
+}
+_REPO_RESOLVED_KEYS = {
+    "repo_resolved",
+    "repository_resolved",
+    "workspace_resolved",
+}
+_REPO_UNRESOLVED_KEYS = {
+    "repo_unresolved",
+    "repository_unresolved",
+    "workspace_unresolved",
+}
+_IGNORED_PROJECT_KEYS = {
+    "ignored_project",
+    "project_ignored",
+}
+_OWNER_KEYS = {
+    "assignee",
+    "owner",
+    "owner_kind",
+    "owner_type",
+    "work_owner",
+}
+_DUPLICATE_KEYS = {
+    "duplicate",
+    "is_duplicate",
+}
 _JOURNAL_REPORTING_FOCUS_FIELD = "selfImprovementFocus"
 _JOURNAL_REPORTING_FOCUS_REQUIRED_FIELDS = (
     "title",
@@ -2013,6 +2086,484 @@ def _journal_entry_claims_work(record: dict[str, Any]) -> bool:
     return _record_claims_work(record, text)
 
 
+def _coerce_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _coerce_non_negative_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _iter_normalized_key_values(value: Any) -> Iterable[tuple[str, Any]]:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = _normalize_evidence_key(key)
+            yield normalized, child
+            yield from _iter_normalized_key_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_normalized_key_values(child)
+
+
+def _string_leaf_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return [str(value)]
+    if isinstance(value, dict):
+        values: list[str] = []
+        preferred = (
+            "identifier",
+            "key",
+            "name",
+            "title",
+            "label",
+            "display_name",
+            "full_name",
+            "path",
+        )
+        for key in preferred:
+            if key in value:
+                values.extend(_string_leaf_values(value.get(key)))
+        if values:
+            return values
+        for child in value.values():
+            values.extend(_string_leaf_values(child))
+        return values
+    if isinstance(value, list):
+        values = []
+        for child in value:
+            values.extend(_string_leaf_values(child))
+        return values
+    return []
+
+
+def _first_text_for_keys(record: dict[str, Any], keys: set[str]) -> Optional[str]:
+    for key, value in _iter_normalized_key_values(record):
+        if key not in keys:
+            continue
+        values = _string_leaf_values(value)
+        if values:
+            return values[0]
+    return None
+
+
+def _first_bool_for_keys(record: dict[str, Any], keys: set[str]) -> Optional[bool]:
+    for key, value in _iter_normalized_key_values(record):
+        if key in keys:
+            parsed = _coerce_bool(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _capacity_values_for_keys(record: dict[str, Any], keys: set[str]) -> list[int]:
+    values: list[int] = []
+    for key, value in _iter_normalized_key_values(record):
+        if key not in keys:
+            continue
+        parsed = _coerce_non_negative_int(value)
+        if parsed is not None:
+            values.append(parsed)
+    return values
+
+
+def _extract_issue_identifier(record: dict[str, Any]) -> Optional[str]:
+    return _first_text_for_keys(
+        record,
+        {
+            "external_key",
+            "id",
+            "identifier",
+            "issue_id",
+            "issue_identifier",
+            "key",
+            "linear_issue_id",
+        },
+    )
+
+
+def _capacity_candidate_title(record: dict[str, Any]) -> Optional[str]:
+    return _first_text_for_keys(record, {"name", "summary", "title"})
+
+
+def _capacity_candidate_labels(record: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    for key, value in _iter_normalized_key_values(record):
+        if key in {"label", "labels"}:
+            labels.extend(_string_leaf_values(value))
+    return list(dict.fromkeys(label for label in labels if label))
+
+
+def _capacity_candidate_repo(record: dict[str, Any]) -> Optional[str]:
+    repo = _first_text_for_keys(record, _REPO_BACKED_KEYS)
+    if repo:
+        return repo
+    return None
+
+
+def _capacity_candidate_status_text(record: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key, value in _iter_normalized_key_values(record):
+        if key in {"review_state", "state", "status", "workflow_state"}:
+            values.extend(_string_leaf_values(value))
+    return " ".join(values)
+
+
+def _capacity_candidate_owner_is_human(
+    record: dict[str, Any],
+    labels: Iterable[str],
+) -> bool:
+    label_values = {label.strip().lower() for label in labels}
+    label_keys = {_normalize_evidence_key(label) for label in labels}
+    if "owner:human" in label_values or "owner_human" in label_keys:
+        return True
+    owner_values: list[str] = []
+    for key, value in _iter_normalized_key_values(record):
+        if key in _OWNER_KEYS:
+            owner_values.extend(_string_leaf_values(value))
+    return any(
+        value.strip().lower() == "human"
+        or _normalize_evidence_key(value) == "owner_human"
+        for value in owner_values
+    )
+
+
+def _capacity_candidate_is_duplicate(
+    record: dict[str, Any],
+    labels: Iterable[str],
+) -> bool:
+    if _first_bool_for_keys(record, _DUPLICATE_KEYS) is True:
+        return True
+    label_keys = {_normalize_evidence_key(label) for label in labels}
+    if "duplicate" in label_keys:
+        return True
+    status = _normalize_evidence_key(_capacity_candidate_status_text(record))
+    return "duplicate" in status.split("_")
+
+
+def _capacity_candidate_ignored_project(
+    record: dict[str, Any],
+    labels: Iterable[str],
+) -> bool:
+    if _first_bool_for_keys(record, _IGNORED_PROJECT_KEYS) is True:
+        return True
+    label_keys = {_normalize_evidence_key(label) for label in labels}
+    if "ignored_project" in label_keys:
+        return True
+    project_text = _first_text_for_keys(record, {"project", "project_name"})
+    return _normalize_evidence_key(project_text or "") == "ignored_project"
+
+
+def _capacity_candidate_repo_unresolved(record: dict[str, Any]) -> bool:
+    if _first_bool_for_keys(record, _REPO_UNRESOLVED_KEYS) is True:
+        return True
+    if _first_bool_for_keys(record, _REPO_RESOLVED_KEYS) is False:
+        return True
+    return _capacity_candidate_repo(record) is None
+
+
+def _capacity_candidate_not_ready(record: dict[str, Any]) -> bool:
+    status = _normalize_evidence_key(_capacity_candidate_status_text(record))
+    if not status:
+        return False
+    blocked_states = {
+        "blocked",
+        "canceled",
+        "cancelled",
+        "closed",
+        "complete",
+        "completed",
+        "done",
+        "merged",
+        "pr_held",
+        "pr_review",
+        "pull_request_held",
+        "review",
+        "review_held",
+        "waiting_for_review",
+    }
+    return any(state in status for state in blocked_states)
+
+
+def _coerce_work_objects(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        return []
+    child_dicts = [item for item in value.values() if isinstance(item, dict)]
+    if child_dicts and len(child_dicts) == len(value):
+        coerced: list[dict[str, Any]] = []
+        for key, item in value.items():
+            child = dict(item)
+            child.setdefault("identifier", str(key))
+            coerced.append(child)
+        return coerced
+    return [value]
+
+
+def _collect_capacity_work_items(
+    value: Any,
+    *,
+    source: str,
+    timestamp: Optional[datetime],
+    selected: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = _normalize_evidence_key(key)
+            if normalized in _SELECTED_WORK_KEYS:
+                for item in _coerce_work_objects(child):
+                    selected.append(
+                        {
+                            "source": source,
+                            "timestamp": timestamp,
+                            "record": item,
+                        }
+                    )
+                continue
+            if normalized in _BACKLOG_CANDIDATE_KEYS:
+                for item in _coerce_work_objects(child):
+                    candidates.append(
+                        {
+                            "source": source,
+                            "timestamp": timestamp,
+                            "record": item,
+                        }
+                    )
+                continue
+            _collect_capacity_work_items(
+                child,
+                source=source,
+                timestamp=timestamp,
+                selected=selected,
+                candidates=candidates,
+            )
+    elif isinstance(value, list):
+        for child in value:
+            _collect_capacity_work_items(
+                child,
+                source=source,
+                timestamp=timestamp,
+                selected=selected,
+                candidates=candidates,
+            )
+
+
+def _work_is_pr_review_held(record: dict[str, Any]) -> bool:
+    status = _normalize_evidence_key(_capacity_candidate_status_text(record))
+    if status in {
+        "in_review",
+        "pr_held",
+        "pr_review",
+        "pull_request_held",
+        "review",
+        "review_held",
+        "waiting_for_review",
+    }:
+        return True
+    text = " ".join(_collect_record_text(record)).lower()
+    mentions_pr = "pull request" in text or re.search(r"\bpr\b", text) is not None
+    mentions_hold = any(
+        token in text
+        for token in ("held", "merge", "review", "waiting")
+    )
+    return mentions_pr and mentions_hold
+
+
+def _capacity_candidate_assessment(
+    item: dict[str, Any],
+    selected_ids: set[str],
+) -> dict[str, Any]:
+    record = item.get("record") or {}
+    labels = _capacity_candidate_labels(record)
+    reasons: list[str] = []
+    if _capacity_candidate_ignored_project(record, labels):
+        reasons.append("ignored_project")
+    if _capacity_candidate_owner_is_human(record, labels):
+        reasons.append("owner_human")
+    if _capacity_candidate_is_duplicate(record, labels):
+        reasons.append("duplicate")
+    if _capacity_candidate_repo_unresolved(record):
+        reasons.append("repo_unresolved")
+    identifier = _extract_issue_identifier(record)
+    if identifier and identifier in selected_ids:
+        reasons.append("selected_work")
+    if _capacity_candidate_not_ready(record):
+        reasons.append("not_ready_for_parallel_execution")
+
+    timestamp = item.get("timestamp")
+    return {
+        "id": identifier,
+        "title": _capacity_candidate_title(record),
+        "repo": _capacity_candidate_repo(record),
+        "source": item.get("source"),
+        "timestamp": timestamp.isoformat() if isinstance(timestamp, datetime) else None,
+        "labels": labels,
+        "safe": not reasons,
+        "exclusion_reasons": reasons,
+    }
+
+
+def _dedupe_capacity_assessments(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        key = (
+            str(item.get("id") or ""),
+            str(item.get("repo") or ""),
+            str(item.get("title") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _build_capacity_saturation_signal(
+    *,
+    journal_payload: Any,
+    codex_payload: Any,
+    ctx_payload: Any,
+    now: datetime,
+    freshness_hours: int,
+) -> dict[str, Any]:
+    source_records = (
+        ("journal_entries", _iter_records(journal_payload, "entries")),
+        ("codex_runs", _iter_codex_records(codex_payload)),
+        ("ctx_bindings", _iter_ctx_records(ctx_payload)),
+    )
+    selected_items: list[dict[str, Any]] = []
+    candidate_items: list[dict[str, Any]] = []
+    spare_values: list[int] = []
+    max_values: list[int] = []
+    active_values: list[int] = []
+
+    for source, records in source_records:
+        for record in records:
+            timestamp = _record_claimed_timestamp(record)
+            if timestamp is not None:
+                age_hours = max(0.0, (now - timestamp).total_seconds() / 3600)
+                if age_hours > freshness_hours:
+                    continue
+            spare_values.extend(_capacity_values_for_keys(record, _CAPACITY_SPARE_KEYS))
+            max_values.extend(_capacity_values_for_keys(record, _CAPACITY_MAX_KEYS))
+            active_values.extend(_capacity_values_for_keys(record, _CAPACITY_ACTIVE_KEYS))
+            _collect_capacity_work_items(
+                record,
+                source=source,
+                timestamp=timestamp,
+                selected=selected_items,
+                candidates=candidate_items,
+            )
+
+    if spare_values:
+        spare_capacity = max(spare_values)
+    elif max_values:
+        spare_capacity = max(0, max(max_values) - max(active_values or [0]))
+    else:
+        spare_capacity = 0
+
+    selected_ids = {
+        identifier
+        for item in selected_items
+        if (identifier := _extract_issue_identifier(item.get("record") or {}))
+    }
+    selected_pr_review_held = any(
+        _work_is_pr_review_held(item.get("record") or {})
+        for item in selected_items
+    )
+    assessments = _dedupe_capacity_assessments(
+        [
+            _capacity_candidate_assessment(item, selected_ids)
+            for item in candidate_items
+        ]
+    )
+    safe_candidates = [item for item in assessments if item.get("safe")]
+    excluded_candidates = [item for item in assessments if not item.get("safe")]
+    fillable_spare_capacity = min(spare_capacity, len(safe_candidates))
+    safeguard_counts = {
+        reason: sum(
+            1
+            for item in excluded_candidates
+            if reason in set(item.get("exclusion_reasons") or [])
+        )
+        for reason in (
+            "ignored_project",
+            "owner_human",
+            "duplicate",
+            "repo_unresolved",
+        )
+    }
+
+    actions: list[str] = []
+    if fillable_spare_capacity > 0:
+        actions.append(
+            "fill "
+            f"{fillable_spare_capacity} spare capacity slot(s) with independent "
+            "safe repo-backed candidate(s) while selected PR/review-held work "
+            "remains separate"
+            if selected_pr_review_held
+            else (
+                "fill "
+                f"{fillable_spare_capacity} spare capacity slot(s) with independent "
+                "safe repo-backed candidate(s)"
+            )
+        )
+    elif spare_capacity > 0 and assessments:
+        actions.append(
+            "spare capacity exists, but no independent repo-backed candidate "
+            "passed safety safeguards"
+        )
+
+    if fillable_spare_capacity > 0:
+        state = "fillable_spare_capacity"
+    elif spare_capacity > 0 and assessments:
+        state = "spare_capacity_guarded"
+    elif spare_capacity > 0:
+        state = "spare_capacity_without_candidates"
+    else:
+        state = "no_spare_capacity"
+
+    return {
+        "state": state,
+        "spare_capacity": spare_capacity,
+        "safe_repo_backed_candidate_count": len(safe_candidates),
+        "raw_candidate_count": len(assessments),
+        "excluded_candidate_count": len(excluded_candidates),
+        "fillable_spare_capacity": fillable_spare_capacity,
+        "selected_pr_review_held": selected_pr_review_held,
+        "selected_work_ids": sorted(selected_ids),
+        "selected_state_separate": bool(
+            selected_pr_review_held and fillable_spare_capacity > 0
+        ),
+        "safeguard_exclusion_counts": safeguard_counts,
+        "safe_candidates": safe_candidates[:5],
+        "excluded_candidates": excluded_candidates[:8],
+        "actions": actions,
+    }
+
+
 def _build_execution_throughput_signal(
     *,
     journal_payload: Any,
@@ -2040,6 +2591,13 @@ def _build_execution_throughput_signal(
         if _journal_entry_claims_work(record)
         if (timestamp := _recent_record_timestamp(record, now, freshness_hours)) is not None
     ]
+    capacity_saturation = _build_capacity_saturation_signal(
+        journal_payload=journal_payload,
+        codex_payload=codex_payload,
+        ctx_payload=ctx_payload,
+        now=now,
+        freshness_hours=freshness_hours,
+    )
     ctx_summary = _summarize_ctx_bindings(ctx_payload, freshness_hours, now)
     codex_count = len(recent_codex_deliveries)
     journal_count = len(recent_journal_work)
@@ -2052,12 +2610,26 @@ def _build_execution_throughput_signal(
     ctx_active_count = int(ctx_summary.get("active_count") or 0)
     ctx_inactive_informational = ctx_status == "inactive" and ctx_active_count == 0
     actions: list[str] = []
+    capacity_actions = [
+        str(action).strip()
+        for action in capacity_saturation.get("actions", [])
+        if str(action).strip()
+    ]
     if journal_gap:
-        actions = [
-            "backfill journal entries for completed Codex deliveries that lack follow-through evidence",
-            "record changed files, tests, PR or commit, and operator decision support for the next completed delivery",
-            "select completed Codex deliveries without journal follow-through before starting more raw issue volume",
-        ]
+        if capacity_actions:
+            actions = [
+                *capacity_actions,
+                "continue backfilling journal entries for completed Codex deliveries that lack follow-through evidence",
+                "record changed files, tests, PR or commit, and operator decision support for the next completed delivery",
+            ]
+        else:
+            actions = [
+                "backfill journal entries for completed Codex deliveries that lack follow-through evidence",
+                "record changed files, tests, PR or commit, and operator decision support for the next completed delivery",
+                "select completed Codex deliveries without journal follow-through before starting more raw issue volume",
+            ]
+    elif capacity_actions:
+        actions = capacity_actions
 
     return {
         "state": "codex_delivery_journal_gap" if journal_gap else "balanced",
@@ -2075,6 +2647,7 @@ def _build_execution_throughput_signal(
         "ctx_active_count": ctx_active_count,
         "ctx_inactivity_informational": ctx_inactive_informational,
         "ctx_inactivity_blocking": False,
+        "capacity_saturation": capacity_saturation,
     }
 
 
@@ -2171,6 +2744,13 @@ def _evaluate_execution_loop_check(
     )
     ctx_records = list(_iter_ctx_records(ctx_payload))
     active_ctx_records = [record for record in ctx_records if _ctx_record_is_active(record)]
+    capacity_saturation = _build_capacity_saturation_signal(
+        journal_payload=journal_payload,
+        codex_payload=codex_payload,
+        ctx_payload=ctx_payload,
+        now=now,
+        freshness_hours=window_hours,
+    )
 
     completed_codex_count = len(recent_completed_codex)
     journal_count = len(recent_journal)
@@ -2209,6 +2789,19 @@ def _evaluate_execution_loop_check(
         journal_count=journal_count,
         journal_follow_through_rate=journal_follow_through_rate,
     )
+    capacity_actions = [
+        str(action).strip()
+        for action in capacity_saturation.get("actions", [])
+        if str(action).strip()
+    ]
+    if capacity_actions:
+        if missing_journal_follow_through or sparse_journal_follow_through:
+            next_action = (
+                capacity_actions[0]
+                + "; continue journal follow-through backfill for completed deliveries."
+            )
+        else:
+            next_action = capacity_actions[0]
 
     if missing_journal_follow_through:
         score = 0.55
@@ -2224,6 +2817,11 @@ def _evaluate_execution_loop_check(
         detail = "Execution loop is converting local Codex deliveries with journal evidence."
         if ctx_inactivity_informational:
             detail += " Inactive ctx is informational on this host."
+    if int(capacity_saturation.get("fillable_spare_capacity") or 0) > 0:
+        detail += (
+            " Independent safe repo-backed candidate(s) can fill spare capacity "
+            "while selected PR/review-held work remains separate."
+        )
 
     return _build_benchmark_item(
         "execution_loop",
@@ -2255,6 +2853,7 @@ def _evaluate_execution_loop_check(
             "missing_journal_follow_through": missing_journal_follow_through,
             "sparse_journal_follow_through": sparse_journal_follow_through,
             "next_throughput_action": next_action,
+            "capacity_saturation": capacity_saturation,
             "completed_codex_examples": [
                 _recent_record_example(record, timestamp)
                 for record, timestamp in recent_completed_codex[:5]
@@ -3082,11 +3681,19 @@ def _format_execution_throughput_remediation(signal: dict[str, Any]) -> str:
         if signal.get("ctx_inactivity_informational")
         else "ctx inactivity is not the throughput blocker"
     )
+    capacity = signal.get("capacity_saturation") or {}
+    capacity_detail = ""
+    if int(capacity.get("fillable_spare_capacity") or 0) > 0:
+        capacity_detail = (
+            "; "
+            f"fillable_spare_capacity={capacity.get('fillable_spare_capacity')} "
+            "with independent safe repo-backed candidate(s)"
+        )
     return (
         "Execution-loop throughput remediation: "
         f"{signal.get('recent_completed_codex_count')} completed Codex run(s) vs "
         f"{signal.get('recent_journal_work_item_count')} journal work item(s); "
-        f"{ctx_detail}; next actions: {action_detail}."
+        f"{ctx_detail}{capacity_detail}; next actions: {action_detail}."
     )
 
 
@@ -3100,6 +3707,7 @@ def _execution_throughput_remediation_payload(signal: dict[str, Any]) -> dict[st
         "recent_journal_work_item_count": signal.get("recent_journal_work_item_count"),
         "journal_to_codex_ratio": signal.get("journal_to_codex_ratio"),
         "actions": signal.get("actions") or [],
+        "capacity_saturation": signal.get("capacity_saturation") or {},
         "ctx_status": signal.get("ctx_status"),
         "ctx_active_count": signal.get("ctx_active_count"),
         "ctx_inactivity_blocking": False,
@@ -3228,6 +3836,12 @@ def _build_issue_selection_summary(
         for action in execution_remediation.get("actions", [])
         if str(action).strip()
     ]
+    capacity_saturation = (
+        execution_remediation.get("capacity_saturation")
+        or execution_throughput.get("capacity_saturation")
+        or {}
+    )
+    fillable_capacity = int(capacity_saturation.get("fillable_spare_capacity") or 0)
     remediation_actions = [
         str(item.get("action") or "").strip()
         for item in (ctx_remediation, ontology_repair)
@@ -3241,14 +3855,25 @@ def _build_issue_selection_summary(
             + "; ".join(remediation_actions or ["inspect reliability gate provenance"])
         )
     elif execution_remediation.get("required"):
-        recommended_focus = "Codex delivery journal follow-through"
-        detail = (
-            "Prioritize completed Codex delivery follow-through before selecting more issue volume: "
-            f"{execution_remediation.get('recent_completed_codex_count')} recent completed Codex run(s), "
-            f"{execution_remediation.get('recent_journal_work_item_count')} journal work item(s). "
-            "Inactive ctx evidence is informational on this host. "
-            + "; ".join(execution_actions)
-        )
+        if fillable_capacity > 0:
+            recommended_focus = "parallel safe repo-backed execution"
+            detail = (
+                "Fill spare execution capacity with independent safe repo-backed candidates "
+                "while selected PR/review-held work remains separate: "
+                f"{fillable_capacity} fillable slot(s), "
+                f"{capacity_saturation.get('safe_repo_backed_candidate_count')} safe candidate(s). "
+                "Continue journal follow-through for completed Codex deliveries. "
+                + "; ".join(execution_actions)
+            )
+        else:
+            recommended_focus = "Codex delivery journal follow-through"
+            detail = (
+                "Prioritize completed Codex delivery follow-through before selecting more issue volume: "
+                f"{execution_remediation.get('recent_completed_codex_count')} recent completed Codex run(s), "
+                f"{execution_remediation.get('recent_journal_work_item_count')} journal work item(s). "
+                "Inactive ctx evidence is informational on this host. "
+                + "; ".join(execution_actions)
+            )
     elif execution_blocked:
         execution = checks.get("execution_loop") or {}
         action = str(

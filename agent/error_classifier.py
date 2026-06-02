@@ -188,7 +188,9 @@ _IMAGE_TOO_LARGE_PATTERNS = [
 # See: https://github.com/NousResearch/hermes-agent/issues/27344
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = [
     # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
+    # Backtick-wrapped variant also seen from MiMo API (#37469).
     "text is not set",
+    "`text` is not set",
     # Generic "tool message must be string" shapes
     "tool message content must be a string",
     "tool content must be a string",

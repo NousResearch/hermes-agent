@@ -54,7 +54,8 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
-  $workingSessionIds
+  $workingSessionIds,
+  sessionPinId
 } from '@/store/session'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
@@ -73,7 +74,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
   },
-  { id: 'skills', label: 'Skills & Tools', icon: props => <Codicon name="symbol-misc" {...props} />, route: SKILLS_ROUTE },
+  {
+    id: 'skills',
+    label: 'Skills & Tools',
+    icon: props => <Codicon name="symbol-misc" {...props} />,
+    route: SKILLS_ROUTE
+  },
   { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
@@ -189,24 +195,45 @@ export function ChatSidebar({
 
   const sortedSessions = useMemo(() => [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a)), [sessions])
 
-  const sessionsById = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
-  const visiblePinnedIds = useMemo(
-    () => pinnedSessionIds.filter(id => sessionsById.has(id)),
-    [pinnedSessionIds, sessionsById]
-  )
+  // Index sessions by both their live id and their lineage-root id so a pin
+  // stored as the pre-compression root resolves to the live continuation tip.
+  const sessionByAnyId = useMemo(() => {
+    const map = new Map<string, SessionInfo>()
 
-  const visiblePinnedIdSet = useMemo(() => new Set(visiblePinnedIds), [visiblePinnedIds])
+    for (const s of sessions) {
+      map.set(s.id, s)
 
-  const pinnedSessions = useMemo(
-    () => visiblePinnedIds.map(id => sessionsById.get(id)!).filter(Boolean),
-    [visiblePinnedIds, sessionsById]
-  )
+      if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
+        map.set(s._lineage_root_id, s)
+      }
+    }
+
+    return map
+  }, [sessions])
+
+  const pinnedSessions = useMemo(() => {
+    const seen = new Set<string>()
+    const out: SessionInfo[] = []
+
+    for (const pinId of pinnedSessionIds) {
+      const session = sessionByAnyId.get(pinId)
+
+      if (session && !seen.has(session.id)) {
+        seen.add(session.id)
+        out.push(session)
+      }
+    }
+
+    return out
+  }, [pinnedSessionIds, sessionByAnyId])
+
+  const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
 
   const unpinnedAgentSessions = useMemo(
-    () => sortedSessions.filter(s => !visiblePinnedIdSet.has(s.id)),
-    [sortedSessions, visiblePinnedIdSet]
+    () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
+    [sortedSessions, pinnedRealIdSet]
   )
 
   const agentSessions = useMemo(
@@ -236,7 +263,10 @@ export function ChatSidebar({
       return
     }
 
-    reorderPinnedSession(String(active.id), newIndex)
+    // Sortable ids are live session ids; the pinned store is keyed by durable
+    // (lineage-root) ids, so translate before reordering.
+    const dragged = sessionByAnyId.get(String(active.id))
+    reorderPinnedSession(dragged ? sessionPinId(dragged) : String(active.id), newIndex)
   }
 
   const handleAgentDragEnd = ({ active, over }: DragEndEvent) => {
@@ -536,7 +566,7 @@ function SidebarSessionsSection({
       isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
-      onPin: () => onTogglePin(session.id),
+      onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
       session
     }

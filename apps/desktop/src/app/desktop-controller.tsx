@@ -32,6 +32,8 @@ import {
   $freshDraftReady,
   $gatewayState,
   $selectedStoredSessionId,
+  $sessions,
+  sessionPinId,
   setAwaitingResponse,
   setBusy,
   setCurrentBranch,
@@ -224,10 +226,14 @@ export function DesktopController() {
       return
     }
 
-    if ($pinnedSessionIds.get().includes(sessionId)) {
-      unpinSession(sessionId)
+    // Pin on the durable lineage-root id so the pin survives auto-compression.
+    const session = $sessions.get().find(s => s.id === sessionId || s._lineage_root_id === sessionId)
+    const pinId = session ? sessionPinId(session) : sessionId
+
+    if ($pinnedSessionIds.get().includes(pinId)) {
+      unpinSession(pinId)
     } else {
-      pinSession(sessionId)
+      pinSession(pinId)
     }
   }, [])
 

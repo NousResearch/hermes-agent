@@ -1525,60 +1525,6 @@ def test_forced_skill_resolves_from_worker_profile_external_dirs(tmp_path, monke
     assert kb._missing_forced_skills(str(home), ["configured-external-skill"]) == []
 
 
-def test_suggest_task_skills_from_catalog_is_conservative(tmp_path):
-    catalog = tmp_path / "catalog.yaml"
-    catalog.write_text(
-        """
-selection_policy:
-  task_skills_default_mode: required
-  max_required_skills_per_task: 5
-skills:
-  systematic-debugging:
-    description: Debug failures.
-    default_mode: required
-    allowed_profiles: [backend-worker]
-    selection:
-      intent_tags: [debugging, root_cause]
-      strong_triggers: [failing tests, traceback]
-      weak_triggers: [bug, issue]
-      negative_triggers: [visual polish]
-  dogfood:
-    description: QA web apps.
-    default_mode: required
-    allowed_profiles: [frontend-worker]
-    selection:
-      strong_triggers: [exploratory qa]
-      weak_triggers: [browser]
-""".strip(),
-        encoding="utf-8",
-    )
-
-    generic = kb.suggest_task_skills_from_catalog(
-        title="Update task summary",
-        body="This is a generic status issue.",
-        assignee="backend-worker",
-        catalog_path=catalog,
-    )
-    assert generic == []
-
-    selected = kb.suggest_task_skills_from_catalog(
-        title="Fix failing tests and find root cause",
-        body="Pytest traceback in backend-worker run.",
-        assignee="backend-worker",
-        catalog_path=catalog,
-    )
-    assert [item["skill"] for item in selected] == ["systematic-debugging"]
-    assert selected[0]["score"] >= 3
-
-    negative = kb.suggest_task_skills_from_catalog(
-        title="visual polish bug",
-        body="style critique only",
-        assignee="backend-worker",
-        catalog_path=catalog,
-    )
-    assert negative == []
-
-
 def test_dispatch_max_spawn_counts_existing_running_tasks(
     kanban_home, all_assignees_spawnable
 ):

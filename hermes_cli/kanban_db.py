@@ -6527,8 +6527,8 @@ def _profile_skill_sync_policy_path(hermes_home: Optional[str]) -> Optional[Path
     """Return the local profile-skill sync policy path when this install has one.
 
     This is deliberately optional and local-policy driven. Upstream Hermes should
-    not blindly mutate profile skill directories; Hoang's Hermes OS policy file is
-    the explicit allowlist for profiles/skills that may be auto-synced before a
+    not blindly mutate profile skill directories; a local policy file is the
+    explicit allowlist for profiles/skills that may be auto-synced before a
     Kanban worker spawn.
     """
     override = os.environ.get("HERMES_PROFILE_SKILL_SYNC_POLICY", "").strip()
@@ -6618,79 +6618,6 @@ def _maybe_sync_missing_forced_skills(
     if proc.returncode != 0:
         return missing
     return _missing_forced_skills(hermes_home, missing)
-
-
-def default_skill_catalog_path() -> Path:
-    """Return the local Kanban skill catalog path, if the user keeps one."""
-    override = os.environ.get("HERMES_KANBAN_SKILL_CATALOG", "").strip()
-    if override:
-        return Path(os.path.expandvars(os.path.expanduser(override))).resolve()
-    return kanban_home() / "local" / "hermes-os" / "kanban-skill-catalog.yaml"
-
-
-def _phrase_hits(text: str, phrases) -> list[str]:
-    hits: list[str] = []
-    if not phrases:
-        return hits
-    for raw in phrases:
-        phrase = str(raw or "").strip().lower()
-        if phrase and phrase in text:
-            hits.append(phrase)
-    return hits
-
-
-def suggest_task_skills_from_catalog(
-    *,
-    title: str,
-    body: Optional[str] = None,
-    assignee: Optional[str] = None,
-    catalog_path: Optional[str | Path] = None,
-    limit: Optional[int] = None,
-) -> list[dict[str, object]]:
-    """Return small metadata-only skill suggestions for a Kanban task.
-
-    This is intentionally conservative. It is a PM/orchestrator helper for
-    selecting likely task-level skills without loading every skill body.
-    """
-    path = Path(catalog_path) if catalog_path is not None else default_skill_catalog_path()
-    if not path.is_file():
-        return []
-    data = _yaml_load_file(path)
-    skills = data.get("skills") if isinstance(data, dict) else None
-    if not isinstance(skills, dict):
-        return []
-    policy = data.get("selection_policy") if isinstance(data.get("selection_policy"), dict) else {}
-    max_required = int(policy.get("max_required_skills_per_task") or 5)
-    if limit is None:
-        limit = max_required
-    text = " ".join(str(part or "") for part in (title, body, assignee)).lower()
-    suggestions: list[dict[str, object]] = []
-    for skill_name, meta in skills.items():
-        if not isinstance(meta, dict):
-            continue
-        allowed = meta.get("allowed_profiles") or []
-        if assignee and allowed and assignee not in allowed:
-            continue
-        selection = meta.get("selection") if isinstance(meta.get("selection"), dict) else {}
-        strong = _phrase_hits(text, selection.get("strong_triggers") or [])
-        weak = _phrase_hits(text, selection.get("weak_triggers") or [])
-        negative = _phrase_hits(text, selection.get("negative_triggers") or [])
-        score = len(strong) * 3 + len(weak) - len(negative) * 3
-        if score < 3:
-            continue
-        suggestions.append(
-            {
-                "skill": str(skill_name),
-                "score": score,
-                "reason": {
-                    "strong_triggers": strong,
-                    "weak_triggers": weak,
-                    "negative_triggers": negative,
-                },
-            }
-        )
-    suggestions.sort(key=lambda item: (-int(item["score"]), str(item["skill"])))
-    return suggestions[: max(0, int(limit or 0))]
 
 
 def _worker_terminal_timeout_env(

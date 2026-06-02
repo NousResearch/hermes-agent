@@ -3569,6 +3569,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body",
+        "codex_responses_websocket", "codex_responses_transport",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -3666,6 +3667,14 @@ def _normalize_custom_provider_entry(
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
+
+    codex_responses_websocket = entry.get("codex_responses_websocket")
+    if isinstance(codex_responses_websocket, bool):
+        normalized["codex_responses_websocket"] = codex_responses_websocket
+
+    codex_responses_transport = entry.get("codex_responses_transport")
+    if isinstance(codex_responses_transport, str) and codex_responses_transport.strip():
+        normalized["codex_responses_transport"] = codex_responses_transport.strip()
 
     return normalized
 
@@ -3828,6 +3837,7 @@ _KNOWN_ROOT_KEYS = {
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
+    "codex_responses_websocket", "codex_responses_transport",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",

@@ -16,11 +16,14 @@ compatibility.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
+import json
 import os
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +205,588 @@ _TERMINAL_EVENT_TYPES = frozenset({
     "response.failed",
 })
 
+_WEBSOCKET_TRUE_VALUES = frozenset({
+    "1",
+    "true",
+    "yes",
+    "on",
+    "enabled",
+    "enable",
+    "websocket",
+    "websocket_mode",
+    "ws",
+    "wss",
+})
+
+_WEBSOCKET_TRANSPORT_VALUES = frozenset({
+    "websocket",
+    "websocket_mode",
+    "ws",
+    "wss",
+})
+
+_WEBSOCKET_BODY_EXCLUDED_KEYS = frozenset({
+    "timeout",
+    "extra_headers",
+    "extra_body",
+    "stream",
+    "background",
+})
+
+_GENERATED_RESPONSE_ITEM_TYPES = frozenset({
+    "function_call",
+    "custom_tool_call",
+    "reasoning",
+})
+
+
+def load_config() -> Dict[str, Any]:
+    """Load Hermes config lazily so tests can monkeypatch this module symbol."""
+    from hermes_cli.config import load_config as _load_config
+    return _load_config()
+
+
+def codex_responses_websocket_url(base_url: str) -> str:
+    """Derive the Responses WebSocket endpoint from a provider base URL."""
+    raw = str(base_url or "").strip().rstrip("/")
+    if not raw:
+        raise ValueError("codex_responses WebSocket transport requires provider base_url")
+
+    parts = urlsplit(raw)
+    scheme = parts.scheme.lower()
+    if scheme == "https":
+        websocket_scheme = "wss"
+    elif scheme == "http":
+        websocket_scheme = "ws"
+    elif scheme in {"ws", "wss"}:
+        websocket_scheme = scheme
+    else:
+        raise ValueError(
+            f"unsupported codex_responses WebSocket base_url scheme: {parts.scheme!r}"
+        )
+    if not parts.netloc:
+        raise ValueError("codex_responses WebSocket base_url must include a host")
+
+    path = parts.path.rstrip("/")
+    if not path.endswith("/responses"):
+        path = f"{path}/responses" if path else "/responses"
+
+    return urlunsplit((websocket_scheme, parts.netloc, path, parts.query, ""))
+
+
+def _normalized_provider_name(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalized_provider_url(value: Any) -> str:
+    return str(value or "").strip().rstrip("/").lower()
+
+
+def _codex_websocket_transport_key(agent) -> tuple[str, str]:
+    return (
+        _normalized_provider_name(getattr(agent, "provider", "")),
+        _normalized_provider_url(getattr(agent, "base_url", "")),
+    )
+
+
+def _entry_base_url(entry: Dict[str, Any]) -> str:
+    for key in ("base_url", "url", "api"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _entry_enables_codex_responses_websocket(entry: Dict[str, Any]) -> bool:
+    raw_flag = entry.get("codex_responses_websocket")
+    if isinstance(raw_flag, bool):
+        return raw_flag
+    if isinstance(raw_flag, str):
+        return raw_flag.strip().lower() in _WEBSOCKET_TRUE_VALUES
+
+    raw_transport = entry.get("codex_responses_transport")
+    if isinstance(raw_transport, bool):
+        return raw_transport
+    if isinstance(raw_transport, str):
+        return raw_transport.strip().lower() in _WEBSOCKET_TRANSPORT_VALUES
+
+    return False
+
+
+def _iter_config_provider_entries(config: Dict[str, Any]):
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for provider_key, entry in providers.items():
+            if isinstance(entry, dict):
+                yield str(provider_key), entry
+
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                yield str(name or ""), entry
+
+
+def _provider_entry_name_matches_agent(agent, provider_key: str, entry: Dict[str, Any]) -> bool:
+    provider = _normalized_provider_name(getattr(agent, "provider", ""))
+    provider_no_custom = provider.removeprefix("custom:")
+    names = {
+        _normalized_provider_name(provider_key),
+        _normalized_provider_name(entry.get("name")),
+    }
+    names = {name for name in names if name}
+    return bool(provider and (provider in names or provider_no_custom in names))
+
+
+def _provider_entry_url_matches_agent(agent, entry: Dict[str, Any]) -> bool:
+    agent_url = _normalized_provider_url(getattr(agent, "base_url", ""))
+    entry_url = _normalized_provider_url(_entry_base_url(entry))
+    return bool(agent_url and entry_url and agent_url == entry_url)
+
+
+def codex_responses_websocket_enabled(agent) -> bool:
+    """Return True when this codex_responses provider explicitly opts into WebSocket."""
+    if getattr(agent, "api_mode", None) != "codex_responses":
+        return False
+    fallback_key = getattr(agent, "_codex_responses_websocket_http_fallback_key", None)
+    if fallback_key is not None and fallback_key == _codex_websocket_transport_key(agent):
+        return False
+
+    try:
+        config = load_config()
+    except Exception:
+        logger.debug("Unable to load config for codex_responses WebSocket gate", exc_info=True)
+        return False
+    if not isinstance(config, dict):
+        return False
+
+    entries = list(_iter_config_provider_entries(config))
+    name_matches = [
+        entry
+        for provider_key, entry in entries
+        if _provider_entry_name_matches_agent(agent, provider_key, entry)
+    ]
+    if name_matches:
+        return any(_entry_enables_codex_responses_websocket(entry) for entry in name_matches)
+
+    for _provider_key, entry in entries:
+        if _provider_entry_url_matches_agent(agent, entry) and _entry_enables_codex_responses_websocket(entry):
+            return True
+
+    return False
+
+
+def _json_to_namespace(value: Any) -> Any:
+    if isinstance(value, dict):
+        return SimpleNamespace(
+            **{str(key): _json_to_namespace(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return [_json_to_namespace(item) for item in value]
+    return value
+
+
+def _codex_websocket_response_body(api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    body = {
+        key: value
+        for key, value in api_kwargs.items()
+        if key not in _WEBSOCKET_BODY_EXCLUDED_KEYS and value is not None
+    }
+    extra_body = api_kwargs.get("extra_body")
+    if isinstance(extra_body, dict):
+        body.update(extra_body)
+    body.pop("stream", None)
+    body.pop("background", None)
+    return body
+
+
+def _codex_websocket_headers(agent, api_kwargs: Dict[str, Any]) -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    extra_headers = api_kwargs.get("extra_headers")
+    if isinstance(extra_headers, dict):
+        headers.update({
+            str(key): str(value)
+            for key, value in extra_headers.items()
+            if key and value is not None
+        })
+
+    api_key = str(getattr(agent, "api_key", "") or "").strip()
+    has_authorization = any(key.lower() == "authorization" for key in headers)
+    if api_key and not has_authorization:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _connect_responses_websocket(uri: str, **kwargs):
+    try:
+        from websockets.sync.client import connect
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "codex_responses WebSocket transport requires the websockets package"
+        ) from exc
+    return connect(uri, **kwargs)
+
+
+def _safe_snapshot(value: Any) -> Any:
+    try:
+        return deepcopy(value)
+    except Exception:
+        return value
+
+
+def _is_prefix_items(prefix: Any, full: Any) -> bool:
+    if not isinstance(prefix, list) or not isinstance(full, list):
+        return False
+    if len(prefix) > len(full):
+        return False
+    return full[: len(prefix)] == prefix
+
+
+def _is_generated_response_item(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get("role") or "").strip().lower()
+    if role == "assistant":
+        return True
+    item_type = str(item.get("type") or "").strip()
+    return item_type in _GENERATED_RESPONSE_ITEM_TYPES
+
+
+def _client_incremental_input_items(items: Any) -> List[Any]:
+    if not isinstance(items, list):
+        return items
+    return [item for item in items if not _is_generated_response_item(item)]
+
+
+def _incremental_input_since_previous_response(previous_input: Any, current_input: Any):
+    if not _is_prefix_items(previous_input, current_input):
+        return current_input, False
+    delta = current_input[len(previous_input) :]
+    return _client_incremental_input_items(delta), True
+
+
+class _CodexResponsesWebSocketSession:
+    def __init__(
+        self,
+        *,
+        uri: str,
+        headers: Dict[str, str],
+        open_timeout: float,
+    ) -> None:
+        self.uri = uri
+        self.headers = dict(headers)
+        self.open_timeout = open_timeout
+        self.websocket = None
+        self._context = None
+        self.previous_response_id: Optional[str] = None
+        self.last_full_input: Any = None
+        self.closed = False
+
+    def matches(self, *, uri: str, headers: Dict[str, str], open_timeout: float) -> bool:
+        return (
+            not self.closed
+            and self.uri == uri
+            and self.headers == dict(headers)
+            and self.open_timeout == open_timeout
+        )
+
+    def open(self):
+        if self.websocket is not None and not self.closed:
+            return self.websocket
+        raw = _connect_responses_websocket(
+            self.uri,
+            additional_headers=self.headers,
+            open_timeout=self.open_timeout,
+            close_timeout=10,
+            max_size=None,
+        )
+        self._context = raw
+        if hasattr(raw, "__enter__"):
+            self.websocket = raw.__enter__()
+        else:
+            self.websocket = raw
+        self.closed = False
+        return self.websocket
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            if self._context is not None and hasattr(self._context, "__exit__"):
+                self._context.__exit__(None, None, None)
+            elif self.websocket is not None and hasattr(self.websocket, "close"):
+                self.websocket.close()
+        except Exception:
+            logger.debug("Codex Responses WebSocket close failed", exc_info=True)
+        finally:
+            self.websocket = None
+            self._context = None
+            self.previous_response_id = None
+            self.last_full_input = None
+
+    def build_payload(
+        self,
+        api_kwargs: Dict[str, Any],
+        *,
+        force_full_input: bool = False,
+    ) -> tuple[Dict[str, Any], Any, bool]:
+        payload = _codex_websocket_response_body(api_kwargs)
+        payload["type"] = "response.create"
+        full_input = _safe_snapshot(payload.get("input"))
+        used_continuation = False
+
+        if force_full_input:
+            self.previous_response_id = None
+            self.last_full_input = None
+            return payload, full_input, used_continuation
+
+        if self.previous_response_id:
+            incremental_input, can_continue = _incremental_input_since_previous_response(
+                self.last_full_input,
+                payload.get("input"),
+            )
+            if can_continue:
+                payload["previous_response_id"] = self.previous_response_id
+                payload["input"] = incremental_input
+                used_continuation = True
+            else:
+                # The current prompt no longer extends the cached chain
+                # exactly. Start a fresh chain on the same socket with full
+                # input rather than sending an unsafe incremental payload.
+                self.previous_response_id = None
+                self.last_full_input = None
+
+        return payload, full_input, used_continuation
+
+    def record_response(self, final: SimpleNamespace, full_input: Any) -> None:
+        status = str(getattr(final, "status", "") or "").strip().lower()
+        response_id = getattr(final, "id", None)
+        if status in {"failed", "cancelled"} or not isinstance(response_id, str) or not response_id:
+            self.previous_response_id = None
+            self.last_full_input = None
+            return
+        self.previous_response_id = response_id
+        self.last_full_input = _safe_snapshot(full_input)
+
+
+def close_codex_responses_websocket_session(agent) -> None:
+    session = getattr(agent, "_codex_responses_websocket_session", None)
+    if session is not None:
+        try:
+            session.close()
+        finally:
+            agent._codex_responses_websocket_session = None
+
+
+def reset_codex_responses_websocket_turn_fallback(agent) -> None:
+    """Clear one-turn HTTP fallback state while preserving chain invalidation."""
+    agent._codex_responses_websocket_http_fallback_key = None
+    agent._codex_responses_websocket_http_fallback_reason = None
+    agent._codex_responses_websocket_output_committed = False
+
+
+def disable_codex_responses_websocket_for_turn(
+    agent,
+    *,
+    reason: str,
+    error: BaseException | None = None,
+) -> None:
+    """Disable WebSocket for this provider for the current turn.
+
+    The continuation chain is also invalidated so the next WebSocket attempt
+    for the same provider starts with full input instead of reusing stale
+    ``previous_response_id`` state from the failed socket.
+    """
+    key = _codex_websocket_transport_key(agent)
+    close_codex_responses_websocket_session(agent)
+    agent._codex_responses_websocket_http_fallback_key = key
+    agent._codex_responses_websocket_http_fallback_reason = reason
+    agent._codex_responses_websocket_chain_invalidated_key = key
+    logger.debug(
+        "Disabled Codex Responses WebSocket for current turn (%s). %s error=%s",
+        reason,
+        getattr(agent, "_client_log_context", lambda: "")(),
+        error,
+    )
+
+
+def clear_codex_responses_websocket_chain_invalidated(agent) -> None:
+    key = getattr(agent, "_codex_responses_websocket_chain_invalidated_key", None)
+    if key is not None and key == _codex_websocket_transport_key(agent):
+        agent._codex_responses_websocket_chain_invalidated_key = None
+
+
+def _codex_responses_websocket_chain_invalidated(agent) -> bool:
+    key = getattr(agent, "_codex_responses_websocket_chain_invalidated_key", None)
+    return key is not None and key == _codex_websocket_transport_key(agent)
+
+
+def codex_responses_websocket_output_committed(agent) -> bool:
+    return bool(getattr(agent, "_codex_responses_websocket_output_committed", False))
+
+
+def _mark_codex_responses_websocket_output_committed(agent) -> None:
+    agent._codex_responses_websocket_output_committed = True
+
+
+def _get_codex_responses_websocket_session(
+    agent,
+    *,
+    uri: str,
+    headers: Dict[str, str],
+    open_timeout: float,
+) -> _CodexResponsesWebSocketSession:
+    session = getattr(agent, "_codex_responses_websocket_session", None)
+    if isinstance(session, _CodexResponsesWebSocketSession) and session.matches(
+        uri=uri,
+        headers=headers,
+        open_timeout=open_timeout,
+    ):
+        return session
+
+    close_codex_responses_websocket_session(agent)
+    session = _CodexResponsesWebSocketSession(
+        uri=uri,
+        headers=headers,
+        open_timeout=open_timeout,
+    )
+    agent._codex_responses_websocket_session = session
+    return session
+
+
+def _iter_codex_websocket_events(
+    websocket,
+    *,
+    interrupt_check=None,
+    recv_timeout: Optional[float] = 1.0,
+):
+    while True:
+        if interrupt_check is not None and interrupt_check():
+            break
+        try:
+            raw = websocket.recv(timeout=recv_timeout)
+        except TimeoutError:
+            continue
+        except Exception as exc:
+            if exc.__class__.__name__.startswith("ConnectionClosed"):
+                break
+            raise
+
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        event = json.loads(raw)
+        event_type = event.get("type") if isinstance(event, dict) else None
+        yield _json_to_namespace(event)
+        if event_type in _TERMINAL_EVENT_TYPES or event_type == "error":
+            break
+
+
+def run_codex_websocket(
+    agent,
+    api_kwargs: Dict[str, Any],
+    *,
+    on_text_delta=None,
+    on_reasoning_delta=None,
+    on_first_delta=None,
+    on_event=None,
+    interrupt_check=None,
+) -> SimpleNamespace:
+    """Execute one Responses API request over WebSocket mode."""
+    websocket_url = codex_responses_websocket_url(getattr(agent, "base_url", ""))
+    timeout = api_kwargs.get("timeout")
+    open_timeout = (
+        float(timeout)
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0
+        else 10
+    )
+    headers = _codex_websocket_headers(agent, api_kwargs)
+    force_full_input = _codex_responses_websocket_chain_invalidated(agent)
+    if force_full_input:
+        close_codex_responses_websocket_session(agent)
+    session = _get_codex_responses_websocket_session(
+        agent,
+        uri=websocket_url,
+        headers=headers,
+        open_timeout=open_timeout,
+    )
+
+    def _send_once(
+        active_session: _CodexResponsesWebSocketSession,
+        *,
+        force_full: bool = False,
+    ) -> tuple[SimpleNamespace, bool]:
+        agent._codex_responses_websocket_output_committed = False
+        payload, full_input, used_continuation = active_session.build_payload(
+            api_kwargs,
+            force_full_input=force_full,
+        )
+        websocket = active_session.open()
+        websocket.send(json.dumps(payload))
+
+        def _on_event_with_commit(event: Any) -> None:
+            if _codex_websocket_event_commits_output(event):
+                _mark_codex_responses_websocket_output_committed(agent)
+            if on_event is not None:
+                on_event(event)
+
+        final_response = _consume_codex_event_stream(
+            _iter_codex_websocket_events(
+                websocket,
+                interrupt_check=interrupt_check,
+                recv_timeout=1.0,
+            ),
+            model=api_kwargs.get("model"),
+            on_text_delta=on_text_delta,
+            on_reasoning_delta=on_reasoning_delta,
+            on_first_delta=on_first_delta,
+            on_event=_on_event_with_commit,
+            interrupt_check=interrupt_check,
+        )
+        active_session.record_response(final_response, full_input)
+        if force_full and active_session.previous_response_id:
+            clear_codex_responses_websocket_chain_invalidated(agent)
+        return final_response, used_continuation
+
+    try:
+        final, _used_continuation = _send_once(session, force_full=force_full_input)
+    except Exception:
+        exc = _current_exception()
+        close_codex_responses_websocket_session(agent)
+        if _is_previous_response_missing_error(exc):
+            recovery_session = _get_codex_responses_websocket_session(
+                agent,
+                uri=websocket_url,
+                headers=headers,
+                open_timeout=open_timeout,
+            )
+            final, _used_continuation = _send_once(recovery_session, force_full=True)
+            return final
+        raise
+
+    return final
+
+
+def _current_exception() -> BaseException:
+    import sys
+    exc = sys.exc_info()[1]
+    if isinstance(exc, BaseException):
+        return exc
+    return RuntimeError("unknown exception")
+
+
+def _is_previous_response_missing_error(exc: BaseException) -> bool:
+    code = str(getattr(exc, "code", "") or "").strip().lower()
+    param = str(getattr(exc, "param", "") or "").strip().lower()
+    message = str(getattr(exc, "message", "") or exc).strip().lower()
+    return (
+        code == "previous_response_not_found"
+        or param == "previous_response_id"
+        or "previous_response_not_found" in message
+        or "previous response" in message and "not found" in message
+    )
+
 
 def _event_field(event: Any, name: str, default: Any = None) -> Any:
     """Field access that handles both attr-style (SDK objects) and dict (raw JSON) events."""
@@ -211,6 +796,57 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _codex_websocket_event_commits_output(event: Any) -> bool:
+    event_type = _event_field(event, "type", "")
+    if not isinstance(event_type, str):
+        return False
+    if event_type == "response.output_item.done":
+        return _event_field(event, "item") is not None
+    if "output_text.delta" in event_type:
+        return bool(_event_field(event, "delta", ""))
+    if "reasoning" in event_type and "delta" in event_type:
+        return bool(_event_field(event, "delta", ""))
+    return False
+
+
+def should_fallback_codex_responses_websocket_to_http(agent, exc: BaseException) -> bool:
+    """Return True for pre-output WebSocket transport failures only."""
+    if codex_responses_websocket_output_committed(agent):
+        return False
+    if isinstance(exc, InterruptedError):
+        return False
+    if isinstance(exc, ValueError):
+        return False
+    class_name = exc.__class__.__name__.lower()
+    message = str(getattr(exc, "message", None) or exc).lower()
+    if "websocket" in class_name or class_name.startswith("connectionclosed"):
+        return True
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+    if _is_previous_response_missing_error(exc):
+        return False
+    if getattr(exc, "status_code", None) is not None:
+        return False
+    if getattr(exc, "code", None) or getattr(exc, "param", None):
+        return False
+
+    if "did not emit a terminal response" in message:
+        return True
+    return any(
+        phrase in message
+        for phrase in (
+            "connection closed",
+            "connection reset",
+            "connection refused",
+            "network connection",
+            "remote protocol",
+            "timed out",
+            "timeout",
+            "websocket",
+        )
+    )
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -218,11 +854,23 @@ def _raise_stream_error(event: Any) -> None:
     pull in ``run_agent`` (e.g. plugin code, doc tools).
     """
     from run_agent import _StreamErrorEvent
-    message = (_event_field(event, "message", "") or "stream emitted error event").strip()
+    nested_error = _event_field(event, "error")
+    if not isinstance(nested_error, dict):
+        nested_error = {
+            "message": getattr(nested_error, "message", None),
+            "code": getattr(nested_error, "code", None),
+            "param": getattr(nested_error, "param", None),
+        } if nested_error is not None else {}
+    message = (
+        _event_field(event, "message", "")
+        or nested_error.get("message")
+        or "stream emitted error event"
+    ).strip()
     raise _StreamErrorEvent(
         message,
-        code=_event_field(event, "code"),
-        param=_event_field(event, "param"),
+        code=_event_field(event, "code") or nested_error.get("code"),
+        param=_event_field(event, "param") or nested_error.get("param"),
+        status_code=_event_field(event, "status"),
     )
 
 
@@ -430,7 +1078,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     """
     import httpx as _httpx
 
-    active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
@@ -449,6 +1096,31 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _interrupt_check() -> bool:
         return bool(agent._interrupt_requested)
+
+    def _warn_terminal_status(final: SimpleNamespace) -> None:
+        if final.status in {"incomplete", "failed"}:
+            logger.warning(
+                "Codex Responses stream terminal status=%s "
+                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
+                final.status, final.incomplete_details, final.error,
+                sum(len(p) for p in agent._codex_streamed_text_parts),
+                agent._client_log_context(),
+            )
+
+    if codex_responses_websocket_enabled(agent):
+        final = run_codex_websocket(
+            agent,
+            api_kwargs,
+            on_text_delta=_on_text_delta,
+            on_reasoning_delta=_on_reasoning_delta,
+            on_first_delta=on_first_delta,
+            on_event=_on_event,
+            interrupt_check=_interrupt_check,
+        )
+        _warn_terminal_status(final)
+        return final
+
+    active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
 
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
@@ -496,14 +1168,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     continue
                 raise
 
-            if final.status in {"incomplete", "failed"}:
-                logger.warning(
-                    "Codex Responses stream terminal status=%s "
-                    "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
-                    final.status, final.incomplete_details, final.error,
-                    sum(len(p) for p in agent._codex_streamed_text_parts),
-                    agent._client_log_context(),
-                )
+            _warn_terminal_status(final)
 
             return final
         finally:
@@ -530,6 +1195,13 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
 __all__ = [
     "run_codex_app_server_turn",
     "run_codex_stream",
+    "run_codex_websocket",
     "run_codex_create_stream_fallback",
+    "close_codex_responses_websocket_session",
+    "codex_responses_websocket_enabled",
+    "codex_responses_websocket_url",
+    "disable_codex_responses_websocket_for_turn",
+    "reset_codex_responses_websocket_turn_fallback",
+    "should_fallback_codex_responses_websocket_to_http",
     "_consume_codex_event_stream",
 ]

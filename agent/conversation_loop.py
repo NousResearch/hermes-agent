@@ -415,6 +415,12 @@ def run_conversation(
     # runtime so this turn gets a fresh attempt with the preferred model.
     # No-op when _fallback_activated is False (gateway, first turn, etc.).
     agent._restore_primary_runtime()
+    if agent.api_mode == "codex_responses":
+        try:
+            from agent.codex_runtime import reset_codex_responses_websocket_turn_fallback
+            reset_codex_responses_websocket_turn_fallback(agent)
+        except Exception:
+            logger.debug("Failed to reset Codex Responses WebSocket turn fallback", exc_info=True)
 
     # Sanitize surrogate characters from user input.  Clipboard paste from
     # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates

@@ -4330,10 +4330,12 @@ class GatewayRunner:
             for v in _builtin_allow_all_vars + _plugin_allow_all_vars
         )
         if not _any_allowlist and not _allow_all:
+            from hermes_cli.config import get_env_path
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
-                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
-                "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
+                "Set GATEWAY_ALLOW_ALL_USERS=true in %s to allow open access, "
+                "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id).",
+                get_env_path(),
             )
         
         # Discover Python plugins before shell hooks so plugin block

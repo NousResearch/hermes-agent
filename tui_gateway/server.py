@@ -6679,7 +6679,7 @@ def _(rid, params: dict) -> dict:
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.config import is_managed, save_env_value
+        from hermes_cli.config import is_config_managed, save_env_value
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
         slug = (params.get("slug") or "").strip()
@@ -6687,7 +6687,7 @@ def _(rid, params: dict) -> dict:
         if not slug or not api_key:
             return _err(rid, 4001, "slug and api_key are required")
 
-        if is_managed():
+        if is_config_managed():
             return _err(rid, 4006, "managed install — credentials are read-only")
 
         pconfig = PROVIDER_REGISTRY.get(slug)

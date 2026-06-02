@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+# Strict snaps cannot write to the read-only install tree. Keep all Hermes
+# mutable state in snap-managed user storage.
+SNAP_COMMON_DIR="${SNAP_USER_COMMON:-${HOME}/snap/hermes-agent/common}"
+HERMES_STATE_DIR="${SNAP_COMMON_DIR}/hermes"
+
+mkdir -p "${HERMES_STATE_DIR}" "${HERMES_STATE_DIR}/logs" "${HERMES_STATE_DIR}/cache"
+
+export HERMES_HOME="${HERMES_HOME:-${HERMES_STATE_DIR}}"
+export HERMES_MANAGED="${HERMES_MANAGED:-snap}"
+export HERMES_DISABLE_LAZY_INSTALLS="${HERMES_DISABLE_LAZY_INSTALLS:-1}"
+export HERMES_SKIP_NODE_BOOTSTRAP="${HERMES_SKIP_NODE_BOOTSTRAP:-1}"
+
+if [ -n "${SNAP:-}" ]; then
+    export HERMES_BUNDLED_SKILLS="${HERMES_BUNDLED_SKILLS:-${SNAP}/usr/share/hermes-agent/skills}"
+    export HERMES_OPTIONAL_SKILLS="${HERMES_OPTIONAL_SKILLS:-${SNAP}/usr/share/hermes-agent/optional-skills}"
+    export HERMES_WEB_DIST="${HERMES_WEB_DIST:-${SNAP}/usr/share/hermes-agent/web_dist}"
+    export HERMES_TUI_DIR="${HERMES_TUI_DIR:-${SNAP}/usr/share/hermes-agent/tui}"
+    # The `tui` part stages a Node >=20 runtime at $SNAP/bin/node. Point Hermes
+    # at it explicitly so `hermes --tui` works without a host Node install.
+    export HERMES_NODE="${HERMES_NODE:-${SNAP}/bin/node}"
+    export PATH="${SNAP}/bin:${SNAP}/usr/bin:${SNAP}/usr/local/bin:${PATH}"
+fi
+
+command_name="${1:-hermes}"
+if [ "$#" -gt 0 ]; then
+    shift
+fi
+
+case "${command_name}" in
+    hermes|hermes-agent|hermes-acp)
+        exec "${command_name}" "$@"
+        ;;
+    *)
+        exec hermes "${command_name}" "$@"
+        ;;
+esac

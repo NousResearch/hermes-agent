@@ -1,0 +1,171 @@
+name: hermes-agent
+base: core24
+adopt-info: hermes
+summary: Self-improving AI agent
+description: |
+  Hermes Agent is a tool-using AI agent with a CLI, TUI, messaging gateway,
+  scheduled jobs, persistent skills, and local/server workflows.
+
+grade: devel
+confinement: strict
+license: MIT
+
+platforms:
+  amd64:
+  arm64:
+
+# The `ffmpeg` stage-package (used for audio transcode) pulls in a large web
+# of optional codec / output-driver libraries — text-mode video (caca),
+# theora, teletext (zvbi), JACK, flite/sphinx, the FFTW parallel variants,
+# mesa/GL/X, and the full ICU family. Hermes uses ffmpeg for audio only, so
+# none are linked and the library linter reports them as "unused" (plus caca's
+# GL plugin as a missing GLU/glut dependency). They surface one-at-a-time as
+# each soname is silenced, so rather than chase every entry we disable the
+# (purely advisory) library linter outright. A genuinely missing *runtime*
+# dependency would still be caught by the install smoke tests (CLI, TUI,
+# dashboard, gateway). Revisit narrowing this before moving to grade: stable.
+lint:
+  ignore:
+    - library
+
+apps:
+  hermes:
+    command: bin/hermes-snap hermes
+    plugs:
+      - home
+      - network
+      - network-bind
+      - removable-media
+  hermes-agent:
+    command: bin/hermes-snap hermes-agent
+    plugs:
+      - home
+      - network
+      - network-bind
+      - removable-media
+  hermes-acp:
+    command: bin/hermes-snap hermes-acp
+    plugs:
+      - home
+      - network
+      - network-bind
+  gateway:
+    command: bin/hermes-snap gateway run
+    daemon: simple
+    restart-condition: on-failure
+    plugs:
+      - home
+      - network
+      - network-bind
+      - removable-media
+
+parts:
+  hermes:
+    plugin: python
+    source: .
+    python-packages:
+      - .[cli,pty,mcp,web,acp,google,youtube,messaging,anthropic,bedrock,azure-identity]
+    build-packages:
+      - gcc
+      - git
+      - libffi-dev
+      - python3-dev
+    stage-packages:
+      - bash
+      - ca-certificates
+      - curl
+      - ffmpeg
+      - git
+      - iputils-ping
+      - openssh-client
+      - procps
+      - python3
+      - python3-venv
+      - ripgrep
+      - xz-utils
+    override-build: |
+      craftctl default
+      # Snap version tracks the Python package version (pyproject.toml). core24's
+      # build env ships Python 3.12, so tomllib is available.
+      craftctl set version="$(python3 -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"])')"
+      mkdir -p "$CRAFT_PART_INSTALL/usr/share/hermes-agent"
+      cp -a skills "$CRAFT_PART_INSTALL/usr/share/hermes-agent/skills"
+      cp -a optional-skills "$CRAFT_PART_INSTALL/usr/share/hermes-agent/optional-skills"
+      # NOTE: the dashboard assets (usr/share/hermes-agent/web_dist) and the TUI
+      # bundle + Node runtime (usr/share/hermes-agent/tui) are produced by the
+      # dedicated `web` and `tui` parts below. web_dist/tui_dist are build
+      # artifacts absent from a clean checkout, so copying them here is unreliable.
+
+  # The TUI is a Node bundle (esbuild → dist/entry.js, target node20). core24's
+  # apt `nodejs` is v18, which is too old (package.json requires node >=20), so we
+  # fetch the official Node 20 binary: use it to build the bundle and stage it as
+  # the runtime that `hermes --tui` execs. The esbuild output is self-contained
+  # (bundle: true, no externals), so only the `node` binary is needed at runtime.
+  tui:
+    plugin: nil
+    source: ui-tui
+    build-packages:
+      - curl
+      - xz-utils
+    override-build: |
+      set -eu
+      NODE_VERSION=20.18.1
+      case "${CRAFT_ARCH_BUILD_FOR}" in
+        amd64) NODE_ARCH=x64 ;;
+        arm64) NODE_ARCH=arm64 ;;
+        *) echo "Unsupported build arch: ${CRAFT_ARCH_BUILD_FOR}" >&2; exit 1 ;;
+      esac
+      NODE_PKG="node-v${NODE_VERSION}-linux-${NODE_ARCH}"
+      curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_PKG}.tar.xz" \
+        -o "${CRAFT_PART_BUILD}/node.tar.xz"
+      mkdir -p "${CRAFT_PART_BUILD}/nodejs"
+      tar -xJf "${CRAFT_PART_BUILD}/node.tar.xz" -C "${CRAFT_PART_BUILD}/nodejs" --strip-components=1
+      export PATH="${CRAFT_PART_BUILD}/nodejs/bin:${PATH}"
+      npm ci
+      npm run build
+      # Stage the built bundle where HERMES_TUI_DIR ($SNAP/usr/share/hermes-agent/tui)
+      # expects it: <dir>/dist/entry.js.
+      mkdir -p "${CRAFT_PART_INSTALL}/usr/share/hermes-agent/tui/dist"
+      cp -a dist/. "${CRAFT_PART_INSTALL}/usr/share/hermes-agent/tui/dist/"
+      # Keep package.json beside dist/ so Node resolves the bundle as ESM
+      # ("type": "module"). Without it, `node dist/entry.js` is parsed as
+      # CommonJS and the bundle's top-level `import` throws (matches nix/tui.nix).
+      cp -a package.json "${CRAFT_PART_INSTALL}/usr/share/hermes-agent/tui/package.json"
+      # Stage the Node runtime so `hermes --tui` can exec it from $SNAP/bin/node.
+      install -D -m0755 "${CRAFT_PART_BUILD}/nodejs/bin/node" "${CRAFT_PART_INSTALL}/bin/node"
+
+  # The dashboard is a Vite/React app whose static bundle is served by the
+  # Python web server (uvicorn), so Node is only needed at BUILD time (not
+  # staged at runtime). web_dist is a build artifact absent from a clean
+  # checkout, so we build it here and stage it where HERMES_WEB_DIST points.
+  web:
+    plugin: nil
+    source: web
+    build-packages:
+      - curl
+      - xz-utils
+    override-build: |
+      set -eu
+      NODE_VERSION=20.18.1
+      case "${CRAFT_ARCH_BUILD_FOR}" in
+        amd64) NODE_ARCH=x64 ;;
+        arm64) NODE_ARCH=arm64 ;;
+        *) echo "Unsupported build arch: ${CRAFT_ARCH_BUILD_FOR}" >&2; exit 1 ;;
+      esac
+      NODE_PKG="node-v${NODE_VERSION}-linux-${NODE_ARCH}"
+      curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_PKG}.tar.xz" \
+        -o "${CRAFT_PART_BUILD}/node.tar.xz"
+      mkdir -p "${CRAFT_PART_BUILD}/nodejs"
+      tar -xJf "${CRAFT_PART_BUILD}/node.tar.xz" -C "${CRAFT_PART_BUILD}/nodejs" --strip-components=1
+      export PATH="${CRAFT_PART_BUILD}/nodejs/bin:${PATH}"
+      npm ci
+      # `npx vite build` (skipping `tsc -b` type-check) mirrors nix/web.nix.
+      npx vite build --outDir dist
+      mkdir -p "${CRAFT_PART_INSTALL}/usr/share/hermes-agent/web_dist"
+      cp -a dist/. "${CRAFT_PART_INSTALL}/usr/share/hermes-agent/web_dist/"
+
+  snap-launcher:
+    plugin: dump
+    source: packaging/snap
+    organize:
+      hermes-snap: bin/hermes-snap

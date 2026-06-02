@@ -1118,7 +1118,16 @@ def run_doctor(args):
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
 
-    if sys.platform != "win32":
+    from hermes_cli.config import get_managed_system as _get_managed_system
+    _managed_system = _get_managed_system()
+    if sys.platform != "win32" and _managed_system:
+        # Package-managed installs (Snap, Homebrew, NixOS) own the `hermes`
+        # command and the install tree. There is no pip venv entry point or
+        # ~/.local/bin symlink to verify, and `pip install -e` cannot run
+        # against a read-only install — so the checks below don't apply.
+        _section("Command Installation")
+        check_ok(f"Managed by {_managed_system} (command provided by the {_managed_system} package)")
+    elif sys.platform != "win32":
         _section("Command Installation")
         # Determine the venv entry point location
         _venv_bin = None

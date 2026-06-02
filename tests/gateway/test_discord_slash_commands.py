@@ -158,6 +158,32 @@ async def test_registers_native_restart_slash_command(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_registers_voice_as_subcommand_group(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    voice = adapter._client.tree.commands["voice"]
+    assert set(voice._children) >= {"join", "leave", "on", "off", "tts", "status"}
+
+    interaction = SimpleNamespace()
+    await voice._children["join"].callback(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/voice join")
+
+
+@pytest.mark.asyncio
+async def test_registers_transcribe_as_subcommand_group(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    transcribe = adapter._client.tree.commands["transcribe"]
+    assert set(transcribe._children) == {"on", "off", "status"}
+
+    interaction = SimpleNamespace()
+    await transcribe._children["off"].callback(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/transcribe off")
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------

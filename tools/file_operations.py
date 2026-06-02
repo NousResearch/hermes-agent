@@ -285,20 +285,30 @@ class ExecuteResult:
     exit_code: int = 0
 
 
-def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
+def _parse_search_context_line(
+    line: str,
+    known_paths: Optional[set[str]] = None,
+) -> tuple[str, int, str] | None:
     """Parse grep/rg context output in ``path-line-content`` format.
 
     Context lines are ambiguous because filenames may legitimately contain
-    ``-<digits>-`` segments. Prefer the rightmost numeric separator so a path
-    like ``dir/file-12-name.py-8-context`` resolves to
-    ``dir/file-12-name.py`` line ``8`` instead of truncating at ``file``.
+    ``-<digits>-`` segments. Prefer a separator that matches a known match-file
+    path, falling back to the rightmost numeric separator so a path like
+    ``dir/file-12-name.py-8-context`` resolves to ``dir/file-12-name.py`` line
+    ``8`` instead of truncating at ``file``.
     """
     if not line or line == "--":
         return None
 
+    candidates = list(re.finditer(r'-(\d+)-', line))
     match = None
-    for candidate in re.finditer(r'-(\d+)-', line):
-        match = candidate
+    if known_paths:
+        for candidate in candidates:
+            if line[:candidate.start()] in known_paths:
+                match = candidate
+                break
+    if match is None and candidates:
+        match = candidates[-1]
 
     if match is None:
         return None
@@ -2013,7 +2023,15 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            raw_lines = result.stdout.strip().split('\n')
+            known_paths = set()
+            if context > 0:
+                for line in raw_lines:
+                    m = _match_re.match(line)
+                    if m:
+                        known_paths.add((m.group(1) or '') + m.group(2))
+
+            for line in raw_lines:
                 if not line or line == "--":
                     continue
                 
@@ -2030,7 +2048,7 @@ class ShellFileOperations(FileOperations):
                 # Try context line (dash-separated: file-line-content)
                 # Only attempt if context was requested to avoid false positives
                 if context > 0:
-                    parsed = _parse_search_context_line(line)
+                    parsed = _parse_search_context_line(line, known_paths)
                     if parsed:
                         matches.append(SearchMatch(
                             path=parsed[0],
@@ -2111,7 +2129,15 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            raw_lines = result.stdout.strip().split('\n')
+            known_paths = set()
+            if context > 0:
+                for line in raw_lines:
+                    m = _match_re.match(line)
+                    if m:
+                        known_paths.add((m.group(1) or '') + m.group(2))
+
+            for line in raw_lines:
                 if not line or line == "--":
                     continue
                 
@@ -2125,7 +2151,7 @@ class ShellFileOperations(FileOperations):
                     continue
                 
                 if context > 0:
-                    parsed = _parse_search_context_line(line)
+                    parsed = _parse_search_context_line(line, known_paths)
                     if parsed:
                         matches.append(SearchMatch(
                             path=parsed[0],

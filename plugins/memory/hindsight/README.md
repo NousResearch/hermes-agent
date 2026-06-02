@@ -102,12 +102,15 @@ Config file: `~/.hermes/hindsight/config.json`
 ### Session Summary Generator
 
 These keys configure the structured summary generator surface. In this stage,
-they do not inject summaries into prompts, enrich recall queries, enrich retain
-context, or alter lifecycle behavior.
+the assembly helpers and config defaults are available, but lifecycle hooks are
+not wired. Summary consumption stays disabled by default.
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `session_summary_enabled` | `false` | Enables the summary generator surface for future lifecycle wiring |
+| `session_summary_enrich_recall_query` | `false` | Future flag for adding rolling summary context after the latest recall query; no lifecycle wiring in this stage |
+| `session_summary_enrich_retain_context` | `false` | Future flag for adding rolling summary text to retain extraction context, never transcript content; no lifecycle wiring in this stage |
+| `session_summary_inject_prompt` | `false` | Future flag for rendering a separate prompt summary block outside recalled memory blocks; no lifecycle wiring in this stage |
 | `session_summary_generator_provider` | — | LLM provider for future real summary generation |
 | `session_summary_generator_model` | — | LLM model for future real summary generation |
 | `session_summary_generator_base_url` | — | Optional OpenAI-compatible summary model endpoint |

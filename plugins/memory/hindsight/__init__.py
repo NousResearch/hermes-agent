@@ -61,6 +61,12 @@ from plugins.memory.hindsight.session_summary_generator import (
     should_update_session_summary,
     trim_session_summary_inputs,
 )
+from plugins.memory.hindsight.session_summary_assembly import (
+    SessionSummaryAssemblyConfig,
+    build_summary_retain_context,
+    compose_summary_recall_query,
+    render_summary_prompt_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -746,6 +752,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # Session summary generator controls. These are parsed and documented in
         # S2, but not wired into recall/retain/prompt lifecycle hooks yet.
         self._session_summary_enabled = False
+        self._session_summary_enrich_recall_query = False
+        self._session_summary_enrich_retain_context = False
+        self._session_summary_inject_prompt = False
         self._session_summary_generator_provider = ""
         self._session_summary_generator_model = ""
         self._session_summary_generator_base_url = ""
@@ -1053,6 +1062,9 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "session_summary_enabled", "description": "Enable the session summary generator surface (lifecycle wiring is staged separately)", "default": False},
+            {"key": "session_summary_enrich_recall_query", "description": "Enable future summary recall-query enrichment (not lifecycle-wired in this stage)", "default": False},
+            {"key": "session_summary_enrich_retain_context", "description": "Enable future summary retain-context enrichment (not lifecycle-wired in this stage)", "default": False},
+            {"key": "session_summary_inject_prompt", "description": "Enable future prompt summary injection (not lifecycle-wired in this stage)", "default": False},
             {"key": "session_summary_generator_provider", "description": "LLM provider for future real summary generation", "default": ""},
             {"key": "session_summary_generator_model", "description": "LLM model for future real summary generation", "default": ""},
             {"key": "session_summary_generator_base_url", "description": "Optional OpenAI-compatible base URL for future real summary generation", "default": ""},
@@ -1422,6 +1434,13 @@ class HindsightMemoryProvider(MemoryProvider):
         # Runtime lifecycle wiring lands in later stages, so these assignments
         # must not change retain/recall payloads or prompt consumption.
         self._session_summary_enabled = self._config.get("session_summary_enabled", False) is True
+        self._session_summary_enrich_recall_query = (
+            self._config.get("session_summary_enrich_recall_query", False) is True
+        )
+        self._session_summary_enrich_retain_context = (
+            self._config.get("session_summary_enrich_retain_context", False) is True
+        )
+        self._session_summary_inject_prompt = self._config.get("session_summary_inject_prompt", False) is True
         self._session_summary_reuse_hindsight_llm_config = (
             self._config.get("session_summary_reuse_hindsight_llm_config", True) is not False
         )

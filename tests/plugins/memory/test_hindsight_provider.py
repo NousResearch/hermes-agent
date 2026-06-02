@@ -307,6 +307,9 @@ class TestConfig:
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
         assert provider._session_summary_enabled is False
+        assert provider._session_summary_enrich_recall_query is False
+        assert provider._session_summary_enrich_retain_context is False
+        assert provider._session_summary_inject_prompt is False
         assert provider._session_summary_update_every_n_turns is None
         assert provider._session_summary_min_update_every_n_turns == 2
         assert provider._session_summary_timeout_seconds == 20
@@ -376,6 +379,9 @@ class TestConfig:
             recall_max_input_chars=500,
             bank_mission="Test agent mission",
             session_summary_enabled=True,
+            session_summary_enrich_recall_query=True,
+            session_summary_enrich_retain_context=True,
+            session_summary_inject_prompt=True,
             session_summary_generator_provider="openai_compatible",
             session_summary_generator_model="summary-model",
             session_summary_generator_base_url="http://localhost:11434/v1",
@@ -411,6 +417,9 @@ class TestConfig:
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
         assert p._session_summary_enabled is True
+        assert p._session_summary_enrich_recall_query is True
+        assert p._session_summary_enrich_retain_context is True
+        assert p._session_summary_inject_prompt is True
         assert p._session_summary_generator_provider == "openai_compatible"
         assert p._session_summary_generator_model == "summary-model"
         assert p._session_summary_generator_base_url == "http://localhost:11434/v1"

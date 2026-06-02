@@ -521,12 +521,14 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
     # Custom / proxy providers: trust the wire-protocol mode declared in
-    # config.yaml. The ``api_mode`` is what determines whether tool-result
-    # image blocks are syntactically accepted, regardless of how the
-    # caller branded the provider slug. A Palantir Foundry entry with
-    # ``api_mode: anthropic_messages`` is wire-identical to native
-    # Anthropic; OpenAI-compat proxies declare ``chat_completions`` and
-    # accept ``image_url`` parts in tool messages.
+    # config.yaml AND require the model slug to be a known vision-capable
+    # family. The wire decides syntax-acceptance, the slug decides whether
+    # the model can actually consume pixels — both must agree, mirroring
+    # the gate in ``decide_image_input_mode`` in agent/image_routing.py.
+    # Without the slug guard we'd inject ``image_url`` parts into
+    # text-only models behind vision-capable wires (e.g. gpt-3.5-turbo via
+    # a chat_completions proxy), which strict gateways reject and
+    # permissive ones silently bill for the unused image tokens.
     try:
         from agent.auxiliary_client import _read_main_api_mode
         api_mode = _read_main_api_mode()
@@ -540,7 +542,12 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         "responses",
         "openai_responses",
     }:
-        return True
+        try:
+            from agent.image_routing import _is_known_vision_capable_model_name
+            if _is_known_vision_capable_model_name(model):
+                return True
+        except Exception:
+            pass
 
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result

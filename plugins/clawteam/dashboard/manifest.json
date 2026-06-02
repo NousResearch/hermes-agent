@@ -1,0 +1,14 @@
+{
+  "name": "clawteam",
+  "label": "ClawTeam",
+  "description": "Discover teams, members, and recent mailbox activity from the clawteam CLI.",
+  "icon": "Users",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/clawteam",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

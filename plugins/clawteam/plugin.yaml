@@ -1,0 +1,11 @@
+name: clawteam
+version: 0.2.0
+description: "ClawTeam integration — discover/spawn teams, send/peek messages; dashboard tab + 5 agent tools."
+author: "molt-labs"
+kind: backend
+provides_tools:
+  - clawteam_team_discover
+  - clawteam_team_status
+  - clawteam_team_spawn
+  - clawteam_inbox_send
+  - clawteam_inbox_peek

@@ -1,0 +1,13 @@
+.ct-root { padding: 16px; color: inherit; }
+.ct-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.ct-header h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.ct-cols { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 12px; }
+.ct-list { min-height: 120px; }
+.ct-row { padding: 8px 10px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ct-row:hover { background: rgba(255,255,255,0.04); }
+.ct-row-selected { background: rgba(99, 102, 241, 0.18); }
+.ct-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.ct-detail-card { min-height: 120px; }
+.ct-detail { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.4; overflow: auto; max-height: 60vh; }
+.ct-error { color: #f87171; margin: 8px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.ct-muted { color: rgba(255,255,255,0.5); font-style: italic; font-size: 13px; }

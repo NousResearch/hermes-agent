@@ -733,6 +733,10 @@ class ShellFileOperations(FileOperations):
         
         This must be done BEFORE shell escaping, since ~ doesn't expand
         inside single quotes.
+        
+        On Windows with MSYS/Git-Bash, we need to handle the case where
+        the shell returns MSYS-style paths (e.g., /c/Users/...) but Python
+        expects Windows-style paths (e.g., C:/Users/...).
         """
         if not path:
             return path
@@ -743,6 +747,9 @@ class ShellFileOperations(FileOperations):
             result = self._exec("echo $HOME")
             if result.exit_code == 0 and result.stdout.strip():
                 home = result.stdout.strip()
+                # Convert MSYS-style path to Windows-style if needed
+                # e.g., /c/Users/xxx -> C:/Users/xxx
+                home = self._msys_to_windows_path(home)
                 if path == '~':
                     return home
                 elif path.startswith('~/'):
@@ -759,8 +766,43 @@ class ShellFileOperations(FileOperations):
                     expand_result = self._exec(f"echo ~{username}")
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         user_home = expand_result.stdout.strip()
+                        user_home = self._msys_to_windows_path(user_home)
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
                         return user_home + suffix
+        
+        # Also convert MSYS-style absolute paths (e.g., /d/code/...) to Windows-style
+        path = self._msys_to_windows_path(path)
+        
+        return path
+    
+    def _msys_to_windows_path(self, path: str) -> str:
+        """
+        Convert MSYS/Git-Bash style paths to Windows-style paths.
+        
+        MSYS maps Windows drives as /c/, /d/, etc. Python on Windows
+        expects C:/, D:/, etc. This conversion ensures file operations
+        target the correct physical location.
+        
+        Examples:
+            /c/Users/xxx -> C:/Users/xxx
+            /d/code/xxx  -> D:/code/xxx
+            /tmp/xxx     -> /tmp/xxx (no conversion needed)
+        """
+        if not path:
+            return path
+        
+        # Match MSYS drive pattern: /x/ or /x (where x is a single letter)
+        import re as _re
+        msys_drive_pattern = _re.compile(r'^/([a-zA-Z])(?:/|$)')
+        match = msys_drive_pattern.match(path)
+        if match:
+            drive_letter = match.group(1).upper()
+            # Replace /x/ with X:/
+            rest = path[3:]  # Remove leading /x/
+            if rest:
+                return f"{drive_letter}:/" + rest
+            else:
+                return f"{drive_letter}:/"
         
         return path
     

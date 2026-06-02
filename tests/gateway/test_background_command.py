@@ -5,7 +5,6 @@ background session) across gateway messenger platforms.
 """
 
 import asyncio
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -316,6 +315,7 @@ class TestRunBackgroundTask:
         assert mock_adapter.send.call_args.kwargs["metadata"] == {
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "463",
         }
 

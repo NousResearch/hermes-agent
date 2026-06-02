@@ -192,6 +192,14 @@ class SignalAdapter(BasePlatformAdapter):
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
+        # Mention filter — only respond in groups when the bot account is @mentioned.
+        # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
+        _rm_cfg = extra.get("require_mention")
+        if _rm_cfg is not None:
+            self.require_mention = bool(_rm_cfg)
+        else:
+            self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
         # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
         # Stored here so the reaction hooks can skip unauthorized senders
         # (reactions fire before run.py's auth gate, so without this check
@@ -446,7 +454,9 @@ class SignalAdapter(BasePlatformAdapter):
                 if sent_msg and isinstance(sent_msg, dict):
                     dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
                     sent_ts = sent_msg.get("timestamp")
-                    if dest == self._account_normalized:
+                    sent_msg_group_info = sent_msg.get("groupInfo") or {}
+                    sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
+                    if dest == self._account_normalized or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if sent_ts and sent_ts in self._recent_sent_timestamps:
                             self._recent_sent_timestamps.discard(sent_ts)
@@ -488,9 +498,19 @@ class SignalAdapter(BasePlatformAdapter):
         if not data_message:
             return
 
-        # Check for group message
+        # Check for group message.
+        # Modern Signal groups surface on dataMessage.groupV2.id; legacy V1
+        # groups still arrive under dataMessage.groupInfo.groupId. signal-cli
+        # versions differ in which field they expose for V2 groups — some
+        # forward the underlying libsignal envelope verbatim (groupV2), others
+        # normalize everything into groupInfo. Read groupV2 first and fall
+        # back to groupInfo so V2-only groups aren't misrouted as DMs.
         group_info = data_message.get("groupInfo")
-        group_id = group_info.get("groupId") if group_info else None
+        group_v2 = data_message.get("groupV2")
+        group_id = (
+            (group_v2.get("id") if isinstance(group_v2, dict) else None)
+            or (group_info.get("groupId") if isinstance(group_info, dict) else None)
+        )
         is_group = bool(group_id)
 
         # Group message filtering — derived from SIGNAL_GROUP_ALLOWED_USERS:
@@ -515,6 +535,23 @@ class SignalAdapter(BasePlatformAdapter):
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
+
+        # Mention filter: in groups, only process messages that @mention the bot account
+        if is_group and self.require_mention:
+            account_norm = self._account_normalized
+            # Check rendered mention tags OR raw mention metadata
+            mentioned_in_text = account_norm and (
+                f"@{account_norm}" in (text or "")
+            )
+            mentioned_in_metadata = any(
+                m.get("number") == account_norm or m.get("uuid") == account_norm
+                for m in (data_message.get("mentions") or [])
+            )
+            if not mentioned_in_text and not mentioned_in_metadata:
+                logger.debug(
+                    "Signal: ignoring group message (require_mention=true, bot not mentioned)"
+                )
+                return
 
         # Extract quote (reply-to) context from Signal dataMessage
         quote_data = data_message.get("quote") or {}
@@ -560,7 +597,7 @@ class SignalAdapter(BasePlatformAdapter):
         # Build session source
         source = self.build_source(
             chat_id=chat_id,
-            chat_name=group_info.get("groupName") if group_info else sender_name,
+            chat_name=(group_info.get("groupName") if isinstance(group_info, dict) else None) or sender_name,
             chat_type=chat_type,
             user_id=sender,
             user_name=sender_name or sender,

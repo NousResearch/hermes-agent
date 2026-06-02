@@ -33,8 +33,8 @@ Environment Variables:
   requires Scale Plan (default: "false")
 - BROWSERBASE_KEEP_ALIVE: Enable keepAlive for session reconnection after disconnects,
   requires paid plan (default: "true")
-- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
-  beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+- BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in seconds (max 21600 = 6h).
+  Set to extend beyond project default. Common values: 600 (10min), 1800 (30min) (default: none)
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
@@ -55,7 +55,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import shutil
 import sys
@@ -63,7 +62,7 @@ import tempfile
 import threading
 import time
 import requests
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
@@ -83,12 +82,25 @@ try:
 except Exception:
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
-from tools.browser_providers.base import CloudBrowserProvider
-from tools.browser_providers.browserbase import BrowserbaseProvider
-from tools.browser_providers.browser_use import BrowserUseProvider
-from tools.browser_providers.firecrawl import FirecrawlProvider
+# Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
+# (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
+# and into ``plugins/browser/<vendor>/``. The dispatcher consults the
+# registry; the legacy class names are re-exported below as backward-compat
+# shims for callers that import them from this module.
+from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # noqa: F401  (legacy alias)
+from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
+    get_provider as _registry_get_browser_provider,
+)
+from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
+    BrowserbaseBrowserProvider as BrowserbaseProvider,
+)
+from plugins.browser.browser_use.provider import (  # noqa: F401
+    BrowserUseBrowserProvider as BrowserUseProvider,
+)
+from plugins.browser.firecrawl.provider import (  # noqa: F401
+    FirecrawlBrowserProvider as FirecrawlProvider,
+)
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
-
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
@@ -144,7 +156,9 @@ def _browser_candidate_path_dirs() -> list[str]:
     """Return ordered browser CLI PATH candidates shared by discovery and execution."""
     hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
-    return [hermes_node_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
+    hermes_node_root = str(hermes_home / "node")
+    hermes_nm_bin = str(hermes_home / "node_modules" / ".bin")
+    return [hermes_node_bin, hermes_node_root, hermes_nm_bin, *list(_discover_homebrew_node_dirs()), *_SANE_PATH_DIRS]
 
 
 def _merge_browser_path(existing_path: str = "") -> str:
@@ -390,12 +404,29 @@ def _stop_cdp_supervisor(task_id: str) -> None:
 # ============================================================================
 # Cloud Provider Registry
 # ============================================================================
+#
+# Per-vendor browser providers (Browserbase / Browser Use / Firecrawl) live as
+# plugins under ``plugins/browser/<vendor>/`` and self-register through
+# :mod:`agent.browser_registry` at plugin-discovery time. The legacy
+# class-name registry below is preserved as a backward-compat shim so test
+# fixtures that ``monkeypatch.setattr(browser_tool, "_PROVIDER_REGISTRY", ...)``
+# keep working — but ``_get_cloud_provider()`` now consults
+# :mod:`agent.browser_registry` for the actual lookup.
+#
+# When the test patches ``_PROVIDER_REGISTRY``, we honour it (so the cache
+# unit tests still drive the function); otherwise the registry-backed path
+# wins. This keeps the test surface stable while letting third-party
+# plugins drop in under ``~/.hermes/plugins/browser/<vendor>/``.
 
 _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
     "browser-use": BrowserUseProvider,
     "firecrawl": FirecrawlProvider,
 }
+# Frozen copy of the import-time _PROVIDER_REGISTRY, used by
+# ``_is_legacy_provider_registry_overridden`` to detect test-time
+# monkeypatching. NEVER mutate this dict.
+_DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
@@ -410,13 +441,65 @@ _cached_browser_engine: Optional[str] = None
 _browser_engine_resolved = False
 
 
+def _is_legacy_provider_registry_overridden() -> bool:
+    """Return True when a test has patched ``_PROVIDER_REGISTRY`` to a custom value.
+
+    Detected by spotting any registered class that *isn't* the canonical
+    plugin-backed class for that name. Tests that
+    ``monkeypatch.setattr(browser_tool, "_PROVIDER_REGISTRY", ...)`` install
+    custom factories (`exploding_factory`, `lambda: fake_provider`, etc.);
+    those entries fail the canonical-class identity check below.
+
+    Note: a future maintainer adding a 4th built-in provider only needs to
+    extend ``_DEFAULT_PROVIDER_REGISTRY`` below — they do NOT need to update
+    a hardcoded set of keys here. The detection just compares each registered
+    value against the corresponding canonical class.
+    """
+    try:
+        for key, default_cls in _DEFAULT_PROVIDER_REGISTRY.items():
+            if _PROVIDER_REGISTRY.get(key) is not default_cls:
+                return True
+        # Extra keys not in the default registry → also an override.
+        return len(_PROVIDER_REGISTRY) != len(_DEFAULT_PROVIDER_REGISTRY)
+    except Exception:
+        return False
+
+
+def _ensure_browser_plugins_loaded() -> None:
+    """Idempotently trigger plugin discovery so the browser registry is populated.
+
+    Normally `model_tools` is imported early in any session and that
+    triggers `discover_plugins()` as a side effect. But `_get_cloud_provider`
+    can be called from contexts that haven't gone through `model_tools` —
+    standalone scripts, certain unit-test paths, the parity-sweep harness.
+    Make discovery idempotent and side-effect-only here so users always
+    see registered plugins regardless of import order. Cheap: subsequent
+    calls early-return inside `_ensure_plugins_discovered`.
+    """
+    try:
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+    except Exception as exc:
+        logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)
+
+
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
 
     Reads ``config["browser"]["cloud_provider"]`` once and caches the result
     for the process lifetime. An explicit ``local`` provider disables cloud
-    fallback. If unset, fall back to Browserbase when direct or managed
-    Browserbase credentials are available.
+    fallback. If unset, fall back to Browser Use (managed Nous gateway or
+    direct API key) and then Browserbase (direct credentials only) — the
+    historic auto-detect order, now expressed as the
+    :data:`agent.browser_registry._LEGACY_PREFERENCE` walk.
+
+    Selection routes through :mod:`agent.browser_registry` so third-party
+    browser plugins (``~/.hermes/plugins/browser/<vendor>/``) participate
+    in explicit-config resolution. Test fixtures that override
+    ``_PROVIDER_REGISTRY`` or ``BrowserUseProvider`` / ``BrowserbaseProvider``
+    on this module still drive the function — see
+    ``_is_legacy_provider_registry_overridden``.
     """
     global _cached_cloud_provider, _cloud_provider_resolved
     if _cloud_provider_resolved:
@@ -436,9 +519,33 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
                 _cached_cloud_provider = None
                 _cloud_provider_resolved = True
                 return None
-        if provider_key and provider_key in _PROVIDER_REGISTRY:
+        if provider_key:
             try:
-                resolved = _PROVIDER_REGISTRY[provider_key]()
+                if _is_legacy_provider_registry_overridden():
+                    # Test fixture path: honour the patched dict so the
+                    # cache-policy unit tests keep working.
+                    factory = _PROVIDER_REGISTRY.get(provider_key)
+                    if factory is not None:
+                        resolved = factory()
+                else:
+                    # Ensure plugins are discovered so the registry is
+                    # populated. Idempotent — cheap on subsequent calls.
+                    _ensure_browser_plugins_loaded()
+                    resolved = _registry_get_browser_provider(provider_key)
+                    if resolved is None:
+                        # Explicit config name unknown to the registry —
+                        # might be a typo, an uninstalled plugin, or a
+                        # registry-population failure. Warn the user
+                        # (legacy code would have surfaced a typed
+                        # credentials error via direct class instantiation;
+                        # post-migration we surface this WARNING instead).
+                        logger.warning(
+                            "browser.cloud_provider=%r is not a registered "
+                            "browser plugin; falling back to auto-detect "
+                            "(install the corresponding plugin or fix the "
+                            "config key spelling).",
+                            provider_key,
+                        )
             except Exception:
                 logger.warning(
                     "Failed to instantiate explicit cloud_provider %r; will retry on next call",
@@ -452,8 +559,15 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
         logger.debug("Could not read cloud_provider from config: %s", e)
 
     if resolved is None:
-        # Prefer Browser Use (managed Nous gateway or direct API key),
-        # fall back to Browserbase (direct credentials only).
+        # Auto-detect path: Browser Use first (managed Nous gateway or
+        # direct API key), then Browserbase (direct credentials). Uses
+        # the legacy class names imported at the top of this module so
+        # tests that ``monkeypatch.setattr(browser_tool, "BrowserUseProvider", ...)``
+        # keep driving this branch deterministically. Third-party browser
+        # plugins are intentionally NOT reachable from auto-detect — they
+        # participate only via explicit ``browser.cloud_provider: <name>``,
+        # mirroring the firecrawl gate documented on
+        # :data:`agent.browser_registry._LEGACY_PREFERENCE`.
         try:
             fallback_provider = BrowserUseProvider()
             if fallback_provider.is_configured():
@@ -1270,8 +1384,11 @@ def _reap_orphaned_browser_sessions():
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
+        # Use the process-tree termination helper so Chromium children
+        # (renderer, GPU, etc.) are cleaned up, not just the daemon parent.
         try:
-            os.kill(daemon_pid, signal.SIGTERM)
+            from tools.process_registry import ProcessRegistry
+            ProcessRegistry._terminate_host_pid(daemon_pid)
             logger.info("Reaped orphaned browser daemon PID %d (session %s)",
                         daemon_pid, session_name)
             reaped += 1
@@ -1461,7 +1578,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page and analyze it with vision AI. Use this when you need to visually understand what's on the page - especially useful for CAPTCHAs, visual verification challenges, complex layouts, or when the text snapshot doesn't capture important visual information. Returns both the AI analysis and a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1702,7 +1819,29 @@ def _find_agent_browser() -> str:
         _agent_browser_resolved = True
         return _cached_agent_browser
 
-    # Nothing found — cache the failure so subsequent calls don't re-scan.
+    # Nothing found — try lazy installation before giving up.
+    try:
+        from hermes_cli.dep_ensure import ensure_dependency
+        if ensure_dependency("browser"):
+            recheck = shutil.which("agent-browser")
+            if not recheck and extended_path:
+                recheck = shutil.which("agent-browser", path=extended_path)
+            if not recheck:
+                hermes_nm = str(get_hermes_home() / "node_modules" / ".bin")
+                recheck = shutil.which("agent-browser", path=hermes_nm)
+            if not recheck:
+                hermes_node_bin = str(get_hermes_home() / "node" / "bin")
+                recheck = shutil.which("agent-browser", path=hermes_node_bin)
+            if not recheck:
+                hermes_node_root = str(get_hermes_home() / "node")
+                recheck = shutil.which("agent-browser", path=hermes_node_root)
+            if recheck:
+                _cached_agent_browser = recheck
+                _agent_browser_resolved = True
+                return recheck
+    except Exception:
+        pass
+
     _agent_browser_resolved = True
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: "
@@ -1873,7 +2012,13 @@ def _run_browser_command(
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
         #   are restricted, causing Chromium to exit with "No usable sandbox"
         #   even for non-root users running under systemd or containers.
-        if "AGENT_BROWSER_CHROME_FLAGS" not in browser_env:
+        # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
+        # agent-browser itself, but documented in older notes) or the real
+        # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
+        if (
+            "AGENT_BROWSER_ARGS" not in browser_env
+            and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
+        ):
             _needs_sandbox_bypass = False
             if hasattr(os, "geteuid") and os.geteuid() == 0:
                 _needs_sandbox_bypass = True
@@ -1892,8 +2037,8 @@ def _run_browser_command(
                 except OSError:
                     pass
             if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
-                    "--no-sandbox --disable-dev-shm-usage"
+                browser_env["AGENT_BROWSER_ARGS"] = (
+                    "--no-sandbox,--disable-dev-shm-usage"
                 )
 
         # Use temp files for stdout/stderr instead of pipes.
@@ -2729,6 +2874,22 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 "error": f"JavaScript evaluation is not supported by this browser backend. {err}",
             }
             return json.dumps(_copy_fallback_warning(response, result))
+        # A live DOM node / NodeList / Window can't be JSON-serialized by CDP
+        # and fails the eval with "Object reference chain is too long".  The
+        # supervisor fast path retries with returnByValue=false, but the CLI
+        # subprocess can't, so turn the cryptic protocol error into actionable
+        # guidance instead of surfacing it raw.
+        if "reference chain is too long" in err.lower():
+            response = {
+                "success": False,
+                "error": (
+                    "Expression returned a live DOM node / NodeList / Window, "
+                    "which can't be serialized. Extract a primitive value "
+                    "(e.g. .innerText, .href, .src, .value) or use "
+                    "JSON.stringify() / a snapshot tool instead."
+                ),
+            }
+            return json.dumps(_copy_fallback_warning(response, result))
         response = {
             "success": False,
             "error": err,
@@ -2899,17 +3060,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
-    Take a screenshot of the current page and analyze it with vision AI.
+    Take a screenshot of the current page for visual inspection.
 
-    This tool captures what's visually displayed in the browser and sends it
-    to Gemini for analysis. Useful for understanding visual content that the
-    text-based snapshot may not capture (CAPTCHAs, verification challenges,
-    images, complex layouts, etc.).
+    Captures what's visually displayed in the browser. When the active model
+    supports native vision, the screenshot is attached directly to the
+    conversation so the model can inspect it on the next turn; otherwise Hermes
+    falls back to the auxiliary vision model and returns a text analysis. Useful
+    for visual content the text-based snapshot may not capture (CAPTCHAs,
+    verification challenges, images, complex layouts, etc.).
 
-    The screenshot is saved persistently and its file path is returned alongside
-    the analysis, so it can be shared with users via MEDIA:<path> in the response.
+    The screenshot is saved persistently and its file path is returned so it
+    can be shared with users via MEDIA:<path> in the response.
 
     Args:
         question: What you want to know about the page visually
@@ -2917,7 +3080,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         task_id: Task identifier for session isolation
 
     Returns:
-        JSON string with vision analysis results and screenshot_path
+        A JSON string with vision analysis results and screenshot_path, or a
+        multimodal tool-result envelope carrying the screenshot and metadata.
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
@@ -3041,6 +3205,34 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         _screenshot_bytes = screenshot_path.read_bytes()
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
+
+        # Fast path: when native image routing is in effect for the active main
+        # model, attach the screenshot directly instead of describing it through
+        # an auxiliary vision LLM. The model inspects the pixels on its next
+        # turn — no aux call, no information loss. Consistent with vision_analyze.
+        from tools.vision_tools import (
+            _build_native_vision_tool_result,
+            _should_use_native_vision_fast_path,
+        )
+
+        if _should_use_native_vision_fast_path():
+            native_result = _build_native_vision_tool_result(
+                image_url=str(screenshot_path),
+                question=question,
+                image_data_url=data_url,
+                image_size_bytes=len(_screenshot_bytes),
+            )
+            meta = native_result.setdefault("meta", {})
+            meta["screenshot_path"] = str(screenshot_path)
+            if _lp_fallback_warning:
+                meta["fallback_warning"] = _lp_fallback_warning
+            if annotate and result.get("data", {}).get("annotations"):
+                meta["annotations"] = result["data"]["annotations"]
+            native_result["text_summary"] = (
+                f"{native_result.get('text_summary', '')} "
+                f"Screenshot path: {screenshot_path}"
+            ).strip()
+            return native_result
 
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
@@ -3293,8 +3485,9 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
                 if os.path.isfile(pid_file):
                     try:
+                        from tools.process_registry import ProcessRegistry
                         daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
-                        os.kill(daemon_pid, signal.SIGTERM)
+                        ProcessRegistry._terminate_host_pid(daemon_pid)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
                         logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
@@ -3381,8 +3574,8 @@ def _chromium_installed() -> bool:
 
     1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
        agent-browser at a pre-installed Chrome/Chromium.
-    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium-browser``,
-       ``chrome``).
+    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
+       ``chromium-browser``, ``chrome``).
     3. Playwright's browser cache (current logic) — directories containing
        ``chromium-*`` or ``chromium_headless_shell-*``.
 
@@ -3405,7 +3598,12 @@ def _chromium_installed() -> bool:
             return True
 
     # 2. System Chrome/Chromium in PATH (common names)
-    system_chrome = shutil.which("google-chrome") or shutil.which("chromium-browser") or shutil.which("chrome")
+    system_chrome = (
+        shutil.which("google-chrome")
+        or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("chrome")
+    )
     if system_chrome:
         _cached_chromium_installed = True
         return True
@@ -3498,6 +3696,24 @@ def check_browser_requirements() -> bool:
         return False
 
     return True
+
+
+def check_browser_vision_requirements() -> bool:
+    """Whether ``browser_vision`` should be advertised to the model.
+
+    Requires BOTH a working browser (``check_browser_requirements``) AND a
+    resolvable vision backend. Without the vision check, the tool stays in
+    the model's tool list even when no vision provider is configured, then
+    fails at call time with a cryptic provider-side error like
+    ``unknown variant `image_url`, expected `text``` (issue #31179).
+    """
+    if not check_browser_requirements():
+        return False
+    try:
+        from tools.vision_tools import check_vision_requirements
+    except ImportError:
+        return False
+    return check_vision_requirements()
 
 
 # ============================================================================
@@ -3634,7 +3850,7 @@ registry.register(
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_vision_requirements,
     emoji="👁️",
 )
 registry.register(

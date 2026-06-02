@@ -127,6 +127,8 @@ export const zhHant: Translations = {
 
   sessions: {
     title: "工作階段",
+    history: "歷史",
+    overview: "總覽",
     searchPlaceholder: "搜尋訊息內容...",
     noSessions: "尚無工作階段",
     noMatch: "沒有符合的工作階段",
@@ -269,7 +271,7 @@ export const zhHant: Translations = {
       "探索、安裝、啟用並更新 Hermes 外掛（對齊 `hermes plugins` CLI）。",
     identifierLabel: "Git 網址或 owner/repo",
     inactive: "未啟用",
-    installBtn: "從 Git 安裝",
+    installBtn: "安裝",
     installHeading: "從 GitHub / Git URL 安裝",
     installHint: "可使用 owner/repo 簡寫或完整的 https:// 或 git@ 複製網址。",
     memoryProviderLabel: "記憶提供者",
@@ -367,6 +369,8 @@ export const zhHant: Translations = {
     description: "管理儲存於下列位置的 API 金鑰與密鑰",
     hideAdvanced: "隱藏進階選項",
     showAdvanced: "顯示進階選項",
+    showLess: "顯示較少",
+    showMore: "顯示更多",
     llmProviders: "LLM 提供者",
     providersConfigured: "已設定 {configured}/{total} 個提供者",
     getKey: "取得金鑰",
@@ -392,7 +396,7 @@ export const zhHant: Translations = {
     disconnect: "中斷連線",
     managedExternally: "由外部管理",
     copied: "已複製 ✓",
-    cli: "CLI",
+    cli: "複製",
     copyCliCommand: "複製 CLI 指令（外部 / 備援用）",
     connect: "連線",
     sessionExpires: "工作階段將於 {time} 後過期",
@@ -419,7 +423,7 @@ export const zhHant: Translations = {
   },
 
   language: {
-    switchTo: "切換為英文",
+    switchTo: "切換語言",
   },
 
   theme: {
@@ -654,6 +658,7 @@ export const zhHant: Translations = {
     columnLabels: {
       triage: "待分類",
       todo: "待辦",
+      scheduled: "已排程",
       ready: "就緒",
       running: "進行中",
       blocked: "已封鎖",
@@ -663,7 +668,8 @@ export const zhHant: Translations = {
     columnHelp: {
       triage: "原始想法 — 規格制定者將完善規格",
       todo: "等待相依項目或尚未指派",
-      ready: "已指派，等待排程器輪詢",
+      scheduled: "等待已知的時間延遲或已排程的後續處理",
+      ready: "相依項目已滿足；指派設定檔以便排程",
       running: "已被工作者領取 — 執行中",
       blocked: "工作者請求人工輸入",
       done: "已完成",

@@ -1,4 +1,5 @@
 import json
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -154,6 +155,43 @@ def test_tool_add_resource_uploads_existing_local_directory_and_cleans_zip(tmp_p
     })
     assert result["status"] == "added"
     assert result["root_uri"] == "viking://resources/docs"
+
+
+def test_tool_add_resource_directory_zip_skips_symlink_escape(tmp_path):
+    secret = tmp_path / "outside-secret.txt"
+    secret.write_text("do not upload\n", encoding="utf-8")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("# Guide\n", encoding="utf-8")
+    link = docs / "leak.txt"
+    try:
+        link.symlink_to(secret)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    archive_entries = {}
+
+    def inspect_upload(path):
+        with zipfile.ZipFile(path) as archive:
+            archive_entries["names"] = archive.namelist()
+            archive_entries["payloads"] = {
+                name: archive.read(name)
+                for name in archive.namelist()
+            }
+        return "upload_docs.zip"
+
+    provider._client.upload_temp_file.side_effect = inspect_upload
+    provider._client.post.return_value = {
+        "status": "ok",
+        "result": {"root_uri": "viking://resources/docs"},
+    }
+
+    json.loads(provider._tool_add_resource({"url": str(docs)}))
+
+    assert archive_entries["names"] == ["guide.md"]
+    assert b"do not upload" not in b"".join(archive_entries["payloads"].values())
 
 
 def test_tool_add_resource_cleans_local_directory_zip_when_add_fails(tmp_path):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from getpass import getpass
 import math
 import sys
 import time
@@ -30,10 +29,11 @@ from agent.credential_pool import (
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -77,6 +77,8 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     if normalized in {"or", "open-router"}:
         return "openrouter"
+    if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
+        return "xai-oauth"
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
@@ -170,7 +172,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -194,7 +196,7 @@ def auth_add_command(args) -> None:
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
         if not token:
-            token = getpass("Paste your API key: ").strip()
+            token = masked_secret_prompt("Paste your API key: ").strip()
         if not token:
             raise SystemExit("No API key provided.")
         default_label = _api_key_default_label(len(pool.entries()) + 1)
@@ -270,9 +272,6 @@ def auth_add_command(args) -> None:
                 print("Rehydrating Nous session from shared credentials...")
                 rehydrated = auth_mod._try_import_shared_nous_state(
                     timeout_seconds=getattr(args, "timeout", None) or 15.0,
-                    min_key_ttl_seconds=max(
-                        60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))
-                    ),
                 )
                 if rehydrated is not None:
                     custom_label = (getattr(args, "label", None) or "").strip() or None
@@ -295,7 +294,6 @@ def auth_add_command(args) -> None:
             timeout_seconds=getattr(args, "timeout", None) or 15.0,
             insecure=bool(getattr(args, "insecure", False)),
             ca_bundle=getattr(args, "ca_bundle", None),
-            min_key_ttl_seconds=max(60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))),
         )
         # Honor `--label <name>` so nous matches other providers' UX.  The
         # helper embeds this into providers.nous so that label_from_token
@@ -324,6 +322,32 @@ def auth_add_command(args) -> None:
             auth_type=AUTH_TYPE_OAUTH,
             priority=0,
             source=f"{SOURCE_MANUAL}:device_code",
+            access_token=creds["tokens"]["access_token"],
+            refresh_token=creds["tokens"].get("refresh_token"),
+            base_url=creds.get("base_url"),
+            last_refresh=creds.get("last_refresh"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "xai-oauth":
+        creds = auth_mod._xai_oauth_loopback_login(
+            timeout_seconds=getattr(args, "timeout", None) or 20.0,
+            open_browser=not getattr(args, "no_browser", False),
+            manual_paste=bool(getattr(args, "manual_paste", False)),
+        )
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["tokens"]["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:xai_pkce",
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
@@ -539,6 +563,54 @@ def _interactive_auth() -> None:
             print()
     except ImportError:
         pass  # boto3 or bedrock_adapter not available
+
+    # Show Azure Foundry Entra ID status
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _model_cfg = _cfg.get("model") if isinstance(_cfg, dict) else None
+        if isinstance(_model_cfg, dict):
+            _cfg_provider = str(_model_cfg.get("provider") or "").strip().lower()
+            _cfg_auth_mode = str(_model_cfg.get("auth_mode") or "").strip().lower()
+            if _cfg_provider == "azure-foundry" and _cfg_auth_mode == "entra_id":
+                from agent.azure_identity_adapter import (
+                    EntraIdentityConfig,
+                    SCOPE_AI_AZURE_DEFAULT,
+                    describe_active_credential,
+                    has_azure_identity_installed,
+                )
+                _base_url = str(_model_cfg.get("base_url") or "").strip()
+                _entra = _model_cfg.get("entra") or {}
+                if not isinstance(_entra, dict):
+                    _entra = {}
+                _scope = (
+                    str(_entra.get("scope") or "").strip()
+                    or SCOPE_AI_AZURE_DEFAULT
+                )
+                print(f"azure-foundry (Microsoft Entra ID):")
+                print(f"  Endpoint: {_base_url or '(not configured)'}")
+                print(f"  Scope: {_scope}")
+                if not has_azure_identity_installed():
+                    print("  Status: ⚠ azure-identity not installed "
+                          "(pip install azure-identity)")
+                else:
+                    _entra_cfg = EntraIdentityConfig(
+                        scope=_scope,
+                    )
+                    _info = describe_active_credential(config=_entra_cfg, timeout_seconds=10.0)
+                    _env_sources = _info.get("env_sources") or []
+                    if _info.get("ok"):
+                        _tag = ", ".join(_env_sources) if _env_sources else "default chain"
+                        print(f"  Status: ✓ token acquired ({_tag})")
+                    else:
+                        _err = _info.get("error") or "credential chain exhausted"
+                        print(f"  Status: ⚠ {_err}")
+                        _hint = _info.get("hint")
+                        if _hint:
+                            print(f"  Hint: {_hint}")
+                print()
+    except Exception:
+        pass
     print()
 
     # Main menu

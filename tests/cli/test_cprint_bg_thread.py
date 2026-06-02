@@ -215,13 +215,15 @@ def test_cprint_swallows_prompt_toolkit_import_error(monkeypatch):
     assert direct_prints == ["fallback2"]
 
 
-def test_output_history_strips_ansi_and_keeps_recent_lines():
+def test_output_history_preserves_ansi_and_keeps_recent_lines():
     cli._configure_output_history(True, 10)
 
     for idx in range(12):
         cli._record_output_history(f"\x1b[31mline-{idx}\x1b[0m")
 
-    assert list(cli._OUTPUT_HISTORY) == [f"line-{idx}" for idx in range(2, 12)]
+    assert list(cli._OUTPUT_HISTORY) == [
+        f"\x1b[31mline-{idx}\x1b[0m" for idx in range(2, 12)
+    ]
 
 
 def test_replay_output_history_does_not_record_replayed_lines(monkeypatch):
@@ -258,8 +260,33 @@ def test_replay_output_history_rerenders_callable_entries(monkeypatch):
     cli._replay_output_history()
 
     assert widths_seen == ["called"]
-    assert printed == ["top border", "body"]
+    assert printed == ["top border\nbody"]
     assert list(cli._OUTPUT_HISTORY) == [_render_current_width]
+
+
+def test_replay_output_history_batches_rendered_lines_into_one_print(monkeypatch):
+    cli._configure_output_history(True, 10)
+    cli._record_output_history("first line")
+    cli._record_output_history("second line")
+    cli._record_output_history_entry(lambda: ["third line", "fourth line"])
+    printed = []
+
+    monkeypatch.setattr(cli, "_pt_print", lambda value: printed.append(value))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda text: text)
+
+    cli._replay_output_history()
+
+    assert printed == ["first line\nsecond line\nthird line\nfourth line"]
+
+
+def test_chat_console_records_rich_ansi_for_resize_replay(monkeypatch):
+    cli._configure_output_history(True, 10)
+    monkeypatch.setattr(cli, "_pt_print", lambda *_args, **_kwargs: None)
+
+    cli.ChatConsole().print("[bold red]Hello[/]")
+
+    assert cli._OUTPUT_HISTORY
+    assert any("\x1b[" in line for line in cli._OUTPUT_HISTORY)
 
 
 def test_suspend_output_history_blocks_recording():

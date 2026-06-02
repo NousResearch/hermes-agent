@@ -10,7 +10,6 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -72,6 +71,13 @@ def _make_staging_dir(root: Path, name: str = "src", *, manifest: DistributionMa
     mf = manifest or DistributionManifest(name=name, version="0.1.0")
     write_manifest(staged, mf)
     return staged
+
+
+def _symlink_file_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
 
 # ===========================================================================
@@ -473,6 +479,23 @@ class TestSecurity:
         if (plan.target_dir / ".env").exists():
             assert "LEAKED" not in (plan.target_dir / ".env").read_text()
 
+    def test_install_rejects_symlinked_distribution_files(self, profile_env, tmp_path):
+        """Distribution install must not follow symlinks to local files."""
+        staged = _make_staging_dir(profile_env, "src")
+        local_secret = tmp_path / "local-secret.txt"
+        local_secret.write_text("outside secret\n")
+        _symlink_file_or_skip(
+            staged / "skills" / "demo" / "leak.txt",
+            local_secret,
+        )
+
+        with pytest.raises(DistributionError, match="symlink"):
+            install_distribution(str(staged), name="clean")
+
+        from hermes_cli.profiles import get_profile_dir
+        target = get_profile_dir("clean")
+        assert not (target / "skills" / "demo" / "leak.txt").exists()
+
 
 # ===========================================================================
 # Install-time metadata (installed_at stamp)
@@ -581,4 +604,3 @@ class TestErrorSurfaces:
         staged = _make_staging_dir(profile_env, "bad", manifest=mf)
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
-

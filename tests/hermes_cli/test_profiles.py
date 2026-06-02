@@ -7,7 +7,6 @@ and shell completion generation.
 
 import json
 import io
-import os
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -29,8 +28,6 @@ from hermes_cli.profiles import (
     rename_profile,
     export_profile,
     import_profile,
-    generate_bash_completion,
-    generate_zsh_completion,
     _get_profiles_root,
     _get_default_hermes_home,
     seed_profile_skills,
@@ -603,6 +600,114 @@ class TestAliasCollision:
         assert result is not None
         assert "reserved" in result.lower()
 
+    def test_uses_where_on_windows(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="")
+            check_alias_collision("mybot")
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == "where"
+
+    def test_uses_which_on_posix(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="")
+            check_alias_collision("mybot")
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == "which"
+
+    def test_windows_checks_bat_extension(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        wrapper_dir = profile_env / ".local" / "bin"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        bat_path = wrapper_dir / "mybot.bat"
+        bat_path.write_text("@echo off\r\nhermes -p mybot %*\r\n")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=str(bat_path),
+            )
+            result = check_alias_collision("mybot")
+        assert result is None  # our own wrapper, safe to overwrite
+
+
+# ===================================================================
+# TestWrapperScript
+# ===================================================================
+
+class TestWrapperScript:
+    """Tests for create_wrapper_script() and remove_wrapper_script()."""
+
+    def test_creates_sh_on_posix(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script
+        wrapper = create_wrapper_script("mybot")
+        assert wrapper is not None
+        assert wrapper.name == "mybot"
+        content = wrapper.read_text()
+        assert content.startswith("#!/bin/sh")
+        assert "hermes -p mybot" in content
+
+    def test_creates_bat_on_windows(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        from hermes_cli.profiles import create_wrapper_script
+        wrapper = create_wrapper_script("mybot")
+        assert wrapper is not None
+        assert wrapper.name == "mybot.bat"
+        content = wrapper.read_text()
+        assert "@echo off" in content
+        assert "hermes -p mybot" in content
+        assert "%*" in content
+
+    def test_remove_finds_bat_on_windows(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
+        wrapper = create_wrapper_script("mybot")
+        assert wrapper is not None
+        assert wrapper.exists()
+        removed = remove_wrapper_script("mybot")
+        assert removed is True
+        assert not wrapper.exists()
+
+    def test_remove_finds_sh_on_posix(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
+        wrapper = create_wrapper_script("mybot")
+        assert wrapper is not None
+        assert wrapper.exists()
+        removed = remove_wrapper_script("mybot")
+        assert removed is True
+        assert not wrapper.exists()
+
+    def test_remove_returns_false_when_absent(self, profile_env):
+        from hermes_cli.profiles import remove_wrapper_script
+        assert remove_wrapper_script("nonexistent") is False
+
+    def test_custom_alias_target_on_posix(self, profile_env, monkeypatch):
+        # Custom alias name pointing at a differently-named profile: the file
+        # is named after the alias, the -p content references the profile.
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script
+        wrapper = create_wrapper_script("rq", target="redqueen")
+        assert wrapper is not None
+        assert wrapper.name == "rq"
+        content = wrapper.read_text()
+        assert content.startswith("#!/bin/sh")
+        assert "hermes -p redqueen" in content
+
+    def test_custom_alias_target_on_windows(self, profile_env, monkeypatch):
+        # Regression: custom-name aliases must still produce an executable
+        # .bat (not a clobbered #!/bin/sh) on Windows.
+        monkeypatch.setattr("sys.platform", "win32")
+        from hermes_cli.profiles import create_wrapper_script
+        wrapper = create_wrapper_script("rq", target="redqueen")
+        assert wrapper is not None
+        assert wrapper.name == "rq.bat"
+        content = wrapper.read_text()
+        assert "@echo off" in content
+        assert "hermes -p redqueen" in content
+        assert "%*" in content
+        assert "#!/bin/sh" not in content
+
 
 # ===================================================================
 # TestRenameProfile
@@ -649,8 +754,8 @@ class TestRenameProfile:
 
         cfg = json.loads(honcho_path.read_text())
         assert "hermes.ssi_health" not in cfg["hosts"]
-        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
-        assert cfg["hosts"]["hermes.heimdall"]["peerName"] == "user-peer"
+        assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
 
     def test_pins_ai_peer_when_absent_on_honcho_host_rename(self, profile_env):
         tmp_path = profile_env
@@ -667,8 +772,8 @@ class TestRenameProfile:
 
         cfg = json.loads(honcho_path.read_text())
         assert "hermes.ssi_health" not in cfg["hosts"]
-        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
-        assert cfg["hosts"]["hermes.heimdall"]["workspace"] == "hermes"
+        assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes_heimdall"]["workspace"] == "hermes"
 
     def test_does_not_overwrite_existing_honcho_host_on_rename(self, profile_env):
         tmp_path = profile_env
@@ -677,7 +782,7 @@ class TestRenameProfile:
         honcho_path.write_text(json.dumps({
             "hosts": {
                 "hermes.ssi_health": {"aiPeer": "ssi_health"},
-                "hermes.heimdall": {"aiPeer": "heimdall"},
+                "hermes_heimdall": {"aiPeer": "heimdall"},
             }
         }))
 
@@ -686,7 +791,7 @@ class TestRenameProfile:
 
         cfg = json.loads(honcho_path.read_text())
         assert cfg["hosts"]["hermes.ssi_health"]["aiPeer"] == "ssi_health"
-        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "heimdall"
+        assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "heimdall"
 
     def test_default_raises_value_error(self, profile_env):
         with pytest.raises(ValueError, match="default"):
@@ -1011,32 +1116,6 @@ class TestProfileIsolation:
         # Verify both exist and are independent dirs
         assert (alpha_dir / "skills").is_dir()
         assert (beta_dir / "skills").is_dir()
-
-
-# ===================================================================
-# TestCompletion
-# ===================================================================
-
-class TestCompletion:
-    """Tests for bash/zsh completion generators."""
-
-    def test_bash_completion_contains_complete(self):
-        script = generate_bash_completion()
-        assert len(script) > 0
-        assert "complete" in script
-
-    def test_zsh_completion_contains_compdef(self):
-        script = generate_zsh_completion()
-        assert len(script) > 0
-        assert "compdef" in script
-
-    def test_bash_completion_has_hermes_profiles_function(self):
-        script = generate_bash_completion()
-        assert "_hermes_profiles" in script
-
-    def test_zsh_completion_has_hermes_function(self):
-        script = generate_zsh_completion()
-        assert "_hermes" in script
 
 
 # ===================================================================

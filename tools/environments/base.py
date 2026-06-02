@@ -524,8 +524,50 @@ class BaseEnvironment(ABC):
         # U+FFFD substitution rather than clobbering the whole buffer.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
+        def _drain_iterable(stream):
+            # Fallback path: ``stream`` is not backed by a real OS file
+            # descriptor (no usable ``fileno()``).  This covers in-memory
+            # ProcessHandle adapters that expose stdout as a plain iterator of
+            # already-collected output (the legacy ``for line in proc.stdout``
+            # contract) rather than a live pipe.  Iterate it to EOF.  Without
+            # this, the drain thread would raise an unhandled exception and die
+            # silently, losing all of the process's output.
+            try:
+                for piece in stream:
+                    if piece is None:
+                        continue
+                    if isinstance(piece, bytes):
+                        output_chunks.append(decoder.decode(piece))
+                    else:
+                        output_chunks.append(str(piece))
+            except Exception:
+                pass
+            finally:
+                try:
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        output_chunks.append(tail)
+                except Exception:
+                    pass
+
         def _drain():
-            fd = proc.stdout.fileno()
+            # Resolve a real OS file descriptor up front.  Real subprocesses and
+            # the SDK ``_ThreadedProcessHandle`` (os.pipe-backed) both return an
+            # integer fd here.  Mocks / iterator-style stdout streams either lack
+            # ``fileno()`` entirely or return a non-integer — in that case fall
+            # back to draining the stream as an iterable instead of crashing the
+            # thread (issue: 'list_iterator' object has no attribute 'fileno').
+            stream = proc.stdout
+            if stream is None:
+                return
+            fileno = getattr(stream, "fileno", None)
+            try:
+                fd = fileno() if callable(fileno) else None
+            except Exception:
+                fd = None
+            if not isinstance(fd, int) or fd < 0:
+                _drain_iterable(stream)
+                return
             # select.select does NOT work on pipe fds on Windows (only sockets).
             # Use blocking os.read in a daemon thread instead — safe because
             # EOF arrives promptly when bash exits.
@@ -609,6 +651,7 @@ class BaseEnvironment(ABC):
             )
 
         try:
+            _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
                 if is_interrupted():
@@ -662,7 +705,17 @@ class BaseEnvironment(ABC):
                     _last_heartbeat = time.monotonic()
                     _cb_was_none = _cb_now_none
 
-                time.sleep(0.2)
+                # Adaptive poll: start at 5ms so fast commands (echo, pwd,
+                # date, cat short files) return in ~6ms instead of being
+                # stuck waiting for the next 200ms tick. Back off
+                # exponentially toward 200ms so long-running commands
+                # (builds, tests, sleeps) don't pay measurable CPU in the
+                # poll loop. For an `echo` this saves ~195ms per tool call;
+                # for a 10s build the steady-state poll rate is identical
+                # to the old behavior.
+                time.sleep(_poll_sleep)
+                if _poll_sleep < 0.2:
+                    _poll_sleep = min(_poll_sleep * 1.5, 0.2)
         except (KeyboardInterrupt, SystemExit):
             # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
             # while we were polling.  The local backend spawns subprocesses

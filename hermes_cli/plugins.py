@@ -34,7 +34,6 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import importlib.metadata
 import importlib.util
 import inspect
@@ -325,8 +324,15 @@ class PluginContext:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        override: bool = False,
     ) -> None:
-        """Register a tool in the global registry **and** track it as plugin-provided."""
+        """Register a tool in the global registry **and** track it as plugin-provided.
+
+        Pass ``override=True`` to replace an existing built-in tool with the
+        same name (e.g. swap the default ``browser_navigate`` for a custom
+        CDP-backed implementation). Without it, attempting to register a name
+        already claimed by a different toolset is rejected.
+        """
         from tools.registry import registry
 
         registry.register(
@@ -339,9 +345,13 @@ class PluginContext:
             is_async=is_async,
             description=description,
             emoji=emoji,
+            override=override,
         )
         self._manager._plugin_tool_names.add(name)
-        logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
+        logger.debug(
+            "Plugin %s registered tool: %s%s",
+            self.manifest.name, name, " (override)" if override else "",
+        )
 
     # -- message injection --------------------------------------------------
 
@@ -542,6 +552,215 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- dashboard auth provider registration --------------------------------
+
+    def register_dashboard_auth_provider(self, provider) -> None:
+        """Register a dashboard authentication provider.
+
+        ``provider`` must be an instance of
+        :class:`hermes_cli.dashboard_auth.DashboardAuthProvider`. Used by
+        the dashboard OAuth auth gate, which engages when the dashboard
+        binds to a non-loopback host without ``--insecure``.
+
+        Misbehaving providers (wrong type, duplicate name) are logged at
+        WARNING and silently ignored — never raised — so a broken plugin
+        cannot crash the host. Same convention as
+        ``register_image_gen_provider``.
+        """
+        from hermes_cli.dashboard_auth import (
+            DashboardAuthProvider, register_provider,
+        )
+
+        if not isinstance(provider, DashboardAuthProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a dashboard-auth provider "
+                "that does not inherit from DashboardAuthProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        try:
+            register_provider(provider)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Plugin '%s' failed to register dashboard-auth provider "
+                "%r: %s",
+                self.manifest.name, getattr(provider, "name", "?"), e,
+            )
+            return
+        logger.info(
+            "Plugin '%s' registered dashboard-auth provider: %s (%s)",
+            self.manifest.name, provider.name, provider.display_name,
+        )
+
+    # -- video gen provider registration -------------------------------------
+
+    def register_video_gen_provider(self, provider) -> None:
+        """Register a video generation backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.video_gen_provider.VideoGenProvider`. The
+        ``provider.name`` attribute is what ``video_gen.provider`` in
+        ``config.yaml`` matches against when routing ``video_generate``
+        tool calls.
+        """
+        from agent.video_gen_provider import VideoGenProvider
+        from agent.video_gen_registry import register_provider as _register_video_provider
+
+        if not isinstance(provider, VideoGenProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a video_gen provider that does "
+                "not inherit from VideoGenProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_video_provider(provider)
+        logger.info(
+            "Plugin '%s' registered video_gen provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- web search/extract provider registration ----------------------------
+
+    def register_web_search_provider(self, provider) -> None:
+        """Register a web search/extract backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.web_search_provider.WebSearchProvider`. The
+        ``provider.name`` attribute is what ``web.search_backend`` /
+        ``web.extract_backend`` / ``web.backend`` in ``config.yaml``
+        matches against when routing ``web_search`` / ``web_extract``
+        tool calls.
+        """
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import register_provider as _register_web_provider
+
+        if not isinstance(provider, WebSearchProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a web provider that does "
+                "not inherit from WebSearchProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_web_provider(provider)
+        logger.info(
+            "Plugin '%s' registered web provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- browser provider registration ---------------------------------------
+
+    def register_browser_provider(self, provider) -> None:
+        """Register a cloud browser backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.browser_provider.BrowserProvider`. The
+        ``provider.name`` attribute is what ``browser.cloud_provider`` in
+        ``config.yaml`` matches against when routing cloud-mode
+        ``browser_*`` tool calls.
+
+        Mirrors :meth:`register_web_search_provider` exactly — same
+        registration shape, same gating, same logging. The browser
+        subsystem's dispatcher (:func:`tools.browser_tool._get_cloud_provider`)
+        consults the registry built up by these calls.
+        """
+        from agent.browser_provider import BrowserProvider
+        from agent.browser_registry import register_provider as _register_browser_provider
+
+        if not isinstance(provider, BrowserProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a browser provider that does "
+                "not inherit from BrowserProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_browser_provider(provider)
+        logger.info(
+            "Plugin '%s' registered browser provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- TTS provider registration -------------------------------------------
+
+    def register_tts_provider(self, provider) -> None:
+        """Register a text-to-speech backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.tts_provider.TTSProvider`. The ``provider.name``
+        attribute is what ``tts.provider`` in ``config.yaml`` matches
+        against when routing ``text_to_speech`` tool calls — **but
+        only when**:
+
+        1. ``provider.name`` is NOT a built-in TTS provider name
+           (``edge``, ``openai``, ``elevenlabs``, …). Built-ins always
+           win — the registry rejects shadowing names with a warning.
+        2. There is NO ``tts.providers.<name>: type: command`` entry
+           with the same name. Command-providers (PR #17843) win on
+           name collision because config is more local than plugin
+           install.
+
+        Coexists with the command-provider registry rather than
+        replacing it — see issue #30398 for the full design rationale.
+        """
+        from agent.tts_provider import TTSProvider
+        from agent.tts_registry import register_provider as _register_tts_provider
+
+        if not isinstance(provider, TTSProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a TTS provider that does "
+                "not inherit from TTSProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_tts_provider(provider)
+        logger.info(
+            "Plugin '%s' registered TTS provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- transcription (STT) provider registration ---------------------------
+
+    def register_transcription_provider(self, provider) -> None:
+        """Register a speech-to-text backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.transcription_provider.TranscriptionProvider`.
+        The ``provider.name`` attribute is what ``stt.provider`` in
+        ``config.yaml`` matches against when routing
+        :func:`tools.transcription_tools.transcribe_audio` calls —
+        **but only when**:
+
+        1. ``provider.name`` is NOT a built-in STT provider name
+           (``local``, ``local_command``, ``groq``, ``openai``,
+           ``mistral``, ``xai``). Built-ins always win — the registry
+           rejects shadowing names with a warning.
+        2. There is NO ``stt.providers.<name>: type: command`` entry
+           with the same name. Command-providers win on name
+           collision because config is more local than plugin install
+           — same precedence rule as TTS.
+
+        Coexists with the in-tree dispatcher and the STT
+        command-provider registry rather than replacing them. The 6
+        built-in STT backends keep their native implementations in
+        ``tools/transcription_tools.py``; this hook is for *new* Python
+        engines (OpenRouter, SenseAudio, Gemini-STT, custom proprietary
+        backends).
+        """
+        from agent.transcription_provider import TranscriptionProvider
+        from agent.transcription_registry import register_provider as _register_stt_provider
+
+        if not isinstance(provider, TranscriptionProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a transcription provider that "
+                "does not inherit from TranscriptionProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_stt_provider(provider)
+        logger.info(
+            "Plugin '%s' registered transcription provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(
@@ -599,6 +818,119 @@ class PluginContext:
         )
 
     # -- hook registration --------------------------------------------------
+
+    # -- auxiliary task registration ---------------------------------------
+
+    def register_auxiliary_task(
+        self,
+        key: str,
+        *,
+        display_name: str,
+        description: str,
+        defaults: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Register a plugin-defined auxiliary LLM task.
+
+        Auxiliary tasks are LLM-backed side jobs (vision analysis, web extraction,
+        compression, smart-approval, etc.) that route through ``auxiliary_client.py``.
+        Each task has its own ``auxiliary.<key>`` config block where users can
+        pin a provider/model independent of the main chat model.
+
+        Plugins use this to declare their own auxiliary tasks without touching
+        core files. After registration, the task:
+
+          - Appears in the ``hermes model → Configure auxiliary models`` picker
+          - Has its provider/model/base_url/api_key bridged from config.yaml to
+            ``AUXILIARY_<KEY_UPPER>_*`` env vars at gateway startup
+          - Gets default routing fields (provider="auto", model="", etc.) merged
+            into loaded configs so ``cfg.get("auxiliary", {}).get(key)`` works
+
+        Args:
+            key: stable task key (snake_case). Used in config ``auxiliary.<key>``
+                and env vars ``AUXILIARY_<KEY_UPPER>_*``. Must not shadow a
+                built-in task key (vision, compression, web_extract, approval,
+                mcp, title_generation, skills_hub, curator).
+            display_name: human-readable name shown in the picker.
+            description: short one-line description shown next to the name.
+            defaults: optional dict of default routing fields. Recognized keys:
+                ``provider`` (default "auto"), ``model`` (default ""),
+                ``base_url`` (default ""), ``api_key`` (default ""),
+                ``timeout`` (default 60), ``extra_body`` (default {}),
+                plus any task-specific extras (e.g. ``download_timeout``).
+                Unknown keys are preserved verbatim — the plugin owns the
+                schema for its own task.
+
+        Raises:
+            ValueError: if *key* is empty, contains invalid characters, or
+                shadows a built-in auxiliary task key.
+
+        Example:
+            ctx.register_auxiliary_task(
+                key="memory_retain_filter",
+                display_name="Memory retain filter",
+                description="hindsight pre-retain dedup/extract",
+                defaults={"provider": "auto", "timeout": 30},
+            )
+        """
+        # Validate key shape
+        if not key or not isinstance(key, str):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register auxiliary task "
+                f"with invalid key {key!r}"
+            )
+        if not all(c.isalnum() or c == "_" for c in key):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' auxiliary task key {key!r} "
+                f"must contain only alphanumeric characters and underscores"
+            )
+
+        # Lazy import to avoid circular: hermes_cli.main imports plugins indirectly
+        from hermes_cli.main import _AUX_TASKS as _BUILTIN_AUX_TASKS
+
+        builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
+        if key in builtin_keys:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' cannot register auxiliary task "
+                f"{key!r} — that key is reserved for a built-in task. "
+                f"Pick a plugin-namespaced key (e.g. '{self.manifest.name}_{key}')."
+            )
+
+        # Reject duplicate registrations across plugins
+        existing = self._manager._aux_tasks.get(key)
+        if existing is not None and existing.get("plugin") != self.manifest.name:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' cannot register auxiliary task "
+                f"{key!r} — already registered by plugin "
+                f"'{existing.get('plugin')}'"
+            )
+
+        # Normalize defaults — plugin owns the schema, but we ensure routing
+        # fields exist with sensible types so consumers don't crash.
+        merged_defaults: Dict[str, Any] = {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        }
+        if defaults:
+            for k, v in defaults.items():
+                merged_defaults[k] = v
+
+        self._manager._aux_tasks[key] = {
+            "key": key,
+            "display_name": display_name,
+            "description": description,
+            "defaults": merged_defaults,
+            "plugin": self.manifest.name,
+        }
+        logger.debug(
+            "Plugin %s registered auxiliary task: %s (%s)",
+            self.manifest.name,
+            key,
+            display_name,
+        )
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
         """Register a lifecycle hook callback.
@@ -684,6 +1016,9 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        # Plugin-registered auxiliary tasks: key → {key, display_name,
+        # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
+        self._aux_tasks: Dict[str, Dict[str, Any]] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -705,6 +1040,7 @@ class PluginManager:
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            self._aux_tasks.clear()
             self._context_engine = None
         self._discovered = True
 
@@ -1312,6 +1648,21 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
 
 
+_thread_tool_whitelist = threading.local()
+
+
+def set_thread_tool_whitelist(
+    allowed: Optional[Set[str]],
+    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+) -> None:
+    _thread_tool_whitelist.allowed = allowed
+    _thread_tool_whitelist.fmt = deny_msg_fmt
+
+
+def clear_thread_tool_whitelist() -> None:
+    _thread_tool_whitelist.allowed = None
+
+
 def get_pre_tool_call_block_message(
     tool_name: str,
     args: Optional[Dict[str, Any]],
@@ -1330,6 +1681,11 @@ def get_pre_tool_call_block_message(
     directive wins.  Invalid or irrelevant hook return values are
     silently ignored so existing observer-only hooks are unaffected.
     """
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    if allowed is not None and tool_name not in allowed:
+        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
+        return fmt.format(tool_name=tool_name)
+
     hook_results = invoke_hook(
         "pre_tool_call",
         tool_name=tool_name,
@@ -1428,6 +1784,21 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
+    """Return all plugin-registered auxiliary tasks as a stable-ordered list.
+
+    Each entry is the registration dict from
+    :meth:`PluginContext.register_auxiliary_task`:
+    ``{key, display_name, description, defaults, plugin}``.
+
+    Triggers idempotent plugin discovery so callers can read the registry
+    before any explicit ``discover_plugins()`` call. Sorted by ``key`` for
+    deterministic ordering in pickers and tests.
+    """
+    manager = _ensure_plugins_discovered()
+    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
 
 def get_plugin_toolsets() -> List[tuple]:

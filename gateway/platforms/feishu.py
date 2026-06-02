@@ -164,6 +164,60 @@ _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
+# Interactive card (Schema 2.0) payloads — used for content that the post-type
+# 'md' renderer cannot handle (notably GFM tables).
+# ---------------------------------------------------------------------------
+
+
+def _build_interactive_card_payload(content: str) -> str:
+    """Build a Schema 2.0 interactive card that renders GFM tables natively.
+
+    Feishu JSON 2.0 ``tag: markdown`` components support CommonMark tables,
+    while the post-type ``tag: md`` renderer does not.  When the caller
+    detects a GFM table in the content, it should route through this function
+    instead of ``_build_markdown_post_payload``.
+
+    For content longer than ~4 000 characters, split into multiple
+    ``tag: markdown`` elements so the card isn't truncated.
+    """
+    _MAX_CARD_SEGMENT = 4000
+
+    segments = []
+    start = 0
+    while start < len(content):
+        end = start + _MAX_CARD_SEGMENT
+        if end >= len(content):
+            segments.append(content[start:])
+        else:
+            # Try to break at a newline.
+            break_pos = content.rfind("\n", start, end)
+            if break_pos > start:
+                segments.append(content[start:break_pos])
+                start = break_pos
+            else:
+                segments.append(content[start:end])
+                start = end
+            continue
+        start = len(content)
+
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Hermes"},
+            "template": "blue",
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": seg} for seg in segments
+            ],
+        },
+    }
+
+    return json.dumps(card, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
 
@@ -4308,12 +4362,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # Send tables via interactive card (Schema 2.0) where the
+        # tag:markdown component supports GFM tables natively.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_interactive_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

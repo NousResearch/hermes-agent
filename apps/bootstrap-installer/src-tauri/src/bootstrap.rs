@@ -208,7 +208,7 @@ pub async fn launch_hermes_desktop(
 /// Walks the well-known electron-builder unpacked-app paths under
 /// `install_root`. Mirrors the resolver in `cmd_gui` (apps/desktop/release/
 /// <os>-unpacked/<exe>).
-fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
+pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
     let release_dir = install_root.join("apps").join("desktop").join("release");
     let candidates: &[(&str, &str)] = if cfg!(target_os = "windows") {
         &[
@@ -230,6 +230,35 @@ fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf>
         }
     }
     None
+}
+
+/// True when a prior install completed (bootstrap-complete marker present) AND a
+/// launchable desktop app exists on disk. Used by the installer's launcher fast
+/// path so a bare re-open just opens Hermes instead of re-running setup.
+pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
+    install_root.join(".hermes-bootstrap-complete").exists()
+        && resolve_hermes_desktop_exe(install_root).is_some()
+}
+
+/// Spawn the already-built desktop app, detached. Returns Err if no built app
+/// exists or the spawn fails, so the caller can fall back to showing the
+/// installer UI.
+pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io::Result<()> {
+    let exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
+    })?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.current_dir(exe.parent().unwrap_or(install_root));
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS = 0x00000008 — keep the desktop alive after the
+        // installer exits, mirroring launch_hermes_desktop. Kept correct here
+        // even though the only caller is macOS-gated today, so future reuse on
+        // Windows doesn't reintroduce the relaunch race.
+        cmd.creation_flags(0x0000_0008);
+    }
+    cmd.spawn().map(|_child| ())
 }
 
 // ---------------------------------------------------------------------------

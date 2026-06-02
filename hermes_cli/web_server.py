@@ -1144,6 +1144,11 @@ async def get_sessions(
     (used by the desktop "Archived sessions" settings panel), and ``include``
     returns both.
     """
+    if archived not in ("exclude", "only", "include"):
+        raise HTTPException(
+            status_code=400,
+            detail="archived must be one of: exclude, only, include",
+        )
     try:
         from hermes_state import SessionDB
         db = SessionDB()
@@ -1169,6 +1174,8 @@ async def get_sessions(
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
+                # SQLite stores the flag as 0/1; expose a real JSON boolean.
+                s["archived"] = bool(s.get("archived"))
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -3745,17 +3752,19 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        updated = False
+        if body.title is None and body.archived is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Nothing to update; provide 'title' and/or 'archived'.",
+            )
         if body.title is not None:
             try:
-                updated = db.set_session_title(sid, body.title or "")
+                db.set_session_title(sid, body.title or "")
             except ValueError as e:
                 # Title too long, invalid characters, or already in use.
                 raise HTTPException(status_code=400, detail=str(e))
         if body.archived is not None:
-            updated = db.set_session_archived(sid, body.archived) or updated
-        if not updated:
-            raise HTTPException(status_code=404, detail="Session not found")
+            db.set_session_archived(sid, body.archived)
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)

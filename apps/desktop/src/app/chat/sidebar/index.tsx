@@ -664,32 +664,30 @@ function SidebarWorkspaceGroup({
 
   return (
     <div className={cn('grid gap-px', dragging && 'z-10 opacity-60', className)} ref={ref} style={style} {...rest}>
-      <button
-        className="group/workspace flex min-h-6 cursor-pointer items-center gap-1 px-2 pt-1 text-left text-[0.6875rem] font-medium text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"
-        onClick={() => setOpen(value => !value)}
-        title={group.path ?? undefined}
-        type="button"
-      >
-        <span className="truncate">{group.label}</span>
-        <SidebarCount>{group.sessions.length}</SidebarCount>
-        <DisclosureCaret
-          className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
-          open={open}
-        />
+      <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
+        <button
+          className="flex min-w-0 cursor-pointer items-center gap-1 bg-transparent text-left hover:text-(--ui-text-secondary)"
+          onClick={() => setOpen(value => !value)}
+          title={group.path ?? undefined}
+          type="button"
+        >
+          <span className="truncate">{group.label}</span>
+          <SidebarCount>{group.sessions.length}</SidebarCount>
+          <DisclosureCaret
+            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+            open={open}
+          />
+        </button>
         {onNewSession && (
-          <span
+          <button
             aria-label={`New session in ${group.label}`}
-            className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
-            onClick={event => {
-              event.preventDefault()
-              event.stopPropagation()
-              onNewSession(group.path)
-            }}
-            role="button"
+            className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+            onClick={() => onNewSession(group.path)}
             title={`New session in ${group.label}`}
+            type="button"
           >
             <Codicon name="add" size="0.75rem" />
-          </span>
+          </button>
         )}
         {reorderable && (
           <span
@@ -708,7 +706,7 @@ function SidebarWorkspaceGroup({
             />
           </span>
         )}
-      </button>
+      </div>
       {open && (
         <>
           {renderRows(visibleSessions)}

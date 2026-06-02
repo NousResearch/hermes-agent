@@ -378,7 +378,6 @@ protocol.registerSchemesAsPrivileged([
   {
     scheme: MEDIA_PROTOCOL,
     privileges: {
-      bypassCSP: true,
       secure: true,
       standard: true,
       stream: true,

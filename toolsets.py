@@ -54,6 +54,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Agent-driven model routing (gated on agent.allow_self_model_switch via check_fn)
+    "model_switch",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -243,6 +245,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "model_switch": {
+        "description": "Let the agent switch its own model based on task complexity (opt-in via agent.allow_self_model_switch)",
+        "tools": ["model_switch"],
         "includes": []
     },
 

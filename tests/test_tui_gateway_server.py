@@ -1733,12 +1733,21 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
     assert resp["result"]["provider"] == "bedrock"
 
 
-def test_complete_slash_includes_provider_alias():
+def test_complete_slash_drops_removed_provider_alias():
+    # `/provider` was folded into a single `/model` command, so autocomplete
+    # must no longer offer the dead alias...
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/pro"}}
     )
 
-    assert any(item["text"] == "provider" for item in resp["result"]["items"])
+    assert not any(item["text"] == "provider" for item in resp["result"]["items"])
+
+    # ...while `/model` stays the canonical command.
+    resp_model = server.handle_request(
+        {"id": "2", "method": "complete.slash", "params": {"text": "/mod"}}
+    )
+
+    assert any(item["text"] == "model" for item in resp_model["result"]["items"])
 
 
 def test_complete_slash_returns_plain_string_fields():

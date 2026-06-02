@@ -1553,7 +1553,15 @@ def run_conversation(
                     else:
                         incomplete_reason = getattr(incomplete_details, "reason", None)
                     if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        finish_reason = "length"
+                        # Codex Responses may finish a step as `incomplete` because
+                        # the hidden output budget was spent on reasoning, while still
+                        # returning replayable reasoning/message items. Do not route
+                        # this through the generic `length` handler: that path was
+                        # built for Chat Completions-style partial text/tool calls and
+                        # returns a user-visible truncation error for Codex. Let the
+                        # normal Codex normalization below mark it `incomplete` and use
+                        # the existing Codex continuation loop.
+                        finish_reason = "incomplete"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":
@@ -1661,7 +1669,7 @@ def run_conversation(
                             "The model used all its output tokens on reasoning "
                             "and had none left for the actual response.\n\n"
                             "To fix this:\n"
-                            "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
+                            "→ Lower reasoning effort: `/reasoning low` or `/reasoning minimal`\n"
                             "→ Or switch to a larger/non-reasoning model with `/model`"
                         )
                         agent._cleanup_task_resources(effective_task_id)

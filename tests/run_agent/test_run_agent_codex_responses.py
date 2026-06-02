@@ -123,6 +123,23 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_max_output_incomplete_reasoning_response():
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content="encrypted-reasoning-state",
+                summary=[SimpleNamespace(type="summary_text", text="Still synthesizing.")],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=100, output_tokens=4096, total_tokens=4196),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -1338,6 +1355,27 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_max_output_incomplete_continues(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_incomplete_reasoning_response(),
+        _codex_message_response("Vendor recommendation complete."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("summarize delegated research")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Vendor recommendation complete."
+    assert result.get("error") is None
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and msg.get("codex_reasoning_items")
+        for msg in result["messages"]
+    )
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):

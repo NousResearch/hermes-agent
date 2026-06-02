@@ -1,4 +1,4 @@
-"""Telegram-specific gateway filtering for noisy status/error output."""
+"""Human-chat gateway filtering for noisy status/error output."""
 
 from gateway.config import Platform
 from gateway.run import (
@@ -24,7 +24,7 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
 
 
 def test_non_telegram_status_is_unchanged():
-    """The Telegram quieting policy must not hide CLI/Discord diagnostics."""
+    """The chat quieting policy must not hide CLI/Discord diagnostics."""
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
 
     assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
@@ -81,3 +81,21 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_slack_status_suppresses_retry_noise():
+    """Slack should not receive internal retry/fallback chatter."""
+    message = "⚠️ Non-retryable error (HTTP None) — trying fallback..."
+
+    assert _prepare_gateway_status_message(Platform.SLACK, "lifecycle", message) is None
+
+
+def test_slack_final_response_sanitizes_raw_provider_errors():
+    """Slack replies should not expose raw provider/runtime diagnostics."""
+    raw = "❌ Non-retryable error (HTTP None): 'NoneType' object is not iterable"
+
+    sanitized = _sanitize_gateway_final_response(Platform.SLACK, raw)
+
+    assert "model provider failed" in sanitized.lower()
+    assert "NoneType" not in sanitized
+    assert "HTTP None" not in sanitized

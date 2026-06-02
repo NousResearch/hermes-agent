@@ -787,7 +787,20 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
         # Thread support: if the post is in a thread, use root_id.
+        #
+        # A root post (the first message of a thread) has an empty root_id in
+        # Mattermost, while its replies carry root_id = <root post id>.  When
+        # reply_mode is "thread" the bot nests its replies under this root
+        # post, so every later reply in the thread will arrive with
+        # root_id = <this post's id>.  To keep the root message and all of its
+        # threaded replies in the SAME session, fall back to the post's own id
+        # as the thread_id for root posts.  Without this, the first message
+        # lands in session "...:<chat>" while every follow-up lands in
+        # "...:<chat>:<root_id>", so the agent loses all context on the first
+        # threaded reply.
         thread_id = post.get("root_id") or None
+        if thread_id is None and self._reply_mode == "thread":
+            thread_id = post.get("id") or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []

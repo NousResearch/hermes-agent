@@ -406,6 +406,101 @@ class TestMattermostWebSocketParsing:
 
 
 # ---------------------------------------------------------------------------
+# Thread session continuity (root post + replies share one session)
+# ---------------------------------------------------------------------------
+
+class TestMattermostThreadSessionContinuity:
+    """A thread's root post and its later replies must resolve to the SAME
+    gateway session, so the agent keeps context when the user follows up.
+
+    In Mattermost a root post has an empty ``root_id`` while its replies carry
+    ``root_id=<root post id>``.  Under ``reply_mode='thread'`` the bot nests
+    its replies under the root post, so every later reply arrives with
+    ``root_id=<root post id>``.  The adapter therefore seeds ``thread_id``
+    from the post's own id for root posts in thread mode — keeping the root
+    message and all of its replies on a single session key.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, post_id, root_id="", channel_type="D"):
+        post_data = {
+            "id": post_id,
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id hello",
+        }
+        if root_id:
+            post_data["root_id"] = root_id
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+    async def _thread_id_for(self, **kwargs):
+        self.adapter.handle_message.reset_mock()
+        await self.adapter._handle_ws_event(self._make_event(**kwargs))
+        assert self.adapter.handle_message.called
+        return self.adapter.handle_message.call_args[0][0].source.thread_id
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_root_post_seeds_thread_id_from_own_id(self):
+        """In thread mode a root post (empty root_id) uses its own id."""
+        self.adapter._reply_mode = "thread"
+        tid = await self._thread_id_for(post_id="root_post_123", root_id="")
+        assert tid == "root_post_123"
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_reply_keeps_root_id(self):
+        """A reply still threads off the existing root_id, not its own id."""
+        self.adapter._reply_mode = "thread"
+        tid = await self._thread_id_for(post_id="reply_456", root_id="root_post_123")
+        assert tid == "root_post_123"
+
+    @pytest.mark.asyncio
+    async def test_off_mode_root_post_has_no_thread_id(self):
+        """With reply_mode='off' a root post must NOT be forced into a thread,
+        otherwise every flat top-level message would get its own session."""
+        self.adapter._reply_mode = "off"
+        tid = await self._thread_id_for(post_id="root_post_123", root_id="")
+        assert tid is None
+
+    @pytest.mark.asyncio
+    async def test_root_and_reply_share_session_key_in_thread_mode(self):
+        """End-to-end regression: the opening message and a follow-up reply in
+        the bot's thread must produce the SAME session key — the original
+        "forgets context on every threaded reply" bug."""
+        from gateway.session import SessionSource, build_session_key
+
+        self.adapter._reply_mode = "thread"
+
+        # 1) User's first message — a root post with an empty root_id.
+        root_tid = await self._thread_id_for(post_id="root_post_123", root_id="")
+        # 2) User's follow-up inside the bot's thread (root_id = original post).
+        reply_tid = await self._thread_id_for(post_id="reply_456", root_id="root_post_123")
+
+        def session_key(thread_id):
+            src = SessionSource(
+                platform=Platform.MATTERMOST,
+                chat_id="chan_456",
+                chat_type="dm",
+                user_id="user_123",
+                thread_id=thread_id,
+            )
+            return build_session_key(src)
+
+        assert session_key(root_tid) == session_key(reply_tid)
+
+
+# ---------------------------------------------------------------------------
 # Mention behavior (require_mention + free_response_channels)
 # ---------------------------------------------------------------------------
 

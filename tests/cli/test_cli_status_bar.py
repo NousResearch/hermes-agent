@@ -190,6 +190,26 @@ class TestCLIStatusBar:
             assert _input_height() == 2
         mock_shutil.assert_not_called()
 
+    def test_tui_input_max_rows_termux_grows_with_terminal_height(self):
+        cli_obj = _make_cli()
+        with patch("cli._is_termux_environment", return_value=True):
+            assert cli_obj._tui_input_max_rows(rows=18) == 10
+            assert cli_obj._tui_input_max_rows(rows=30) == 16
+
+    def test_tui_input_max_rows_non_termux_stays_legacy_default(self):
+        cli_obj = _make_cli()
+        with patch("cli._is_termux_environment", return_value=False):
+            assert cli_obj._tui_input_max_rows(rows=40) == 8
+
+    def test_resolve_input_available_width_termux_avoids_hardcoded_40(self):
+        cli_obj = _make_cli()
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=8)
+        with patch("cli._is_termux_environment", return_value=True), \
+             patch("prompt_toolkit.application.get_app", return_value=mock_app), \
+             patch("shutil.get_terminal_size", return_value=SimpleNamespace(columns=28, lines=24)):
+            assert cli_obj._resolve_input_available_width(prompt_width=4) == 24
+
     def test_build_status_bar_text_no_cost_in_status_bar(self):
         cli_obj = _attach_agent(
             _make_cli(),

@@ -3750,6 +3750,58 @@ class HermesCLI:
         except Exception:
             return shutil.get_terminal_size(default).columns
 
+    @staticmethod
+    def _get_tui_terminal_rows(default: tuple[int, int] = (80, 24)) -> int:
+        """Return the live prompt_toolkit row count, falling back to ``shutil``."""
+        try:
+            from prompt_toolkit.application import get_app
+            return get_app().output.get_size().rows
+        except Exception:
+            return shutil.get_terminal_size(default).lines
+
+    def _tui_input_max_rows(self, rows: Optional[int] = None) -> int:
+        """Return the maximum multiline composer height.
+
+        Desktop terminals keep the long-standing 8-row cap. On Termux/mobile we
+        allow a taller composer so long prompts remain visible while typing.
+        """
+        if not _is_termux_environment():
+            return 8
+        if rows is None:
+            rows = self._get_tui_terminal_rows()
+        try:
+            rows = int(rows or 0)
+        except Exception:
+            rows = 0
+        if rows <= 0:
+            rows = 24
+        # Reserve rows for status/chrome + transcript while still giving enough
+        # room for long prompts on smaller mobile viewports.
+        return max(8, min(16, rows - 8))
+
+    def _resolve_input_available_width(self, prompt_width: int) -> int:
+        """Return safe wrap width for composer line-height calculation.
+
+        Avoid hardcoded fallbacks that can exceed the real mobile viewport and
+        cause wrap/clip artifacts on Termux when reported width briefly glitches.
+        """
+        fallback_cols = max(20, shutil.get_terminal_size((80, 24)).columns)
+        live_cols = 0
+        try:
+            from prompt_toolkit.application import get_app
+            live_cols = int(get_app().output.get_size().columns or 0)
+        except Exception:
+            live_cols = 0
+
+        cols = live_cols if live_cols > 0 else fallback_cols
+        if _is_termux_environment() and live_cols and live_cols < 20 and fallback_cols > live_cols:
+            cols = fallback_cols
+
+        available = int(cols) - max(1, int(prompt_width or 0))
+        if available < 4:
+            available = max(4, fallback_cols - max(1, int(prompt_width or 0)))
+        return max(4, available)
+
     def _use_minimal_tui_chrome(self, width: Optional[int] = None) -> bool:
         """Hide low-value chrome on narrow/mobile terminals to preserve rows."""
         if width is None:
@@ -12718,10 +12770,62 @@ class HermesCLI:
         level = min(rms, 8000) * 7 // 8000
         return _LEVEL_BARS[level]
 
+    def _termux_prompt_fragment(self, style: str, text: str):
+        """Return a Termux-safe prompt fragment with stable width.
+
+        On some mobile/Termux terminals, when prompt states shrink (e.g.
+        busy -> idle) stale trailing glyphs can remain visible, which appears as
+        accumulating arrows in the input area. We keep a small width floor and
+        right-pad shorter states to overwrite leftovers.
+        """
+        text = (text or "").rstrip() + " "
+        try:
+            from prompt_toolkit.utils import get_cwidth
+
+            width = max(1, int(get_cwidth(text)))
+        except Exception:
+            width = max(1, len(text))
+
+        prev = int(getattr(self, "_termux_prompt_clear_width", 0) or 0)
+        target = max(5, prev, width)
+        target = min(target, 12)
+        setattr(self, "_termux_prompt_clear_width", target)
+
+        if width < target:
+            text += " " * (target - width)
+        return [(style, text)]
+
     def _get_tui_prompt_fragments(self):
         """Return the prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
         compact = self._use_minimal_tui_chrome(width=self._get_tui_terminal_width())
+
+        if _is_termux_environment():
+            # Termux/mobile: prefer fixed-width ASCII state labels to avoid
+            # ambiguous-width emoji/icon drift in prompt_toolkit cursor math.
+            if self._voice_recording:
+                return self._termux_prompt_fragment("class:voice-recording", "REC>")
+            if self._voice_processing:
+                return self._termux_prompt_fragment("class:voice-processing", "STT>")
+            if self._sudo_state:
+                return self._termux_prompt_fragment("class:sudo-prompt", "PWD>")
+            if self._secret_state:
+                return self._termux_prompt_fragment("class:sudo-prompt", "KEY>")
+            if self._approval_state:
+                return self._termux_prompt_fragment("class:prompt-working", "ASK>")
+            if getattr(self, "_slash_confirm_state", None):
+                return self._termux_prompt_fragment("class:prompt-working", "ASK>")
+            if self._clarify_freetext:
+                return self._termux_prompt_fragment("class:clarify-selected", "TXT>")
+            if self._clarify_state:
+                return self._termux_prompt_fragment("class:prompt-working", "QRY>")
+            if self._command_running:
+                return self._termux_prompt_fragment("class:prompt-working", "CMD>")
+            if self._agent_running:
+                return self._termux_prompt_fragment("class:prompt-working", "AI>")
+            if self._voice_mode:
+                return self._termux_prompt_fragment("class:voice-prompt", "MIC>")
+            return self._termux_prompt_fragment("class:prompt", symbol)
 
         def _state_fragment(style: str, icon: str, extra: str = ""):
             if compact:
@@ -13972,7 +14076,7 @@ class HermesCLI:
             skill_bundles_provider=lambda: get_skill_bundles(),
         )
         input_area = TextArea(
-            height=Dimension(min=1, max=8, preferred=1),
+            height=Dimension(min=1, max=self._tui_input_max_rows(), preferred=1),
             prompt=get_prompt,
             style='class:input-area',
             multiline=True,
@@ -13996,17 +14100,11 @@ class HermesCLI:
         # wrapping of long lines so the input area always fits its content.
         def _input_height():
             try:
-                from prompt_toolkit.application import get_app
                 from prompt_toolkit.utils import get_cwidth
 
                 doc = input_area.buffer.document
                 prompt_width = max(2, get_cwidth(self._get_tui_prompt_text()))
-                try:
-                    available_width = get_app().output.get_size().columns - prompt_width
-                except Exception:
-                    available_width = shutil.get_terminal_size((80, 24)).columns - prompt_width
-                if available_width < 10:
-                    available_width = 40
+                available_width = self._resolve_input_available_width(prompt_width)
                 visual_lines = 0
                 for line in doc.lines:
                     # Each logical line takes at least 1 visual row; long lines wrap.
@@ -14016,7 +14114,7 @@ class HermesCLI:
                         visual_lines += 1
                     else:
                         visual_lines += max(1, -(-line_width // available_width))  # ceil division
-                return min(max(visual_lines, 1), 8)
+                return min(max(visual_lines, 1), self._tui_input_max_rows())
             except Exception:
                 return 1
 

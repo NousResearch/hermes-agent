@@ -1,8 +1,16 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cli import HermesCLI, _rich_text_from_ansi
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
+
+
+@pytest.fixture(autouse=True)
+def _force_non_termux(monkeypatch):
+    """Keep baseline skin tests deterministic across host platforms."""
+    monkeypatch.setattr("cli._is_termux_environment", lambda: False)
 
 
 def _make_cli_stub():
@@ -55,6 +63,26 @@ class TestCliSkinPromptIntegration:
 
         with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=50):
             assert cli._get_tui_prompt_fragments() == [("class:voice-prompt", "🎤 ")]
+
+    def test_termux_prompt_uses_ascii_state_labels(self):
+        cli = _make_cli_stub()
+        cli._agent_running = True
+
+        with patch("cli._is_termux_environment", return_value=True):
+            frags = cli._get_tui_prompt_fragments()
+
+        assert frags == [("class:prompt-working", "AI>  ")]
+
+    def test_termux_prompt_keeps_width_when_state_shrinks(self):
+        cli = _make_cli_stub()
+
+        with patch("cli._is_termux_environment", return_value=True):
+            cli._agent_running = True
+            busy = cli._get_tui_prompt_fragments()[0][1]
+            cli._agent_running = False
+            idle = cli._get_tui_prompt_fragments()[0][1]
+
+        assert len(idle) >= len(busy)
 
     def test_narrow_terminals_compact_voice_recording_prompt_fragments(self):
         cli = _make_cli_stub()

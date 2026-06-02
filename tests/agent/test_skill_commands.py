@@ -486,6 +486,29 @@ Generate some audio.
         assert "test-skill" in msg
         assert "do stuff" in msg
 
+    def test_includes_termux_compatibility_note_when_present(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "test-skill")
+            scan_skill_commands()
+            with patch(
+                "agent.skill_commands._load_skill_payload",
+                return_value=(
+                    {
+                        "success": True,
+                        "name": "test-skill",
+                        "content": "# Test Skill\n\nUse it.",
+                        "termux_compat_warning": "Linux-targeted commands may differ on Termux.",
+                    },
+                    tmp_path / "test-skill",
+                    "test-skill",
+                ),
+            ):
+                msg = build_skill_invocation_message("/test-skill", "do stuff")
+
+        assert msg is not None
+        assert "Termux compatibility note" in msg
+        assert "Linux-targeted commands may differ on Termux." in msg
+
     def test_returns_none_for_unknown(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()

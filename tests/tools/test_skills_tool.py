@@ -373,6 +373,25 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_termux_linux_skill_includes_compat_warning(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "linux-skill", frontmatter_extra="platforms: [linux]\n")
+            raw = skill_view("linux-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "termux_compat_warning" in result
+        assert "Termux is Linux-based" in result["termux_compat_warning"]
+
+    def test_termux_unscoped_skill_has_no_compat_warning(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "generic-skill")
+            raw = skill_view("generic-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "termux_compat_warning" not in result
+
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

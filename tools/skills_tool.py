@@ -69,7 +69,11 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    display_hermes_home,
+    is_termux as _is_termux_environment,
+)
 import os
 import re
 from enum import Enum
@@ -157,6 +161,40 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     """
     from agent.skill_utils import skill_matches_platform as _impl
     return _impl(frontmatter)
+
+
+def _normalized_frontmatter_platforms(frontmatter: Dict[str, Any]) -> Set[str]:
+    """Return normalized platform labels declared in skill frontmatter."""
+    raw_platforms = frontmatter.get("platforms")
+    if not raw_platforms:
+        return set()
+    if not isinstance(raw_platforms, list):
+        raw_platforms = [raw_platforms]
+    normalized: Set[str] = set()
+    for entry in raw_platforms:
+        label = str(entry or "").strip().lower()
+        if not label:
+            continue
+        normalized.add(_PLATFORM_MAP.get(label, label))
+    return normalized
+
+
+def _termux_linux_skill_warning(frontmatter: Dict[str, Any]) -> Optional[str]:
+    """Return a non-blocking warning for Linux-targeted skills on Termux."""
+    if not _is_termux_environment():
+        return None
+    platforms = _normalized_frontmatter_platforms(frontmatter)
+    if not platforms:
+        return None
+    if "linux" not in platforms:
+        return None
+    if "termux" in platforms or "android" in platforms:
+        return None
+    return (
+        "This skill declares Linux compatibility. Termux is Linux-based, but "
+        "Linux-targeted commands/tools may be unavailable or behave differently "
+        "on Android/Termux."
+    )
 
 
 def _normalize_prerequisite_values(value: Any) -> List[str]:
@@ -747,6 +785,8 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
+    termux_warning = _termux_linux_skill_warning(parsed_frontmatter)
+
     # Injection scan — log but still serve (matches local-skill behaviour)
     if any(p in content.lower() for p in _INJECTION_PATTERNS):
         logger.warning(
@@ -791,17 +831,17 @@ def _serve_plugin_skill(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
-    return json.dumps(
-        {
-            "success": True,
-            "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
-            "description": description,
-            "linked_files": None,
-            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        },
-        ensure_ascii=False,
-    )
+    result = {
+        "success": True,
+        "name": f"{namespace}:{bare}",
+        "content": f"{banner}{rendered_content}" if banner else rendered_content,
+        "description": description,
+        "linked_files": None,
+        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+    }
+    if termux_warning:
+        result["termux_compat_warning"] = termux_warning
+    return json.dumps(result, ensure_ascii=False)
 
 
 def skill_view(
@@ -1060,6 +1100,8 @@ def skill_view(
                 },
                 ensure_ascii=False,
             )
+
+        termux_warning = _termux_linux_skill_warning(parsed_frontmatter)
 
         # Check if the skill is disabled by the user
         resolved_name = parsed_frontmatter.get("name", skill_md.parent.name)
@@ -1360,6 +1402,8 @@ def skill_view(
             if setup_needed
             else SkillReadinessStatus.AVAILABLE.value,
         }
+        if termux_warning:
+            result["termux_compat_warning"] = termux_warning
 
         setup_help = next((e["help"] for e in required_env_vars if e.get("help")), None)
         if setup_help:

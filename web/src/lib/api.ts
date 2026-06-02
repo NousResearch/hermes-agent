@@ -813,6 +813,8 @@ export interface VoiceMeetInviteResponse {
   mode: "meet";
   call_id: string;
   invite_url: string;
+  participant_audio_routing?: "not_supported" | "supported";
+  participant_audio_routing_detail?: string;
   feature_flag: string;
 }
 

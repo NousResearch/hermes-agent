@@ -353,6 +353,20 @@ def test_voice_task_status_lookup_reports_unavailable_for_missing_id(voice_clien
     assert "vt_missing: status unavailable" in result
 
 
+def test_voice_visible_task_result_replaces_secret_only_output(voice_client):
+    _client, web_server = voice_client
+    task = web_server.VoiceTask("vt_secret", "call-secret", "deniz", "do work", "voice_task_vt_secret")
+
+    result = web_server._voice_visible_task_result(
+        "⏭ Secret entry skipped\n\n  ⏭ Secret entry skipped\n\n  ⏭ Secret entry skipped",
+        task,
+    )
+
+    assert "only visible output was redacted secret-entry placeholders" in result
+    assert "voice_task_vt_secret" in result
+    assert "⏭ Secret entry skipped" not in result
+
+
 def test_voice_session_config_reports_speaking_rate_support(voice_client, monkeypatch):
     _client, web_server = voice_client
     monkeypatch.setenv("HERMES_VOICE_SPEAKING_RATE", "1.08")
@@ -390,6 +404,8 @@ def test_voice_invite_returns_share_url_when_enabled(voice_client, monkeypatch):
     assert body["call_id"] == "voice-call"
     assert "mode=meet" in body["invite_url"]
     assert "call_id=voice-call" in body["invite_url"]
+    assert body["participant_audio_routing"] == "not_supported"
+    assert "participant-to-participant audio bridging is not implemented" in body["participant_audio_routing_detail"]
 
 
 def test_voice_invite_rejects_ended_call(voice_client, monkeypatch):

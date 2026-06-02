@@ -935,7 +935,14 @@ export default function VoiceCallPage() {
       setMode("meet");
       setInviteUrl(resp.invite_url);
       addLog("system", `Meet invite ready: ${resp.invite_url}`);
-      persistTranscript("system", `Meet invite created: ${resp.invite_url}`, "meet_invite_created", { mode: "meet" });
+      if (resp.participant_audio_routing === "not_supported") {
+        addLog("system", resp.participant_audio_routing_detail || "Participant-to-participant audio is not bridged yet.");
+      }
+      persistTranscript("system", `Meet invite created: ${resp.invite_url}`, "meet_invite_created", {
+        mode: "meet",
+        participant_audio_routing: resp.participant_audio_routing,
+        participant_audio_routing_detail: resp.participant_audio_routing_detail,
+      });
       await startCall("meet");
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);

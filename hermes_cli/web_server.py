@@ -502,6 +502,17 @@ def _voice_task_status_lookup(query: str | None = None, limit: int = 1600) -> st
     return _voice_bound_text("\n".join(rows), limit)
 
 
+def _voice_visible_task_result(result: str, task: VoiceTask) -> str:
+    lines = [line.strip() for line in (result or "").splitlines() if line.strip()]
+    if lines and all(re.fullmatch(r"(?:⏭\s*)?Secret entry skipped", line) for line in lines):
+        return (
+            f"Background Rolly task {task.task_id} completed, but the only visible output was "
+            "redacted secret-entry placeholders. No user-safe implementation summary was produced. "
+            f"Task session: {task.session_id}."
+        )
+    return result
+
+
 def _voice_task_worker(task_id: str) -> None:
     with _VOICE_TASKS_LOCK:
         task = _VOICE_TASKS[task_id]
@@ -509,6 +520,7 @@ def _voice_task_worker(task_id: str) -> None:
     _voice_task_event(task, "delegation_started", "Rolly background task started.")
     try:
         result = _run_voice_research(task.request, user=task.user, source="dashboard-voice-background", parent_call_id=task.call_id)
+        result = _voice_visible_task_result(result, task)
         with _VOICE_TASKS_LOCK:
             task.mark("complete", "Rolly background task completed.", result=result)
         _voice_task_event(task, "delegation_result", result, {"status": "complete"})
@@ -1025,6 +1037,11 @@ async def create_voice_meet_invite(payload: VoiceMeetInviteRequest, request: Req
         "mode": "meet",
         "call_id": call_id,
         "invite_url": invite_url,
+        "participant_audio_routing": "not_supported",
+        "participant_audio_routing_detail": (
+            "Meet invites share a Rolly Voice room id, but participant-to-participant audio bridging "
+            "is not implemented yet; each browser connects to Rolly/OpenAI."
+        ),
         "feature_flag": "HERMES_VOICE_MEET_INVITES",
     }
 

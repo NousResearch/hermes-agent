@@ -177,6 +177,33 @@ def test_check_storage_policy_presence_reads_only_canonical_markers(tmp_path):
     assert result["files"]["storage_runbook"]["exists"] is True
 
 
+def test_check_quality_policy_presence_reports_markers_without_prompt_text(tmp_path):
+    repo = tmp_path / "repo"
+    gateway = repo / "gateway"
+    gateway.mkdir(parents=True)
+    (gateway / "session.py").write_text(
+        "QUALITY_LANE_POLICY_MARKERS = ('implementation lane', 'verification lane')\n"
+        "def render_quality_lane_policy_for_prompt(): return ''\n"
+        "def build_session_context_prompt():\n"
+        "    return render_quality_lane_policy_for_prompt()\n",
+        encoding="utf-8",
+    )
+    hermes_home = tmp_path / ".hermes"
+    memories = hermes_home / "memories"
+    memories.mkdir(parents=True)
+    (memories / "MEMORY.md").write_text("WAHA\nSignal Room\n", encoding="utf-8")
+    (memories / "USER.md").write_text("video production\n", encoding="utf-8")
+
+    result = doctor.check_quality_policy_presence(repo, hermes_home)
+
+    assert result["injection_path_enabled"] is True
+    assert result["memory_markers"]["WAHA"] is True
+    assert result["memory_markers"]["Signal Room"] is True
+    rendered = json.dumps(result)
+    assert "implementation lane" not in rendered
+    assert "verification lane" not in rendered
+
+
 def test_evaluate_runtime_topology_flags_cli_split_brain():
     result = doctor.evaluate_runtime_topology(
         expected_runtime_checkout="/clean",

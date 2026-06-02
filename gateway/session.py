@@ -203,6 +203,36 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+QUALITY_LANE_POLICY_MARKERS = (
+    "implementation lane",
+    "review lane",
+    "verification lane",
+    "deployment/report lane",
+)
+
+
+def render_quality_lane_policy_for_prompt() -> str:
+    """Compact high-rigor work policy for gateway/runtime prompts."""
+    return "\n".join(
+        [
+            "## Quality Lanes for High-Rigor Work",
+            "",
+            "For video production, WAHA inspection work, app building, Hermes "
+            "reliability, code changes requiring review, final reports, and "
+            "deployment verification: use delegate_task subagents when "
+            "available and appropriate.",
+            "",
+            "If real subagents are unavailable or unsafe for the task, use "
+            "checklist-style lanes instead: implementation lane, review lane, "
+            "verification lane, and deployment/report lane.",
+            "",
+            "Do not claim real subagents ran unless delegation actually ran. "
+            "Final reports should state which lanes were completed and what "
+            "verification evidence was checked.",
+        ]
+    )
+
+
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session.
 
@@ -417,6 +447,9 @@ def build_session_context_prompt(
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+
+    lines.append("")
+    lines.append(render_quality_lane_policy_for_prompt())
 
     if context.session_id:
         try:

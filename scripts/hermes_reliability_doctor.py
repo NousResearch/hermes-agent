@@ -371,6 +371,43 @@ def check_storage_policy_presence(
     return {"all_required_markers_present": all_present, "files": files}
 
 
+def check_quality_policy_presence(
+    repo_root: str | Path,
+    hermes_home: str | Path = DEFAULT_HERMES_HOME,
+) -> dict[str, Any]:
+    root = Path(repo_root)
+    session_py = root / "gateway" / "session.py"
+    source = ""
+    try:
+        source = session_py.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    source_markers = {
+        "quality_lane_markers_constant": "QUALITY_LANE_POLICY_MARKERS" in source,
+        "prompt_renderer": "render_quality_lane_policy_for_prompt" in source,
+        "prompt_builder_call": "render_quality_lane_policy_for_prompt()" in source,
+    }
+    memory_text = ""
+    home = Path(hermes_home)
+    for path in (home / "memories" / "MEMORY.md", home / "memories" / "USER.md"):
+        try:
+            memory_text += "\n" + path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    memory_folded = memory_text.lower()
+    memory_markers = {
+        "WAHA": "waha" in memory_folded,
+        "Signal Room": "signal room" in memory_folded,
+        "video production": "video production" in memory_folded,
+        "Hermes reliability": "hermes reliability" in memory_folded,
+    }
+    return {
+        "injection_path_enabled": all(source_markers.values()),
+        "source_markers": source_markers,
+        "memory_markers": memory_markers,
+    }
+
+
 def inspect_mount_names() -> dict[str, Any]:
     result = _run_command(["mount"], timeout=3.0)
     names = []
@@ -410,6 +447,10 @@ def collect_report(args: argparse.Namespace) -> dict[str, Any]:
             "active_tasks": inspect_active_task_store(hermes_home / "session_active_tasks.json"),
             "goals": inspect_goal_store(hermes_home / "state.db"),
         },
+        "quality_policy": check_quality_policy_presence(
+            args.expected_runtime_checkout,
+            hermes_home,
+        ),
         "storage": {
             "policy": check_storage_policy_presence(hermes_home, args.ai_ops_brain),
             "rclone_config": parse_rclone_config(Path.home() / ".config/rclone/rclone.conf"),
@@ -421,6 +462,7 @@ def collect_report(args: argparse.Namespace) -> dict[str, Any]:
 def format_report(report: dict[str, Any]) -> str:
     runtime = report["runtime"]
     stores = report["stores"]
+    quality_policy = report["quality_policy"]
     storage = report["storage"]
     lines = [
         "Hermes reliability doctor (read-only)",
@@ -448,6 +490,10 @@ def format_report(report: dict[str, Any]) -> str:
             f"  active goals: {stores['goals'].get('active_count')}",
             f"  goal statuses: {stores['goals'].get('status_counts')}",
             f"  goal field presence: {stores['goals'].get('field_presence')}",
+            "",
+            "Quality policy:",
+            f"  injection enabled: {quality_policy.get('injection_path_enabled')}",
+            f"  memory markers: {quality_policy.get('memory_markers')}",
             "",
             "Storage:",
             f"  policy markers complete: {storage['policy'].get('all_required_markers_present')}",

@@ -524,6 +524,24 @@ class TestAgentCacheLifecycle:
         prompt2 = agent._cached_system_prompt
         assert prompt1 is prompt2  # same object, not rebuilt
 
+    def test_quality_policy_prompt_participates_in_cache_signature(self):
+        from gateway.run import GatewayRunner
+
+        base = GatewayRunner._agent_config_signature(
+            "model-a",
+            {"provider": "test", "base_url": ""},
+            ["safe"],
+            "session context",
+        )
+        with_policy = GatewayRunner._agent_config_signature(
+            "model-a",
+            {"provider": "test", "base_url": ""},
+            ["safe"],
+            "session context\n\n## Quality Lanes for High-Rigor Work",
+        )
+
+        assert base != with_policy
+
     def test_callbacks_update_without_cache_eviction(self):
         """Per-message callbacks can be set on cached agent."""
         from run_agent import AIAgent

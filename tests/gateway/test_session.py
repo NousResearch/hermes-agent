@@ -195,6 +195,24 @@ class TestBuildSessionContextPrompt:
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
 
+    def test_quality_lane_policy_is_injected_into_session_context(self):
+        config = GatewayConfig()
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="thread-1",
+        )
+        ctx = build_session_context(source, config)
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "## Quality Lanes for High-Rigor Work" in prompt
+        assert "delegate_task subagents when available" in prompt
+        assert "checklist-style lanes" in prompt
+        assert "implementation lane" in prompt
+        assert "verification lane" in prompt
+
     def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
         config = GatewayConfig(
             platforms={
@@ -465,6 +483,8 @@ class TestBuildSessionContextPrompt:
         assert "## Standing Goal" in prompt
         assert "finish the reliability audit" in prompt
         assert "Status: active" in prompt
+        assert "## Quality Lanes for High-Rigor Work" in prompt
+        assert "delegate_task subagents when available" in prompt
         goals._DB_CACHE.clear()
 
     def test_goal_context_does_not_leak_between_sessions(self, tmp_path, monkeypatch):

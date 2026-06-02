@@ -402,31 +402,45 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
+def _resolve_llm_api_key(
+    config: dict[str, Any], *, llm_api_key: str | None = None
+) -> str | None:
+    """Resolve the LLM API key from config, env vars, and .env file.
+
+    Used by both _build_embedded_profile_env (to write hermes.env) and
+    _get_client (to pass to HindsightEmbedded). Returns None when no key
+    is found, so callers can decide whether to pass an empty string or omit.
+    """
+    if llm_api_key:
+        return llm_api_key
+
+    key_env = str(config.get("llmApiKeyEnv") or config.get("llm_api_key_env") or "")
+    key = (
+        (os.environ.get(key_env, "") if key_env else "")
+        or config.get("llmApiKey")
+        or config.get("llm_api_key")
+        or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+        or os.environ.get("HINDSIGHT_API_LLM_API_KEY", "")
+    )
+    # Fallback: if key_env references a variable not in the process
+    # environment (e.g. DEEPSEEK_API_KEY only exists in ~/.hermes/.env),
+    # read it from the .env file.
+    if not key and key_env:
+        dotenv_path = get_hermes_home() / ".env"
+        if dotenv_path.exists():
+            dotenv_values = _load_simple_env(dotenv_path)
+            key = dotenv_values.get(key_env, "")
+            if key:
+                logger.debug(
+                    "Resolved %s from %s (not in process env)",
+                    key_env, dotenv_path,
+                )
+    return key or None
+
+
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
-    current_key = llm_api_key
-    if current_key is None:
-        key_env = str(config.get("llmApiKeyEnv") or config.get("llm_api_key_env") or "")
-        current_key = (
-            (os.environ.get(key_env, "") if key_env else "")
-            or config.get("llmApiKey")
-            or config.get("llm_api_key")
-            or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
-            or os.environ.get("HINDSIGHT_API_LLM_API_KEY", "")
-        )
-        # Fallback: if key_env references a variable not in the process
-        # environment (e.g. DEEPSEEK_API_KEY only exists in ~/.hermes/.env),
-        # read it from the .env file so hermes update doesn't nuke the key.
-        if not current_key and key_env:
-            dotenv_path = get_hermes_home() / ".env"
-            if dotenv_path.exists():
-                dotenv_values = _load_simple_env(dotenv_path)
-                current_key = dotenv_values.get(key_env, "")
-                if current_key:
-                    logger.debug(
-                        "Resolved %s from %s (not in process env)",
-                        key_env, dotenv_path,
-                    )
+    current_key = _resolve_llm_api_key(config, llm_api_key=llm_api_key) or ""
 
     current_provider = config.get("llm_provider", "")
     current_model = config.get("llm_model", "")
@@ -971,11 +985,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 allowed = dict(
                     profile=profile,
                     llm_provider=llm_provider,
-                    llm_api_key=(self._config.get("llmApiKey")
-                                 or self._config.get("llm_api_key")
-                                 or (os.environ.get(self._config.get("llmApiKeyEnv", "")) if self._config.get("llmApiKeyEnv") else None)
-                                 or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
-                                 or os.environ.get("HINDSIGHT_API_LLM_API_KEY", "")),
+                    llm_api_key=_resolve_llm_api_key(self._config) or "",
                     llm_model=self._config.get("llm_model", ""),
                 )
                 if self._llm_base_url:

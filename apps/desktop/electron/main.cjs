@@ -2094,6 +2094,7 @@ function fetchJson(url, token, options = {}) {
       },
       res => {
         const chunks = []
+        res.on('error', reject)
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8')

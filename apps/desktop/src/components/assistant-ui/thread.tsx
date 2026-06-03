@@ -375,7 +375,9 @@ const ThinkingDisclosure: FC<{
     observer.observe(content)
 
     return () => observer.disconnect()
-  }, [isPreview])
+    // Re-run when the disclosure toggles so the observer attaches to the new
+    // DOM after expand/collapse (refs are conditionally rendered on `open`).
+  }, [isPreview, open])
 
   return (
     <div

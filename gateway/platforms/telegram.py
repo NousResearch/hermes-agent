@@ -409,6 +409,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # suppress_commands: register an empty command list so this bot doesn't
+        # pollute the autocomplete in groups where another bot is the primary.
+        self._suppress_commands: bool = self._coerce_bool_extra("suppress_commands", False)
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -1693,11 +1696,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeChat,
                 )
                 from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Limit to 30 core commands
-                # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                if self._suppress_commands:
+                    bot_commands = []
+                    hidden_count = 0
+                    logger.info("[%s] suppress_commands=true — registering empty command list", self.name)
+                else:
+                    # Telegram allows up to 100 commands but has an undocumented
+                    # payload size limit (~4KB total).  Limit to 30 core commands
+                    # to stay well under the threshold while covering all categories.
+                    menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                    bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
                 # through to AllGroupChats or Default).
@@ -1708,14 +1716,27 @@ class TelegramAdapter(BasePlatformAdapter):
                         logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
                     except Exception as scope_err:
                         logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+                # Forum/group chats use BotCommandScopeChat(chat_id) which overrides
+                # AllGroupChats. When suppress_commands=true, proactively clear
+                # BotCommandScopeChat for the known home chat so cached commands
+                # from previous runs are wiped immediately on startup.
+                if self._suppress_commands:
+                    home_chat_id = self.config.extra.get("home_chat_id") or os.getenv("TELEGRAM_HOME_CHAT_ID")
+                    if home_chat_id:
+                        try:
+                            from telegram import BotCommandScopeChat
+                            await self._bot.set_my_commands([], scope=BotCommandScopeChat(chat_id=int(home_chat_id)))
+                            logger.info("[%s] suppress_commands: cleared BotCommandScopeChat for home chat %s", self.name, home_chat_id)
+                        except Exception as scope_err:
+                            logger.warning("[%s] suppress_commands: failed to clear BotCommandScopeChat for %s: %s", self.name, home_chat_id, scope_err)
                 # Forum topics don't inherit AllGroupChats — Telegram resolves
                 # commands via BotCommandScopeChat(chat_id) for forum groups.
                 # Lazy registration happens in _ensure_forum_commands on first
                 # message from a forum topic (see _handle_text_message).
-                if hidden_count:
+                if not self._suppress_commands and hidden_count:
                     logger.info(
                         "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count, 30,
+                        self.name, len(bot_commands), hidden_count, 30,
                     )
             except Exception as e:
                 logger.warning(
@@ -4928,9 +4949,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 if chat_id in self._forum_command_registered:
                     return
                 from telegram import BotCommand, BotCommandScopeChat
-                from hermes_cli.commands import telegram_menu_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                if self._suppress_commands:
+                    bot_commands = []
+                    logger.info("[%s] suppress_commands=true — registering empty commands for forum chat %s", self.name, chat_id)
+                else:
+                    from hermes_cli.commands import telegram_menu_commands
+                    menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                    bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)

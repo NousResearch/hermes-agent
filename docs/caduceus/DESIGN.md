@@ -1,22 +1,21 @@
 # Caduceus — Hermes-Native Dynamic-Workflow Mode
 
-*(Hermes's native port of Claude Code's "UltraCode": xhigh effort + a dynamic
-multi-agent Workflow engine + orchestrator/worker model tiering.)*
+*(A native deep-planning + dynamic multi-agent workflow mode for Hermes —
+inspired by the best agentic coding loops, built entirely on Hermes primitives.)*
 
-**Design document — v1 (pre-implementation).**
-Target: the Hermes desktop app installed at
-`C:\Users\User\AppData\Local\hermes\hermes-agent\` (NousResearch/hermes-agent
-`v0.15.1`, commit `b34ee8074`), launched via the OneDrive Desktop `Hermes.lnk`
-→ `apps/desktop/release/win-unpacked/Hermes.exe`.
+> **Status: implemented.** This is the design record; the feature is built,
+> tested, and off-by-default. For the contribution summary and integration map
+> see [`PR_DESCRIPTION.md`](PR_DESCRIPTION.md); for usage see
+> [`USER_GUIDE.md`](USER_GUIDE.md). The behavioral-parity evidence and eval
+> harness live alongside this doc.
 
-Goal: add a **native** "UltraCode dynamic-workflow mode" to Hermes — the
-orchestrator + worker two-model system, the dynamic-workflow engine, and the
-full UltraCode prompt stack — implemented as a **core fork** of `hermes-agent`
-(Python agent + Electron/React desktop), with the **smartest possible engine**
-(max reliability, low latency) and a **live "Orchestration Theater" UI** that is
-genuinely exciting to watch.
-
-This pass is **design only** — no code is changed yet.
+Goal: a **native deep-planning mode** for Hermes — a disciplined, visible
+to-do-driven loop; an opt-in **dynamic multi-agent workflow engine** (the
+"Loom"); role-aware orchestrator/worker model tiering; an optional per-task
+**Auto Router**; and a live **"Orchestration Theater"** desktop view. Built as a
+small, additive integration on top of Hermes's existing `todo` tool,
+`delegate_task`, auxiliary models, and TUI/desktop event bus. Targets
+`NousResearch/hermes-agent` (base commit `b34ee8074`).
 
 ---
 

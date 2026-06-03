@@ -1,0 +1,7 @@
+name: achilli-tendon
+version: "0.1.0"
+description: "Subagent orchestration health monitor. Hooks into subagent_stop to track child lifecycle events, exposes tendon_health and monitor_subagents tools. Alerts on stuck children, token burn anomalies, and delegation failures. Does NOT intercept delegate_task spawns (pre_tool_call does not fire for delegate_task -- this is a core Hermes limitation)."
+author: "Achilli Project / Jeff (swizzcheeze)"
+hooks:
+  - subagent_stop
+  - on_session_end

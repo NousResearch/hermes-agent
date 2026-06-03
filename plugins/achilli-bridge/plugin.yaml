@@ -1,0 +1,9 @@
+name: achilli-bridge
+version: "0.1.0"
+description: "MCP tool chain resilience, circuit breaker, and format translation. NOTE: The post_tool_call hook required by this plugin is NOT invoked in Hermes core >= 0.15.1. This plugin loads but its core interception logic is non-functional until the hook is implemented. See README."
+author: "Achilli Project / Jeff (swizzcheeze)"
+hooks:
+  - subagent_stop
+provides_tools:
+  - bridge_status
+  - achilli_bridge_status

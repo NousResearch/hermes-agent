@@ -1,0 +1,10 @@
+name: achilli-chorus
+version: "0.1.0"
+description: "Multi-agent output harmonization and conflict resolution. Collects subagent results via subagent_stop hook, uses ctx.llm to synthesize unified output. Provides chorus_status and harmonize_results tools. Requires delegate_task (built-in)."
+author: "Achilli Project / Jeff (swizzcheeze)"
+hooks:
+  - subagent_stop
+  - on_session_end
+provides_tools:
+  - chorus_status
+  - harmonize_results

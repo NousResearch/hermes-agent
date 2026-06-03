@@ -1,0 +1,9 @@
+name: achilli-tendo
+version: "0.1.0"
+description: "Agent session checkpoint/resume for working state. Hooks into on_session_finalize to serialize agent state (transcript, background processes, active subagents). Provides checkpoint_agent, resume_agent, and list_checkpoints tools."
+author: "Achilli Project / Jeff (swizzcheeze)"
+hooks:
+  - on_session_finalize
+  - subagent_stop
+provides_tools:
+  - list_checkpoints

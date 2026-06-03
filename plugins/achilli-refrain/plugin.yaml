@@ -1,0 +1,9 @@
+name: achilli-refrain
+version: "0.1.0"
+description: "Memory contradiction detection and cognitive harmonization. Hooks into on_session_end to trigger YantrikDB think/consolidation scans. Provides refrain_status, resolve_conflict, and cognitive_diff tools. Requires YantrikDB MCP server."
+author: "Achilli Project / Jeff (swizzcheeze)"
+hooks:
+  - on_session_end
+provides_tools:
+  - refrain_status
+  - resolve_conflict

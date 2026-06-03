@@ -718,3 +718,55 @@ class TestPlatformSlashCommand:
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
 
+
+
+class TestSpawnSupervisedRestart:
+    """Regression guards for _spawn_supervised restart semantics."""
+
+    @pytest.mark.asyncio
+    async def test_clean_synchronous_return_is_not_respawned(self):
+        """A supervised watcher that returns cleanly+synchronously (e.g.
+        kanban dispatcher when disabled by config) must NOT be respawned —
+        respawning a synchronously-returning coro busy-spins the event loop
+        with no backoff and the exception-only ceiling never engages.
+        Regression for the pass-2 clean-return respawn loop."""
+        runner = _make_runner()
+        runner._background_tasks = set()
+        runner._running = True
+        calls = {"n": 0}
+
+        async def _disabled_watcher():
+            calls["n"] += 1
+            return  # clean, immediate return (watcher disabled)
+
+        runner._spawn_supervised(_disabled_watcher, "disabled_watcher", restart=True)
+        await asyncio.sleep(0.15)  # ample time for any (buggy) respawn storm
+        assert calls["n"] == 1, (
+            f"clean-returning supervised task was respawned {calls['n']}x (busy-spin)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_exception_restart_is_bounded_by_ceiling(self, monkeypatch):
+        """A deterministically-crashing watcher is restarted with backoff but
+        abandoned after _MAX_SUPERVISED_RESTARTS — not an infinite flood."""
+        runner = _make_runner()
+        runner._background_tasks = set()
+        runner._running = True
+        calls = {"n": 0}
+
+        async def _boom():
+            calls["n"] += 1
+            raise RuntimeError("boom")
+
+        real_sleep = asyncio.sleep
+
+        async def _instant(_d):
+            await real_sleep(0)
+
+        # Make the restart backoff instant so the ceiling is reached fast.
+        monkeypatch.setattr("gateway.run.asyncio.sleep", _instant)
+        runner._spawn_supervised(_boom, "boom_watcher", restart=True)
+        await real_sleep(0.3)  # let the (instant-backoff) restart chain converge
+
+        # initial attempt + _MAX_SUPERVISED_RESTARTS restarts, then it gives up.
+        assert calls["n"] == runner._MAX_SUPERVISED_RESTARTS + 1, calls["n"]

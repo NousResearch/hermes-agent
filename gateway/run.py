@@ -4738,8 +4738,10 @@ class GatewayRunner:
         logs forever. ``_attempt`` is the count of consecutive immediate
         failures; it grows the back-off (``min(60, 2 ** min(_attempt, 6))``
         seconds) and, once it reaches ``_MAX_SUPERVISED_RESTARTS``, restarts
-        are abandoned. A clean return (no exception) resets the counter by
-        spawning a fresh task at ``_attempt=0``.
+        are abandoned. A clean return (no exception) is NOT respawned: these
+        ``while self._running`` loops only return cleanly on shutdown or when
+        they deliberately short-circuit (e.g. a watcher disabled by config),
+        and respawning either case would busy-spin.
         """
         # Some test harnesses construct the runner without running __init__.
         if getattr(self, "_background_tasks", None) is None:
@@ -4757,18 +4759,12 @@ class GatewayRunner:
             exc = t.exception()
             if exc is None:
                 # Clean return — these are infinite ``while self._running``
-                # loops, so a clean completion means the loop exited normally
-                # (e.g. shutdown). If we still need to restart, do so with a
-                # reset attempt counter.
-                if restart and self._running:
-                    async def _respawn_clean():
-                        if self._running:
-                            self._spawn_supervised(
-                                coro_factory, name, restart=restart, _attempt=0
-                            )
-                    respawn_task = asyncio.create_task(_respawn_clean())
-                    self._background_tasks.add(respawn_task)
-                    respawn_task.add_done_callback(self._background_tasks.discard)
+                # loops, so a clean completion means either shutdown
+                # (self._running is False) or a deliberate short-circuit
+                # (e.g. a watcher disabled by config returns synchronously).
+                # Neither should respawn: respawning a synchronously-returning
+                # watcher would busy-spin the event loop with no backoff and
+                # the exception-only ceiling would never engage.
                 return
             logger.error("Supervised task %s died: %r", name, exc, exc_info=exc)
             if restart and self._running:

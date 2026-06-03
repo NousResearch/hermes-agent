@@ -182,6 +182,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
   // user-driven upward scroll; re-armed when they reach bottom again.
   const armedRef = useRef(true)
   const lastTopRef = useRef(0)
+  const lastHeightRef = useRef(0)
   // Counter that tracks how many scroll events we expect to be ours rather
   // than the user's. `pinToBottom` writes `el.scrollTop`, which fires an
   // async `scroll` event; without this guard the on-scroll handler can race
@@ -206,6 +207,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     programmaticScrollPendingRef.current += 1
     el.scrollTop = el.scrollHeight
     lastTopRef.current = el.scrollTop
+    lastHeightRef.current = el.scrollHeight
   }, [scrollerRef])
 
   const jumpToBottom = useCallback(() => {
@@ -250,6 +252,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
       if (programmaticScrollPendingRef.current > 0) {
         programmaticScrollPendingRef.current -= 1
         lastTopRef.current = top
+        lastHeightRef.current = el.scrollHeight
         // Always re-arm — sticky-bottom should hold through clamp races.
         armedRef.current = true
         const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
@@ -258,11 +261,26 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
         return
       }
 
-      if (top + 1 < lastTopRef.current) {
+      // Disarm only when `scrollTop` decreases AND `scrollHeight` did NOT
+      // grow this frame. A bare `top < lastTopRef.current` check is unsafe:
+      // when content grows (virtualizer item measurement, streaming token,
+      // code highlight re-tokenization, composer chip), the browser emits
+      // an interim `scroll` event whose `scrollTop` is smaller than the
+      // previous frame's because `scrollHeight` jumped — this fires before
+      // the rAF-scheduled `pinToBottom` runs, so `programmaticScrollPendingRef`
+      // is 0. Treating that as a user scroll permanently disarmed sticky-bottom
+      // and produced the visible at-rest backward jump (#37997). Gating on a
+      // stable `scrollHeight` keeps real user-driven upward intent — scrollbar
+      // drag, keyboard PgUp, programmatic scrollIntoView — covered without
+      // the false positive. Wheel-up and touchmove still disarm via their
+      // own listeners below.
+      const heightGrew = el.scrollHeight > lastHeightRef.current
+      if (!heightGrew && top + 1 < lastTopRef.current) {
         armedRef.current = false
       }
 
       lastTopRef.current = top
+      lastHeightRef.current = el.scrollHeight
 
       const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
 
@@ -323,8 +341,9 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
 
     const observer = new ResizeObserver(schedulePin)
 
-    observer.observe(el)
-
+    // Observe ONLY the content (firstElementChild), not the scroller `el`
+    // itself. Resizes of the viewport/scroller (window resize, devtools
+    // panel toggle) shouldn't trigger a pin — only content growth should.
     if (el.firstElementChild) {
       observer.observe(el.firstElementChild)
     }

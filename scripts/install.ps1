@@ -714,19 +714,39 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
+# The desktop build runs Vite ^8, which refuses to start on Node outside
+# `^20.19 || >=22.12` -- older Node lacks node:util.styleText, so `vite build`
+# crashes with a SyntaxError that surfaces only as the opaque "Build desktop
+# app ... exit code 1" install failure. Returns $true when a `node --version`
+# string clears that floor.
+function Test-NodeVersionOk {
+    param([string]$Version)
+    try {
+        $v = [version]($Version -replace '^v', '' -replace '-.*$', '')
+    } catch {
+        return $false
+    }
+    if ($v.Major -eq 20 -and $v.Minor -ge 19) { return $true }
+    if ($v.Major -ge 22 -and ($v.Major -gt 22 -or $v.Minor -ge 12)) { return $true }
+    return $false
+}
+
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
     if (Get-Command node -ErrorAction SilentlyContinue) {
         $version = node --version
-        Write-Success "Node.js $version found"
-        $script:HasNode = $true
-        return $true
+        if (Test-NodeVersionOk $version) {
+            Write-Success "Node.js $version found"
+            $script:HasNode = $true
+            return $true
+        }
+        Write-Warn "Node.js $version is too old for the desktop build (need ^20.19 or >=22.12)"
     }
 
-    # Check our own managed install from a previous run
+    # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     $managedNode = "$HermesHome\node\node.exe"
-    if (Test-Path $managedNode) {
+    if ((Test-Path $managedNode) -and (Test-NodeVersionOk (& $managedNode --version))) {
         $version = & $managedNode --version
         $env:Path = "$HermesHome\node;$env:Path"
         Write-Success "Node.js $version found (Hermes-managed)"
@@ -734,7 +754,7 @@ function Test-Node {
         return $true
     }
 
-    Write-Info "Node.js not found -- installing Node.js $NodeVersion LTS..."
+    Write-Info "Installing Hermes-managed Node.js $NodeVersion LTS..."
 
     # Try the portable-zip path FIRST -- no UAC, no admin, no winget MSI.
     # winget install OpenJS.NodeJS.LTS triggers a system-wide MSI install
@@ -1906,16 +1926,17 @@ function Install-Desktop {
     # so an "unpacked" build (electron-builder --dir) is enough — we
     # don't need to produce an NSIS/MSI artifact here.
 
-    if (-not $HasNode) {
-        # Cross-process driver mode: each `-Stage NAME` invocation runs in a
-        # fresh PowerShell process, so $script:HasNode set by Stage-Node
-        # in the previous process isn't visible. Re-detect rather than
-        # trusting the global.
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-            Write-Warn "Skipping desktop build (Node.js / npm not on PATH)"
-            $script:_StageSkippedReason = "Node.js not available"
-            return
-        }
+    # Always re-resolve Node here. Stages run in separate PowerShell processes,
+    # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
+    # enforces the build floor (^20.19 || >=22.12) and prepends the Hermes-managed
+    # Node to PATH, so the build never runs on a too-old system Node -- the cause
+    # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
+    # old Node).
+    Test-Node | Out-Null
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Warn "Skipping desktop build (Node.js / npm not on PATH)"
+        $script:_StageSkippedReason = "Node.js not available"
+        return
     }
 
     $desktopDir = "$InstallDir\apps\desktop"

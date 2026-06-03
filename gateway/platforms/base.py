@@ -3096,6 +3096,17 @@ class BasePlatformAdapter(ABC):
                     pass
             self._typing_paused.discard(chat_id)
 
+    def stop_typing_before_final_delivery(self) -> bool:
+        """Whether to stop typing before the first final response send.
+
+        Most platforms expire typing indicators quickly or clear them when a
+        message arrives. Some adapters (notably BlueBubbles/iMessage) can
+        render a late keep-alive pulse after the final reply, so they need the
+        keep-typing loop stopped before delivery and then stopped again during
+        normal cleanup.
+        """
+        return False
+
     def pause_typing_for_chat(self, chat_id: str) -> None:
         """Pause typing indicator for a chat (e.g. during approval waits).
 
@@ -4033,6 +4044,28 @@ class BasePlatformAdapter(ABC):
                 # typing task is already cancelled; if the parent task is also
                 # cancelling, let this message-processing task unwind now.
                 pass
+
+        _typing_stopped_before_delivery = False
+
+        async def _stop_typing_before_delivery_once() -> None:
+            """Stop typing before the first visible final delivery if needed."""
+            nonlocal _typing_stopped_before_delivery
+            if _typing_stopped_before_delivery:
+                return
+            if not self.stop_typing_before_final_delivery():
+                return
+            _typing_stopped_before_delivery = True
+            logger.debug(
+                "[%s] Stopping typing before final delivery to %s",
+                self.name,
+                event.source.chat_id,
+            )
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
+                pass
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -4153,6 +4186,7 @@ class BasePlatformAdapter(ABC):
                 _tts_caption_delivered = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
+                        await _stop_typing_before_delivery_once()
                         telegram_tts_caption = None
                         if (
                             self.platform == Platform.TELEGRAM
@@ -4178,6 +4212,7 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    await _stop_typing_before_delivery_once()
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.
                     # Platform adapters that support per-message notification
@@ -4221,6 +4256,7 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
+                        await _stop_typing_before_delivery_once()
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
@@ -4262,6 +4298,7 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
+                        await _stop_typing_before_delivery_once()
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
@@ -4276,6 +4313,7 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        await _stop_typing_before_delivery_once()
                         ext = Path(media_path).suffix.lower()
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
@@ -4306,6 +4344,7 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        await _stop_typing_before_delivery_once()
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
                             await self.send_video(

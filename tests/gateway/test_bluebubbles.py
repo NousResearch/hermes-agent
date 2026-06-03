@@ -5,11 +5,13 @@ import json
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, SendResult
 
 
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    monkeypatch.delenv("BLUEBUBBLES_MENTION_PATTERNS", raising=False)
     from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
     cfg = PlatformConfig(
@@ -76,6 +78,80 @@ class TestBlueBubblesHelpers:
     def test_supports_message_editing_is_false(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_stops_typing_before_final_delivery(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.stop_typing_before_final_delivery() is True
+
+    @pytest.mark.asyncio
+    async def test_typing_uses_endpoint_even_when_helper_cache_is_false(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = False
+        calls = []
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+        class _Client:
+            async def post(self, url, timeout=None):
+                calls.append(("post", url, timeout))
+                return _Response()
+
+            async def delete(self, url, timeout=None):
+                calls.append(("delete", url, timeout))
+                return _Response()
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        monkeypatch.setattr(adapter, "client", _Client())
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+
+        await adapter.send_typing("user@example.com")
+        await adapter.stop_typing("user@example.com")
+
+        assert [call[0] for call in calls] == ["post", "delete"]
+
+    @pytest.mark.asyncio
+    async def test_final_response_stops_typing_before_send(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        events = []
+
+        async def fake_send_typing(chat_id, metadata=None):
+            events.append("typing-start")
+
+        async def fake_stop_typing(chat_id):
+            events.append("typing-stop")
+
+        async def fake_send(chat_id, content, reply_to=None, metadata=None):
+            events.append("send")
+            return SendResult(success=True, message_id="sent-1")
+
+        async def fake_handler(event):
+            await asyncio.sleep(0.01)
+            return "done"
+
+        monkeypatch.setattr(adapter, "send_typing", fake_send_typing)
+        monkeypatch.setattr(adapter, "stop_typing", fake_stop_typing)
+        monkeypatch.setattr(adapter, "send", fake_send)
+        adapter._message_handler = fake_handler
+
+        source = adapter.build_source(
+            chat_id="iMessage;-;user@example.com",
+            chat_type="dm",
+            user_id="user@example.com",
+        )
+        event = MessageEvent(text="hello", source=source)
+
+        await adapter._process_message_background(event, "test-session")
+
+        assert "send" in events
+        send_index = events.index("send")
+        assert "typing-start" in events[:send_index]
+        assert "typing-stop" in events[:send_index]
+        assert "typing-start" not in events[send_index + 1:]
 
     def test_truncate_message_omits_pagination_suffixes(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

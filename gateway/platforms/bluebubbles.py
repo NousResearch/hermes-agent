@@ -114,6 +114,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
 
+    def stop_typing_before_final_delivery(self) -> bool:
+        """Stop iMessage typing before sending the final reply.
+
+        BlueBubbles/IMCore can process a late "start typing" pulse after a
+        cancel signal. Stopping the refresh loop before the reply, then letting
+        base cleanup stop it again after delivery, keeps the indicator aligned
+        with actual agent processing instead of lingering after the response.
+        """
+        return True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
@@ -685,30 +695,45 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
+        # /server/info can report helper_connected=false during gateway startup
+        # and never refresh. The typing endpoint is the source of truth; if the
+        # Private API is enabled, try it and log endpoint failures.
+        if not self._private_api_enabled or not self.client:
             return
         try:
             guid = await self._resolve_chat_guid(chat_id)
             if guid:
                 encoded = quote(guid, safe="")
-                await self.client.post(
+                res = await self.client.post(
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
-        except Exception:
-            pass
+                res.raise_for_status()
+                logger.debug("[bluebubbles] typing start chat=%s", _redact(guid))
+        except Exception as exc:
+            logger.debug(
+                "[bluebubbles] send_typing failed for %s: %s",
+                _redact(chat_id or ""),
+                exc,
+            )
 
     async def stop_typing(self, chat_id: str) -> None:
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
+        if not self._private_api_enabled or not self.client:
             return
         try:
             guid = await self._resolve_chat_guid(chat_id)
             if guid:
                 encoded = quote(guid, safe="")
-                await self.client.delete(
+                res = await self.client.delete(
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
-        except Exception:
-            pass
+                res.raise_for_status()
+                logger.debug("[bluebubbles] typing stop chat=%s", _redact(guid))
+        except Exception as exc:
+            logger.debug(
+                "[bluebubbles] stop_typing failed for %s: %s",
+                _redact(chat_id or ""),
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Read receipts

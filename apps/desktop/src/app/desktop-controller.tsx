@@ -34,7 +34,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
-  mergeWorkingSessions,
+  mergeSessionPage,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -208,12 +208,13 @@ export function DesktopController() {
       const result = await listSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        // Don't hard-replace: a session whose first turn is still in flight has
-        // message_count 0 in the DB, so min_messages=1 omits it. Since every
-        // message.complete refreshes the list, a plain replace would drop the
-        // other still-running new chats the moment one of them finishes. Keep
-        // any working session the server hasn't surfaced yet.
-        setSessions(prev => mergeWorkingSessions(prev, result.sessions, $workingSessionIds.get()))
+        // Don't hard-replace. Two kinds of rows must survive a refresh the
+        // server didn't return: (1) sessions whose first turn is still in
+        // flight (message_count 0, so min_messages=1 omits them) and (2)
+        // pinned sessions that have aged off the most-recent page — otherwise
+        // the pin "disappears until you refresh". mergeSessionPage keeps both.
+        const keepIds = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
+        setSessions(prev => mergeSessionPage(prev, result.sessions, keepIds))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
       }
     } finally {

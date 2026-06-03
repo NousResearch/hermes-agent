@@ -428,6 +428,78 @@ class TestWebServerEndpoints:
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
 
+    def test_search_dedupes_compression_lineage_to_tip(self):
+        """A conversation that auto-compresses leaves the matched term in both
+        the root segment and the continuation. Search must collapse them to a
+        single result keyed by the lineage root and pointing at the live tip,
+        so the sidebar stops showing the same chat several times."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="search-root", source="cli")
+            db.append_message(session_id="search-root", role="user", content="distinctneedle in the root")
+            db.end_session("search-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "search-root"),
+            )
+            db.create_session(session_id="search-tip", source="cli", parent_session_id="search-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 90, "search-tip"))
+            db.append_message(session_id="search-tip", role="user", content="distinctneedle again in the tip")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=distinctneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        lineage_hits = [r for r in results if r.get("lineage_root") == "search-root"]
+        # One conversation -> exactly one result despite two FTS hits.
+        assert len(lineage_hits) == 1
+        hit = lineage_hits[0]
+        # Surfaced under the live tip so clicking resumes the current session.
+        assert hit["session_id"] == "search-tip"
+        assert hit["lineage_root"] == "search-root"
+
+    def test_search_keeps_branch_specific_hits_on_branch(self):
+        """Branch sessions share parent_session_id, but they are not compression
+        continuations. A query that only exists in the branch must open the
+        branch instead of being collapsed back to the parent/root."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = _time.time()
+            db.create_session(session_id="branch-parent", source="cli")
+            db.append_message(session_id="branch-parent", role="user", content="ancestor context")
+            db.end_session("branch-parent", "branched")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "branch-parent"),
+            )
+            db.create_session(session_id="branch-child", source="cli", parent_session_id="branch-parent")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 80, "branch-child"))
+            db.append_message(session_id="branch-child", role="user", content="branchspecificneedle only here")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=branchspecificneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        assert any(
+            r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
+            for r in results
+        )
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { mergeWorkingSessions, sessionPinId } from './session'
+import { mergeSessionPage, sessionPinId } from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -35,12 +35,12 @@ describe('sessionPinId', () => {
   })
 })
 
-describe('mergeWorkingSessions', () => {
-  it('returns the server page untouched when nothing is working', () => {
+describe('mergeSessionPage', () => {
+  it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]
 
-    expect(mergeWorkingSessions(previous, incoming, [])).toBe(incoming)
+    expect(mergeSessionPage(previous, incoming, [])).toBe(incoming)
   })
 
   it('keeps a still-working session the server omitted', () => {
@@ -50,7 +50,7 @@ describe('mergeWorkingSessions', () => {
     const previous = [session({ id: 'c' }), session({ id: 'b' }), session({ id: 'a' })]
     const incoming = [session({ id: 'a', message_count: 2 })]
 
-    const merged = mergeWorkingSessions(previous, incoming, ['b', 'c'])
+    const merged = mergeSessionPage(previous, incoming, ['b', 'c'])
 
     expect(merged.map(s => s.id)).toEqual(['c', 'b', 'a'])
     // The finished session comes from the fresh server payload, not the stale
@@ -62,18 +62,42 @@ describe('mergeWorkingSessions', () => {
     const previous = [session({ id: 'b' }), session({ id: 'a' })]
     const incoming = [session({ id: 'b', message_count: 4 }), session({ id: 'a' })]
 
-    const merged = mergeWorkingSessions(previous, incoming, ['b'])
+    const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a'])
     expect(merged.find(s => s.id === 'b')?.message_count).toBe(4)
   })
 
-  it('never resurrects a non-working session the server dropped', () => {
+  it('never resurrects a session the server dropped that is not in the keep set', () => {
     // A deleted/archived session is removed from `previous` optimistically and
-    // is not in the working set, so it must stay gone after a refresh.
+    // is not in the keep set, so it must stay gone after a refresh.
     const previous = [session({ id: 'b' }), session({ id: 'gone' })]
     const incoming = [session({ id: 'b' })]
 
-    expect(mergeWorkingSessions(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
+    expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
+  })
+
+  it('keeps a pinned session that has aged off the recent page', () => {
+    // Repro of "loses pins until you refresh": a pinned chat falls off the
+    // most-recent page, so the server stops returning it. A hard replace would
+    // evict it and the Pinned section would go empty. The keep set (which
+    // carries pinned ids) must hold it in memory.
+    const previous = [session({ id: 'recent' }), session({ id: 'pinned' })]
+    const incoming = [session({ id: 'recent' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['pinned'])
+
+    expect(merged.map(s => s.id)).toEqual(['pinned', 'recent'])
+  })
+
+  it('keeps a pinned session matched by its lineage root after compression', () => {
+    // The pin is stored on the lineage-root id, but the loaded row surfaces
+    // under its live compression tip. Matching on _lineage_root_id keeps it.
+    const previous = [session({ id: 'tip', _lineage_root_id: 'root' })]
+    const incoming = [session({ id: 'other' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['root'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
   })
 })

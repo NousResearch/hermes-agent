@@ -143,6 +143,7 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     cwd: null,
     ended_at: null,
     id: result.session_id,
+    _lineage_root_id: result.lineage_root ?? null,
     input_tokens: 0,
     is_active: false,
     last_active: ts,

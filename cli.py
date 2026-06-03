@@ -10335,6 +10335,117 @@ class HermesCLI:
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
 
+    def _cli_self_rollover_settings(self) -> tuple[bool, int]:
+        """Return whether interactive CLI self-rollover is enabled and its token threshold."""
+        cfg = getattr(self, "config", None) or CLI_CONFIG
+        section = cfg.get("cli_self_rollover", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(section, dict):
+            section = {}
+
+        enabled = section.get("enabled", True)
+        env_enabled = os.getenv("HERMES_CLI_SELF_ROLLOVER", "").strip().lower()
+        if env_enabled:
+            enabled = env_enabled not in {"0", "false", "no", "off", "disable", "disabled"}
+
+        raw_threshold = os.getenv(
+            "HERMES_CLI_SELF_ROLLOVER_TOKENS",
+            str(section.get("threshold_tokens", 150_000)),
+        )
+        try:
+            threshold = int(str(raw_threshold).replace(",", "").strip())
+        except (TypeError, ValueError):
+            threshold = 150_000
+        threshold = max(1, threshold)
+        return bool(enabled), threshold
+
+    def _estimate_cli_context_pressure(self) -> int:
+        """Estimate current request pressure for deciding whether to self-rollover."""
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return 0
+        compressor = getattr(agent, "context_compressor", None)
+        prompt_tokens = int(getattr(compressor, "last_prompt_tokens", 0) or 0) if compressor else 0
+        if prompt_tokens > 0:
+            return prompt_tokens
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+            return int(estimate_request_tokens_rough(
+                getattr(self, "conversation_history", []) or [],
+                system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+                tools=getattr(agent, "tools", None) or None,
+            ) or 0)
+        except Exception:
+            return 0
+
+    def _maybe_self_rollover_after_turn(self) -> bool:
+        """Auto-create a fresh continuation session once the interactive CLI reaches 150k tokens.
+
+        This is the CLI-side equivalent of the manual ``/compress`` escape hatch:
+        it summarizes the current transcript into a child session, swaps the CLI
+        to that child session, and persists the handoff so ``hermes --resume``
+        lands on the fresh context instead of the huge parent.  It deliberately
+        does *not* exec/replace the terminal process; the freshness boundary is
+        the model context/session, which is the part that otherwise overflows.
+        """
+        enabled, threshold = self._cli_self_rollover_settings()
+        if not enabled:
+            return False
+        history = getattr(self, "conversation_history", []) or []
+        if len(history) < 4:
+            return False
+        agent = getattr(self, "agent", None)
+        if not agent or not getattr(agent, "compression_enabled", True):
+            return False
+        if getattr(self, "_cli_self_rollover_in_progress", False):
+            return False
+
+        approx_tokens = self._estimate_cli_context_pressure()
+        if approx_tokens < threshold:
+            return False
+
+        self._cli_self_rollover_in_progress = True
+        original_session_id = getattr(self, "session_id", "") or ""
+        try:
+            with self._busy_command("Rolling over CLI context..."):
+                print(
+                    f"\n🔁 Hermes CLI self-rollover: context reached ~{approx_tokens:,} "
+                    f"tokens (threshold {threshold:,}). Creating fresh continuation..."
+                )
+                compressed, _ = agent._compress_context(
+                    list(history),
+                    None,
+                    approx_tokens=approx_tokens,
+                    focus_topic=(
+                        "fresh context transfer for continuing this Hermes CLI session; "
+                        "preserve active task, decisions, blockers, commands run, files touched, "
+                        "and exact next actions"
+                    ),
+                    force=True,
+                )
+                self.conversation_history = compressed
+                if getattr(agent, "session_id", None) and agent.session_id != original_session_id:
+                    try:
+                        self._transfer_session_yolo(original_session_id, agent.session_id)
+                    except Exception:
+                        pass
+                    self.session_id = agent.session_id
+                    self._pending_title = None
+                    try:
+                        agent._flush_messages_to_session_db(self.conversation_history, None)
+                    except Exception as exc:
+                        logger.debug("CLI self-rollover persistence failed: %s", exc)
+                    print(f"  ✅ Fresh continuation session: {self.session_id}")
+                    print(f"     Resume with: hermes --resume {self.session_id}")
+                    return True
+                print("  ⚠️  Self-rollover summary created but session id did not change.")
+                return False
+        except Exception as exc:
+            print(f"  ❌ CLI self-rollover failed: {exc}")
+            logger.warning("CLI self-rollover failed", exc_info=True)
+            return False
+        finally:
+            self._cli_self_rollover_in_progress = False
+
     def _handle_debug_command(self):
         """Handle /debug — upload debug report + logs and print paste URLs."""
         from hermes_cli.debug import run_debug_share
@@ -12590,6 +12701,15 @@ class HermesCLI:
                 preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
+
+            if (
+                result
+                and result.get("completed", True)
+                and not result.get("failed")
+                and not result.get("partial")
+                and not result.get("interrupted")
+            ):
+                self._maybe_self_rollover_after_turn()
 
             return response
             

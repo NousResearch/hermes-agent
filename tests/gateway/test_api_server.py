@@ -117,6 +117,17 @@ class TestResponseStore:
         assert store.get("resp_2") is None
         assert store.get("resp_1") is not None
 
+    def test_access_refreshes_lru_when_clock_ties(self, monkeypatch):
+        monkeypatch.setattr(time, "time_ns", lambda: 1_000_000_000)
+        store = ResponseStore(max_size=3)
+        store.put("resp_1", {"output": "one"})
+        store.put("resp_2", {"output": "two"})
+        store.put("resp_3", {"output": "three"})
+        store.get("resp_1")
+        store.put("resp_4", {"output": "four"})
+        assert store.get("resp_2") is None
+        assert store.get("resp_1") is not None
+
     def test_update_existing_key(self):
         store = ResponseStore(max_size=10)
         store.put("resp_1", {"output": "v1"})

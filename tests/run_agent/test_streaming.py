@@ -1639,3 +1639,128 @@ class TestStreamWatchdogKillCeiling:
         # 2 kills × 0.3s threshold ≈ <1s of real stall detection; allow
         # generous slack but well under the 20s blocking sleep.
         assert _elapsed < 10.0, f"watchdog took {_elapsed:.1f}s — it hung"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_streaming_watchdog_aborts_even_when_retries_bump_timer(
+        self, mock_replace, mock_abort, mock_close, mock_create, monkeypatch
+    ):
+        """Regression for the timestamp-based progress-reset bug.
+
+        The kill→client-close→worker-retry loop re-enters the inner retry
+        loop, which resets last_chunk_time["t"] = time.time() at the start of
+        every attempt WITHOUT delivering any real chunk.  The old
+        timestamp-keyed progress-reset saw the timer change and reset
+        _stale_kills to 0 on every poll — so the bounded ceiling never tripped
+        and the request looped until HERMES_STREAM_RETRIES (50 here) was
+        exhausted.  With the chunk-count-keyed reset, _stale_kills accumulates
+        because no real chunk ever arrives, and the ceiling trips with
+        TimeoutError after HERMES_STREAM_MAX_STALE_KILLS kills.
+        """
+        import time as _time
+
+        from run_agent import AIAgent
+
+        import threading as _threading
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.3")
+        monkeypatch.setenv("HERMES_STREAM_MAX_STALE_KILLS", "2")
+        # Retries set high so the inner retry loop keeps re-entering (bumping
+        # last_chunk_time at attempt start) long past the kill ceiling —
+        # proving the ceiling, not retry exhaustion, is what aborts.
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "50")
+
+        _create_calls = {"n": 0}
+        _done = _threading.Event()  # set by the test after the assertion
+
+        class _WedgeStream:
+            """Yields nothing.  __next__ blocks until the watchdog aborts the
+            client (mock_abort sets self.aborted), then raises a retryable
+            connection error.  This re-wedges the worker every attempt WITHOUT
+            ever delivering a real chunk — so chunks_seen never advances, but
+            last_chunk_time IS bumped at attempt start (line ~1774) on each
+            retry.  The old timestamp-keyed progress-reset saw that bump and
+            zeroed _stale_kills every cycle; the chunk-count reset does not."""
+
+            def __init__(self):
+                self.aborted = _threading.Event()
+                self.response = None
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                # Wait for the stale watchdog to abort us (or test teardown).
+                while not self.aborted.wait(timeout=0.05):
+                    if _done.is_set():
+                        raise StopIteration
+                raise ConnectionError("peer closed connection (simulated wedge)")
+
+        _streams = []
+
+        def _make_stream(*args, **kwargs):
+            _create_calls["n"] += 1
+            s = _WedgeStream()
+            _streams.append(s)
+            return s
+
+        def _abort_signals_streams(*args, **kwargs):
+            # The watchdog kill aborts the worker's client from the poll
+            # (stranger) thread — release whatever stream is currently wedged.
+            for s in _streams:
+                s.aborted.set()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _make_stream
+        mock_create.return_value = mock_client
+        mock_close.return_value = None
+        mock_abort.side_effect = _abort_signals_streams
+        mock_replace.return_value = True
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        # Snapshot live threads so the finally block can join any worker the
+        # streaming call spawns — a lingering daemon worker would otherwise
+        # keep retrying in the background and pollute the next test (it steals
+        # CPU and races timing-sensitive interrupt tests).
+        _threads_before = set(_threading.enumerate())
+
+        _start = _time.time()
+        try:
+            with pytest.raises(TimeoutError):
+                agent._interruptible_streaming_api_call({})
+            _elapsed = _time.time() - _start
+        finally:
+            # Release any lingering daemon worker so it can't pollute the
+            # next test by retrying in the background, then JOIN it so it is
+            # fully dead before this test returns.
+            _done.set()
+            for s in _streams:
+                s.aborted.set()
+            for _t in set(_threading.enumerate()) - _threads_before:
+                if _t is not _threading.current_thread():
+                    _t.join(timeout=5.0)
+
+        # 2 kills × 0.3s stale window + poll granularity — well under 10s.
+        # With the OLD timestamp logic, the attempt-start timer bump on each
+        # retry resets _stale_kills, so the ceiling never trips and this loops
+        # to HERMES_STREAM_RETRIES=50 exhaustion (raising ConnectionError, not
+        # TimeoutError) — the pytest.raises(TimeoutError) above would fail.
+        assert _elapsed < 10.0, f"watchdog took {_elapsed:.1f}s — ceiling didn't trip"
+        # The worker genuinely retried (re-creating the client and bumping the
+        # attempt-start timer) more than once, exercising the timer-bump path.
+        assert _create_calls["n"] >= 2, (
+            f"expected ≥2 retry attempts to exercise the timer bump, "
+            f"got {_create_calls['n']}"
+        )

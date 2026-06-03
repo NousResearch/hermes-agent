@@ -3586,7 +3586,26 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         import time as _time
         from gateway.status import record_start_and_check_storm
 
-        _storm = record_start_and_check_storm()
+        # Operator overrides: HERMES_GATEWAY_MAX_STARTS <= 0 disables the breaker
+        # entirely (e.g. deliberate rapid `gateway run --replace` config iteration),
+        # and HERMES_GATEWAY_START_WINDOW_S tunes the observation window. Parse
+        # defensively so a bad value never blocks startup.
+        try:
+            _max_starts = int(os.environ.get("HERMES_GATEWAY_MAX_STARTS", "5"))
+        except ValueError:
+            _max_starts = 5
+        try:
+            _start_window_s = float(os.environ.get("HERMES_GATEWAY_START_WINDOW_S", "120"))
+        except ValueError:
+            _start_window_s = 120.0
+
+        _storm = (
+            None
+            if _max_starts <= 0
+            else record_start_and_check_storm(
+                max_starts=_max_starts, window_s=_start_window_s
+            )
+        )
         if _storm is not None:
             logger.warning(
                 "Gateway (re)started %d times in %.0fs — backing off %.0fs to break a respawn storm.",
@@ -3601,8 +3620,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                 backoff_s=_storm.backoff_s,
             )
             _time.sleep(_storm.backoff_s)
-    except Exception:
-        pass
+    except Exception as _be:
+        logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
     success = False
     try:

@@ -4718,7 +4718,9 @@ class GatewayRunner:
 
         return True
 
-    def _spawn_supervised(self, coro_factory, name, *, restart=True):
+    _MAX_SUPERVISED_RESTARTS = 5
+
+    def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0):
         """Launch a long-lived background task with supervision.
 
         Bare ``asyncio.create_task(...)`` for the gateway's long-lived
@@ -4730,9 +4732,14 @@ class GatewayRunner:
 
         This wrapper keeps a handle in ``_background_tasks``, logs any
         non-cancellation exception with a traceback, and (when ``restart``
-        is True and the gateway is still running) respawns the task after a
-        short back-off so a one-off blip doesn't permanently lose the
-        watcher.
+        is True and the gateway is still running) respawns the task with a
+        bounded exponential back-off so a one-off blip doesn't permanently
+        lose the watcher — while a *deterministic* crash can't flood the
+        logs forever. ``_attempt`` is the count of consecutive immediate
+        failures; it grows the back-off (``min(60, 2 ** min(_attempt, 6))``
+        seconds) and, once it reaches ``_MAX_SUPERVISED_RESTARTS``, restarts
+        are abandoned. A clean return (no exception) resets the counter by
+        spawning a fresh task at ``_attempt=0``.
         """
         # Some test harnesses construct the runner without running __init__.
         if getattr(self, "_background_tasks", None) is None:
@@ -4749,13 +4756,38 @@ class GatewayRunner:
                 return
             exc = t.exception()
             if exc is None:
+                # Clean return — these are infinite ``while self._running``
+                # loops, so a clean completion means the loop exited normally
+                # (e.g. shutdown). If we still need to restart, do so with a
+                # reset attempt counter.
+                if restart and self._running:
+                    async def _respawn_clean():
+                        if self._running:
+                            self._spawn_supervised(
+                                coro_factory, name, restart=restart, _attempt=0
+                            )
+                    respawn_task = asyncio.create_task(_respawn_clean())
+                    self._background_tasks.add(respawn_task)
+                    respawn_task.add_done_callback(self._background_tasks.discard)
                 return
             logger.error("Supervised task %s died: %r", name, exc, exc_info=exc)
             if restart and self._running:
+                if _attempt >= self._MAX_SUPERVISED_RESTARTS:
+                    logger.error(
+                        "Supervised task %s died %d times consecutively — "
+                        "giving up restarts",
+                        name, _attempt,
+                    )
+                    return
+                backoff = min(60, 2 ** min(_attempt, 6))
+
                 async def _respawn():
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(backoff)
                     if self._running:
-                        self._spawn_supervised(coro_factory, name, restart=restart)
+                        self._spawn_supervised(
+                            coro_factory, name, restart=restart,
+                            _attempt=_attempt + 1,
+                        )
                 respawn_task = asyncio.create_task(_respawn())
                 self._background_tasks.add(respawn_task)
                 respawn_task.add_done_callback(self._background_tasks.discard)

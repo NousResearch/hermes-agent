@@ -1109,10 +1109,13 @@ def record_start_and_check_storm(
         # Ring-buffer the on-disk log so it can't grow unbounded.
         keep = max(max_starts * 4, 40)
         to_write = existing[-keep:]
-        log_path.write_text(
-            "\n".join(f"{ts:.6f}" for ts in to_write) + "\n",
-            encoding="utf-8",
-        )
+        # Write atomically (temp file in the same dir + os.replace) so a
+        # concurrent overlapping restart during a storm — the exact case this
+        # runs in — can never observe a truncated/corrupt half-written log.
+        payload = "\n".join(f"{ts:.6f}" for ts in to_write) + "\n"
+        tmp_path = log_path.with_suffix(".tmp")
+        tmp_path.write_text(payload, encoding="utf-8")
+        os.replace(tmp_path, log_path)
 
         if len(recent) > max_starts:
             over = len(recent) - max_starts

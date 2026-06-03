@@ -430,6 +430,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             if meta is None:
                                 continue
                             _idx, _name, _args = meta
+                            # Only synthesize a timeout result if the slot is
+                            # still empty.  An abandoned daemon worker may later
+                            # finish and write results[_idx] itself — that race
+                            # is harmless and intentionally tolerated: the turn's
+                            # tool-results are already assembled downstream from
+                            # this synthesized value, so a late real write only
+                            # mutates an array nothing reads anymore.
                             if results[_idx] is None:
                                 results[_idx] = (
                                     _name, _args,

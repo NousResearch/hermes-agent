@@ -1088,7 +1088,10 @@ class TelegramAdapter(BasePlatformAdapter):
         `_handle_polling_network_error`, which can ultimately escalate to
         a fatal error and trigger a full platform reconnect.
         """
-        INTERVAL = float(os.getenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "90"))
+        try:
+            INTERVAL = float(os.getenv("HERMES_TELEGRAM_HEARTBEAT_INTERVAL", "90"))
+        except ValueError:
+            INTERVAL = 90.0
         PROBE_TIMEOUT = 10
 
         while not self.has_fatal_error:
@@ -1107,20 +1110,35 @@ class TelegramAdapter(BasePlatformAdapter):
 
             updater = getattr(self._app, "updater", None) if self._app else None
             if updater is None:
-                return
+                # `self._app` is transiently None during a reconnect (the app
+                # gets rebuilt). Keep looping rather than returning — returning
+                # would permanently kill the heartbeat. disconnect() cancels
+                # this task, so looping here is safe.
+                continue
 
             if not updater.running:
-                await self._handle_polling_network_error(
-                    RuntimeError("Updater not running (heartbeat)")
-                )
+                try:
+                    await self._handle_polling_network_error(
+                        RuntimeError("Updater not running (heartbeat)")
+                    )
+                except Exception as _he:
+                    logger.warning(
+                        "[%s] heartbeat recovery raised: %s", self.name, _he
+                    )
                 continue
 
             try:
                 await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+                self._send_path_degraded = False
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                await self._handle_polling_network_error(e)
+                try:
+                    await self._handle_polling_network_error(e)
+                except Exception as _he:
+                    logger.warning(
+                        "[%s] heartbeat recovery raised: %s", self.name, _he
+                    )
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
@@ -1830,10 +1848,24 @@ class TelegramAdapter(BasePlatformAdapter):
             except ValueError:
                 _hb = 90.0
             if _hb > 0 and not getattr(self, "_webhook_mode", False) and not self.has_fatal_error:
+                # Cancel any pre-existing heartbeat so a reconnect can't leave
+                # two heartbeat loops running concurrently.
+                _old = getattr(self, "_polling_heartbeat_task", None)
+                if _old and not _old.done():
+                    _old.cancel()
                 hb_task = asyncio.ensure_future(self._polling_heartbeat_loop())
                 self._polling_heartbeat_task = hb_task
                 self._background_tasks.add(hb_task)
-                hb_task.add_done_callback(self._background_tasks.discard)
+
+                def _hb_done(t: asyncio.Task) -> None:
+                    self._background_tasks.discard(t)
+                    if not t.cancelled() and t.exception() is not None:
+                        logger.error(
+                            "[%s] polling heartbeat loop died: %r",
+                            self.name, t.exception(),
+                        )
+
+                hb_task.add_done_callback(_hb_done)
 
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.

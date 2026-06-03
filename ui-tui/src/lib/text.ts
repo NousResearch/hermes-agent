@@ -1,7 +1,9 @@
 import {
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
-  THINKING_COT_MAX
+  THINKING_COT_MAX,
+  VERBOSE_TRAIL_MAX_CHARS,
+  VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
@@ -215,7 +217,16 @@ export const buildToolTrailLine = (
 const verboseToolBlock = (label: string, text?: string) => {
   const body = (text ?? '').trim()
 
-  return body ? `${label}:\n${boundedLiveRenderText(body)}` : ''
+  // Persisted trail blocks are kept all session and rendered expanded by
+  // default — cap to a small readable preview (NOT the 16KB live-render
+  // budget) so a large tool output can't balloon the Ink render tree and
+  // silently OOM-kill the TUI. See VERBOSE_TRAIL_MAX_CHARS (#34095).
+  return body
+    ? `${label}:\n${boundedLiveRenderText(body, {
+        maxChars: VERBOSE_TRAIL_MAX_CHARS,
+        maxLines: VERBOSE_TRAIL_MAX_LINES
+      })}`
+    : ''
 }
 
 export const buildVerboseToolTrailLine = (

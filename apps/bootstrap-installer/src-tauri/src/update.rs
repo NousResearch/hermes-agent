@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-use crate::events::{BootstrapEvent, StageInfo, StageState};
+use crate::events::{BootstrapEvent, LogStream, StageInfo, StageState};
 
 /// `hermes update` exit code meaning "another hermes process is holding the
 /// venv shim open / dirty precondition" — see _cmd_update_impl in
@@ -237,6 +237,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         emit_log(
             &app,
             None,
+            LogStream::Stdout,
             &format!("[update] could not auto-launch desktop: {err}. Launch Hermes manually."),
         );
     }
@@ -251,7 +252,7 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
     let shim = venv_hermes(install_root);
     let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
 
-    emit_log(app, Some("update"), "[update] waiting for Hermes to exit…");
+    emit_log(app, Some("update"), LogStream::Stdout, "[update] waiting for Hermes to exit…");
 
     loop {
         if !is_locked(&shim) {
@@ -261,6 +262,7 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
             emit_log(
                 app,
                 Some("update"),
+                LogStream::Stdout,
                 "[update] timed out waiting for Hermes to exit; proceeding anyway",
             );
             return;
@@ -320,22 +322,22 @@ async fn run_streamed(
     loop {
         tokio::select! {
             line = out.next_line() => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), &l),
+                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l),
                 Ok(None) => break,
                 Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
             },
             line = err.next_line() => match line {
-                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), &format!("stderr: {l}")),
+                Ok(Some(l)) => emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l),
                 Ok(None) => {}
                 Err(e) => { tracing::warn!("stderr read error: {e}"); }
             },
         }
     }
     while let Ok(Some(l)) = out.next_line().await {
-        emit_log(app, stage_owned.as_deref(), &l);
+        emit_log(app, stage_owned.as_deref(), LogStream::Stdout, &l);
     }
     while let Ok(Some(l)) = err.next_line().await {
-        emit_log(app, stage_owned.as_deref(), &format!("stderr: {l}"));
+        emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
     }
 
     let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;
@@ -429,7 +431,7 @@ fn emit_stage(
     );
 }
 
-fn emit_log(app: &AppHandle, stage: Option<&str>, line: &str) {
+fn emit_log(app: &AppHandle, stage: Option<&str>, stream: LogStream, line: &str) {
     match stage {
         Some(s) => tracing::info!(target: "bootstrap.log", stage = %s, "{line}"),
         None => tracing::info!(target: "bootstrap.log", "{line}"),
@@ -439,6 +441,7 @@ fn emit_log(app: &AppHandle, stage: Option<&str>, line: &str) {
         BootstrapEvent::Log {
             stage: stage.map(|s| s.to_string()),
             line: line.to_string(),
+            stream,
         },
     );
 }

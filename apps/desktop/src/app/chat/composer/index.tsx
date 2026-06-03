@@ -65,7 +65,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
-import { detectTrigger, extractClipboardImageBlobs, shouldSkipTriggerRefreshOnKeyUp, textBeforeCaret, type TriggerState } from './text-utils'
+import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -421,6 +421,14 @@ export function ChatBar({
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  // Set synchronously in keydown when the open trigger popover consumes a
+  // navigation/control key (Arrow/Enter/Tab/Escape). The subsequent keyup must
+  // NOT run refreshTrigger for that keypress: it never edits text, and for
+  // Escape the keydown has already set trigger=null, so a keyup refresh would
+  // re-detect the still-present `/` and instantly reopen the menu. A ref is
+  // used instead of reading `trigger` in keyup because by keyup time React has
+  // re-rendered and the handler closure sees the post-keydown state.
+  const triggerKeyConsumedRef = useRef(false)
 
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current
@@ -572,6 +580,7 @@ export function ChatBar({
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx + 1) % triggerItems.length)
 
         return
@@ -579,6 +588,7 @@ export function ChatBar({
 
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
 
         return
@@ -586,6 +596,7 @@ export function ChatBar({
 
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
 
         if (item) {
@@ -597,6 +608,7 @@ export function ChatBar({
 
       if (event.key === 'Escape') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         closeTrigger()
 
         return
@@ -616,12 +628,16 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
-    // Arrow/Enter/Tab/Escape while the trigger menu is open are fully handled
-    // in keydown and never edit text. Refreshing the trigger here would reset
-    // the highlight to the top (breaking ArrowDown/ArrowUp) and re-open a menu
-    // that Escape just closed, so skip it.
-    if (shouldSkipTriggerRefreshOnKeyUp(event.key, trigger !== null)) {
+  const handleEditorKeyUp = () => {
+    // If this keyup belongs to a key the open trigger popover already consumed
+    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
+    // edit text, and for Escape the keydown already closed the menu — a refresh
+    // here would re-detect the still-present `/` and instantly reopen it. We
+    // read a ref set during keydown rather than `trigger`, because by keyup
+    // time React has re-rendered and `trigger` may already be null.
+    if (triggerKeyConsumedRef.current) {
+      triggerKeyConsumedRef.current = false
+
       return
     }
 

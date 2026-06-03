@@ -155,10 +155,11 @@ class TestSyncBackAppliesChanged:
 
 
 class TestSyncBackNewRemoteFile:
-    """File created on remote (not in _pushed_hashes) is applied via _infer_host_path."""
+    """Files created only on the remote are not written back to the host."""
 
-    def test_sync_back_detects_new_remote_file(self, tmp_path):
-        # Existing mapping gives _infer_host_path a prefix to work with
+    def test_sync_back_skips_new_remote_file(self, tmp_path):
+        # Existing mapping proves there is a known synced directory, but a
+        # remote-created sibling must not become a new host file implicitly.
         existing_host = tmp_path / "host" / "skills" / "existing.py"
         _write_file(existing_host, b"existing")
         mapping = [(str(existing_host), "/root/.hermes/skills/existing.py")]
@@ -174,10 +175,9 @@ class TestSyncBackNewRemoteFile:
 
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
-        # The new file should have been inferred and written to the host
+        # The new file stays remote-only because it was never pushed by Hermes.
         expected_host_path = tmp_path / "host" / "skills" / "new_skill.py"
-        assert expected_host_path.exists()
-        assert expected_host_path.read_bytes() == new_remote_content
+        assert not expected_host_path.exists()
 
 
 class TestSyncBackConflict:
@@ -330,52 +330,6 @@ class TestSyncBackFileLock:
         with patch("tools.environments.file_sync.fcntl", None):
             # Should not raise — locking is skipped
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
-
-
-class TestInferHostPath:
-    """Edge cases for _infer_host_path prefix matching."""
-
-    def test_infer_no_matching_prefix(self, tmp_path):
-        """Remote path in unmapped directory should return None."""
-        host_file = tmp_path / "host" / "skills" / "a.py"
-        _write_file(host_file, b"content")
-        mapping = [(str(host_file), "/root/.hermes/skills/a.py")]
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping)
-        result = mgr._infer_host_path(
-            "/root/.hermes/cache/new.json",
-            file_mapping=mapping,
-        )
-        assert result is None
-
-    def test_infer_partial_prefix_no_false_match(self, tmp_path):
-        """A partial prefix like /root/.hermes/sk should NOT match /root/.hermes/skills/."""
-        host_file = tmp_path / "host" / "skills" / "a.py"
-        _write_file(host_file, b"content")
-        mapping = [(str(host_file), "/root/.hermes/skills/a.py")]
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping)
-        # /root/.hermes/skillsXtra/b.py shares prefix "skills" but the
-        # directory is different — should not match /root/.hermes/skills/
-        result = mgr._infer_host_path(
-            "/root/.hermes/skillsXtra/b.py",
-            file_mapping=mapping,
-        )
-        assert result is None
-
-    def test_infer_matching_prefix(self, tmp_path):
-        """A file in a mapped directory should be correctly inferred."""
-        host_file = tmp_path / "host" / "skills" / "a.py"
-        _write_file(host_file, b"content")
-        mapping = [(str(host_file), "/root/.hermes/skills/a.py")]
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping)
-        result = mgr._infer_host_path(
-            "/root/.hermes/skills/b.py",
-            file_mapping=mapping,
-        )
-        expected = str(tmp_path / "host" / "skills" / "b.py")
-        assert result == expected
 
 
 class TestSyncBackSIGINT:

@@ -341,18 +341,23 @@ class FileSyncManager:
                             if remote_hash == pushed_hash:
                                 continue
                         else:
-                            remote_hash = None  # new remote file
+                            logger.debug(
+                                "sync_back: skipping %s (not previously pushed)",
+                                remote_path,
+                            )
+                            continue
 
-                        # Resolve host path from cached mapping
+                        # Resolve host path from the explicit pushed mapping.
+                        # Sync-back must not infer new host paths from a remote
+                        # directory prefix because remote backends are isolation
+                        # boundaries, not implicit host persistence channels.
                         host_path = self._resolve_host_path(remote_path, file_mapping)
                         if host_path is None:
-                            host_path = self._infer_host_path(remote_path, file_mapping)
-                            if host_path is None:
-                                logger.debug(
-                                    "sync_back: skipping %s (no host mapping)",
-                                    remote_path,
-                                )
-                                continue
+                            logger.debug(
+                                "sync_back: skipping %s (no explicit host mapping)",
+                                remote_path,
+                            )
+                            continue
 
                         if os.path.exists(host_path) and pushed_hash is not None:
                             host_hash = _sha256_file(host_path)
@@ -380,23 +385,4 @@ class FileSyncManager:
         for host, remote in mapping:
             if remote == remote_path:
                 return host
-        return None
-
-    def _infer_host_path(self, remote_path: str,
-                         file_mapping: list[tuple[str, str]] | None = None) -> str | None:
-        """Infer a host path for a new remote file by matching path prefixes.
-
-        Uses the existing file mapping to find a remote->host directory
-        pair, then applies the same prefix substitution to the new file.
-        For example, if the mapping has ``/root/.hermes/skills/a.md`` →
-        ``~/.hermes/skills/a.md``, a new remote file at
-        ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
-        """
-        mapping = file_mapping if file_mapping is not None else []
-        for host, remote in mapping:
-            remote_dir = str(Path(remote).parent)
-            if remote_path.startswith(remote_dir + "/"):
-                host_dir = str(Path(host).parent)
-                suffix = remote_path[len(remote_dir):]
-                return host_dir + suffix
         return None

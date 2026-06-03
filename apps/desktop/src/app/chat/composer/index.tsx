@@ -64,7 +64,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
-import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
+import { detectTrigger, extractClipboardImageBlobs, shouldSkipTriggerRefreshOnKeyUp, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -442,7 +442,14 @@ export function ChatBar({
     const detected = detectTrigger(before ?? composerPlainText(editor))
 
     setTrigger(detected)
-    setTriggerActive(0)
+
+    // Only reset the highlight when the trigger actually changed (opened, or
+    // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
+    // caret move (mouseup) or a stray refresh — must preserve the user's
+    // current selection instead of snapping back to the first item.
+    if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
+      setTriggerActive(0)
+    }
   }, [trigger])
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
@@ -602,7 +609,15 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = () => {
+  const handleEditorKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Arrow/Enter/Tab/Escape while the trigger menu is open are fully handled
+    // in keydown and never edit text. Refreshing the trigger here would reset
+    // the highlight to the top (breaking ArrowDown/ArrowUp) and re-open a menu
+    // that Escape just closed, so skip it.
+    if (shouldSkipTriggerRefreshOnKeyUp(event.key, trigger !== null)) {
+      return
+    }
+
     window.setTimeout(refreshTrigger, 0)
   }
 

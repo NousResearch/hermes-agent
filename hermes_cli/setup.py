@@ -2770,7 +2770,12 @@ def _run_portal_one_shot(config: dict) -> None:
         from hermes_cli.main import _model_flow_nous
 
         _model_flow_nous(config)
-    except (KeyboardInterrupt, EOFError):
+    except (KeyboardInterrupt, EOFError, SystemExit):
+        # _login_nous raises SystemExit(130)/(1) on cancel/failure; the
+        # logged-out path inside _model_flow_nous catches it, but the
+        # expired-session re-login path only catches Exception, so a
+        # SystemExit there would otherwise escape and kill the whole CLI.
+        # Treat all of these as a graceful cancel/abort for the portal flow.
         print()
         print_info("  Setup cancelled.")
         print_info("  You can retry later with `hermes portal`.")

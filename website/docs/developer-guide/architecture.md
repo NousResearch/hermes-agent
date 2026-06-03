@@ -73,6 +73,7 @@ hermes-agent/
 │   ├── skill_commands.py     # Skill slash commands
 │   ├── memory_manager.py    # Memory manager orchestration
 │   ├── memory_provider.py   # Memory provider ABC
+│   ├── memory_layers.py     # Layered memory routing, optional semantic recall, compression hygiene
 │   └── trajectory.py         # Trajectory saving helpers
 │
 ├── hermes_cli/               # CLI subcommands and setup
@@ -220,6 +221,22 @@ Central tool registry (`tools/registry.py`) with 70+ registered tools across ~28
 SQLite-based session storage with FTS5 full-text search. Sessions have lineage tracking (parent/child across compressions), per-platform isolation, and atomic writes with contention handling.
 
 → [Session Storage](./session-storage.md)
+
+### Memory Architecture
+
+Hermes uses a layered memory architecture rather than treating long-term memory as one flat vector database:
+
+| Layer | Canonical store | Use for |
+|-------|-----------------|---------|
+| 0 — Raw canonical stores | `state.db`, session transcripts, Obsidian/Drive/repos/project files | Full-fidelity source material and domain artifacts |
+| 1 — Optional semantic recall | Active memory provider, e.g. MemPalace-style local recall when installed/configured | On-demand retrieval over larger context collections |
+| 2 — Curated always-on memory | Built-in `MEMORY.md` / `USER.md` managed by `agent/memory_manager.py` | Tiny stable facts and preferences that should affect every session |
+| 3 — Procedural memory | Skills under `$HERMES_HOME/skills/` and bundled/optional skills | Reusable workflows, conventions, and task procedures |
+| 4 — Compression / hygiene | `agent/memory_layers.py::CavemanCompressor` and context engines | Strip padding and keep memory/skill/context entries compact |
+
+`agent/memory_layers.py::LayeredMemoryRouter` classifies candidate knowledge before saving: preferences go to curated user memory, stable project/env facts to curated memory, reusable workflows to skills, artifacts to domain stores such as Obsidian/Drive/repos, episodic recall to `session_search`, and stale task progress/PR status is skipped. The bundled `plugins/memory/layered/` provider exposes this router through `memory_route` plus `memory_compress`; it is inactive unless selected with `memory.provider: layered`.
+
+→ [Memory](../user-guide/features/memory.md), [Memory Providers](../user-guide/features/memory-providers.md), [Memory Provider Plugin](./memory-provider-plugin.md)
 
 ### Messaging Gateway
 

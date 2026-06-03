@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Layered, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, or route memory to the correct Hermes shelf. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,23 +22,56 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: layered      # or honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
 
-When a memory provider is active, Hermes automatically:
+When a memory provider is active, Hermes can:
 
-1. **Injects provider context** into the system prompt (what the provider knows)
-2. **Prefetches relevant memories** before each turn (background, non-blocking)
-3. **Syncs conversation turns** to the provider after each response
-4. **Extracts memories on session end** (for providers that support it)
-5. **Mirrors built-in memory writes** to the external provider
-6. **Adds provider-specific tools** so the agent can search, store, and manage memories
+1. **Inject provider context** into the system prompt (what the provider knows)
+2. **Prefetch relevant memories** before each turn (background, non-blocking)
+3. **Sync conversation turns** to the provider after each response (for providers that store transcripts)
+4. **Extract memories on session end** (for providers that support it)
+5. **Mirror built-in memory writes** to the external provider (for providers that store facts)
+6. **Add provider-specific tools** so the agent can search, store, route, compress, and manage memories
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### Layered
+
+Local taxonomy/routing provider that helps Hermes put knowledge in the right canonical store instead of dumping everything into always-on memory or a flat semantic database.
+
+| | |
+|---|---|
+| **Best for** | Memory hygiene, domain-store routing, and enforcing the layered memory architecture |
+| **Requires** | Nothing for routing/compression. Optional MemPalace CLI if semantic prefetch is enabled. |
+| **Data storage** | No separate storage by default; routes to built-in memory, skills, session search, or domain stores such as Obsidian/Drive/repos |
+| **Cost** | Free |
+
+**Tools (2):** `memory_route` classifies candidate knowledge and recommends the correct shelf; `memory_compress` removes assistant padding/whitespace from memory, skill, or context snippets without summarizing facts.
+
+**Architecture:** `agent/memory_layers.py` implements the router, optional MemPalace CLI adapter, and Caveman-style deterministic compressor. Route decisions follow the layered model:
+
+- preferences → curated user memory
+- stable project/environment facts → curated memory
+- reusable workflows/procedures → skills
+- artifacts such as recipes, receipts, PDFs, and repo docs → canonical domain stores
+- episodic recall → `session_search` / optional semantic recall
+- stale task progress, PR numbers, commits, and phase status → skip
+
+**Setup:**
+```bash
+hermes memory setup    # select "layered"
+# Or manually:
+hermes config set memory.provider layered
+```
+
+Optional semantic recall remains disabled unless configured under the provider's plugin config; no cron jobs or background ingestion are enabled by selecting `layered`.
+
+---
 
 ### Honcho
 
@@ -547,6 +580,7 @@ hermes memory setup
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
+| **Layered** | Routes to built-in/domain stores | Free | 2 | None | Memory taxonomy + compression hygiene |
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
@@ -561,7 +595,7 @@ hermes memory setup
 
 Each provider's data is isolated per [profile](/user-guide/profiles):
 
-- **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
+- **Routing/local providers** (Layered, Holographic, ByteRover) use `$HERMES_HOME/` paths or existing domain stores which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file

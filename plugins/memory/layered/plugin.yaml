@@ -1,0 +1,3 @@
+name: layered
+description: Layered memory router with domain-store routing, optional MemPalace semantic recall, and Caveman-style compression hygiene.
+version: 0.1.0

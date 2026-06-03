@@ -1596,6 +1596,39 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._fallback_chain = fallback_chain
     agent._fallback_model = fallback_chain[0] if fallback_chain else None
 
+    # ── Propagate the new provider/model to auxiliary routing immediately ──
+    # set_runtime_main() is normally called at the top of each run_conversation()
+    # turn, but a mid-session /model switch must take effect for auxiliary calls
+    # (context compression, title generation, session search, etc.) that execute
+    # BEFORE the next turn begins.  Without this update the process-local
+    # _RUNTIME_MAIN_* globals stay stale, causing auxiliary routing to continue
+    # using — and billing — the previously-active provider/model (bug #36759).
+    # We also evict any "auto"-provider cache entries built under the old model
+    # so the next auxiliary call constructs a fresh client rather than reusing
+    # a cached one that points at the wrong endpoint.
+    try:
+        from agent.auxiliary_client import set_runtime_main, _evict_cached_clients
+        _effective_key = agent.api_key if isinstance(agent.api_key, str) else ""
+        set_runtime_main(
+            agent.provider,
+            agent.model,
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=_effective_key,
+            api_mode=getattr(agent, "api_mode", "") or "",
+        )
+        logger.debug(
+            "switch_model: propagated new provider=%s model=%s to auxiliary routing",
+            agent.provider, agent.model,
+        )
+        # Evict cached "auto" clients that encode the old runtime in their key,
+        # so auxiliary fallback doesn't silently reuse an endpoint the user
+        # just switched away from.
+        _evict_cached_clients("auto")
+    except Exception as _aux_exc:
+        logger.debug(
+            "switch_model: could not update auxiliary routing globals: %s", _aux_exc
+        )
+
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,

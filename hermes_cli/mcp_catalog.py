@@ -47,6 +47,7 @@ from hermes_cli.config import (
 from hermes_cli.cli_output import prompt as _prompt_input
 
 _MANIFEST_VERSION = 1
+_FULL_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
@@ -95,7 +96,7 @@ class InstallSpec:
     """
     type: str  # "git"
     url: str
-    ref: str  # commit/tag/branch — pinned, never floats
+    ref: str  # immutable 40-character commit SHA
     bootstrap: List[str] = field(default_factory=list)
 
 
@@ -255,6 +256,11 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         ref = install_raw.get("ref") or ""
         if not url or not ref:
             raise CatalogError(f"{path}: install.url and install.ref are required")
+        if not isinstance(ref, str) or not _FULL_GIT_SHA_RE.fullmatch(ref):
+            raise CatalogError(
+                f"{path}: install.ref must be a full 40-character commit SHA "
+                "(branches and tags are mutable and cannot be bootstrapped)"
+            )
         bootstrap = install_raw.get("bootstrap") or []
         if not isinstance(bootstrap, list):
             raise CatalogError(f"{path}: install.bootstrap must be a list")
@@ -406,32 +412,12 @@ def _do_git_install(entry: CatalogEntry) -> Path:
 
     print(color(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN))
 
-    # `git clone --branch` only accepts branches and tags, NOT commit SHAs.
-    # Detecting SHA-shaped refs upfront avoids a guaranteed stderr leak on
-    # the fast path (the --branch attempt would always fail noisily for a
-    # SHA ref before we fall back to full-clone-then-checkout).
-    is_sha_ref = bool(re.fullmatch(r"[0-9a-f]{7,40}", install.ref))
-
-    if not is_sha_ref:
-        proc = subprocess.run(
-            [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
-        )
-        if proc.returncode == 0:
-            pass
-        else:
-            # Branch/tag form failed (unlikely for valid manifests; possible if
-            # the ref was deleted upstream). Fall through to the full-clone path.
-            if dest.exists():
-                shutil.rmtree(dest)
-            is_sha_ref = True  # treat the same as a SHA ref from here
-
-    if is_sha_ref:
-        proc = subprocess.run([git, "clone", install.url, str(dest)])
-        if proc.returncode != 0:
-            raise CatalogError(f"git clone failed for {install.url}")
-        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref])
-        if proc.returncode != 0:
-            raise CatalogError(f"git checkout {install.ref} failed")
+    proc = subprocess.run([git, "clone", install.url, str(dest)])
+    if proc.returncode != 0:
+        raise CatalogError(f"git clone failed for {install.url}")
+    proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref])
+    if proc.returncode != 0:
+        raise CatalogError(f"git checkout {install.ref} failed")
 
     if install.bootstrap:
         _run_bootstrap(dest, install.bootstrap)

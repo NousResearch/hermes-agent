@@ -15,7 +15,7 @@ Security features (based on OWASP + NIST SP 800-63-4 guidance):
   - File permissions: chmod 0600 on all data files
   - Codes are never logged to stdout
 
-Storage: ~/.hermes/pairing/
+Storage: ~/.hermes/platforms/pairing/
 """
 
 import hashlib
@@ -32,7 +32,7 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases,
     normalize_whatsapp_identifier,
 )
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_home
 from utils import atomic_replace
 
 
@@ -49,7 +49,25 @@ LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
 MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 
-PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
+def _has_pairing_data(path: Path) -> bool:
+    return path.is_dir() and any(path.glob("*.json"))
+
+
+def _resolve_pairing_dir(home: Path | None = None) -> Path:
+    """Resolve pairing storage without letting an empty legacy dir win.
+
+    ``platforms/pairing`` is the current location. ``pairing`` is the legacy
+    location and is only used when it is the only directory with pairing data.
+    """
+    hermes_home = home or get_hermes_home()
+    current = hermes_home / "platforms" / "pairing"
+    legacy = hermes_home / "pairing"
+    if _has_pairing_data(current) or not _has_pairing_data(legacy):
+        return current
+    return legacy
+
+
+PAIRING_DIR = _resolve_pairing_dir()
 
 
 def _secure_write(path: Path, data: str) -> None:

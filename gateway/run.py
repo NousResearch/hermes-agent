@@ -6994,6 +6994,23 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        auth_user_ids: list[str] = []
+
+        def _add_auth_user_id(value: object) -> None:
+            if value is None:
+                return
+            candidate = str(value).strip()
+            if candidate and candidate not in auth_user_ids:
+                auth_user_ids.append(candidate)
+
+        _add_auth_user_id(user_id)
+        _add_auth_user_id(getattr(source, "user_id_alt", None))
+        aliases = getattr(source, "user_id_aliases", None) or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        for alias in aliases:
+            _add_auth_user_id(alias)
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
@@ -7068,10 +7085,13 @@ class GatewayRunner:
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
 
-        # Check pairing store (always checked, regardless of allowlists)
+        # Check pairing store (always checked, regardless of allowlists).
+        # Alternate/alias IDs preserve access for users paired before a
+        # platform changed its preferred sender ID format.
         platform_name = source.platform.value if source.platform else ""
-        if self.pairing_store.is_approved(platform_name, user_id):
-            return True
+        for candidate_user_id in auth_user_ids:
+            if self.pairing_store.is_approved(platform_name, candidate_user_id):
+                return True
 
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
@@ -7152,9 +7172,10 @@ class GatewayRunner:
         if "*" in allowed_ids:
             return True
 
-        check_ids = {user_id}
-        if "@" in user_id:
-            check_ids.add(user_id.split("@")[0])
+        check_ids = set(auth_user_ids)
+        for candidate_user_id in auth_user_ids:
+            if "@" in candidate_user_id:
+                check_ids.add(candidate_user_id.split("@")[0])
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
@@ -7164,10 +7185,11 @@ class GatewayRunner:
             if normalized_allowed_ids:
                 allowed_ids = normalized_allowed_ids
 
-            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
-            normalized_user_id = _normalize_whatsapp_identifier(user_id)
-            if normalized_user_id:
-                check_ids.add(normalized_user_id)
+            for candidate_user_id in auth_user_ids:
+                check_ids.update(_expand_whatsapp_auth_aliases(candidate_user_id))
+                normalized_user_id = _normalize_whatsapp_identifier(candidate_user_id)
+                if normalized_user_id:
+                    check_ids.add(normalized_user_id)
 
         return bool(check_ids & allowed_ids)
 

@@ -16,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ class SessionSource:
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
+    user_id_aliases: List[str] = field(default_factory=list)  # Auth-only historical/secondary IDs
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
@@ -126,6 +127,8 @@ class SessionSource:
         }
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
+        if self.user_id_aliases:
+            d["user_id_aliases"] = list(self.user_id_aliases)
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
         if self.guild_id:
@@ -148,6 +151,11 @@ class SessionSource:
             thread_id=data.get("thread_id"),
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
+            user_id_aliases=(
+                [data["user_id_aliases"]]
+                if isinstance(data.get("user_id_aliases"), str)
+                else list(data.get("user_id_aliases") or [])
+            ),
             chat_id_alt=data.get("chat_id_alt"),
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),

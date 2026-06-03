@@ -540,6 +540,32 @@ def test_resolve_sender_profile_uses_open_id_for_bot_name_lookup():
     assert profile["user_name"] == "Peer Bot"
 
 
+def test_resolve_sender_profile_preserves_open_id_auth_alias_when_union_id_present():
+    import asyncio
+
+    from gateway.platforms.feishu import FeishuAdapter
+
+    adapter = object.__new__(FeishuAdapter)
+    seen = []
+
+    async def _fake_resolve_sender_name(sender_id, *, is_bot=False):
+        seen.append((sender_id, is_bot))
+        return "Alice"
+
+    adapter._resolve_sender_name_from_api = _fake_resolve_sender_name
+
+    profile = asyncio.run(
+        adapter._resolve_sender_profile(
+            SimpleNamespace(open_id="ou_legacy", user_id="u_tenant", union_id="on_stable"),
+        )
+    )
+
+    assert seen == [("u_tenant", False)]
+    assert profile["user_id"] == "u_tenant"
+    assert profile["user_id_alt"] == "on_stable"
+    assert profile["user_id_aliases"] == ["on_stable", "ou_legacy"]
+
+
 # --- _allow_group_message matrix -------------------------------------------
 #
 # Bot-bypass semantics: admitted bots skip allowlist/blacklist (parallel

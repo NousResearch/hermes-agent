@@ -139,6 +139,19 @@ Markdown or CSV. Write rules: `Stage`/`Tags` use the user's enums; `FDV` in USD;
 relations append/update only (never delete); on refresh, show a delta table first.
 Never commit real database IDs, API keys, tokens, or endpoints.
 
+## On-chain helper (optional)
+For step 4, a bundled read-only helper is available — no API key required:
+
+```bash
+python scripts/price.py <token_address>        # price, FDV, market cap, liquidity, 24h volume/change
+python scripts/price.py --search "<name>"      # list same-name tokens across chains (brand-squatting check)
+```
+
+It calls the public DexScreener API (read-only, GET only; `api.dexscreener.com`)
+and prints JSON; no credentials are bundled. Holders count is not provided by this
+source — label it "not found" or use an explorer if you have one. Treat the
+numbers as facts (step 4), not as a death verdict.
+
 ## Pitfalls
 - Dumping raw data instead of a judgment — lead with the table + verdict.
 - Trusting a handle/contract because the user provided it.

@@ -1176,6 +1176,48 @@ model:
 
 ---
 
+### Reasoning / Thinking Field Support
+
+Hermes fully supports `reasoning_content`, `reasoning`, and streaming `delta.reasoning` fields returned by OpenAI-compatible providers that implement reasoning or thinking modes. This means models served through vLLM with `--reasoning-parser qwen3`, DeepSeek-think mode, Kimi thinking, or any other OpenAI-compatible backend that emits a reasoning field work correctly with Hermes — these fields are not lost or stripped.
+
+**How it works under the hood:**
+
+1. **`NormalizedResponse` captures reasoning into `provider_data`.**  
+   In `agent/transports/types.py`, the `NormalizedResponse` dataclass has a `reasoning` field (top-level, line 107) and a `reasoning_content` property (lines 115–117) that reads from `provider_data["reasoning_content"]`. Response-level metadata such as `reasoning_details` is also preserved through the `provider_data` dict.
+
+2. **Gateway propagation.**  
+   The gateway's session store (`gateway/session.py`, line 1270) persists `reasoning_content` alongside each assistant message. On replay (`gateway/run.py`, lines 475–541), a dedicated replay whitelist (`_ASSISTANT_REPLAY_FIELDS`) preserves `reasoning`, `reasoning_content`, `reasoning_details`, and other provider-specific fields so they are faithfully re-sent on subsequent API calls — ensuring multi-turn reasoning continuity.
+
+3. **Multi-turn fidelity.**  
+   The helper `copy_reasoning_content_for_api` (`agent/agent_runtime_helpers.py`, line 1987) promotes the internal `reasoning` field to `reasoning_content` at send time, applies any needed provider-specific padding (e.g., DeepSeek/Kimi require a non-empty `reasoning_content` in thinking mode), and guards against cross-provider reasoning leaks. This logic runs both in the CLI conversation loop and in the gateway, giving consistent behaviour across all entry points.
+
+**Specific use cases:**
+
+| Scenario | How Hermes handles it |
+|----------|-----------------------|
+| **vLLM with `--reasoning-parser qwen3`** (Qwen reasoning models) | `reasoning_content` in the API response is captured in `provider_data` and propagated through the normal assistant message pipeline. No special configuration needed. |
+| **DeepSeek thinking mode** | `reasoning_content` is preserved and replayed. The copy helper injects a single space placeholder when the provider requires it for tool-call turns. |
+| **OpenAI Codex Responses API** | `codex_reasoning_items` and `codex_message_items` reasoning blobs are stored in `provider_data` and replayed for prefix cache hits. |
+| **Streaming `delta.reasoning`** | Chunks arriving via streaming are accumulated into the assistant message's `reasoning` field and persisted on completion. |
+
+**Disabling reasoning output:**
+
+Since reasoning is handled server-side by your provider, the way to disable it depends on your backend:
+
+- **vLLM**: Start vLLM without `--reasoning-parser`, or pass `chat_template_kwargs.enable_thinking=false` in your `extra_body` config:
+  ```yaml
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: false
+  ```
+- **DeepSeek / Kimi**: Omit `reasoning_effort` or set provider-level thinking controls. Hermes itself never injects `reasoning_content` on the initial outbound request — it only preserves what the provider returns.
+- **Gemma / NVIDIA NIM**: Use the same `chat_template_kwargs.enable_thinking` shape as shown above.
+
+**Minimum Hermes version:**  
+Support for `reasoning_content` in `NormalizedResponse` and the gateway is present in the current codebase — all related changes are fully shipped and stable. No version gate is required.
+
+---
+
 ### Context Length Detection
 
 :::note Two settings, easy to confuse

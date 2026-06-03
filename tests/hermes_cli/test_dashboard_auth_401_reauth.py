@@ -163,12 +163,122 @@ class TestApi401Envelope:
             for c in set_cookies
         )
 
-    def test_login_url_carries_next_for_deep_api_path(self, gated_app):
+    def test_login_url_drops_next_for_deep_api_path(self, gated_app):
+        """Bug fix: ``/api/*`` paths must NOT round-trip into ``next=``.
+
+        Before the fix, an unauthenticated SPA fetch like ``GET
+        /api/analytics/models?days=30`` from ModelsPage round-tripped
+        through the OAuth dance and landed the user on the raw JSON
+        endpoint instead of the dashboard. The gate now drops API paths
+        from ``next=`` entirely; the SPA's own ``hermes.lastLocation``
+        fallback in ``web/src/lib/api.ts`` covers the deep-link case.
+        """
         r = gated_app.get("/api/sessions?page=2")
         body = r.json()
-        # next= is URL-encoded.
-        assert "next=" in body["login_url"]
-        assert quote("/api/sessions?page=2", safe="") in body["login_url"]
+        # ``login_url`` is the bare ``/login`` (no ``next=``) — the
+        # post-callback landing falls back to "/" rather than the API
+        # URL.
+        assert body["login_url"] == "/login"
+        assert "next=" not in body["login_url"]
+
+    def test_login_url_drops_next_for_analytics_path(self, gated_app):
+        """Specific repro for the ``/api/analytics/models?days=30``
+        case Ben reported: page on /models, session expires, SPA fires
+        getModelsAnalytics(), 401 envelope carries ``next=``, user ends
+        up staring at JSON post-callback."""
+        r = gated_app.get("/api/analytics/models?days=30")
+        body = r.json()
+        assert body["login_url"] == "/login"
+        assert "next=" not in body["login_url"]
+
+
+class TestTransparentRefreshOnAccessTokenEviction:
+    """Regression: an expired access token whose cookie the browser has
+    ALREADY EVICTED must still transparently refresh via the RT cookie —
+    not bounce to /login.
+
+    This is the common-path expiry bug, not an edge case. The access-token
+    cookie is set with ``Max-Age = access_token_expires_in`` (~15 min), so
+    the browser deletes ``hermes_session_at`` the instant the token lapses,
+    while ``hermes_session_rt`` lives for 30 days. From that moment the
+    browser sends ONLY the refresh-token cookie. The original gate bailed at
+    ``if not at: return _unauth_response(...)`` — bouncing the user to
+    /login on every single expiry despite holding a perfectly good refresh
+    token, defeating the entire transparent-refresh feature. The fix lets a
+    request carrying only the RT flow into the refresh path.
+
+    Discrimination: under the pre-fix code, scenario 1 (AT cookie absent,
+    RT present) returned 401/302 to login with NO rotated cookies and NO
+    REFRESH_SUCCESS — the refresh code never ran. With the fix it returns
+    200 and rotates both cookies.
+    """
+
+    def _build_rt_only_app(self):
+        """Gate over the real app with a Stub provider whose RT is live
+        (default_ttl>0 so refresh succeeds). Mint a valid signed RT
+        directly (the stub's refresh_session only checks the RT's
+        signature + exp), then send ONLY that RT cookie.
+        """
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        clear_providers()
+        provider = StubAuthProvider(default_ttl=900)
+        register_provider(provider)
+        valid_rt = _sign(
+            {"sub": "stub-user-1", "kind": "refresh", "exp": int(_t.time()) + 30 * 86400}
+        )
+        return provider, valid_rt
+
+    def test_at_evicted_rt_present_refreshes_transparently(self, gated_app):
+        provider, valid_rt = self._build_rt_only_app()
+        # Browser sends ONLY the RT cookie — the AT cookie has aged out.
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+
+        r = gated_app.get("/api/sessions", follow_redirects=False)
+        # Transparent refresh — request served, NOT bounced.
+        assert r.status_code == 200, (
+            f"expected 200 (transparent refresh) got {r.status_code} "
+            f"— the AT-evicted/RT-present case bounced to login"
+        )
+        # Both cookies rotated onto the response.
+        set_cookies = r.headers.get_list("set-cookie")
+        assert any(
+            c.startswith(SESSION_AT_COOKIE) or f"-{SESSION_AT_COOKIE}" in c
+            for c in set_cookies
+        ), f"no rotated AT cookie in {set_cookies!r}"
+        assert any(
+            c.startswith(SESSION_RT_COOKIE) or f"-{SESSION_RT_COOKIE}" in c
+            for c in set_cookies
+        ), f"no rotated RT cookie in {set_cookies!r}"
+
+    def test_no_cookies_at_all_still_bounces(self, gated_app):
+        """Guard the fix didn't over-reach: a request with NEITHER cookie
+        must still 401 to login (nothing to verify or refresh)."""
+        self._build_rt_only_app()
+        gated_app.cookies.clear()
+        r = gated_app.get("/api/sessions")
+        assert r.status_code == 401
+        assert r.json()["error"] == "unauthenticated"
+
+    def test_dead_rt_only_bounces_to_login(self, gated_app):
+        """An RT-only request whose RT is dead/expired must bounce (the
+        refresh raises RefreshExpiredError → clear + relogin), not 500."""
+        clear_providers()
+        # default_ttl=0 → the stub treats the minted RT as born-expired,
+        # so refresh_session raises RefreshExpiredError.
+        provider = StubAuthProvider(default_ttl=0)
+        register_provider(provider)
+        gated_app.cookies.clear()
+        # A syntactically-real but expired RT (signed with exp<=now).
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+        dead_rt = _sign({"sub": "u", "kind": "refresh", "exp": int(_t.time()) - 1})
+        gated_app.cookies.set(SESSION_RT_COOKIE, dead_rt)
+        r = gated_app.get("/api/sessions")
+        assert r.status_code == 401
+        assert r.json()["error"] == "session_expired"
 
 
 class TestHtmlRedirectNext:
@@ -252,6 +362,46 @@ class TestNextSameOriginValidation:
         assert _safe_next_target(FakeRequest("/login")) == ""
         assert _safe_next_target(FakeRequest("/auth/login")) == ""
         assert _safe_next_target(FakeRequest("/api/auth/me")) == ""
+
+    def test_safe_next_validator_rejects_api_paths(self):
+        """``/api/*`` paths must not round-trip through ``next=``.
+
+        Any API URL is a JSON endpoint; landing the browser there after
+        OAuth shows raw JSON instead of the dashboard. This is the bug
+        fix that closes the analytics-page redirect mishap.
+        """
+        from hermes_cli.dashboard_auth.middleware import _safe_next_target
+
+        class FakeRequest:
+            def __init__(self, path, query=""):
+                self.url = type("URL", (), {"path": path, "query": query})()
+
+        assert _safe_next_target(FakeRequest("/api/analytics/models")) == ""
+        assert (
+            _safe_next_target(FakeRequest("/api/analytics/models", "days=30"))
+            == ""
+        )
+        assert _safe_next_target(FakeRequest("/api/sessions")) == ""
+        assert _safe_next_target(FakeRequest("/api/config")) == ""
+        assert _safe_next_target(FakeRequest("/api/status")) == ""
+        # Exact ``/api`` (no trailing slash) also rejected — the dashboard
+        # has no such SPA route, but pinning the boundary keeps the rule
+        # crisp.
+        assert _safe_next_target(FakeRequest("/api")) == ""
+
+    def test_safe_next_validator_does_not_reject_api_prefix_lookalikes(self):
+        """Negative guard: ``/api-docs`` or ``/apis`` aren't ``/api/*``
+        and must remain valid landing targets."""
+        from hermes_cli.dashboard_auth.middleware import _safe_next_target
+
+        class FakeRequest:
+            def __init__(self, path):
+                self.url = type("URL", (), {"path": path, "query": ""})()
+
+        # ``/apidocs`` or ``/api-keys`` lookalike SPA routes — we must
+        # only match the ``/api/`` prefix or exact ``/api``.
+        assert _safe_next_target(FakeRequest("/apidocs")) == "%2Fapidocs"
+        assert _safe_next_target(FakeRequest("/api-keys")) == "%2Fapi-keys"
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +544,91 @@ class TestAuthCallbackNext:
         # No next= was in the PKCE cookie, so landing must be "/" —
         # NOT /internal-admin.
         assert r.headers["location"] == "/"
+
+    def test_callback_with_api_next_lands_at_root(self, gated_app):
+        """End-to-end repro of the analytics-redirect bug.
+
+        Drive ``/auth/login?next=/api/analytics/models?days=30`` —
+        exactly what the pre-fix gate would have stamped after a
+        ModelsPage 401. The validator at /auth/login MUST now drop
+        ``/api/*`` so the PKCE cookie never carries the API path, AND
+        the callback's ``_validate_post_login_target`` MUST drop it as
+        second-line defence. Either layer alone is enough; both means
+        a regression in one is caught by the other.
+
+        Discrimination: under the pre-fix code, both validators
+        accepted ``/api/*`` and the callback redirected to the raw
+        JSON endpoint. With the fix, the callback redirects to "/".
+        """
+        api_next = "/api/analytics/models?days=30"
+        r_to_idp = gated_app.get(
+            f"/auth/login?provider=stub&next={quote(api_next, safe='')}",
+            follow_redirects=False,
+        )
+        state = r_to_idp.headers["location"].split("state=")[1]
+        r = gated_app.get(
+            f"/auth/callback?code=stub_code&state={state}",
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        # Landing falls back to "/" — NOT the API URL.
+        assert r.headers["location"] == "/"
+
+
+# ---------------------------------------------------------------------------
+# Unit-level coverage: _validate_post_login_target on the callback boundary
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePostLoginTarget:
+    """Cover ``_validate_post_login_target`` directly — it's the second
+    half of the next= validator pair (the callback boundary). The gate
+    side has matching coverage in ``TestNextSameOriginValidation``.
+    """
+
+    def test_accepts_same_origin_paths(self):
+        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
+        assert _validate_post_login_target("/sessions") == "/sessions"
+        # URL-encoded form (as the cookie carries it) round-trips through
+        # the validator's unquote step.
+        assert (
+            _validate_post_login_target("%2Fsessions%3Fpage%3D2")
+            == "/sessions?page=2"
+        )
+
+    def test_rejects_protocol_relative(self):
+        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
+        assert _validate_post_login_target("//evil.com") == ""
+        assert _validate_post_login_target("%2F%2Fevil.com") == ""
+
+    def test_rejects_login_loop(self):
+        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
+        assert _validate_post_login_target("/login") == ""
+        assert _validate_post_login_target("/auth/login") == ""
+        assert _validate_post_login_target("/api/auth/me") == ""
+
+    def test_rejects_api_paths(self):
+        """Bug fix: any ``/api/*`` target is dropped at the callback
+        boundary. Pin both the exact match and the trailing-slash forms
+        plus a few realistic SPA-API endpoints."""
+        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
+        assert _validate_post_login_target("/api") == ""
+        assert _validate_post_login_target("/api/analytics/models") == ""
+        assert _validate_post_login_target("/api/analytics/models?days=30") == ""
+        assert _validate_post_login_target("/api/sessions") == ""
+        assert _validate_post_login_target("/api/config") == ""
+        # URL-encoded form — what the cookie actually carries.
+        assert (
+            _validate_post_login_target(
+                "%2Fapi%2Fanalytics%2Fmodels%3Fdays%3D30"
+            ) == ""
+        )
+
+    def test_does_not_reject_api_prefix_lookalikes(self):
+        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
+        # SPA route lookalikes — must NOT be dropped.
+        assert _validate_post_login_target("/apidocs") == "/apidocs"
+        assert _validate_post_login_target("/api-keys") == "/api-keys"
 
 
 # ---------------------------------------------------------------------------

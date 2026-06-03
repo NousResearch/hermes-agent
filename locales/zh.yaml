@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "没有可撤销的内容。"
-    removed:               "↩️ 已撤销 {count} 条消息。\n已移除：「{preview}」"
+    removed:               "↩️ 已撤销 {turns} 个回合（{count} 条消息）。\n已备份到：「{preview}」\n复制/编辑上面的文本并发送，即可从此处重新提问。"
+    invalid_count:         "无效的数量「{arg}」—— 请使用 /undo 或 /undo N。"
 
   update:
     platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"

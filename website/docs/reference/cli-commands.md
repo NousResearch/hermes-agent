@@ -29,7 +29,8 @@ hermes [global-options] <command> [subcommand/options]
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. |
-| `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. |
+| `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. Always wins over `display.interface`. |
+| `--cli` | Force the classic prompt_toolkit REPL. Use this to override `display.interface: tui` for a single invocation. |
 | `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
 
 ## Top-level commands
@@ -982,6 +983,8 @@ Subcommands:
 | `audit` | Re-scan installed hub skills. |
 | `uninstall` | Remove a hub-installed skill. |
 | `reset` | Un-stick a bundled skill flagged as `user_modified` by clearing its manifest entry. With `--restore`, also replaces the user copy with the bundled version. |
+| `opt-out` | Stop bundled skills from being seeded into the active profile. Writes a `.no-bundled-skills` marker so the installer, `hermes update`, and any sync skip bundled-skill seeding. Safe by default — nothing on disk is touched. With `--remove`, also deletes already-present bundled skills that are **unmodified** (user-edited, hub-installed, and hand-written skills are never removed; previews and confirms first, `--yes` to skip). |
+| `opt-in` | Undo `opt-out` by removing the `.no-bundled-skills` marker so bundled skills are seeded again on the next `hermes update`. With `--sync`, re-seed immediately. |
 | `publish` | Publish a skill to a registry. |
 | `snapshot` | Export/import skill configurations. |
 | `tap` | Manage custom skill sources. |
@@ -1005,6 +1008,9 @@ hermes skills update
 hermes skills config
 hermes skills reset google-workspace
 hermes skills reset google-workspace --restore --yes
+hermes skills opt-out                  # stop future bundled-skill seeding (nothing deleted)
+hermes skills opt-out --remove --yes   # also delete UNMODIFIED bundled skills
+hermes skills opt-in --sync            # undo: remove marker and re-seed now
 ```
 
 Notes:

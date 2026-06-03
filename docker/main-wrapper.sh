@@ -16,9 +16,10 @@
 #   first arg is an executable    → exec it directly (sleep, bash, sh, …)
 #   first arg is anything else    → exec `hermes <args>` (subcommand passthrough)
 #
-# We drop to the hermes user via `s6-setuidgid` so the supervised
-# workload runs unprivileged (UID 10000 by default).
+# Drop to hermes via s6-setuidgid, but skip it when already non-root.
 set -e
+
+drop() { [ "$(id -u)" = 0 ] && set -- s6-setuidgid hermes "$@"; exec "$@"; }
 
 # HOME comes through with-contenv as /root (the /init context). Override
 # to the hermes user's home before dropping privileges so libraries that
@@ -26,18 +27,28 @@ set -e
 # don't try to write to /root.
 export HOME=/opt/data
 
+# Save the Docker -w (or default) working directory before init
+# scripts cd to /opt/data, so the container starts in the
+# directory the user requested.
+_hermes_orig_cwd="${HERMES_ORIG_CWD:-$PWD}"
+
 cd /opt/data
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
 
+# Restore the original working directory before handing off to
+# the user's command so `hermes chat` starts in the Docker -w
+# directory, not /opt/data.
+cd "$_hermes_orig_cwd"
+
 if [ $# -eq 0 ]; then
-    exec s6-setuidgid hermes hermes
+    drop hermes
 fi
 
 if command -v "$1" >/dev/null 2>&1; then
     # Bare executable — pass through directly.
-    exec s6-setuidgid hermes "$@"
+    drop "$@"
 fi
 
 # Hermes subcommand pass-through.
-exec s6-setuidgid hermes hermes "$@"
+drop hermes "$@"

@@ -6643,10 +6643,21 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
     parameter, constant-time compared.
 
-    Gated (public bind, no ``--insecure``): ``?ticket=<single-use>`` query
-    parameter consumed against the dashboard-auth ticket store. The legacy
-    token path is unconditionally rejected in this mode (the SPA bundle
-    isn't carrying the token any longer).
+    Gated (public bind, no ``--insecure``): one of two credentials —
+
+    * ``?ticket=<single-use>`` — a browser-minted, single-use, 30s-TTL ticket
+      consumed against the dashboard-auth ticket store. This is what the SPA
+      (and native clients) use.
+    * ``?internal=<process-credential>`` — the process-lifetime internal
+      credential, used only by WS clients the server spawns itself (the
+      embedded-TUI PTY child attaching to ``/api/ws`` and ``/api/pub``). It
+      is multi-use and never expires so the child can reconnect, and is never
+      injected into the SPA — see ``dashboard_auth.ws_tickets`` for the
+      threat model.
+
+    The legacy ``?token=`` path is unconditionally rejected in gated mode
+    (the SPA bundle isn't carrying the token any longer, and a leaked
+    ``_SESSION_TOKEN`` must not grant WS access once the gate is engaged).
 
     Returns True if the WS should be accepted; callers close with the
     appropriate WS code (4401) on False. Audit-logs the rejection so
@@ -6654,16 +6665,35 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     """
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
-        ticket = ws.query_params.get("ticket", "")
-        if not ticket:
-            return False
         # Lazy import — keeps this function importable in test harnesses
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
         from hermes_cli.dashboard_auth.ws_tickets import (
             TicketInvalid,
+            consume_internal_credential,
             consume_ticket,
         )
+
+        # Server-spawned children (PTY child → /api/ws, /api/pub) present the
+        # multi-use internal credential rather than a single-use ticket, so
+        # they survive reconnects and slow cold boots.
+        internal = ws.query_params.get("internal", "")
+        if internal:
+            try:
+                consume_internal_credential(internal)
+                return True
+            except TicketInvalid as exc:
+                audit_log(
+                    AuditEvent.WS_TICKET_REJECTED,
+                    reason=f"internal: {exc}",
+                    ip=(ws.client.host if ws.client else ""),
+                    path=ws.url.path,
+                )
+                return False
+
+        ticket = ws.query_params.get("ticket", "")
+        if not ticket:
+            return False
 
         try:
             consume_ticket(ticket)
@@ -6740,7 +6770,16 @@ def _resolve_chat_argv(
 
 
 def _build_gateway_ws_url() -> Optional[str]:
-    """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic."""
+    """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
+
+    Loopback / ``--insecure``: ``?token=<_SESSION_TOKEN>``.
+
+    Gated mode: the legacy token path is rejected by ``_ws_auth_ok``, so the
+    server-spawned PTY child authenticates with the process-lifetime internal
+    credential (``?internal=``). It must NOT use a single-use browser ticket:
+    the child reads this URL once at startup and reuses it on every reconnect,
+    and a 30s-TTL ticket can expire before a slow cold boot even dials.
+    """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
 
@@ -6752,7 +6791,13 @@ def _build_gateway_ws_url() -> Optional[str]:
         if ":" in host and not host.startswith("[")
         else f"{host}:{port}"
     )
-    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
+
+    if getattr(app.state, "auth_required", False):
+        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
+
+        qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
+    else:
+        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
 
     return f"ws://{netloc}/api/ws?{qs}"
 
@@ -6762,16 +6807,14 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
     Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
 
-    Gated mode: mints a single-use ticket via the dashboard-auth ticket
-    store (server-side mint, no HTTP round trip — the PTY child is a
-    server-spawned process and we trust it). The ticket binds to the
-    pseudo-user ``"pty-sidecar"`` so audit logs can distinguish these from
-    browser-initiated tickets.
-
-    The single-use lifetime means the PTY child cannot reconnect without a
-    new sidecar URL. PTY children open ``/api/pub`` once at startup; if
-    reconnect semantics ever become important, this should be upgraded to
-    a long-lived process-scoped token.
+    Gated mode: authenticates with the process-lifetime internal credential
+    (``?internal=``), the same one ``_build_gateway_ws_url`` uses. The PTY
+    child is a server-spawned process we trust; the credential is multi-use
+    and never expires, so the child can reconnect ``/api/pub`` without a new
+    URL. (This previously minted a single-use 30s ticket, which meant the
+    child could not reconnect and could miss the window on a slow cold boot.)
+    Connections authenticated this way are recorded under the
+    ``server-internal`` identity in the audit log.
     """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
@@ -6782,11 +6825,13 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
 
     if getattr(app.state, "auth_required", False):
-        # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
-        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+        # Gated mode — use the internal credential so the WS upgrade survives
+        # _ws_auth_ok and the child can reconnect.
+        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        ticket = mint_ticket(user_id="pty-sidecar", provider="server-internal")
-        qs = urllib.parse.urlencode({"ticket": ticket, "channel": channel})
+        qs = urllib.parse.urlencode(
+            {"internal": internal_ws_credential(), "channel": channel}
+        )
     else:
         qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 

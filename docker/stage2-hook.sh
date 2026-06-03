@@ -278,6 +278,38 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     chmod 600 "$HERMES_HOME/auth.json"
 fi
 
+# gateway_state.json: declare the gateway's INITIAL supervised state on a
+# fresh volume. Same first-boot-only env-seed pattern as auth.json above.
+#
+# On a blank volume there is no gateway_state.json, so the boot reconciler
+# (cont-init.d/02-reconcile-profiles → container_boot.reconcile_profile_gateways)
+# registers the gateway-default s6 slot but leaves it DOWN — it only
+# auto-starts when the last recorded state was "running". That means a
+# freshly-provisioned container comes up with the gateway down until
+# someone starts it (e.g. from the dashboard). An orchestrator that
+# provisions a fresh volume and wants the gateway running from first boot
+# can set HERMES_GATEWAY_BOOTSTRAP_STATE=running; we seed the state file
+# here, BEFORE 02-reconcile-profiles runs (cont-init.d scripts run in
+# lexicographic order), so the reconciler sees prior_state=running and
+# brings the supervised slot up on the very first boot.
+#
+# This is a generic container contract, not specific to any host: it seeds
+# the SAME gateway_state.json the reconciler already consults, exactly as
+# HERMES_AUTH_JSON_BOOTSTRAP seeds auth.json. The [ ! -f ] guard is the
+# load-bearing part — on every subsequent boot the persisted state wins,
+# so a gateway the operator deliberately stopped stays stopped across
+# restarts and we never clobber real runtime state.
+#
+# Only a literal "running" is honoured (the sole value in the reconciler's
+# _AUTOSTART_STATES); any other value is ignored so a typo can't write a
+# bogus state the reconciler would treat as "no prior state" anyway.
+if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
+        [ "${HERMES_GATEWAY_BOOTSTRAP_STATE:-}" = "running" ]; then
+    printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
+    chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
+    chmod 644 "$HERMES_HOME/gateway_state.json"
+fi
+
 # --- Sync bundled skills ---
 # Invoke the venv's python by absolute path so we don't need a `sh -c`
 # wrapper to source the activate script. This is safe because

@@ -20,14 +20,23 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$HOST_KEY" >> ~/.ssh/known_hosts
-          ssh -i ~/.ssh/id_ed25519 root@5.189.159.195 'bash -se' <<'REMOTE'
+          # Keepalive prevents "client_loop: send disconnect: Broken pipe" when
+          # the multi-minute `docker build` produces no output for a while (the
+          # long `chmod -R`/`chown -R` stage-2 step). ServerAliveInterval=30 +
+          # CountMax=120 tolerates ~60 min of silence before the client gives
+          # up. See failed run actions/runs/26861301561.
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120 \
+              -o TCPKeepAlive=yes -o ConnectTimeout=30 \
+              -i ~/.ssh/id_ed25519 root@5.189.159.195 'bash -se' <<'REMOTE'
           set -euo pipefail
           cd /opt/hermes/app
           git config --global --add safe.directory /opt/hermes/app
           git remote set-url origin https://github.com/adrozdenko/hermes-agent.git
           git fetch origin main
           git reset --hard origin/main
-          docker build -t hermes-agent:local .
+          # --progress=plain keeps a steady output stream during the build,
+          # which also helps keep the SSH channel active.
+          docker build --progress=plain -t hermes-agent:local .
           docker compose -f /opt/hermes/docker-compose.yml up -d
           echo "Deploy complete"
           REMOTE

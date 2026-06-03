@@ -67,6 +67,44 @@ class TestWriteDenyExactPaths:
 
         assert _is_write_denied(str(global_env)) is True
 
+    def test_hermes_bws_cache(self):
+        """The Bitwarden Secrets Manager disk cache (cache/bws_cache.json)
+        holds plaintext secret values that load_hermes_dotenv() injects into
+        os.environ on the next run. get_read_block_error() already blocks
+        reading it; the write deny must be paired so a prompt-injected
+        write_file/patch cannot poison cached credentials.
+        """
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / "cache" / "bws_cache.json")
+        assert _is_write_denied(path) is True
+
+    def test_bws_cache_write_denied_in_profile_and_root(self, tmp_path, monkeypatch):
+        """The BWS disk cache is write-denied both in the active profile and at
+        the global root, mirroring the read guard.
+
+        Under a profile, HERMES_HOME = <root>/profiles/<name>, but
+        <root>/cache/bws_cache.json is inherited by every profile and must
+        also be protected — same shape as the <root>/.env widening (#15981).
+        """
+        root = tmp_path / "hermes_root"
+        profile_home = root / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        from hermes_constants import get_hermes_home, get_default_hermes_root
+        assert get_hermes_home() == profile_home
+        assert get_default_hermes_root() == root
+
+        profile_cache = profile_home / "cache" / "bws_cache.json"
+        root_cache = root / "cache" / "bws_cache.json"
+        profile_cache.parent.mkdir(parents=True, exist_ok=True)
+        root_cache.parent.mkdir(parents=True, exist_ok=True)
+        profile_cache.write_text("{}", encoding="utf-8")
+        root_cache.write_text("{}", encoding="utf-8")
+
+        assert _is_write_denied(str(profile_cache)) is True
+        assert _is_write_denied(str(root_cache)) is True
+
     def test_shell_profiles(self):
         home = str(Path.home())
         for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:

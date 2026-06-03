@@ -76,6 +76,19 @@ def test_google_oauth_json_blocked(fake_home):
     assert "credential store" in err
 
 
+def test_bws_cache_blocked(fake_home):
+    """The Bitwarden Secrets Manager disk cache (cache/bws_cache.json) holds
+    plaintext secret values — blocked from direct reads. Paired with the
+    is_write_denied write deny so the read block isn't left unguarded on the
+    write side (credential integrity)."""
+    from agent.file_safety import get_read_block_error
+
+    cache = _create(fake_home, Path("cache") / "bws_cache.json")
+    err = get_read_block_error(str(cache))
+    assert err is not None
+    assert "credential store" in err
+
+
 def test_arbitrary_hermes_home_file_not_blocked(fake_home):
     """Non-credential files inside HERMES_HOME stay readable."""
     from agent.file_safety import get_read_block_error

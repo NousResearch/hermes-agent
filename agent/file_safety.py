@@ -104,12 +104,25 @@ def is_write_denied(path: str) -> bool:
         if resolved.startswith(prefix):
             return True
 
-    # Hermes control-plane files: block both the ACTIVE profile's view
-    # (hermes_home) AND the global root view. Without the root pass, a
-    # profile-mode session leaves <root>/auth.json + <root>/config.yaml
+    # Hermes control-plane + credential-store files: block both the ACTIVE
+    # profile's view (hermes_home) AND the global root view. Without the root
+    # pass, a profile-mode session leaves <root>/auth.json + <root>/config.yaml
     # writable — letting a prompt-injected write_file overwrite the global
     # files that every profile inherits from (same shape as #15981).
-    control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json")
+    #
+    # cache/bws_cache.json holds plaintext Bitwarden Secrets Manager values
+    # (agent/secret_sources/bitwarden.py) that load_hermes_dotenv() injects
+    # into os.environ on the next run. _read_disk_cache() trusts the file with
+    # no integrity check, so a prompt-injected write_file/patch could poison
+    # cached credentials. get_read_block_error() already blocks reading it;
+    # an unpaired read block leaves the write side open, so deny writes here
+    # too — keep this in sync with credential_file_names in the read guard.
+    control_file_names = (
+        "auth.json",
+        "config.yaml",
+        "webhook_subscriptions.json",
+        os.path.join("cache", "bws_cache.json"),
+    )
     mcp_tokens_dir_name = "mcp-tokens"
 
     hermes_dirs = []

@@ -26,6 +26,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.linear_aig import LinearAIGAdapter
 
 
+DEFAULT_TOKEN_URL = "https://api.linear.app/oauth/token"
 TOKEN_ENV_NAMES = (
     "LINEAR_OAUTH_TOKEN",
     "LINEAR_ACCESS_TOKEN",
@@ -36,6 +37,20 @@ SECRET_ENV_NAMES = (
     "LINEAR_AIG_WEBHOOK_SECRET",
     "LINEAR_WEBHOOK_SECRET",
     "HERMES_LINEAR_AIG_WEBHOOK_SECRET",
+)
+CLIENT_ID_ENV_NAMES = (
+    "HERMES_LINEAR_AIG_CLIENT_ID",
+    "LINEAR_OAUTH_CLIENT_ID",
+    "LINEAR_CLIENT_ID",
+)
+CLIENT_SECRET_ENV_NAMES = (
+    "HERMES_LINEAR_AIG_CLIENT_SECRET",
+    "LINEAR_OAUTH_CLIENT_SECRET",
+    "LINEAR_CLIENT_SECRET",
+)
+CLIENT_SCOPE_ENV_NAMES = (
+    "HERMES_LINEAR_AIG_CLIENT_CREDENTIALS_SCOPE",
+    "LINEAR_CLIENT_CREDENTIALS_SCOPE",
 )
 
 
@@ -74,6 +89,66 @@ def _mask_state(name: str, value: str) -> str:
     if value:
         return f"{name}=present length={len(value)}"
     return f"{name}=missing"
+
+
+def _client_credentials_config(args: argparse.Namespace) -> tuple[str, str, str, str]:
+    client_id_name, client_id = _get_secret_env(CLIENT_ID_ENV_NAMES)
+    client_secret_name, client_secret = _get_secret_env(CLIENT_SECRET_ENV_NAMES)
+    scope_name, scope = _get_secret_env(CLIENT_SCOPE_ENV_NAMES)
+    scope = (args.client_credentials_scope or scope).strip()
+    if args.client_credentials_scope:
+        scope_name = "--client-credentials-scope"
+    source = (
+        f"client_id={client_id_name or 'missing'} "
+        f"client_secret={client_secret_name or 'missing'} "
+        f"scope={scope_name or 'missing'}"
+    )
+    return client_id, client_secret, scope, source
+
+
+async def _fetch_client_credentials_token(args: argparse.Namespace) -> tuple[str, str]:
+    client_id, client_secret, scope, source = _client_credentials_config(args)
+    print(f"client credentials source: {source}")
+    if not client_id or not client_secret or not scope:
+        print(
+            "client credentials skipped: set client id, client secret, and scope. "
+            "Scope is required because Linear may replace existing app tokens when "
+            "a different scope set is requested."
+        )
+        return "", ""
+    try:
+        import aiohttp
+    except ImportError:
+        print("client credentials failed: aiohttp is not installed")
+        return "", ""
+
+    data = {
+        "grant_type": "client_credentials",
+        "scope": scope,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            args.client_credentials_token_url,
+            data=data,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as response:
+            text = await response.text()
+            if response.status >= 400:
+                print(f"client credentials failed: HTTP {response.status} {text[:200]}")
+                return "", ""
+            try:
+                payload = await response.json()
+            except Exception:
+                print("client credentials failed: token endpoint returned non-JSON")
+                return "", ""
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        print("client credentials failed: access_token missing from response")
+        return "", ""
+    print(_mask_state("client credentials token", token))
+    return "client_credentials", token
 
 
 def _build_adapter(args: argparse.Namespace) -> tuple[LinearAIGAdapter, str, str]:
@@ -132,6 +207,13 @@ async def _doctor(adapter: LinearAIGAdapter, token_name: str, secret_name: str) 
 
 
 async def _serve(args: argparse.Namespace) -> int:
+    if args.client_credentials_token:
+        token_name, token = await _fetch_client_credentials_token(args)
+        if not token:
+            return 2
+        os.environ["HERMES_LINEAR_AIG_ACCESS_TOKEN"] = token
+        print("client credentials token source=process-only")
+
     adapter, token_name, secret_name = _build_adapter(args)
     doctor_status = await _doctor(adapter, token_name, secret_name)
     if doctor_status != 0:
@@ -188,6 +270,28 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--path", default="/linear/aig")
     parser.add_argument("--public-url", default="")
     parser.add_argument("--doctor-only", action="store_true")
+    parser.add_argument(
+        "--client-credentials-token",
+        action="store_true",
+        help=(
+            "Fetch a process-only Linear client_credentials app token before "
+            "running doctor/serve. Requires client id, client secret, and scope."
+        ),
+    )
+    parser.add_argument(
+        "--client-credentials-scope",
+        default="",
+        help=(
+            "Comma-separated Linear scopes for client_credentials token minting. "
+            "Required unless HERMES_LINEAR_AIG_CLIENT_CREDENTIALS_SCOPE or "
+            "LINEAR_CLIENT_CREDENTIALS_SCOPE is set."
+        ),
+    )
+    parser.add_argument(
+        "--client-credentials-token-url",
+        default=DEFAULT_TOKEN_URL,
+        help="Linear OAuth token endpoint.",
+    )
     parser.add_argument(
         "--initial-ack",
         default="Hermes received the Linear smoke test and is starting work.",

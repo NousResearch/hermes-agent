@@ -1290,18 +1290,19 @@ def _strip_edge_self_mentions(
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop.
 
-    Uses a fresh event loop per adapter instance so that multiple Feishu
-    adapters can run simultaneously without conflicting over the global
-    ``lark_oapi.ws.client.loop`` variable.
+    Completely bypasses the SDK's ``start()`` method (which assumes a single
+    global event loop) and drives the connection lifecycle manually so that
+    multiple Feishu adapters can run simultaneously.
     """
     import lark_oapi.ws.client as ws_client_module
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    # Patch the module-level loop so that the SDK's internal callbacks
-    # (ping, receive, reconnect) schedule onto this thread's loop.
-    ws_client_module.loop = loop
     adapter._ws_thread_loop = loop
+
+    # The SDK stores the loop in a module-level variable; patch it so that
+    # internal callbacks (ping, reconnect, etc.) schedule onto this thread.
+    ws_client_module.loop = loop
 
     original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
@@ -1333,8 +1334,29 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
+
+    async def _run() -> None:
+        """Drive the client lifecycle without calling start()."""
+        if hasattr(ws_client, '_connect'):
+            try:
+                await ws_client._connect()
+            except Exception as exc:
+                logger.error("[Feishu] WS connect failed: %s", exc)
+                raise
+
+            # Start background tasks on *this* loop
+            loop.create_task(ws_client._ping_loop())
+            loop.create_task(ws_client._receive_message_loop())
+
+            # Keep the loop alive until disconnect is requested
+            while getattr(ws_client, "_conn", None) is not None:
+                await asyncio.sleep(1)
+        else:
+            # Fallback for test fakes or older SDK versions
+            ws_client.start()
+
     try:
-        ws_client.start()
+        loop.run_until_complete(_run())
     except Exception:
         pass
     finally:

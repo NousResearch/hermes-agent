@@ -120,6 +120,72 @@ class TestPtyBridgeResize:
         finally:
             bridge.close()
 
+    def test_resize_clamps_wsl_garbage_dimensions(self):
+        # WSL2 reports columns=131072, rows=1 from a broken winsize probe.
+        # 131072 > 65535 (unsigned short max) used to raise struct.error in
+        # resize() — uncaught, since only OSError was handled — and broke the
+        # dashboard /chat resize path (blank/disappearing text). The clamp
+        # must coerce the width down to the sane max and never raise.
+        winsize_script = (
+            "import fcntl, struct, termios, time; "
+            "time.sleep(0.1); "
+            "rows, cols, *_ = struct.unpack('HHHH', "
+            "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
+            "print(cols); print(rows)"
+        )
+        bridge = PtyBridge.spawn(
+            [sys.executable, "-c", winsize_script],
+            cols=80,
+            rows=24,
+        )
+        try:
+            # Must not raise struct.error.
+            bridge.resize(cols=131072, rows=1)
+            output = _read_until(bridge, b"\n", timeout=5.0)
+            # Width clamped to the sane maximum (2000), height floored to 1.
+            assert b"2000" in output
+        finally:
+            bridge.close()
+
+
+@skip_on_windows
+class TestClampDimension:
+    def test_clamps_above_max(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        assert _clamp_dimension(131072, _MAX_COLS) == _MAX_COLS
+        assert _clamp_dimension(131072, _MAX_ROWS) == _MAX_ROWS
+
+    def test_floors_at_one(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(0, _MAX_COLS) == 1
+        assert _clamp_dimension(-5, _MAX_COLS) == 1
+
+    def test_passes_through_sane_values(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(80, _MAX_COLS) == 80
+        assert _clamp_dimension(2000, _MAX_COLS) == 2000
+
+    def test_non_numeric_falls_back_to_min(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(None, _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("nan"), _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("inf"), _MAX_COLS) == 1  # type: ignore[arg-type]
+
+    def test_clamped_values_pack_as_unsigned_short(self):
+        # The whole point: clamped output must never raise struct.error.
+        import struct as _struct
+
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        cols = _clamp_dimension(131072, _MAX_COLS)
+        rows = _clamp_dimension(1, _MAX_ROWS)
+        # Should not raise.
+        _struct.pack("HHHH", rows, cols, 0, 0)
+
 
 @skip_on_windows
 class TestPtyBridgeClose:

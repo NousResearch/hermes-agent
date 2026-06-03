@@ -50,6 +50,33 @@ except ImportError:  # pragma: no cover - dev env without ptyprocess
 __all__ = ["PtyBridge", "PtyUnavailableError"]
 
 
+# ``struct winsize`` packs rows/cols as unsigned short (0..65535).  We clamp
+# well below that ceiling: real terminals never exceed a couple thousand
+# columns, and a value above this is a broken probe (WSL2 reports
+# columns=131072) rather than a genuine ultrawide.  Lower bound is 1 — a
+# zero/negative dimension is the classic "no size yet" signal.
+_MIN_DIMENSION = 1
+_MAX_COLS = 2000
+_MAX_ROWS = 1000
+
+
+def _clamp_dimension(value: int, maximum: int) -> int:
+    """Clamp a reported terminal dimension into ``[_MIN_DIMENSION, maximum]``.
+
+    Non-integer / non-finite values fall back to ``_MIN_DIMENSION`` so a bad
+    probe can never reach ``struct.pack`` and raise ``struct.error``.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return _MIN_DIMENSION
+    if n < _MIN_DIMENSION:
+        return _MIN_DIMENSION
+    if n > maximum:
+        return maximum
+    return n
+
+
 class PtyUnavailableError(RuntimeError):
     """Raised when a PTY cannot be created on this platform.
 
@@ -189,11 +216,23 @@ class PtyBridge:
             view = view[n:]
 
     def resize(self, cols: int, rows: int) -> None:
-        """Forward a terminal resize to the child via ``TIOCSWINSZ``."""
+        """Forward a terminal resize to the child via ``TIOCSWINSZ``.
+
+        Dimensions are clamped to a sane range first.  Some hosts report
+        garbage window sizes — the motivating case is WSL2, where xterm.js
+        in the dashboard ``/chat`` tab can pick up ``columns=131072,
+        rows=1`` from a broken winsize probe.  ``struct winsize`` packs each
+        field as an unsigned short (max 65535), so an unclamped 131072 would
+        raise ``struct.error`` (not ``OSError``) and break the resize path,
+        leaving the TUI laid out for a one-row / absurdly-wide screen —
+        which is what shows up as blank / disappearing text.
+        """
         if self._closed:
             return
+        cols = _clamp_dimension(cols, _MAX_COLS)
+        rows = _clamp_dimension(rows, _MAX_ROWS)
         # struct winsize: rows, cols, xpixel, ypixel (all unsigned short)
-        winsize = struct.pack("HHHH", max(1, rows), max(1, cols), 0, 0)
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
         try:
             fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
         except OSError:

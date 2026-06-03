@@ -60,12 +60,12 @@ hermes tools              # Enable the gateway per-tool — pick "Nous Subscript
 Check what's active at any time:
 
 ```bash
-hermes portal status      # Portal auth + Tool Gateway routing summary
+hermes portal info        # Portal auth + Tool Gateway routing summary
 hermes portal tools       # Gateway catalog with current routing per tool
 hermes status             # Full system status (Tool Gateway is one section)
 ```
 
-`hermes portal status` shows a section like:
+`hermes portal info` shows a section like:
 
 ```
 ◆ Nous Tool Gateway

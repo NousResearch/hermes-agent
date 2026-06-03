@@ -185,10 +185,11 @@ class TestBasePlatformTopicSessions:
     @pytest.mark.asyncio
     async def test_process_message_background_marks_exception_unsuccessful(self):
         adapter = DummyTelegramAdapter()
+        secret = "sk-live_abcdefghijklmnopqrstuvwxyz1234567890"
 
         async def handler(_event):
             await asyncio.sleep(0)
-            raise RuntimeError("boom")
+            raise RuntimeError(f"Incorrect API key provided: {secret}")
 
         async def hold_typing(_chat_id, interval=2.0, metadata=None):
             await asyncio.Event().wait()
@@ -203,6 +204,19 @@ class TestBasePlatformTopicSessions:
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.FAILURE),
         ]
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": (
+                    "Sorry, I encountered an unexpected error.\n"
+                    "Try again or use /reset to start a fresh session."
+                ),
+                "reply_to": None,
+                "metadata": {"thread_id": "17585"},
+            }
+        ]
+        assert secret not in adapter.sent[0]["content"]
+        assert "Incorrect API key provided" not in adapter.sent[0]["content"]
 
     @pytest.mark.asyncio
     async def test_process_message_background_marks_cancellation_unsuccessful(self):

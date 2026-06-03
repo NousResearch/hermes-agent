@@ -32,18 +32,70 @@ def _patch_no_builtins(reg):
     return patch.object(reg, "_register_builtin_hooks")
 
 
+def _patch_hook_policy(enabled=None, disabled=None):
+    """Patch user hook allow/deny config for discovery tests."""
+    return patch(
+        "gateway.hooks._get_user_hook_policy",
+        return_value=(list(enabled or []), list(disabled or [])),
+    )
+
+
 class TestDiscoverAndLoad:
     def test_loads_valid_hook(self, tmp_path):
         _create_hook(tmp_path, "my-hook", '["agent:start"]',
                       "def handle(event_type, context):\n    pass\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["my-hook"]),
+        ):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 1
         assert reg.loaded_hooks[0]["name"] == "my-hook"
         assert "agent:start" in reg.loaded_hooks[0]["events"]
+
+    def test_skips_valid_hook_when_not_enabled(self, tmp_path):
+        _create_hook(
+            tmp_path,
+            "my-hook",
+            '["agent:start"]',
+            "raise AssertionError('handler imported without opt-in')\n"
+            "def handle(event_type, context):\n    pass\n",
+        )
+
+        reg = HookRegistry()
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=[]),
+        ):
+            reg.discover_and_load()
+
+        assert reg.loaded_hooks == []
+        assert reg._handlers == {}
+
+    def test_disabled_hook_overrides_enabled_hook(self, tmp_path):
+        _create_hook(
+            tmp_path,
+            "my-hook",
+            '["agent:start"]',
+            "raise AssertionError('disabled handler imported')\n"
+            "def handle(event_type, context):\n    pass\n",
+        )
+
+        reg = HookRegistry()
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["my-hook"], disabled=["my-*"]),
+        ):
+            reg.discover_and_load()
+
+        assert reg.loaded_hooks == []
+        assert reg._handlers == {}
 
     def test_skips_missing_hook_yaml(self, tmp_path):
         hook_dir = tmp_path / "bad-hook"
@@ -51,7 +103,11 @@ class TestDiscoverAndLoad:
         (hook_dir / "handler.py").write_text("def handle(e, c): pass\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["bad-hook"]),
+        ):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0
@@ -62,7 +118,11 @@ class TestDiscoverAndLoad:
         (hook_dir / "HOOK.yaml").write_text("name: bad\nevents: ['agent:start']\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["bad-hook"]),
+        ):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0
@@ -74,7 +134,11 @@ class TestDiscoverAndLoad:
         (hook_dir / "handler.py").write_text("def handle(e, c): pass\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["empty-hook"]),
+        ):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0
@@ -86,14 +150,22 @@ class TestDiscoverAndLoad:
         (hook_dir / "handler.py").write_text("def something_else(): pass\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["no-handle"]),
+        ):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0
 
     def test_nonexistent_hooks_dir(self, tmp_path):
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path / "nonexistent"), _patch_no_builtins(reg):
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path / "nonexistent"),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["*"]),
+        ):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 0
@@ -105,7 +177,11 @@ class TestDiscoverAndLoad:
                       "def handle(e, c): pass\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+        with (
+            patch("gateway.hooks.HOOKS_DIR", tmp_path),
+            _patch_no_builtins(reg),
+            _patch_hook_policy(enabled=["hook-*"]),
+        ):
             reg.discover_and_load()
 
         assert len(reg.loaded_hooks) == 2
@@ -122,7 +198,7 @@ class TestEmit:
                       "    results.append(event_type)\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_hook_policy(enabled=["sync-hook"]):
             reg.discover_and_load()
 
         # Inject our results list into the handler's module globals
@@ -149,7 +225,7 @@ class TestEmit:
         )
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_hook_policy(enabled=["async-hook"]):
             reg.discover_and_load()
 
         handler_fn = reg._handlers["agent:end"][0]
@@ -168,7 +244,7 @@ class TestEmit:
                       "    results.append(event_type)\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_hook_policy(enabled=["wildcard-hook"]):
             reg.discover_and_load()
 
         handler_fn = reg._handlers["command:*"][0]
@@ -192,7 +268,7 @@ class TestEmit:
                       "    raise ValueError('boom')\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_hook_policy(enabled=["bad-hook"]):
             reg.discover_and_load()
 
         assert len(reg._handlers.get("agent:start", [])) == 1
@@ -210,7 +286,7 @@ class TestEmit:
                       "    captured.append(context)\n")
 
         reg = HookRegistry()
-        with patch("gateway.hooks.HOOKS_DIR", tmp_path):
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_hook_policy(enabled=["ctx-hook"]):
             reg.discover_and_load()
 
         handler_fn = reg._handlers["agent:start"][0]

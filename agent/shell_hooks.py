@@ -302,6 +302,9 @@ def reset_for_tests() -> None:
 # Config parsing
 # ---------------------------------------------------------------------------
 
+NON_EVENT_HOOK_CONFIG_KEYS = frozenset({"enabled", "disabled", "output_spill"})
+
+
 def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     """Normalise the ``hooks:`` dict into a flat list of ``ShellHookSpec``.
 
@@ -318,8 +321,8 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     for event_name, entries in hooks_cfg.items():
         # Reserved sub-keys that aren't event names — skip silently. These
         # are config sub-sections nested under `hooks:` for related
-        # functionality (e.g. output-spill budgets).
-        if event_name in ("output_spill",):
+        # functionality (gateway-hook policy and output-spill budgets).
+        if event_name in NON_EVENT_HOOK_CONFIG_KEYS:
             continue
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(

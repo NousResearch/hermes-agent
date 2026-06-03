@@ -10,7 +10,7 @@ Hermes has three hook systems that run custom code at key lifecycle points:
 
 | System | Registered via | Runs in | Use case |
 |--------|---------------|---------|----------|
-| **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/` | Gateway only | Logging, alerts, webhooks |
+| **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/`, enabled via `hooks.enabled` | Gateway only | Logging, alerts, webhooks |
 | **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
 | **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
 
@@ -43,6 +43,20 @@ events:
 ```
 
 The `events` list determines which events trigger your handler. You can subscribe to any combination of events, including wildcards like `command:*`.
+
+Gateway hooks are user-installed Python code, so Hermes only imports a hook after
+you explicitly allow it in `~/.hermes/config.yaml`. `hooks.disabled` is optional
+and always wins over `hooks.enabled`; both lists accept exact names and shell
+globs such as `team-*`.
+
+```yaml
+hooks:
+  enabled:
+    - my-hook
+    - long-task-alert
+  disabled:
+    - old-experiment
+```
 
 #### handler.py
 
@@ -341,10 +355,11 @@ An earlier version of Hermes shipped this as a built-in hook and silently spawne
 ### How It Works
 
 1. On gateway startup, `HookRegistry.discover_and_load()` scans `~/.hermes/hooks/`
-2. Each subdirectory with `HOOK.yaml` + `handler.py` is loaded dynamically
-3. Handlers are registered for their declared events
-4. At each lifecycle point, `hooks.emit()` fires all matching handlers
-5. Errors in any handler are caught and logged — a broken hook never crashes the agent
+2. Each subdirectory with `HOOK.yaml` + `handler.py` is checked against `hooks.enabled` and `hooks.disabled`
+3. Enabled hooks are loaded dynamically
+4. Handlers are registered for their declared events
+5. At each lifecycle point, `hooks.emit()` fires all matching handlers
+6. Errors in any handler are caught and logged — a broken hook never crashes the agent
 
 :::info
 Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, Teams). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
@@ -1305,7 +1320,7 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 | Events | `VALID_HOOKS` (incl. `subagent_stop`) | `VALID_HOOKS` | Gateway lifecycle (`gateway:startup`, `agent:*`, `command:*`) |
 | Can block a tool call | Yes (`pre_tool_call`) | Yes (`pre_tool_call`) | No |
 | Can inject LLM context | Yes (`pre_llm_call`) | Yes (`pre_llm_call`) | No |
-| Consent | First-use prompt per `(event, command)` pair | Implicit (Python plugin trust) | Implicit (dir trust) |
+| Consent | First-use prompt per `(event, command)` pair | `plugins.enabled` | `hooks.enabled` |
 | Inter-process isolation | Yes (subprocess) | No (in-process) | No (in-process) |
 
 ### Configuration schema

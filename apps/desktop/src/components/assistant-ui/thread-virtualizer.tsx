@@ -183,6 +183,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
   const armedRef = useRef(true)
   const lastTopRef = useRef(0)
   const lastHeightRef = useRef(0)
+  const lastClientHeightRef = useRef(0)
   // Counter that tracks how many scroll events we expect to be ours rather
   // than the user's. `pinToBottom` writes `el.scrollTop`, which fires an
   // async `scroll` event; without this guard the on-scroll handler can race
@@ -208,6 +209,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     el.scrollTop = el.scrollHeight
     lastTopRef.current = el.scrollTop
     lastHeightRef.current = el.scrollHeight
+    lastClientHeightRef.current = el.clientHeight
   }, [scrollerRef])
 
   const jumpToBottom = useCallback(() => {
@@ -254,6 +256,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
         programmaticScrollPendingRef.current -= 1
         lastTopRef.current = top
         lastHeightRef.current = el.scrollHeight
+        lastClientHeightRef.current = el.clientHeight
         // Always re-arm — sticky-bottom should hold through clamp races.
         armedRef.current = true
         const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
@@ -262,26 +265,39 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
         return
       }
 
-      // Disarm only when `scrollTop` decreases AND `scrollHeight` did NOT
-      // grow this frame. A bare `top < lastTopRef.current` check is unsafe:
-      // when content grows (virtualizer item measurement, streaming token,
-      // code highlight re-tokenization, composer chip), the browser emits
-      // an interim `scroll` event whose `scrollTop` is smaller than the
-      // previous frame's because `scrollHeight` jumped — this fires before
-      // the rAF-scheduled `pinToBottom` runs, so `programmaticScrollPendingRef`
-      // is 0. Treating that as a user scroll permanently disarmed sticky-bottom
-      // and produced the visible at-rest backward jump (#37997). Gating on a
-      // stable `scrollHeight` keeps real user-driven upward intent — scrollbar
-      // drag, keyboard PgUp, programmatic scrollIntoView — covered without
-      // the false positive. Wheel-up and touchmove still disarm via their
-      // own listeners below.
+      // Disarm only when `scrollTop` decreases AND neither `scrollHeight` nor
+      // `clientHeight` grew this frame. A bare `top < lastTopRef.current` check
+      // is unsafe for two reasons:
+      //
+      // 1. Content growth (virtualizer item measurement, streaming token,
+      //    code highlight re-tokenization, composer chip): `scrollHeight`
+      //    jumped → the browser emits an interim `scroll` event whose
+      //    `scrollTop` is smaller than the previous frame's because the
+      //    content grew. This fire before the rAF-scheduled `pinToBottom`
+      //    runs, so `programmaticScrollPendingRef` is 0. Treating that as a
+      //    user scroll permanently disarmed sticky-bottom and produced the
+      //    visible at-rest backward jump (#37997).
+      //
+      // 2. Viewport resize (composer expands/collapses, window resize):
+      //    `clientHeight` shrinks → the browser adjusts `scrollTop` down to
+      //    keep the same content visible. Without checking `clientHeight`,
+      //    the handler misreads this as the user scrolling up and disarms
+      //    sticky-bottom — the view then lurches because the user didn't
+      //    actually scroll.
+      //
+      // Gating on stable `scrollHeight` and `clientHeight` keeps real
+      // user-driven upward intent — scrollbar drag, keyboard PgUp,
+      // programmatic scrollIntoView — covered without false positives.
+      // Wheel-up and touchmove still disarm via their own listeners below.
       const heightGrew = el.scrollHeight > lastHeightRef.current
-      if (!heightGrew && top + 1 < lastTopRef.current) {
+      const clientHeightGrew = el.clientHeight > lastClientHeightRef.current
+      if (!heightGrew && !clientHeightGrew && top + 1 < lastTopRef.current) {
         armedRef.current = false
       }
 
       lastTopRef.current = top
       lastHeightRef.current = el.scrollHeight
+      lastClientHeightRef.current = el.clientHeight
 
       const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
 

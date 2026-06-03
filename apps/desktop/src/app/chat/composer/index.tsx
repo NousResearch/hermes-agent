@@ -567,6 +567,13 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // IME composition: Enter confirms composed text, not a message submission.
+    // Without this guard, pressing Enter to finalise a Korean/Japanese/Chinese
+    // IME preedit fires submitDraft() and splits the message mid-word.
+    if (event.nativeEvent.isComposing) {
+      return
+    }
+
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
       event.preventDefault()
 

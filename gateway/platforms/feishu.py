@@ -4392,14 +4392,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
 
         header_line = lines[0]
-        headers = [re.sub(r"\[(.+?)\]\(.+?\)", r"\1", cell.strip()) for cell in header_line.strip().strip("|").split("|")]
+        headers = [cell.strip() for cell in header_line.strip().strip("|").split("|")]
 
         columns = []
         for idx, header in enumerate(headers):
             col_name = f"col{idx}"
             col_def: dict = {
                 "name": col_name,
-                "data_type": "text",
+                "data_type": "markdown",
                 "vertical_align": "top",
                 "width": "auto",
             }
@@ -4415,11 +4415,6 @@ class FeishuAdapter(BasePlatformAdapter):
             for idx in range(len(columns)):
                 col_name = columns[idx]["name"]
                 cell_value = cells[idx] if idx < len(cells) else ""
-                # Clean markdown formatting for cleaner display
-                cell_value = re.sub(r"\*\*(.+?)\*\*", r"\1", cell_value)
-                cell_value = re.sub(r"\*(.+?)\*", r"\1", cell_value)
-                cell_value = re.sub(r"~~(.+?)~~", r"\1", cell_value)
-                cell_value = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", cell_value)
                 row[col_name] = cell_value
             rows.append(row)
 

@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  Tray,
   clipboard,
   dialog,
   ipcMain,
@@ -2667,6 +2668,82 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+// ── System tray ──────────────────────────────────────────────────────────────
+// When the user closes the window the app minimizes to the system tray instead
+// of quitting. A full quit is available from the tray context menu.
+
+let tray = null
+let isQuitting = false
+
+function getTrayIconPath() {
+  // Reuse the app icon. On macOS the tray accepts a template image
+  // (named ending in Template) for automatic dark/light adaptation; for now
+  // we ship the same icon on every platform.
+  return getAppIconPath()
+}
+
+function createTray() {
+  const iconPath = getTrayIconPath()
+  if (!iconPath) return
+
+  const iconImage = IS_MAC
+    ? nativeImage.createFromPath(iconPath).resize({ width: 22 })
+    : nativeImage.createFromPath(iconPath)
+
+  tray = new Tray(iconImage)
+  tray.setToolTip('Hermes Agent')
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Show Hermes',
+      click: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          createWindow()
+        }
+        mainWindow.show()
+        mainWindow.focus()
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit Hermes',
+      click: () => {
+        isQuitting = true
+        app.quit()
+      }
+    }
+  ])
+
+  tray.setContextMenu(contextMenu)
+
+  // Double-click tray icon to restore the window (Windows/Linux)
+  tray.on('double-click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow()
+    }
+    mainWindow.show()
+    mainWindow.focus()
+  })
+
+  // Single click also shows on Linux (where context menu uses right-click)
+  if (!IS_MAC) {
+    tray.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createWindow()
+      }
+      mainWindow.show()
+      mainWindow.focus()
+    })
+  }
+}
+
+function destroyTray() {
+  if (tray && !tray.isDestroyed()) {
+    tray.destroy()
+  }
+  tray = null
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { webContents } = mainWindow
@@ -3448,6 +3525,16 @@ function createWindow() {
   installDevToolsShortcut(mainWindow)
   installZoomShortcuts(mainWindow)
   installContextMenu(mainWindow)
+
+  // Hide to tray on close instead of quitting (unless isQuitting is set by
+  // the tray "Quit" item or app.quit() from outside).
+  mainWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault()
+      mainWindow.hide()
+    }
+  })
+
   mainWindow.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
 
@@ -4176,6 +4263,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   createWindow()
+  createTray()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -4206,6 +4294,8 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  isQuitting = true
+
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {
@@ -4219,6 +4309,7 @@ app.on('before-quit', () => {
   }
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+  destroyTray()
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
@@ -4226,5 +4317,6 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // With system tray enabled, keep the app running even on Windows/Linux.
+  // The only way to fully quit is via the tray context menu or app.quit().
 })

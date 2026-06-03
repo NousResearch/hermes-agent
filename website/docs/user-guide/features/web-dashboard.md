@@ -620,7 +620,7 @@ The dashboard's React StatusPage shows the same fields under "Web server". A sid
 
 ## Connecting Hermes Desktop to a remote backend
 
-Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateway → Remote gateway**, which asks for a **Remote URL** and a **Session token**.
+Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateway → Remote gateway**, which asks for a **Remote URL** and a **Session token**. (For the desktop app itself — install, settings, chat — see the [Hermes Desktop](/user-guide/desktop) page.)
 
 The "session token" is the dashboard's session token — the same secret the local web UI uses for `/api` and WebSocket calls. **Hermes does not print it for you to copy.** By default the dashboard mints a fresh random token on every boot and injects it straight into the served HTML, so there is nothing sitting in `config.yaml`, in `/gateway`, or in the logs to grab. For a remote connection you set the token yourself on the backend, then paste that same value into the desktop app.
 

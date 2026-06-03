@@ -12,11 +12,11 @@
 </p>
 
 <p align="center">
-  <b>A reversible fork of <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.</b><br>
-  One switch turns Hermes into a senior-engineer planner — it drives a visible to-do plan, raises reasoning
-  effort, delegates where it helps, and escalates to a deterministic multi-agent <b>workflow engine</b>
-  (the <i>Loom</i>) when you ask. An optional <b>Auto&nbsp;Router</b> sends each delegated worker to the
-  cheapest model that can do that subtask.
+  <b>Built for <a href="https://github.com/NousResearch/hermes-agent">Hermes Desktop</a> — the new desktop agent app from Nous Research — and shipped on launch day.</b><br>
+  A reversible fork of Hermes Agent: one switch turns Hermes into a senior-engineer planner — it drives a
+  visible to-do plan, raises reasoning effort, delegates where it helps, and escalates to a deterministic
+  multi-agent <b>workflow engine</b> (the <i>Loom</i>) when you ask. An optional <b>Auto&nbsp;Router</b>
+  sends each delegated worker to the cheapest model that can do that subtask.
 </p>
 
 <p align="center">
@@ -51,7 +51,7 @@ One switch, three composable layers. Each turns on only when you need it — and
 
 ### Watch it think — the Orchestration Theater
 
-Say **"workflow"** and Caduceus fans out across subagents on the Loom. The desktop opens a live **Orchestration Theater** — phase lanes, per-agent model badges (orchestrator gold, workers blue), token burn, live concurrency, and a shared budget gauge — so the fan-out *feels alive*.
+Say **"workflow"** and Caduceus fans out across subagents on the Loom. The **Hermes Desktop** app opens a live **Orchestration Theater** — phase lanes, per-agent model badges (orchestrator gold, workers blue), token burn, live concurrency, and a shared budget gauge — so the fan-out *feels alive*.
 
 <p align="center">
   <img src="docs/caduceus/assets/caduceus-theater.png" alt="The Orchestration Theater — live phase lanes, agent cards, concurrency and budget gauges" width="100%">
@@ -78,7 +78,7 @@ With many models configured, you don't want to pay frontier prices on trivial su
 [parity](docs/caduceus/PARITY.md) · [contribution summary](docs/caduceus/PR_DESCRIPTION.md)
 
 <p align="center">
-  <sub>Caduceus ships <b>off</b>. With it off, this fork behaves exactly like upstream Hermes — the full upstream README follows below.</sub>
+  <sub>Caduceus ships <b>off</b> — with it off, this fork behaves exactly like upstream Hermes. The full upstream <b>Hermes Agent</b> README (CLI, messaging gateway, and platform docs) follows below.</sub>
 </p>
 
 ---

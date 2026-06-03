@@ -150,9 +150,34 @@ export function isDesktopSlashCommand(command: string): boolean {
   return DESKTOP_COMMANDS.has(canonical) || !isKnownHermesSlashCommand(normalized)
 }
 
+/**
+ * An "extension" command is anything the backend surfaces that is NOT one of
+ * Hermes' built-in slash commands — i.e. skill commands (`/gif-search`,
+ * `/codex`, …) and user-defined quick commands. These are user-activated, so
+ * they should appear in the desktop slash palette even though they aren't in
+ * the curated `DESKTOP_COMMANDS` allow-list. This mirrors the predicate in
+ * `isDesktopSlashCommand` that already lets them EXECUTE when typed.
+ */
+export function isDesktopSlashExtensionCommand(command: string): boolean {
+  const normalized = normalizeCommand(command)
+
+  if (!normalized || normalized === '/') {
+    return false
+  }
+
+  return !isKnownHermesSlashCommand(normalized)
+}
+
 export function isDesktopSlashSuggestion(command: string): boolean {
   const normalized = normalizeCommand(command)
   const canonical = canonicalDesktopSlashCommand(normalized)
+
+  // Surface skill / quick commands (extensions the backend provides) alongside
+  // the curated built-ins. Built-in aliases stay hidden so the popover isn't
+  // cluttered with duplicates.
+  if (isDesktopSlashExtensionCommand(normalized)) {
+    return true
+  }
 
   return DESKTOP_COMMANDS.has(canonical) && !DESKTOP_ALIASES.has(normalized)
 }

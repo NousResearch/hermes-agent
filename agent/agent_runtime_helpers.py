@@ -1667,8 +1667,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
     def _finish_agent_tool(result: Any) -> Any:
         try:
-            from model_tools import _emit_post_tool_call_hook, _tool_result_observer_fields
-            status, error_type, error_message = _tool_result_observer_fields(result)
+            from model_tools import _emit_post_tool_call_hook
             _emit_post_tool_call_hook(
                 function_name=function_name,
                 function_args=function_args,
@@ -1679,9 +1678,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 duration_ms=int((time.monotonic() - tool_start_time) * 1000),
-                status=status,
-                error_type=error_type,
-                error_message=error_message,
             )
         except Exception:
             pass

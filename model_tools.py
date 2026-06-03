@@ -799,6 +799,16 @@ def _coerce_boolean(value: str):
     return value
 
 
+def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
+    try:
+        parsed_result = json.loads(result) if isinstance(result, str) else result
+        if isinstance(parsed_result, dict) and parsed_result.get("error"):
+            return "error", "tool_error", str(parsed_result.get("error"))
+    except Exception:
+        pass
+    return "ok", None, None
+
+
 def _emit_post_tool_call_hook(
     *,
     function_name: str,
@@ -810,12 +820,25 @@ def _emit_post_tool_call_hook(
     turn_id: Optional[str] = None,
     api_request_id: Optional[str] = None,
     duration_ms: int = 0,
-    status: str = "ok",
+    status: Optional[str] = None,
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
 ) -> None:
+    """Emit the ``post_tool_call`` observer hook.
+
+    No-ops cheaply when no plugin has registered for ``post_tool_call`` —
+    the ``has_hook`` gate skips both the result-field derivation and the
+    payload dispatch so the no-listener path costs one dict lookup.  When
+    ``status`` is not supplied, the ok/error fields are derived from the
+    result *after* the gate (parsing the result is only worth it when a
+    listener will actually consume it).
+    """
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.plugins import has_hook, invoke_hook
+        if not has_hook("post_tool_call"):
+            return
+        if status is None:
+            status, error_type, error_message = _tool_result_observer_fields(result)
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
@@ -833,16 +856,6 @@ def _emit_post_tool_call_hook(
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
-
-
-def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
-    try:
-        parsed_result = json.loads(result) if isinstance(result, str) else result
-        if isinstance(parsed_result, dict) and parsed_result.get("error"):
-            return "error", "tool_error", str(parsed_result.get("error"))
-    except Exception:
-        pass
-    return "ok", None, None
 
 
 def handle_function_call(
@@ -1077,7 +1090,6 @@ def handle_function_call(
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
-        status, error_type, error_message = _tool_result_observer_fields(result)
 
         _emit_post_tool_call_hook(
             function_name=function_name,
@@ -1089,9 +1101,6 @@ def handle_function_call(
             turn_id=turn_id,
             api_request_id=api_request_id,
             duration_ms=duration_ms,
-            status=status,
-            error_type=error_type,
-            error_message=error_message,
         )
 
         # Generic tool-result canonicalization seam: plugins receive the
@@ -1100,27 +1109,31 @@ def handle_function_call(
         # post_tool_call (which stays observational) and before the result
         # is appended back into conversation context. Fail-open; the first
         # valid string return wins; non-string returns are ignored.
+        # Gated on has_hook so the no-listener path skips both the result
+        # field derivation and the payload dispatch.
         try:
-            from hermes_cli.plugins import invoke_hook
-            hook_results = invoke_hook(
-                "transform_tool_result",
-                tool_name=function_name,
-                args=function_args,
-                result=result,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=turn_id or "",
-                api_request_id=api_request_id or "",
-                duration_ms=duration_ms,
-                status=status,
-                error_type=error_type,
-                error_message=error_message,
-            )
-            for hook_result in hook_results:
-                if isinstance(hook_result, str):
-                    result = hook_result
-                    break
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if has_hook("transform_tool_result"):
+                status, error_type, error_message = _tool_result_observer_fields(result)
+                hook_results = invoke_hook(
+                    "transform_tool_result",
+                    tool_name=function_name,
+                    args=function_args,
+                    result=result,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                    turn_id=turn_id or "",
+                    api_request_id=api_request_id or "",
+                    duration_ms=duration_ms,
+                    status=status,
+                    error_type=error_type,
+                    error_message=error_message,
+                )
+                for hook_result in hook_results:
+                    if isinstance(hook_result, str):
+                        result = hook_result
+                        break
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 

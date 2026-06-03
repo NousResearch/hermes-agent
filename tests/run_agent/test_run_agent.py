@@ -2067,6 +2067,7 @@ class TestExecuteToolCalls:
             return []
 
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _capture_hook)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
 
         with (
             patch("run_agent.handle_function_call", side_effect=KeyboardInterrupt),
@@ -2524,6 +2525,7 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
 
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1", tool_call_id="todo-1")
@@ -2606,6 +2608,7 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
 
         with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
@@ -2632,6 +2635,7 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
 
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")

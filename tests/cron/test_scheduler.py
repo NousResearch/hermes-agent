@@ -165,6 +165,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001234567890",
             "thread_id": "42",
+            "agent_id": None,
         }
 
     def test_telegram_cron_thread_id_sets_thread_when_home_thread_unset(self, monkeypatch):
@@ -177,6 +178,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001234567890",
             "thread_id": "42",
+            "agent_id": None,
         }
 
     def test_telegram_cron_thread_id_does_not_leak_to_other_platforms(self, monkeypatch):
@@ -189,6 +191,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "parent-42",
             "thread_id": "topic-7",
+            "agent_id": None,
         }
 
     def test_explicit_telegram_topic_target_overrides_cron_thread_id(self, monkeypatch):
@@ -200,6 +203,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1003724596514",
             "thread_id": "17",
+            "agent_id": None,
         }
 
     def test_explicit_telegram_topic_target_with_thread_id(self):

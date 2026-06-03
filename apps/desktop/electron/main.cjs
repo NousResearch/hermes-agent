@@ -4047,6 +4047,11 @@ function maybePinToDock() {
   }
   if (!bundle) return
 
+  // The Dock stores tiles as file-reference URLs (type 15), e.g.
+  // file:///Applications/Hermes.app/ -- NOT a raw POSIX path. A type-0/raw-path
+  // tile is silently dropped when the Dock rewrites persistent-apps on restart.
+  const url = pathToFileURL(bundle.endsWith('/') ? bundle : `${bundle}/`).href
+
   const done = note => {
     try {
       fs.writeFileSync(marker, JSON.stringify({ bundle, pinnedAt: new Date().toISOString(), ...note }) + '\n')
@@ -4060,20 +4065,23 @@ function maybePinToDock() {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
     })
-    if (apps.includes(bundle)) return done({ alreadyPresent: true })
+    if (apps.includes(url)) return done({ alreadyPresent: true })
   } catch {
     // persistent-apps may not exist yet; -array-add creates it
   }
 
   const tile =
     '<dict><key>tile-data</key><dict><key>file-data</key><dict>' +
-    `<key>_CFURLString</key><string>${bundle}</string><key>_CFURLStringType</key><integer>0</integer>` +
+    `<key>_CFURLString</key><string>${url}</string><key>_CFURLStringType</key><integer>15</integer>` +
     '</dict></dict></dict>'
   try {
     execFileSync('defaults', ['write', 'com.apple.dock', 'persistent-apps', '-array-add', tile], { stdio: 'ignore' })
+    // Flush the write through cfprefsd before restarting the Dock, otherwise the
+    // Dock reloads stale prefs and our tile is lost in the race.
+    execFileSync('defaults', ['read', 'com.apple.dock', 'persistent-apps'], { stdio: 'ignore' })
     execFileSync('killall', ['Dock'], { stdio: 'ignore' })
     done()
-    rememberLog(`[install] pinned to Dock: ${bundle}`)
+    rememberLog(`[install] pinned to Dock: ${url}`)
   } catch (err) {
     rememberLog(`[install] Dock pin skipped: ${err.message}`)
   }

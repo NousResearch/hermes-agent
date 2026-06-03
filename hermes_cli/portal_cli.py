@@ -1,10 +1,11 @@
 """``hermes portal`` — the human-readable entry point for Nous Portal.
 
 Running ``hermes portal`` with no subcommand performs the one-shot Portal
-onboarding: OAuth login, switch the inference provider to Nous, and offer to
-enable the Tool Gateway. It is the friendly alias for
-``hermes auth add nous --type oauth`` (which still works) and is identical to
-``hermes setup --portal``.
+onboarding: OAuth login, pick a Nous model, switch the inference provider to
+Nous, and offer to enable the Tool Gateway. It is the friendly alias for
+``hermes auth add nous --type oauth`` (which still works), is identical to
+``hermes setup --portal``, and runs the same Nous flow as the first-time quick
+setup.
 
 Subcommands:
   (none)   Log in to Nous Portal + set it up (one-shot onboarding).
@@ -167,12 +168,13 @@ def _cmd_tools(args) -> int:
 
 
 def _cmd_login(args) -> int:
-    """Run the one-shot Nous Portal onboarding (OAuth + provider + Tool Gateway).
+    """Run the one-shot Nous Portal onboarding (login + model + provider + tools).
 
     This is the human-readable front door for `hermes auth add nous --type
-    oauth`. It reuses the exact wiring behind `hermes setup --portal` so the
-    two commands stay in lockstep: device-code login, switch the inference
-    provider to Nous, then offer the Tool Gateway opt-in.
+    oauth`. It reuses the exact wiring behind `hermes setup --portal` (which in
+    turn runs the same Nous flow as the first-time quick setup), so the
+    commands stay in lockstep: device-code login, pick a Nous model, switch the
+    inference provider to Nous, then offer the Tool Gateway opt-in.
     """
     from hermes_cli.setup import _run_portal_one_shot
 
@@ -210,12 +212,13 @@ def add_parser(subparsers) -> None:
     """Register `hermes portal` on the given argparse subparsers object."""
     portal_parser = subparsers.add_parser(
         "portal",
-        help="Set up Nous Portal (OAuth login + Tool Gateway); see also `portal info`",
+        help="Set up Nous Portal (login, model pick, Tool Gateway); see also `portal info`",
         description=(
             "Run `hermes portal` with no subcommand to log in to Nous Portal "
-            "and set it up (the human-readable alias for `hermes auth add nous "
-            "--type oauth`, identical to `hermes setup --portal`). Subcommands: "
-            "login (default), info, open, tools."
+            "and set it up — pick a model, set Nous as your provider, and offer "
+            "the Tool Gateway (the human-readable alias for `hermes auth add "
+            "nous --type oauth`, identical to `hermes setup --portal`). "
+            "Subcommands: login (default), info, open, tools."
         ),
     )
     portal_sub = portal_parser.add_subparsers(dest="portal_command")

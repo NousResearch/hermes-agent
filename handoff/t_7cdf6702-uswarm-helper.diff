@@ -1,0 +1,13 @@
+diff --git a/agent/uswarm_helpers.py b/agent/uswarm_helpers.py
+index 6bdafb1bf..f8d705c49 100644
+--- a/agent/uswarm_helpers.py
++++ b/agent/uswarm_helpers.py
+@@ -94,7 +94,7 @@ def _safe_pack_path(ref: str, *, allowed_base: Optional[str] = None) -> Optional
+     # ordinary relative strings.  Context-pack refs may originate from Windows
+     # paths, so reject escape syntax before POSIX normalization.
+     windows_candidate = PureWindowsPath(text)
+-    if windows_candidate.drive or windows_candidate.root:
++    if windows_candidate.drive or text.startswith("\\"):
+         return None
+     if ".." in text.replace("\\", "/").split("/"):
+         return None

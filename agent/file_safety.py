@@ -561,3 +561,80 @@ def get_sandbox_mirror_warning(path: str) -> Optional[str]:
         f"(Defense-in-depth — not a security boundary; the terminal tool "
         f"can still bypass.)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Container-context mirror guard (inner-container case — #32049 follow-up)
+#
+# Brian's shape-based detector (#32213) catches paths that still carry the
+# full ``…/sandboxes/<backend>/<task>/home/.hermes/…`` prefix on the host.
+# But when file tools execute *inside* the container the bind-mount strips
+# that prefix: the agent sees plain ``/root/.hermes/…``.  The root:root
+# ownership on the divergent SOUL.md in #32049 confirms this is the primary
+# failure mode.
+#
+# Fix: file_tools passes the active Docker mirror prefix when the terminal
+# backend is docker + persistent. This catches the very first file-tool call,
+# before a DockerEnvironment object necessarily exists.
+# ---------------------------------------------------------------------------
+
+
+def classify_container_mirror_target(
+    path: str,
+    mirror_prefix: str | None = None,
+) -> Optional[dict]:
+    """Classify a write target as a container-side sandbox mirror.
+
+    ``mirror_prefix`` must be supplied by the caller after it has established
+    that file tools are executing in a container whose home is a sandbox
+    mirror. Returns ``None`` when no such context is active or the path is not
+    under the mirror prefix. Otherwise returns:
+
+      * ``target_path``: resolved path string
+      * ``mirror_root``: the declared container mirror prefix
+      * ``inner_path``: portion under the mirror root (what the agent
+        likely meant to address in the host HERMES_HOME)
+    """
+    if not mirror_prefix:
+        return None
+    try:
+        target = Path(os.path.expanduser(str(path))).resolve()
+        mirror = Path(os.path.expanduser(mirror_prefix)).resolve()
+        inner = target.relative_to(mirror)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return {
+        "target_path": str(target),
+        "mirror_root": str(mirror),
+        "inner_path": inner.as_posix(),
+    }
+
+
+def get_container_mirror_warning(
+    path: str,
+    mirror_prefix: str | None = None,
+) -> Optional[str]:
+    """Return a model-facing warning when *path* lands in the container's
+    sandbox mirror of authoritative Hermes state.
+
+    The caller supplies ``mirror_prefix`` only when the current file-tool
+    backend is known to execute inside a Docker sandbox. Same contract as
+    ``get_cross_profile_warning``: soft guard, returns ``None`` for
+    non-mirror paths, caller surfaces as a tool-result error. Bypass via
+    ``cross_profile=True`` after explicit user direction.
+    """
+    info = classify_container_mirror_target(path, mirror_prefix)
+    if info is None:
+        return None
+    return (
+        f"Sandbox-mirror write blocked by soft guard: {info['target_path']} "
+        f"sits under {info['mirror_root']!r}, which is the container's "
+        f"bind-mounted home — a per-task mirror that the host Hermes "
+        f"process never reads. The authoritative file is "
+        f"{info['inner_path']!r} under the real HERMES_HOME. Use the "
+        f"host-side tool for authoritative state (e.g. ``memory`` for "
+        f"memories), or address the host path directly. To bypass after "
+        f"explicit user direction, retry with ``cross_profile=True``. "
+        f"(Defense-in-depth — not a security boundary; the terminal tool "
+        f"can still bypass.)"
+    )

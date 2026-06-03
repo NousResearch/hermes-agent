@@ -872,6 +872,17 @@ _cleanup_done = False
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 _deferred_agent_startup_done = False
+# Set True once the TUI's prompt_toolkit app starts (which enables focus
+# reporting + mouse tracking). Gates the on-exit terminal reset so non-TUI
+# one-shot CLI runs — which also register _run_cleanup via atexit — don't emit
+# escape codes for modes they never enabled (#36823).
+_tui_input_modes_active = False
+
+
+def _mark_tui_input_modes_active() -> None:
+    """Record that the TUI app started, so _run_cleanup resets input modes."""
+    global _tui_input_modes_active
+    _tui_input_modes_active = True
 
 
 def _prepare_deferred_agent_startup() -> None:
@@ -927,6 +938,12 @@ def _run_cleanup():
         return
     _cleanup_done = True
 
+    # Reset terminal input modes first, before the slower resource teardown
+    # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
+    # user's terminal becomes usable immediately, and a later step raising
+    # can't skip the reset (#36823). No-op unless the TUI actually ran.
+    _reset_terminal_input_modes_on_exit()
+
     try:
         _cleanup_all_terminals()
     except Exception:
@@ -968,6 +985,50 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
+    except Exception:
+        pass
+
+
+def _reset_terminal_input_modes_on_exit() -> None:
+    """Best-effort: disable focus reporting + mouse tracking on TUI exit so they
+    don't leak into the next shell session sharing the tab.
+
+    prompt_toolkit restores these on a clean teardown, but Ctrl+C, SIGTERM /
+    SIGHUP and crashes can bypass its unwind, leaving the modes enabled. The
+    terminal then emits raw ``ESC[I`` / ``ESC[O`` focus events and fragmented
+    SGR mouse reports as visible text in whatever runs next in the same tab
+    (#36823). Called from ``_run_cleanup`` (atexit-registered + invoked on the
+    normal / EOF / interrupt exit paths) this covers normal quit, Ctrl+C and
+    SIGTERM/SIGHUP. ``kill -9`` is uncatchable, and the kanban worker's
+    ``os._exit(0)`` path bypasses ``atexit``; neither runs this — but both are
+    non-TTY / non-TUI, so there is nothing to reset there.
+
+    Gated on ``_tui_input_modes_active`` so one-shot non-TUI CLI runs (which
+    share ``_run_cleanup`` via ``atexit``) never emit these codes. Writes to the
+    controlling terminal directly: by exit, prompt_toolkit's own output is torn
+    down, so ``sys.stdout`` is the real fd; falls back to ``/dev/tty`` when
+    stdout is redirected away from the terminal.
+    """
+    global _tui_input_modes_active
+    if not _tui_input_modes_active:
+        return
+    # About to disable the modes — clear the flag so a re-armed _run_cleanup (or
+    # a long-lived process that reuses it) doesn't re-emit them.
+    _tui_input_modes_active = False
+    # Prefer stdout when it's the terminal; otherwise the TUI may have driven
+    # /dev/tty while stdout was redirected — reset there instead of nowhere.
+    try:
+        stream = sys.stdout
+        if stream is not None and stream.isatty():
+            stream.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+            stream.flush()
+            return
+    except Exception:
+        pass
+    try:
+        with open("/dev/tty", "w", encoding="ascii") as tty:
+            tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+            tty.flush()
     except Exception:
         pass
 
@@ -2114,6 +2175,41 @@ def _cprint(text: str):
             _pt_print(_PT_ANSI(text))
         except Exception:
             pass
+
+
+def _prepend_note_to_message(message, note: str):
+    """Prepend a one-shot system-style note to a user message.
+
+    ``message`` is normally a plain string, but when the user attaches an image
+    to a vision-capable model it becomes a list of OpenAI-style content parts
+    (text + ``image_url`` blocks). Naively doing ``note + "\\n\\n" + message``
+    then raises ``TypeError: can only concatenate str (not "list") to str`` —
+    e.g. running ``/model ...`` (which queues a model-switch note) and then
+    sending a pasted image in the same turn.
+
+    Returns the message with ``note`` prepended:
+      * ``str``  → ``f"{note}\\n\\n{message}"`` (just ``note`` when empty)
+      * ``list`` → note folded into the first text part, or inserted as a new
+        leading ``{"type": "text"}`` part when there is no text part.
+    Unknown shapes are returned unchanged (fail-open).
+    """
+    note = str(note or "").strip()
+    if not note:
+        return message
+    if isinstance(message, str):
+        return f"{note}\n\n{message}" if message else note
+    if isinstance(message, list):
+        parts = list(message)
+        for i, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") == "text":
+                merged = dict(part)
+                text = merged.get("text", "")
+                merged["text"] = f"{note}\n\n{text}" if text else note
+                parts[i] = merged
+                return parts
+        # No text part (image-only) — insert the note as a leading text block.
+        return [{"type": "text", "text": note}, *parts]
+    return message
 
 
 # ---------------------------------------------------------------------------
@@ -12135,17 +12231,21 @@ class HermesCLI:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
-                # Prepend pending model switch note so the model knows about the switch
+                # Prepend pending notes via _prepend_note_to_message, which
+                # handles both plain-string and multimodal content-parts list
+                # messages. Naive ``note + "\n\n" + agent_message`` crashed with
+                # TypeError when an image was attached (agent_message is a list)
+                # and a /model or /reload-skills note was queued for the turn.
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
-                    agent_message = _msn + "\n\n" + agent_message
+                    agent_message = _prepend_note_to_message(agent_message, _msn)
                     self._pending_model_switch_note = None
                 # Prepend pending /reload-skills note so the model sees which
                 # skills were added/removed before handling this turn. Same
                 # one-shot queue pattern as the model-switch note above.
                 _srn = getattr(self, '_pending_skills_reload_note', None)
                 if _srn:
-                    agent_message = _srn + "\n\n" + agent_message
+                    agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(
@@ -15096,6 +15196,9 @@ class HermesCLI:
                     pass  # No running loop -- nothing to patch
                 except Exception:
                     pass
+                # The app enables focus reporting + mouse tracking; record that
+                # so _run_cleanup resets them on exit (#36823).
+                _mark_tui_input_modes_active()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass

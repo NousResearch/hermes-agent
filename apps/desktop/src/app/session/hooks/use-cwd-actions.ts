@@ -50,16 +50,23 @@ export function useCwdActions({
       }
 
       if (!activeSessionId) {
+        setCurrentCwd(trimmed)
+
         try {
           const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {
             key: 'project',
             cwd: trimmed
           })
 
-          setCurrentCwd(info.cwd || trimmed)
+          // Adopt the backend's normalized cwd so the persisted workspace and
+          // branch stay consistent with what the agent will use.
+          if (info.cwd) {
+            setCurrentCwd(info.cwd)
+          }
+
           setCurrentBranch(info.branch || '')
-        } catch (err) {
-          notifyError(err, 'Working directory change failed')
+        } catch {
+          setCurrentBranch('')
         }
 
         return

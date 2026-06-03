@@ -45,12 +45,14 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "liliangjya@gmail.com": "truenorth-lj",
     "ben.bartholomew@vectorize.io": "benfrank241",
     "74339271+SaguaroDev@users.noreply.github.com": "SaguaroDev",
     "subw3@mail2.sysu.edu.cn": "Subway2023",
     "trevin@trevinchow.com": "tmchow",
     "zhipengli@thebrainly.ai": "a1245582339",
     "mathijs.vd.hurk@gmail.com": "mathijsvandenhurk",
+    "david.gutowsky@gmail.com": "davidgut1982",
     "drpelagik@gmail.com": "SeaXen",
     "lengr@users.noreply.github.com": "LengR",
     "17255546+CharZhou@users.noreply.github.com": "CharZhou",
@@ -64,6 +66,7 @@ AUTHOR_MAP = {
     "524706+Twanislas@users.noreply.github.com": "Twanislas",
     "9592417+adam91holt@users.noreply.github.com": "adam91holt",
     "kchuang1015@users.noreply.github.com": "kchuang1015",
+    "kyssta-exe@users.noreply.github.com": "kyssta-exe",
     "45688690+fujinice@users.noreply.github.com": "fujinice",
     "276689385+carltonawong@users.noreply.github.com": "carltonawong",
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",
@@ -371,6 +374,7 @@ AUTHOR_MAP = {
     "harish.kukreja@gmail.com": "counterposition",
     "nidhi2894@gmail.com": "nidhi-singh02",
     "35294173+Fearvox@users.noreply.github.com": "Fearvox",
+    "fearvox1015@gmail.com": "Fearvox",
     "hypnus.yuan@gmail.com": "Hypnus-Yuan",
     "15558128926@qq.com": "xsfX20",
     "binhnt.ht.92@gmail.com": "binhnt92",
@@ -1422,6 +1426,7 @@ AUTHOR_MAP = {
     "2663402852@qq.com": "x1am1",  # PR #35098 (chown root-owned top-level HERMES_HOME state files)
     "nicsequenzy@gmail.com": "polnikale",  # PR #35717 (discover Playwright headless_shell browser)
     "wasdhkzk@gmail.com": "whyhkzk",  # PR #32407 (sandbox-mirror inner-container guard; commits authored as whyhkzk + zhukun)
+    "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
 }
 
 

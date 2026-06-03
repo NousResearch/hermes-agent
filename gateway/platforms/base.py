@@ -1265,6 +1265,107 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Unified media caching
+#
+# One entry point for "I have raw attachment bytes from a platform — cache them
+# and tell me what I got." Classifies by extension/MIME against the shared
+# registries above, routes to the right cache_*_from_bytes helper, and returns
+# a small result the caller can store and/or describe in a transcript. Used by
+# both the addressed-message path and the observed-group-context path, on any
+# platform — not Telegram-specific.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CachedMedia:
+    """Result of caching one attachment's bytes."""
+
+    path: str                 # absolute cache path, agent-visible (sandbox-translated)
+    media_type: str           # MIME type recorded on the MessageEvent
+    kind: str                 # "image" | "video" | "audio" | "document"
+    display_name: str         # human-readable name for transcript notes
+
+    def context_note(self) -> str:
+        """One-line transcript annotation pointing the agent at the file."""
+        return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
+
+
+def _resolve_media_ext(filename: str, mime_type: str) -> str:
+    """Best-effort file extension from filename, then MIME fallback."""
+    if filename:
+        ext = os.path.splitext(filename)[1].lower()
+        if ext:
+            return ext
+    mime = (mime_type or "").lower()
+    if not mime:
+        return ""
+    for table in (
+        SUPPORTED_IMAGE_DOCUMENT_TYPES,
+        SUPPORTED_VIDEO_TYPES,
+        SUPPORTED_DOCUMENT_TYPES,
+    ):
+        for ext, m in table.items():
+            if m == mime:
+                return ext
+    return ""
+
+
+def cache_media_bytes(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+) -> Optional[CachedMedia]:
+    """Classify and cache raw attachment bytes; return a CachedMedia or None.
+
+    ``default_kind`` ("image"/"video"/"audio"/"document") biases classification
+    when the extension/MIME are ambiguous — e.g. a Telegram native photo whose
+    file has no usable name. Unsupported document types return None so the
+    caller can record an "unsupported" note. Images that fail validation
+    (``cache_image_from_bytes`` raises ValueError) also return None.
+    """
+    from tools.credential_files import to_agent_visible_cache_path
+
+    ext = _resolve_media_ext(filename, mime_type)
+    mime = (mime_type or "").lower()
+    display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
+
+    is_image = (
+        mime.startswith("image/")
+        or ext in SUPPORTED_IMAGE_DOCUMENT_TYPES
+        or default_kind == "image"
+    )
+    is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
+    is_audio = mime.startswith("audio/") or default_kind == "audio"
+
+    if is_image:
+        img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
+        try:
+            path = cache_image_from_bytes(data, ext=img_ext)
+        except ValueError:
+            return None
+        out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "image", display)
+
+    if is_video:
+        vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
+        path = cache_video_from_bytes(data, ext=vid_ext)
+        return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
+
+    if is_audio:
+        aud_ext = ext if ext in {".ogg", ".mp3", ".wav", ".m4a", ".opus", ".flac"} else ".ogg"
+        path = cache_audio_from_bytes(data, ext=aud_ext)
+        out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
+        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
+
+    if ext not in SUPPORTED_DOCUMENT_TYPES:
+        return None
+
+    path = cache_document_from_bytes(data, filename or f"document{ext}")
+    return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_DOCUMENT_TYPES[ext], "document", display or f"document{ext}")
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
@@ -1750,8 +1851,8 @@ class BasePlatformAdapter(ABC):
     def enforces_own_access_policy(self) -> bool:
         """Whether this adapter gates inbound access before dispatch.
 
-        Some adapters (WeCom, Weixin, Yuanbao, QQBot) implement a documented
-        config-driven access surface — ``dm_policy`` / ``group_policy`` /
+        Some adapters (WeCom, Weixin, Yuanbao, QQBot, WhatsApp) implement a
+        documented config-driven access surface — ``dm_policy`` / ``group_policy`` /
         ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.
@@ -1814,6 +1915,84 @@ class BasePlatformAdapter(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement send_draft"
         )
+
+    # ── Structured stream-event rendering ────────────────────────────────
+    #
+    # These methods let an adapter decide *how* to present each structured
+    # streaming event (see gateway/stream_events.py).  The default
+    # implementations reproduce the historical behavior exactly: assistant
+    # text/commentary/segment events delegate to the stream consumer, and
+    # tool events render the same "emoji tool_name: preview" chrome the
+    # gateway has always produced.  Adapters override these to be more native
+    # to their platform (e.g. Telegram streaming a MarkdownV2 ```bash``` block
+    # as a draft; iMessage eating tool chrome it cannot format).
+    #
+    # The contract is presentation-only: nothing rendered here is persisted to
+    # conversation history.  History is owned by the agent; what an adapter
+    # chooses to "eat" must never change the bytes the agent stored.
+
+    def render_message_event(self, event: Any, sink: Any) -> None:
+        """Render a MessageChunk / MessageStop / Commentary onto the sink.
+
+        Default: map onto the stream consumer's existing primitives, preserving
+        today's behavior 1:1.  ``sink`` is a GatewayStreamConsumer.
+        """
+        from gateway.stream_events import MessageChunk, MessageStop, Commentary
+
+        if isinstance(event, MessageChunk):
+            if event.text:
+                sink.on_delta(event.text)
+        elif isinstance(event, MessageStop):
+            # An intermediate stop (text → tool → text) is a segment break;
+            # the terminal stop is signalled by the gateway via finish(),
+            # not here, so we only break segments on non-final stops.
+            if not event.final:
+                sink.on_segment_break()
+        elif isinstance(event, Commentary):
+            if event.text:
+                sink.on_commentary(event.text)
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> Optional[str]:
+        """Return the rendered chrome for a ToolCallChunk, or None to eat it.
+
+        Reproduces the gateway's historical tool-progress formatting: an emoji
+        for the tool, the tool name, and a short argument preview (or the full
+        args dict in ``verbose`` mode).  Adapters that cannot render tool chrome
+        (no message editing, plain-text only) should override to return None so
+        the event is dropped rather than spamming separate bubbles.
+
+        ``mode`` is the resolved tool-progress mode ("all" / "new" / "verbose");
+        ``preview_max_len`` mirrors the ``tool_preview_length`` config (0 means
+        "no cap" in verbose mode).
+        """
+        from gateway.stream_events import ToolCallChunk
+        if not isinstance(event, ToolCallChunk):
+            return None
+
+        from agent.display import get_tool_emoji
+        emoji = get_tool_emoji(event.tool_name, default="⚙️")
+
+        if mode == "verbose":
+            if event.args:
+                import json
+                args_str = json.dumps(event.args, ensure_ascii=False, default=str)
+                if preview_max_len > 0 and len(args_str) > preview_max_len:
+                    args_str = args_str[:preview_max_len - 3] + "..."
+                return f"{emoji} {event.tool_name}({list(event.args.keys())})\n{args_str}"
+            if event.preview:
+                return f"{emoji} {event.tool_name}: \"{event.preview}\""
+            return f"{emoji} {event.tool_name}..."
+
+        # "all" / "new": short preview, capped (default 40 to keep gateway
+        # progress bubbles compact — they persist as permanent messages).
+        preview = event.preview
+        if preview:
+            cap = preview_max_len if preview_max_len > 0 else 40
+            if len(preview) > cap:
+                preview = preview[:cap - 3] + "..."
+            return f"{emoji} {event.tool_name}: \"{preview}\""
+        return f"{emoji} {event.tool_name}..."
 
     @property
     def has_fatal_error(self) -> bool:

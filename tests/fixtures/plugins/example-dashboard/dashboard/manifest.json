@@ -1,7 +1,7 @@
 {
   "name": "example",
   "label": "Example",
-  "description": "Example dashboard plugin — used by test suite for auth coverage",
+  "description": "Test-only dashboard plugin fixture — installed by tests that need a stable plugin API endpoint to verify auth + static-asset behaviour",
   "icon": "Sparkles",
   "version": "1.0.0",
   "tab": {

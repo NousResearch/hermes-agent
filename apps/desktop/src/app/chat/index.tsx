@@ -36,7 +36,8 @@ import {
   $introSeed,
   $messages,
   $selectedStoredSessionId,
-  $sessions
+  $sessions,
+  sessionPinId
 } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -96,9 +97,17 @@ function ChatHeader({
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
-  const activeStoredSession = sessions.find(session => session.id === selectedSessionId) || null
+  const activeStoredSession =
+    sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
-  const selectedIsPinned = selectedSessionId ? pinnedSessionIds.includes(selectedSessionId) : false
+  // Pins live on the durable lineage-root id, but selectedSessionId is the live
+  // (tip) id — resolve through the loaded row so the menu reflects the pin
+  // state after auto-compression rotates the id.
+  const selectedIsPinned = activeStoredSession
+    ? pinnedSessionIds.includes(sessionPinId(activeStoredSession))
+    : selectedSessionId
+      ? pinnedSessionIds.includes(selectedSessionId)
+      : false
 
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>

@@ -28,28 +28,45 @@ export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id
   session._lineage_root_id ?? session.id
 
 /** Merge a fresh server session page into the in-memory list, keeping any
- *  still-"working" session the server omitted.
+ *  row the server omitted that we still want visible — both still-"working"
+ *  sessions and pinned sessions.
  *
- *  A brand-new session's first user message isn't flushed to the SessionDB
- *  until its turn is persisted, so `listSessions(min_messages=1)` skips
- *  sessions that are mid-first-response. Because every `message.complete`
- *  triggers a full refresh, a hard replace makes concurrent new chats vanish
- *  the instant any one of them finishes. Preserving the working-but-absent
- *  rows keeps them visible until their own turn persists and the server
- *  starts returning them. Optimistic deletes/archives already drop the row
- *  from `previous`, so a removed session can't be resurrected here. */
-export function mergeWorkingSessions(
+ *  Two reasons the server drops a row we must keep:
+ *
+ *  1. A brand-new session's first user message isn't flushed to the SessionDB
+ *     until its turn is persisted, so `listSessions(min_messages=1)` skips
+ *     sessions that are mid-first-response. Because every `message.complete`
+ *     triggers a full refresh, a hard replace makes concurrent new chats vanish
+ *     the instant any one of them finishes.
+ *  2. The sidebar lists only the most-recent page (`SIDEBAR_SESSIONS_PAGE_SIZE`)
+ *     ordered by activity. A pinned conversation that hasn't been touched in a
+ *     while falls off that page, so a hard replace silently evicts it from the
+ *     in-memory list — and because the Pinned section resolves pins against
+ *     that list, the pin "disappears until you refresh".
+ *
+ *  `keepIds` carries both the working set and the pinned set. Pins are stored
+ *  on the durable lineage-root id (see {@link sessionPinId}), while the loaded
+ *  row surfaces under its live compression tip, so we match a survivor by
+ *  either its live `id` or its `_lineage_root_id`. Optimistic deletes/archives
+ *  drop the row from `previous` (and unpin it), so a removed session can't be
+ *  resurrected here. */
+export function mergeSessionPage(
   previous: SessionInfo[],
   incoming: SessionInfo[],
-  workingIds: readonly string[]
+  keepIds: Iterable<string>
 ): SessionInfo[] {
-  if (workingIds.length === 0) {
+  const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
+
+  if (keep.size === 0) {
     return incoming
   }
 
-  const working = new Set(workingIds)
   const incomingIds = new Set(incoming.map(session => session.id))
-  const survivors = previous.filter(session => working.has(session.id) && !incomingIds.has(session.id))
+  const survivors = previous.filter(
+    session =>
+      !incomingIds.has(session.id) &&
+      (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
+  )
 
   return survivors.length ? [...survivors, ...incoming] : incoming
 }

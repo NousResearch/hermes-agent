@@ -6,6 +6,7 @@ Binds only to 127.0.0.1. Does not log or print credentials.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import queue
 import sys
@@ -35,6 +36,12 @@ MAX_REQUEST_TIMEOUT = float(os.environ.get("CODEX_ANTHROPIC_BRIDGE_MAX_REQUEST_T
 MAX_RETRIES = int(os.environ.get("CODEX_ANTHROPIC_BRIDGE_MAX_RETRIES", "2"))
 RETRY_BACKOFF = float(os.environ.get("CODEX_ANTHROPIC_BRIDGE_RETRY_BACKOFF", "0.75"))
 STREAM_PING_INTERVAL = float(os.environ.get("CODEX_ANTHROPIC_BRIDGE_STREAM_PING_INTERVAL", "5"))
+DEFAULT_CONTEXT_WINDOW_TOKENS = int(os.environ.get("CODEX_ANTHROPIC_BRIDGE_CONTEXT_WINDOW_TOKENS", "272000"))
+PROTOCOL_LOG = os.environ.get("CODEX_ANTHROPIC_BRIDGE_PROTOCOL_LOG", "0").lower() in {"1", "true", "yes", "on"}
+PROTOCOL_LOG_FILE = os.environ.get("CODEX_ANTHROPIC_BRIDGE_PROTOCOL_LOG_FILE", "").strip()
+THINKING_SIGNATURE_PLACEHOLDER = os.environ.get(
+    "CODEX_ANTHROPIC_BRIDGE_THINKING_SIGNATURE_PLACEHOLDER", "1"
+).lower() in {"1", "true", "yes", "on"}
 # The Codex/OpenAI backend used by this bridge currently rejects chat messages
 # with role="tool". Claude Code sends Anthropic tool_result blocks on user
 # messages after Read/Write/Bash/Workflow tool use. Default to flattening prior
@@ -46,13 +53,13 @@ STRUCTURED_TOOL_HISTORY = os.environ.get(
 DEFAULT_MODEL_ALIASES = {
     # Claude Code / subagent-friendly aliases.  These keep the backend model
     # explicit while letting Claude choose an appropriate depth/cost profile.
-    "gpt-5.5": {"model": "gpt-5.5"},
-    "gpt-5.5-xhigh": {"model": "gpt-5.5", "effort": "xhigh"},
-    "gpt-5.5-high": {"model": "gpt-5.5", "effort": "high"},
-    "gpt-5.5-medium": {"model": "gpt-5.5", "effort": "medium"},
-    "gpt-5.5-low": {"model": "gpt-5.5", "effort": "low"},
-    "gpt-5.5-fast": {"model": "gpt-5.5", "effort": "low"},
-    "gpt-5.5-mini": {"model": "gpt-5.5", "effort": "low"},
+    "gpt-5.5": {"model": "gpt-5.5", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "gpt-5.5-xhigh": {"model": "gpt-5.5", "effort": "xhigh", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "gpt-5.5-high": {"model": "gpt-5.5", "effort": "high", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "gpt-5.5-medium": {"model": "gpt-5.5", "effort": "medium", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "gpt-5.5-low": {"model": "gpt-5.5", "effort": "low", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "gpt-5.5-fast": {"model": "gpt-5.5", "effort": "low", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "gpt-5.5-mini": {"model": "gpt-5.5", "effort": "low", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
     # Backward/forward compatible names for workflows that ask for smaller
     # Codex models directly.  If the account pool rejects one, the request
     # fails honestly instead of silently upgrading to 5.5.
@@ -61,7 +68,30 @@ DEFAULT_MODEL_ALIASES = {
     "gpt-5.4-high": {"model": "gpt-5.4", "effort": "high"},
     "gpt-5.4-medium": {"model": "gpt-5.4", "effort": "medium"},
     "gpt-5.4-low": {"model": "gpt-5.4", "effort": "low"},
+    # Claude Code native / Dynamic Workflow aliases.  Keep the requested
+    # Anthropic-looking model id in responses so Claude Code can preserve its
+    # native model-routing and thinking UX, while resolving locally to the
+    # Hermes OpenAI-Codex credential pool.
+    "claude-haiku-4-8": {"model": "gpt-5.5", "effort": "high", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-haiku-4-8-latest": {"model": "gpt-5.5", "effort": "high", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-sonnet-4-8": {"model": "gpt-5.5", "effort": "xhigh", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-sonnet-4-8-latest": {"model": "gpt-5.5", "effort": "xhigh", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-opus-4-8": {"model": "gpt-5.5", "effort": "xhigh", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-opus-4-8-latest": {"model": "gpt-5.5", "effort": "xhigh", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    # Compatibility aliases kept for older Claude Code settings/workflows.
+    "claude-sonnet-4-5": {"model": "gpt-5.5", "effort": "high", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-sonnet-4-5-latest": {"model": "gpt-5.5", "effort": "high", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-opus-4-1": {"model": "gpt-5.5", "effort": "xhigh", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
+    "claude-opus-4-1-latest": {"model": "gpt-5.5", "effort": "xhigh", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS},
 }
+
+BRIDGE_TOOL_CONTINUATION_INSTRUCTION = (
+    "Local bridge instruction: when user content includes completed tool "
+    "results, continue the requested task until it is complete. Do not stop "
+    "merely because a tool returned. If another tool is needed, call it; "
+    "otherwise summarize the result."
+)
+THINKING_SIGNATURE = "codex-bridge-placeholder:not-anthropic-origin"
 
 
 def _load_config() -> Dict[str, Any]:
@@ -87,6 +117,12 @@ def _model_aliases() -> Dict[str, Dict[str, str]]:
                 entry = {"model": model}
                 if effort:
                     entry["effort"] = str(effort)
+                context_window = value.get("context_window") or value.get("context_window_tokens")
+                if context_window is not None:
+                    try:
+                        entry["context_window"] = int(context_window)
+                    except Exception:
+                        pass
                 aliases[str(name)] = entry
     return aliases
 
@@ -94,12 +130,13 @@ def _model_aliases() -> Dict[str, Dict[str, str]]:
 def _supported_model_ids() -> List[str]:
     cfg = _load_config()
     configured = cfg.get("models") if isinstance(cfg, dict) else None
-    if isinstance(configured, list) and configured:
-        return [str(x) for x in configured if str(x).strip()]
     ids = list(_model_aliases().keys())
+    if isinstance(configured, list) and configured:
+        ids = [str(x) for x in configured if str(x).strip()] + ids
     if DEFAULT_MODEL not in ids:
         ids.insert(0, DEFAULT_MODEL)
-    return ids
+    seen: set[str] = set()
+    return [mid for mid in ids if mid and not (mid in seen or seen.add(mid))]
 
 
 def _requested_thinking_effort(payload: Dict[str, Any]) -> str | None:
@@ -119,10 +156,12 @@ def _requested_thinking_effort(payload: Dict[str, Any]) -> str | None:
 
 def _resolve_model_and_effort(payload: Dict[str, Any]) -> Tuple[str, str, str]:
     requested = str(payload.get("model") or DEFAULT_MODEL)
-    if requested.startswith("claude"):
-        requested = DEFAULT_MODEL
     aliases = _model_aliases()
-    alias = aliases.get(requested, {"model": requested})
+    alias = aliases.get(requested)
+    if alias is None and requested.startswith("claude"):
+        alias = {"model": DEFAULT_MODEL, "effort": "high"}
+    if alias is None:
+        alias = {"model": requested}
     model = str(alias.get("model") or DEFAULT_MODEL)
     effort = (
         _requested_thinking_effort(payload)
@@ -135,6 +174,47 @@ def _resolve_model_and_effort(payload: Dict[str, Any]) -> Tuple[str, str, str]:
         effort = "medium"
     return requested, model, effort
 
+
+
+def _context_window_for_payload(payload: Dict[str, Any]) -> int:
+    requested = str(payload.get("model") or DEFAULT_MODEL)
+    alias = _model_aliases().get(requested)
+    if alias is None and requested.startswith("claude"):
+        alias = {"model": DEFAULT_MODEL, "effort": "high", "context_window": DEFAULT_CONTEXT_WINDOW_TOKENS}
+    if isinstance(alias, dict):
+        try:
+            return int(alias.get("context_window") or DEFAULT_CONTEXT_WINDOW_TOKENS)
+        except Exception:
+            return DEFAULT_CONTEXT_WINDOW_TOKENS
+    return DEFAULT_CONTEXT_WINDOW_TOKENS
+
+
+def _context_windows() -> Dict[str, int]:
+    return {model_id: _context_window_for_payload({"model": model_id}) for model_id in _supported_model_ids()}
+
+
+def _context_window_error(payload: Dict[str, Any]) -> Dict[str, Any] | None:
+    input_tokens = _estimate_count_tokens(payload)
+    context_window = _context_window_for_payload(payload)
+    if input_tokens <= context_window:
+        return None
+    requested_model, resolved_model, _effort = _resolve_model_and_effort(payload)
+    return {
+        "type": "error",
+        "error": {
+            "type": "context_length_exceeded",
+            "message": (
+                f"input estimate {input_tokens} tokens exceeds backend context window "
+                f"{context_window} for requested model {requested_model} "
+                f"(resolved backend {resolved_model}). The Claude-looking alias is UX-only; "
+                "it cannot safely claim a larger context window than GPT-5.5."
+            ),
+            "input_tokens": input_tokens,
+            "context_window": context_window,
+            "requested_model": requested_model,
+            "resolved_model": resolved_model,
+        },
+    }
 
 def _anthropic_model_info(model_id: str) -> Dict[str, Any]:
     return {"id": model_id, "object": "model", "created": 0, "owned_by": "openai-codex-pool"}
@@ -192,6 +272,88 @@ def _safe_error_message(exc: Exception, limit: int = 1000) -> str:
     return f"{exc.__class__.__name__}: {str(exc)[:limit]}"
 
 
+def _protocol_log_enabled() -> bool:
+    return PROTOCOL_LOG or os.environ.get("CODEX_ANTHROPIC_BRIDGE_PROTOCOL_LOG", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def _protocol_log(event: Dict[str, Any]) -> None:
+    if not _protocol_log_enabled():
+        return
+    safe_event = {k: v for k, v in event.items() if k.lower() not in {"authorization", "api_key", "token"}}
+    safe_event.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    line = json.dumps(safe_event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    target = PROTOCOL_LOG_FILE or os.environ.get("CODEX_ANTHROPIC_BRIDGE_PROTOCOL_LOG_FILE", "").strip()
+    if target:
+        try:
+            with open(target, "a", encoding="utf-8") as fh:
+                fh.write(line)
+            return
+        except Exception as exc:
+            sys.stderr.write(json.dumps({"bridge_protocol_log_error": exc.__class__.__name__}) + "\n")
+    sys.stderr.write(line)
+    sys.stderr.flush()
+
+
+def _content_block_types(blocks: Any) -> List[str]:
+    if not isinstance(blocks, list):
+        return [type(blocks).__name__]
+    out: List[str] = []
+    for block in blocks:
+        if isinstance(block, dict):
+            out.append(str(block.get("type") or "unknown"))
+        else:
+            out.append(type(block).__name__)
+    return out
+
+
+def _incoming_last_message_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
+    messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    msg = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    content = msg.get("content")
+    blocks = content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
+    text_chars = 0
+    tool_results = 0
+    tool_uses = 0
+    block_types: List[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            text_chars += len(str(block))
+            block_types.append(type(block).__name__)
+            continue
+        btype = str(block.get("type") or "unknown")
+        block_types.append(btype)
+        if btype == "text":
+            text_chars += len(str(block.get("text") or ""))
+        elif btype == "tool_result":
+            tool_results += 1
+        elif btype == "tool_use":
+            tool_uses += 1
+    return {
+        "role": str(msg.get("role") or ""),
+        "content_block_types": block_types,
+        "text_chars": text_chars,
+        "tool_result_count": tool_results,
+        "tool_use_count": tool_uses,
+    }
+
+
+def _count_tool_results(messages: Any) -> int:
+    if not isinstance(messages, list):
+        return 0
+    count = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else []
+        count += sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "tool_result")
+    return count
+
+
+def _event_order_checksum(events: List[str]) -> str:
+    return hashlib.sha256(",".join(events).encode("utf-8")).hexdigest()[:16]
+
+
 def _tool_use_transcript(tool_id: str, name: str, args: Any) -> str:
     # Never put Claude Code's raw internal wrapper spelling into model history.
     # GPT/Codex backends can copy those markers back as ordinary assistant text,
@@ -233,13 +395,18 @@ def _sanitize_tool_input(name: str, args: Any) -> Any:
 
 def _anthropic_messages_to_openai(messages: List[Dict[str, Any]], system: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
+    has_tool_results = _count_tool_results(messages) > 0
     if system:
         if isinstance(system, list):
             sys_text = _extract_text_from_anthropic_content(system)
         else:
             sys_text = str(system)
         if sys_text.strip():
+            if has_tool_results:
+                sys_text = sys_text.rstrip() + "\n\n" + BRIDGE_TOOL_CONTINUATION_INSTRUCTION
             out.append({"role": "system", "content": sys_text})
+    elif has_tool_results:
+        out.append({"role": "system", "content": BRIDGE_TOOL_CONTINUATION_INSTRUCTION})
 
     for msg in messages or []:
         role = msg.get("role")
@@ -410,12 +577,33 @@ def _estimate_count_tokens(payload: Dict[str, Any]) -> int:
     return max(1, len(text) // 4)
 
 
+def _structured_reasoning_text(msg: Any) -> str:
+    parts: List[str] = []
+    for field in ("reasoning", "reasoning_content"):
+        val = getattr(msg, field, None)
+        if isinstance(val, str) and val.strip():
+            parts.append(val.strip())
+    details = getattr(msg, "reasoning_details", None)
+    if isinstance(details, list):
+        for detail in details:
+            summary = detail.get("summary") if isinstance(detail, dict) else getattr(detail, "summary", None)
+            if isinstance(summary, str) and summary.strip():
+                parts.append(summary.strip())
+            elif isinstance(summary, list):
+                for item in summary:
+                    text = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+    seen: set[str] = set()
+    return "\n\n".join(part for part in parts if not (part in seen or seen.add(part))).strip()
+
+
 def _codex_call(
     payload: Dict[str, Any],
     message_id: str | None = None,
     on_text_delta=None,
     on_reasoning_delta=None,
-) -> Tuple[Dict[str, Any], str | None]:
+) -> Tuple[Dict[str, Any], str | None, Dict[str, Any]]:
     from agent.auxiliary_client import _build_codex_client
 
     requested_model, model, effort = _resolve_model_and_effort(payload)
@@ -499,16 +687,20 @@ def _codex_call(
     msg = choice.message
     text = getattr(msg, "content", None) or ""
     content_blocks: List[Dict[str, Any]] = []
-    reasoning_text = "".join(reasoning_parts).strip()
+    reasoning_text = "".join(reasoning_parts).strip() or _structured_reasoning_text(msg)
     if reasoning_text:
         # Claude Code stream-json exposes thinking to cc-connect only when the
         # final assistant message contains a thinking content block. Raw SSE
         # thinking_delta alone is not surfaced by Claude Code's stream-json.
-        content_blocks.append({"type": "thinking", "thinking": reasoning_text})
+        thinking_block = {"type": "thinking", "thinking": reasoning_text}
+        if THINKING_SIGNATURE_PLACEHOLDER:
+            thinking_block["signature"] = THINKING_SIGNATURE
+        content_blocks.append(thinking_block)
     if text:
         content_blocks.append({"type": "text", "text": text})
     tool_calls = getattr(msg, "tool_calls", None) or []
     valid_tool_uses = 0
+    malformed_tool_count = 0
     for tc in tool_calls:
         fn = getattr(tc, "function", None)
         name = str(getattr(fn, "name", "") if fn else getattr(tc, "name", ""))
@@ -516,6 +708,7 @@ def _codex_call(
         tool_id = str(getattr(tc, "id", "") or f"toolu_{uuid.uuid4().hex[:16]}")
         args, parse_error = _parse_tool_arguments(tool_id, name, args_raw)
         if parse_error:
+            malformed_tool_count += 1
             content_blocks.append({
                 "type": "text",
                 "text": (
@@ -549,6 +742,17 @@ def _codex_call(
         "stop_sequence": None,
         "usage": _usage_from_openai(usage),
     }
+    meta = {
+        "requested_model": requested_model,
+        "resolved_model": model,
+        "effort": effort,
+        "finish_reason": str(finish_reason or ""),
+        "stop_reason": stop_reason,
+        "content_block_types": _content_block_types(content_blocks),
+        "tool_use_ids": [str(b.get("id") or "") for b in content_blocks if isinstance(b, dict) and b.get("type") == "tool_use"],
+        "tool_use_names": [str(b.get("name") or "") for b in content_blocks if isinstance(b, dict) and b.get("type") == "tool_use"],
+        "malformed_tool_count": malformed_tool_count,
+    }
     # Only expose non-secret selected label if available.
     label = None
     try:
@@ -556,10 +760,13 @@ def _codex_call(
         label = getattr(real, "_hermes_pool_label", None)
     except Exception:
         pass
-    return result, label
+    return result, label, meta
 
 
 def _sse_write(handler: BaseHTTPRequestHandler, event: str, data: Dict[str, Any]) -> None:
+    events = getattr(handler, "_bridge_sse_events", None)
+    if isinstance(events, list):
+        events.append(event)
     raw = f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
     handler.wfile.write(raw)
     handler.wfile.flush()
@@ -571,10 +778,15 @@ def _sse_emit_result_content(handler: BaseHTTPRequestHandler, result: Dict[str, 
         if not isinstance(block, dict):
             block = {"type": "text", "text": _unsupported_block_transcript("assistant", block)}
         if block.get("type") == "thinking":
-            _sse_write(handler, "content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "thinking", "thinking": ""}})
+            start_block = {"type": "thinking", "thinking": ""}
+            if THINKING_SIGNATURE_PLACEHOLDER:
+                start_block["signature"] = THINKING_SIGNATURE
+            _sse_write(handler, "content_block_start", {"type": "content_block_start", "index": idx, "content_block": start_block})
             thinking = block.get("thinking") or block.get("text") or ""
             if thinking:
                 _sse_write(handler, "content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "thinking_delta", "thinking": thinking}})
+            if THINKING_SIGNATURE_PLACEHOLDER:
+                _sse_write(handler, "content_block_delta", {"type": "content_block_delta", "index": idx, "delta": {"type": "signature_delta", "signature": THINKING_SIGNATURE}})
             _sse_write(handler, "content_block_stop", {"type": "content_block_stop", "index": idx})
         elif block.get("type") == "text":
             _sse_write(handler, "content_block_start", {"type": "content_block_start", "index": idx, "content_block": {"type": "text", "text": ""}})
@@ -617,7 +829,9 @@ class Handler(BaseHTTPRequestHandler):
                 "model": DEFAULT_MODEL,
                 "models": _supported_model_ids(),
                 "backend": "hermes-openai-codex-pool",
-                "features": ["model_aliases", "reasoning_effort_aliases", "streaming_thinking_delta"],
+                "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
+                "context_windows": _context_windows(),
+                "features": ["model_aliases", "reasoning_effort_aliases", "streaming_thinking_delta", "context_window_guard"],
             })
             return
         if request_path.rstrip("/") == "/v1/models":
@@ -625,15 +839,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         _json_response(self, 404, {"type": "error", "error": {"type": "not_found_error", "message": "not found"}})
 
-    def _handle_streaming_messages(self, payload: Dict[str, Any]) -> None:
+    def _handle_streaming_messages(self, payload: Dict[str, Any], request_id: str) -> None:
         message_id = f"msg_{uuid.uuid4().hex}"
+        self._bridge_sse_events = []
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
-        requested_model, _backend_model, _effort = _resolve_model_and_effort(payload)
+        requested_model, backend_model, effort = _resolve_model_and_effort(payload)
         start_message = {
             "id": message_id,
             "type": "message",
@@ -662,12 +877,12 @@ class Handler(BaseHTTPRequestHandler):
 
         def run_backend() -> None:
             try:
-                result, label = _codex_call(
+                result, label, meta = _codex_call(
                     payload,
                     message_id=message_id,
                     on_reasoning_delta=on_reasoning_delta,
                 )
-                done.put(("ok", result, label))
+                done.put(("ok", result, (label, meta)))
             except Exception as exc:
                 traceback.print_exc(file=sys.stderr)
                 done.put(("error", exc, None))
@@ -684,7 +899,7 @@ class Handler(BaseHTTPRequestHandler):
                             _sse_write(self, "content_block_start", {
                                 "type": "content_block_start",
                                 "index": next_content_index,
-                                "content_block": {"type": "thinking", "thinking": ""},
+                                "content_block": {"type": "thinking", "thinking": "", **({"signature": THINKING_SIGNATURE} if THINKING_SIGNATURE_PLACEHOLDER else {})},
                             })
                         _sse_write(self, "content_block_delta", {
                             "type": "content_block_delta",
@@ -695,7 +910,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
             try:
-                kind, obj, label = done.get_nowait()
+                kind, obj, label_meta = done.get_nowait()
                 break
             except queue.Empty:
                 now = time.monotonic()
@@ -714,7 +929,7 @@ class Handler(BaseHTTPRequestHandler):
                         _sse_write(self, "content_block_start", {
                             "type": "content_block_start",
                             "index": next_content_index,
-                            "content_block": {"type": "thinking", "thinking": ""},
+                            "content_block": {"type": "thinking", "thinking": "", **({"signature": THINKING_SIGNATURE} if THINKING_SIGNATURE_PLACEHOLDER else {})},
                         })
                     _sse_write(self, "content_block_delta", {
                         "type": "content_block_delta",
@@ -724,6 +939,12 @@ class Handler(BaseHTTPRequestHandler):
         except queue.Empty:
             pass
         if thinking_opened:
+            if THINKING_SIGNATURE_PLACEHOLDER:
+                _sse_write(self, "content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": next_content_index,
+                    "delta": {"type": "signature_delta", "signature": THINKING_SIGNATURE},
+                })
             _sse_write(self, "content_block_stop", {"type": "content_block_stop", "index": next_content_index})
             next_content_index += 1
 
@@ -736,9 +957,27 @@ class Handler(BaseHTTPRequestHandler):
                 "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
             })
             _sse_write(self, "message_stop", {"type": "message_stop"})
+            _protocol_log({
+                "event": "messages_response",
+                "request_id": request_id,
+                "stream": True,
+                "requested_model": requested_model,
+                "resolved_model": backend_model,
+                "effort": effort,
+                "incoming_last_message": _incoming_last_message_summary(payload),
+                "tool_result_count": _count_tool_results(payload.get("messages")),
+                "outgoing_content_block_types": ["error"],
+                "tool_use_ids": [],
+                "tool_use_names": [],
+                "finish_reason": "error",
+                "stop_reason": "end_turn",
+                "malformed_tool_count": 0,
+                "event_order_checksum": _event_order_checksum(getattr(self, "_bridge_sse_events", [])),
+            })
             return
 
         result = obj
+        _label, meta = label_meta if isinstance(label_meta, tuple) else (None, {})
         if thinking_opened and isinstance(result, dict):
             # Avoid replaying the accumulated final thinking block after the
             # live thinking_delta block already streamed to Claude Code.
@@ -747,6 +986,23 @@ class Handler(BaseHTTPRequestHandler):
         _sse_emit_result_content(self, result, start_index=next_content_index)
         _sse_write(self, "message_delta", {"type": "message_delta", "delta": {"stop_reason": result.get("stop_reason"), "stop_sequence": result.get("stop_sequence")}, "usage": result.get("usage", {})})
         _sse_write(self, "message_stop", {"type": "message_stop"})
+        _protocol_log({
+            "event": "messages_response",
+            "request_id": request_id,
+            "stream": True,
+            "requested_model": meta.get("requested_model", requested_model),
+            "resolved_model": meta.get("resolved_model", backend_model),
+            "effort": meta.get("effort", effort),
+            "incoming_last_message": _incoming_last_message_summary(payload),
+            "tool_result_count": _count_tool_results(payload.get("messages")),
+            "outgoing_content_block_types": _content_block_types(result.get("content") or []),
+            "tool_use_ids": meta.get("tool_use_ids", []),
+            "tool_use_names": meta.get("tool_use_names", []),
+            "finish_reason": meta.get("finish_reason", ""),
+            "stop_reason": result.get("stop_reason"),
+            "malformed_tool_count": meta.get("malformed_tool_count", 0),
+            "event_order_checksum": _event_order_checksum(getattr(self, "_bridge_sse_events", [])),
+        })
 
     def do_HEAD(self) -> None:
         request_path = urlparse(self.path).path
@@ -777,17 +1033,48 @@ class Handler(BaseHTTPRequestHandler):
             _json_response(self, 404, {"type": "error", "error": {"type": "not_found_error", "message": "not found"}})
             return
 
+        context_error = _context_window_error(payload)
+        if context_error is not None:
+            _json_response(self, 400, context_error)
+            return
+
         try:
+            request_id = self.headers.get("x-request-id") or f"req_{uuid.uuid4().hex}"
             if payload.get("stream"):
-                self._handle_streaming_messages(payload)
+                self._handle_streaming_messages(payload, request_id)
                 return
-            result, label = _codex_call(payload)
+            result, label, meta = _codex_call(payload)
             if label:
                 result["container"] = {"selected_label": label}
             _json_response(self, 200, result)
+            _protocol_log({
+                "event": "messages_response",
+                "request_id": request_id,
+                "stream": False,
+                "requested_model": meta.get("requested_model"),
+                "resolved_model": meta.get("resolved_model"),
+                "effort": meta.get("effort"),
+                "incoming_last_message": _incoming_last_message_summary(payload),
+                "tool_result_count": _count_tool_results(payload.get("messages")),
+                "outgoing_content_block_types": _content_block_types(result.get("content") or []),
+                "tool_use_ids": meta.get("tool_use_ids", []),
+                "tool_use_names": meta.get("tool_use_names", []),
+                "finish_reason": meta.get("finish_reason"),
+                "stop_reason": result.get("stop_reason"),
+                "malformed_tool_count": meta.get("malformed_tool_count", 0),
+                "event_order_checksum": _event_order_checksum(_content_block_types(result.get("content") or []) + [str(result.get("stop_reason") or "")]),
+            })
         except Exception as exc:
             # No secrets in error body; truncate.
             _json_response(self, 500, {"type": "error", "error": {"type": exc.__class__.__name__, "message": _safe_error_message(exc)}})
+            _protocol_log({
+                "event": "messages_error",
+                "request_id": self.headers.get("x-request-id") or "unknown",
+                "stream": bool(payload.get("stream")),
+                "incoming_last_message": _incoming_last_message_summary(payload),
+                "tool_result_count": _count_tool_results(payload.get("messages")),
+                "error_type": exc.__class__.__name__,
+            })
             traceback.print_exc(file=sys.stderr)
 
 

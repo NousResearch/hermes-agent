@@ -11,9 +11,13 @@ It is intended for local use only. It binds to `127.0.0.1`, reads its runtime co
 - Model aliases map to backend model + Codex reasoning effort:
   - `gpt-5.5-xhigh`, `gpt-5.5-high`, `gpt-5.5-medium`, `gpt-5.5-low`, `gpt-5.5-fast`, `gpt-5.5-mini`
   - `gpt-5.4-xhigh`, `gpt-5.4-high`, `gpt-5.4-medium`, `gpt-5.4-low`
+  - `claude-haiku-4-8`, `claude-haiku-4-8-latest`, `claude-sonnet-4-8`, `claude-sonnet-4-8-latest`, `claude-opus-4-8`, `claude-opus-4-8-latest` resolve to `gpt-5.5` while preserving the requested model id in Anthropic responses.
+  - Older compatibility aliases remain available: `claude-sonnet-4-5`, `claude-sonnet-4-5-latest`, `claude-opus-4-1`, `claude-opus-4-1-latest`.
 - Claude `thinking.budget_tokens` is translated into Codex reasoning effort when no explicit alias effort is present.
-- Codex `response.reasoning_summary_text.delta` is streamed to Claude Code as Anthropic `thinking_delta` blocks.
+- Claude-looking aliases expose the real backend context window, not the cosmetic Claude model window. When an alias resolves to GPT-5.5, `/health` reports a 272k estimated-token window and `/v1/messages` fails closed with `context_length_exceeded` before calling the backend if the estimated input exceeds that window.
+- Codex `response.reasoning_summary_text.delta` is streamed to Claude Code as Anthropic `thinking_delta` blocks, with a local placeholder `signature_delta` for Claude Code compatibility. The placeholder is marked as bridge-local and is not an Anthropic-origin signature.
 - Tool-use history is flattened into non-protocol XML-like transcript markers to avoid Claude Code wrapper leakage.
+- Optional protocol logging via `CODEX_ANTHROPIC_BRIDGE_PROTOCOL_LOG=1`; set `CODEX_ANTHROPIC_BRIDGE_PROTOCOL_LOG_FILE=/path/to/log.jsonl` to write compact no-secret JSONL logs.
 
 ## Local setup
 
@@ -55,6 +59,14 @@ curl -sS http://127.0.0.1:15722/v1/models | python -m json.tool
 ```
 
 Streaming reasoning smoke should show `thinking_delta` frames. Use a prompt likely to trigger reasoning summary, for example arithmetic or debugging, because trivial prompts may not emit reasoning deltas.
+
+Run the protocol smoke driver when a local bridge is running:
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:15722 \
+ANTHROPIC_AUTH_TOKEN=BRIDGE_VALUE_FROM_CONFIG \
+python scripts/cc-switch-codex-bridge/smoke_protocol.py
+```
 
 ## Security notes
 

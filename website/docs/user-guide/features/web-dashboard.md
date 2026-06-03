@@ -93,6 +93,50 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
 
+To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a dashboard running on another machine instead of its own bundled backend, see the remote-backend section below.
+
+### Connecting Hermes Desktop to a remote backend
+
+Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateway → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because three independent things have to line up and only one of them is what Desktop's readiness check actually verifies.
+
+Desktop's "remote backend is ready" probe only hits `GET /api/status`, which is a public endpoint — it answers as soon as *any* dashboard is running on the host. The live chat connection is a **separate** WebSocket to `/api/ws` (and `/api/pty`), and that socket is gated by two more checks the status probe never touches:
+
+1. **The embedded chat must be enabled.** `/api/ws` and `/api/pty` close immediately with WS code **4403** unless the dashboard was started with `--tui` (or `HERMES_DASHBOARD_TUI=1`). A plain `hermes dashboard` or `hermes gateway` serves the status page but refuses the chat socket.
+2. **The session token must match.** Even with chat enabled, the socket closes with WS code **4401** if the token Desktop sends doesn't match the dashboard's session token. By default the dashboard generates a **fresh random token on every restart**, so a token you saved in Desktop yesterday is invalid after the service restarts. Pin it by setting `HERMES_DASHBOARD_SESSION_TOKEN` to a stable value.
+3. **The bind host must allow the client and match the Host header.** A loopback bind (`127.0.0.1`) only accepts loopback clients, so a remote machine is rejected at the socket layer regardless of token. Bind to a non-loopback address (`--host 0.0.0.0 --insecure` for a trusted LAN) so the peer-IP guard lets the remote client through. The remote URL you enter in Desktop must reach the dashboard by the same host it bound to — the DNS-rebinding guard requires the Host header to match.
+
+#### Remote dashboard setup
+
+Run the remote dashboard with embedded chat **and** a pinned token. For a `systemd` service:
+
+```ini
+[Service]
+Environment="HERMES_DASHBOARD_SESSION_TOKEN=<long-random-token>"
+ExecStart=/path/to/venv/bin/python -m hermes_cli.main dashboard \
+    --host 0.0.0.0 --port 9119 --insecure --tui --no-open
+```
+
+Generate a token once with `python -c "import secrets; print(secrets.token_urlsafe(32))"`, reload, and restart the service. Then paste that **same** token into Desktop's **Session token** field alongside the **Remote URL** (e.g. `http://VM_IP:9119`).
+
+:::tip Verify before retrying Desktop
+From the client machine, hit a protected endpoint with the token before opening Desktop:
+
+```bash
+curl -i -H "X-Hermes-Session-Token: <long-random-token>" http://VM_IP:9119/api/config
+```
+
+- **200** → the token path Desktop needs is good.
+- **401** → Desktop will fail even though `/api/status` reports the backend is ready. Fix the token first.
+
+The REST API reads the token from the `X-Hermes-Session-Token` header; the WebSocket reads the same token from the `?token=` query parameter. Both compare against `HERMES_DASHBOARD_SESSION_TOKEN`, so a 200 here means the WS handshake will authenticate too.
+:::
+
+If `/api/config` returns 200 with the token Desktop is using and Desktop *still* fails to connect, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateway → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat not enabled, 4401 = token mismatch, 4403 from the request guard = Host/peer rejected).
+
+:::note Public binds use OAuth, not the session token
+Everything above describes `--insecure` (loopback or trusted-LAN) mode. If the dashboard is bound to a public address *without* `--insecure`, it engages the [OAuth gate](#oauth-authentication-gated-mode) instead and the legacy session-token path is rejected — Desktop's session-token remote mode is for `--insecure` deployments.
+:::
+
 ### Config
 
 A form-based editor for `config.yaml`. All 150+ configuration fields are auto-discovered from `DEFAULT_CONFIG` and organized into tabbed categories:

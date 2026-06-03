@@ -1531,15 +1531,12 @@ async def get_sessions(
 async def search_sessions(q: str = "", limit: int = 20):
     """Full-text search across session message content using FTS5.
 
-    Results are deduped by *conversation lineage*, not by raw ``session_id``.
+    Results are deduped by compression lineage, not by raw ``session_id``.
     Auto-compression rotates a conversation onto a fresh session id (and leaves
-    the old segment's messages in the FTS index), and branches copy the
-    transcript into a new row — so one logical chat owns many ``sessions`` rows
-    that all match the same query. Without lineage dedup the sidebar shows the
-    same conversation several times, which is the "multiple copies / branches"
-    navigation complaint. We collapse every match to its lineage root and
-    surface the live compression tip so clicking the result resumes the current
-    session.
+    the old segment's messages in the FTS index), so one logical chat can own
+    many ``sessions`` rows that all match the same query. Branches also use
+    ``parent_session_id``, but they are real alternate conversations; don't
+    collapse branch-specific hits back into the parent.
     """
     if not q or not q.strip():
         return {"results": []}
@@ -1563,11 +1560,13 @@ async def search_sessions(q: str = "", limit: int = 20):
             fetch_limit = max(limit * 5, 50)
             matches = db.search_messages(query=prefix_query, limit=fetch_limit)
 
-            # Walk parent_session_id to the lineage root, memoized so a chain of
-            # compression segments only costs one walk.
+            # Walk parent_session_id to the compression root, memoized so a
+            # chain of compression segments only costs one walk. We deliberately
+            # stop at branch/delegate edges: those sessions may diverge from the
+            # parent and should remain searchable on their own.
             root_cache: dict = {}
 
-            def lineage_root(session_id: str) -> str:
+            def compression_root(session_id: str) -> str:
                 if not session_id:
                     return session_id
                 if session_id in root_cache:
@@ -1593,6 +1592,24 @@ async def search_sessions(q: str = "", limit: int = 20):
                     if not parent:
                         root = cur
                         break
+                    try:
+                        parent_session = db.get_session(parent)
+                    except Exception:
+                        parent_session = None
+                    if not parent_session:
+                        root = cur
+                        break
+                    parent_ended_at = parent_session.get("ended_at")
+                    started_at = s.get("started_at")
+                    is_compression_edge = (
+                        parent_session.get("end_reason") == "compression"
+                        and parent_ended_at is not None
+                        and started_at is not None
+                        and started_at >= parent_ended_at
+                    )
+                    if not is_compression_edge:
+                        root = cur
+                        break
                     cur = parent
                 for node in chain:
                     root_cache[node] = root
@@ -1613,11 +1630,11 @@ async def search_sessions(q: str = "", limit: int = 20):
                 tip_cache[root_id] = tip
                 return tip
 
-            # Keep the best (first / most relevant) hit per lineage root.
+            # Keep the best (first / most relevant) hit per compression root.
             seen: dict = {}
             for m in matches:
                 raw_sid = m["session_id"]
-                root = lineage_root(raw_sid)
+                root = compression_root(raw_sid)
                 if root in seen:
                     continue
                 seen[root] = {

@@ -103,10 +103,19 @@ export class JsonRpcGatewayClient {
     this.socket = socket
 
     socket.addEventListener('message', message => {
+      if (this.socket !== socket) {
+        return
+      }
+
       this.handleMessage(message.data)
     })
 
     socket.addEventListener('close', () => {
+      if (this.socket !== socket) {
+        return
+      }
+
+      this.socket = null
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     })
@@ -125,7 +134,7 @@ export class JsonRpcGatewayClient {
       }
 
       const onOpen = () => {
-        if (settled) {
+        if (settled || this.socket !== socket) {
           return
         }
 
@@ -136,7 +145,7 @@ export class JsonRpcGatewayClient {
       }
 
       const onError = () => {
-        if (settled) {
+        if (settled || this.socket !== socket) {
           return
         }
 
@@ -159,13 +168,15 @@ export class JsonRpcGatewayClient {
           cleanup()
           // Drop the half-open socket so the next connect() starts clean
           // instead of short-circuiting on a zombie 'connecting' state.
-          try {
-            this.socket?.close()
-          } catch {
-            // ignore
-          }
+          if (this.socket === socket) {
+            try {
+              socket.close()
+            } catch {
+              // ignore
+            }
 
-          this.socket = null
+            this.socket = null
+          }
           this.setState('error')
           reject(new Error(this.options.connectErrorMessage))
         }, this.options.connectTimeoutMs)

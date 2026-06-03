@@ -123,3 +123,4 @@ def test_elixir_analytics_distribution_ships_analytics_skill():
     assert "`logEntry` in stdout" in body
     assert "`dashboardUrl`" in body
     assert "Ask clarification" in body
+    assert "--env-file /Users/ritik/.hermes/profiles/elixir-analytics/.env" in body

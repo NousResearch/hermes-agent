@@ -255,7 +255,7 @@ gateway facts:
 
 ```bash
 cd /Users/ritik/Coding/claude-analytics
-node --import tsx scripts/check-ops-readiness.ts --current-branch '<branch>' --gateway-hosted --slack-connected --smart-approvals --generic-tools
+node --import tsx scripts/check-ops-readiness.ts --current-branch '<branch>' --env-file /Users/ritik/.hermes/profiles/elixir-analytics/.env --gateway-hosted --slack-connected --smart-approvals --generic-tools
 ```
 
 Summarize `blockers` first, then `warnings`. Repo-owned blockers can be fixed

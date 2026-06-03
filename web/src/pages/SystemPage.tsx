@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Activity,
   Brain,
@@ -21,12 +22,12 @@ import {
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -236,16 +237,9 @@ export default function SystemPage() {
   };
 
   // ── Memory ─────────────────────────────────────────────────────────
-  const setMemoryProvider = async (provider: string) => {
-    try {
-      await api.setMemoryProvider(provider);
-      showToast(`Memory provider: ${provider || "built-in only"}`, "success");
-      loadAll();
-    } catch (e) {
-      showToast(`Failed to set provider: ${e}`, "error");
-    }
-  };
-
+  // Memory provider selection lives on the /plugins page now (see the
+  // read-only display + link below); the dropdown was intentionally
+  // dropped from this card during the admin-panel refresh.
   const memoryReset = useConfirmDelete({
     onDelete: useCallback(
       async (target: string) => {
@@ -748,26 +742,22 @@ export default function SystemPage() {
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
-            <div className="grid gap-2 max-w-sm">
-              <Label htmlFor="mem-provider">External provider</Label>
-              <Select
-                id="mem-provider"
-                value={memory?.active || ""}
-                onValueChange={setMemoryProvider}
-              >
-                <SelectOption value="">Built-in only</SelectOption>
-                {(memory?.providers ?? []).map((p) => (
-                  <SelectOption key={p.name} value={p.name}>
-                    {p.name}
-                    {p.configured ? " (configured)" : ""}
-                  </SelectOption>
-                ))}
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Set up a new provider's credentials with{" "}
-                <span className="font-mono">hermes memory setup</span>.
-              </p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                External provider:{" "}
+                <span className="font-mono text-foreground">
+                  {memory?.active || "built-in only"}
+                </span>
+              </span>
+              <Link to="/plugins" className="underline">
+                Change in Plugins →
+              </Link>
+              <span className="ml-auto">
+                New credentials:{" "}
+                <span className="font-mono">hermes memory setup</span>
+              </span>
             </div>
+
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
                 Built-in files — MEMORY.md:{" "}

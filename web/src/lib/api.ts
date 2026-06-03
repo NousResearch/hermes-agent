@@ -238,6 +238,18 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
+  getEmptySessionsCount: () =>
+    fetchJSON<{ count: number }>("/api/sessions/empty/count"),
+  deleteEmptySessions: () =>
+    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/empty", {
+      method: "DELETE",
+    }),
+  bulkDeleteSessions: (ids: string[]) =>
+    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
   renameSession: (id: string, title: string) =>
     fetchJSON<{ ok: boolean; title: string }>(
       `/api/sessions/${encodeURIComponent(id)}`,

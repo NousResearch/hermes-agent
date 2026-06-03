@@ -12,8 +12,7 @@ affected MCP server failed until the gateway was manually restarted.
 """
 import json
 import threading
-import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 

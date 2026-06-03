@@ -255,7 +255,7 @@ gateway:
     title:                 "**Titel:** {title}"
     created:               "**Erstellt:** {timestamp}"
     last_activity:         "**Letzte Aktivität:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Kumulierte API-Tokens (bei jedem Aufruf erneut gesendet):** {tokens}"
     agent_running:         "**Agent läuft:** {state}"
     state_yes:             "Ja ⚡"
     state_no:              "Nein"
@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Nichts zum Rückgängigmachen."
-    removed:               "↩️ {count} Nachricht(en) rückgängig gemacht.\nEntfernt: \"{preview}\""
+    removed:               "↩️ {turns} Zug/Züge rückgängig gemacht ({count} Nachricht(en)).\nGesichert nach: \"{preview}\"\nKopieren/bearbeiten Sie den obigen Text und senden Sie ihn, um von hier aus erneut zu fragen."
+    invalid_count:         "Ungültige Anzahl \"{arg}\" — verwenden Sie /undo oder /undo N."
 
   update:
     platform_not_messaging:  "✗ /update ist nur auf Messaging-Plattformen verfügbar. Führen Sie `hermes update` im Terminal aus."

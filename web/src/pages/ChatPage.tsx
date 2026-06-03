@@ -23,7 +23,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Typography } from "@/components/NouiTypography";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
@@ -36,6 +36,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { useTheme } from "@/themes";
 
 function buildWsUrl(
   authParam: [string, string],
@@ -66,8 +67,9 @@ function generateChannelId(): string {
 // with cream foreground — we intentionally don't pick monokai or a loud
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
-const TERMINAL_THEME = {
-  background: "#0d2626",
+// `background` is omitted here — it's supplied dynamically from the active
+// theme's `terminalBackground` field so users can control it via YAML themes.
+const TERMINAL_THEME_STATIC = {
   foreground: "#f0e6d2",
   cursor: "#f0e6d2",
   cursorAccent: "#0d2626",
@@ -119,8 +121,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
+  // In gated (OAuth) mode the server intentionally omits the session token —
+  // the SPA authenticates the WS via a single-use ticket (buildWsAuthParam),
+  // so a missing token there is expected, not an error.
   const [banner, setBanner] = useState<string | null>(() =>
-    typeof window !== "undefined" && !window.__HERMES_SESSION_TOKEN__
+    typeof window !== "undefined" &&
+    !window.__HERMES_SESSION_TOKEN__ &&
+    !window.__HERMES_AUTH_REQUIRED__
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
@@ -150,6 +157,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     typeof window !== "undefined"
       ? window.matchMedia("(max-width: 1023px)").matches
       : false,
+  );
+
+  const { theme } = useTheme();
+  const terminalBg = theme.terminalBackground ?? "#000000";
+  const terminalTheme = useMemo(
+    () => ({ ...TERMINAL_THEME_STATIC, background: terminalBg }),
+    [terminalBg],
   );
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
@@ -273,8 +287,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!host) return;
 
     const token = window.__HERMES_SESSION_TOKEN__;
+    const gated = !!window.__HERMES_AUTH_REQUIRED__;
     // Banner already initialised above; just bail before wiring xterm/WS.
-    if (!token) {
+    // In gated mode the token is absent by design — buildWsAuthParam() mints
+    // a WS ticket instead, so don't bail; let the effect reach that path.
+    if (!token && !gated) {
       return;
     }
 
@@ -304,7 +321,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
-      theme: TERMINAL_THEME,
+      theme: terminalTheme,
     });
     termRef.current = term;
 
@@ -713,6 +730,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [isActive]);
 
+  // Keep the live xterm theme in sync when the active theme's terminal
+  // background changes (e.g. user switches to a custom YAML theme mid-session).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = { ...TERMINAL_THEME_STATIC, background: terminalBg };
+  }, [terminalBg]);
+
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
@@ -820,7 +845,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: TERMINAL_THEME.background,
+            backgroundColor: terminalBg,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
@@ -844,7 +869,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}
-            style={{ color: TERMINAL_THEME.foreground }}
+            style={{ color: TERMINAL_THEME_STATIC.foreground }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
@@ -876,5 +901,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_AUTH_REQUIRED__?: boolean;
   }
 }

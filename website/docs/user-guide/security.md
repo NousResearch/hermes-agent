@@ -30,9 +30,22 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 
 ```yaml
 approvals:
-  mode: manual    # manual | smart | off
-  timeout: 60     # seconds to wait for user response (default: 60)
+  mode: manual                    # manual | smart | off
+  timeout: 60                     # seconds to wait for user response (default: 60)
+  cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
+  mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
+  destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
+
+The full set of keys:
+
+| Key | Default | What it controls |
+|---|---|---|
+| `mode` | `manual` | Approval policy for dangerous shell commands — see the table below. |
+| `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
+| `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
+| `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
+| `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. TUI uses its own modal overlay (set `HERMES_TUI_NO_CONFIRM=1` to opt out there). |
 
 | Mode | Behavior |
 |------|----------|
@@ -73,7 +86,7 @@ When YOLO is active, Hermes shows two persistent visual reminders so it's hard t
 YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
 :::
 
-For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/exit --delete`), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
+For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
 ### Hardline Blocklist (Always-On Floor)
 
@@ -422,7 +435,7 @@ terminal:
     - my_custom_oauth_token.json
 ```
 
-Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container.
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
 
 ### What Each Sandbox Filters
 
@@ -573,7 +586,7 @@ Blocked files show a warning:
 4. **Store secrets securely** — keep API keys in `~/.hermes/.env` with proper file permissions
 5. **Enable DM pairing** — use pairing codes instead of hardcoding user IDs when possible
 6. **Review command allowlist** — periodically audit `command_allowlist` in config.yaml
-7. **Set `MESSAGING_CWD`** — don't let the agent operate from sensitive directories
+7. **Set `terminal.cwd`** — don't let the agent operate from sensitive directories
 8. **Run as non-root** — never run the gateway as root
 9. **Monitor logs** — check `~/.hermes/logs/` for unauthorized access attempts
 10. **Keep updated** — run `hermes update` regularly for security patches

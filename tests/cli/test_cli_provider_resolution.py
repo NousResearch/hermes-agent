@@ -271,7 +271,10 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
 
 def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.managed_nous_tools_enabled",
+        lambda *args, **kwargs: True,
+    )
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "elevenlabs"},
@@ -306,7 +309,28 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
 
 
 def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    from hermes_cli.nous_account import NousPortalAccountInfo
+
+    # Entitled account (paid → all tools eligible) drives the offer; the prompt
+    # is a per-tool checklist now, so capture the call rather than scrape stdout.
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda **kwargs: NousPortalAccountInfo(
+            logged_in=True,
+            source="account_api",
+            fresh=True,
+            paid_service_access=True,
+        ),
+    )
+    captured = {}
+
+    def _fake_checklist(title, items, pre_selected=None):
+        captured["title"] = title
+        captured["items"] = list(items)
+        return []  # decline; we only assert the prompt was offered
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_checklist", _fake_checklist, raising=False)
+
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
         "tts": {"provider": "edge"},
@@ -332,10 +356,9 @@ def test_model_flow_nous_offers_tool_gateway_prompt_when_unconfigured(monkeypatc
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
     hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
 
-    out = capsys.readouterr().out
-    # Tool Gateway prompt should be shown (input() raises OSError in pytest
-    # which is caught, so the prompt text appears but nothing is applied)
-    assert "Tool Gateway" in out
+    # The per-tool Tool Gateway checklist was offered.
+    assert "title" in captured
+    assert "Tool Gateway" in captured["title"] or "tool pool" in captured["title"].lower()
 
 
 def test_codex_provider_uses_config_model(monkeypatch):

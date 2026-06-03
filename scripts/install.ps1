@@ -23,8 +23,8 @@ param(
     # exact ref.  Precedence: Commit > Tag > Branch.
     [string]$Commit = "",
     [string]$Tag = "",
-    [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent",
+    [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
+    [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
@@ -39,7 +39,24 @@ param(
 
     # --- Ensure mode (dep_ensure.py entry point) ---
     [string]$Ensure = "",
-    [switch]$PostInstall
+    [switch]$PostInstall,
+
+    # --- Desktop GUI build (opt-in) ---
+    # When set, install.ps1 includes Stage-Desktop in the manifest and
+    # builds apps/desktop into a launchable Hermes.exe.
+    #
+    # Why opt-in:
+    #   * Hermes-Setup.exe (the signed Tauri bootstrap installer) passes
+    #     -IncludeDesktop so a user who installed via the GUI ends up
+    #     with a launchable desktop binary.
+    #   * The Electron desktop's own bootstrap-runner.cjs runs install.ps1
+    #     from inside an already-launched Hermes.exe; if THAT recursively
+    #     built apps/desktop it would try to overwrite the live Hermes.exe
+    #     on disk and fail. The recursive path omits the flag.
+    #   * The canonical CLI one-liner (irm | iex) omits the flag too;
+    #     terminal users don't need a desktop binary built for them, and
+    #     `hermes desktop` already builds on demand.
+    [switch]$IncludeDesktop
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,6 +104,55 @@ $InstallStageProtocolVersion = 1
 
 # ============================================================================
 # Helper functions
+
+# Return the real OS processor architecture as a lowercase string suitable for
+# Node.js / electron download URL slugs: "arm64", "x64", or "x86".
+#
+# Why not just trust [Environment]::Is64BitOperatingSystem or
+# [RuntimeInformation]::OSArchitecture?  On Windows on ARM, when this script
+# is invoked from Windows PowerShell 5.1 (the default `powershell.exe`) or
+# any x64 PowerShell host, the process runs under Prism x64 emulation and
+# BOTH of those APIs report `X64` -- they describe the emulated view, not
+# the real OS.  We've seen this concretely on Snapdragon X1 hardware: an
+# ARM64-based Surface Laptop returns OSArchitecture=X64 from an emulated
+# PowerShell session.
+#
+# Win32_Processor.Architecture is invariant to emulation.  Values:
+#   0=x86, 5=ARM, 9=AMD64/x64, 12=ARM64.  We fall back to
+#   PROCESSOR_ARCHITEW6432 (set on WoW64 with the real OS arch) and then
+#   PROCESSOR_ARCHITECTURE so we still produce a sensible answer if CIM
+#   isn't available (locked-down WMI, container, etc.).
+function Get-WindowsArch {
+    try {
+        $proc = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop |
+            Select-Object -First 1
+        switch ([int]$proc.Architecture) {
+            12 { return "arm64" }
+            9  { return "x64" }
+            0  { return "x86" }
+            5  { return "arm" }
+        }
+    } catch {
+        # CIM unavailable -- fall through to env-var path
+    }
+
+    $envArch = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+    switch ($envArch) {
+        "ARM64" { return "arm64" }
+        "AMD64" { return "x64" }
+        "x86"   { return "x86" }
+        default {
+            # Last-resort: respect 64-bitness so we don't ship a 32-bit
+            # toolchain to anyone.
+            if ([Environment]::Is64BitOperatingSystem) { return "x64" } else { return "x86" }
+        }
+    }
+}
+
 # ============================================================================
 
 function Write-Banner {
@@ -223,78 +289,42 @@ function Install-AgentBrowser {
 # ============================================================================
 
 function Install-Uv {
-    Write-Info "Checking for uv package manager..."
-    
-    # Check if uv is already available
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $version = uv --version
-        $script:UvCmd = "uv"
-        Write-Success "uv found ($version)"
+    # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there —
+    # no PATH probing, no conda guards, no multi-location resolution chains.
+    # The runtime update path (hermes_cli/managed_uv.py) looks in the same
+    # place, so install.ps1 and `hermes update` stay in sync.
+    $managedUv = Join-Path $HermesHome "bin\uv.exe"
+
+    if (Test-Path $managedUv) {
+        $script:UvCmd = $managedUv
+        $version = & $managedUv --version
+        Write-Success "Managed uv found ($version)"
         return $true
     }
-    
-    # Check common install locations
-    $uvPaths = @(
-        "$env:USERPROFILE\.local\bin\uv.exe",
-        "$env:USERPROFILE\.cargo\bin\uv.exe"
-    )
-    foreach ($uvPath in $uvPaths) {
-        if (Test-Path $uvPath) {
-            $script:UvCmd = $uvPath
-            $version = & $uvPath --version
-            Write-Success "uv found at $uvPath ($version)"
-            return $true
-        }
-    }
-    
-    # Install uv
-    Write-Info "Installing uv (fast Python package manager)..."
-    # Capture EAP outside the try block so the catch's restore call always
-    # has a meaningful value -- if the assignment lived inside try and the
-    # try body threw before reaching it, the catch would see $prevEAP
-    # unset and leave EAP at whatever the previous protected call set.
+
+    Write-Info "Installing managed uv into $HermesHome\bin ..."
+    New-Item -ItemType Directory -Path (Join-Path $HermesHome "bin") -Force | Out-Null
+
+    # UV_INSTALL_DIR tells the astral installer to place the binary
+    # directly into $HermesHome\bin instead of ~/.local/bin.
     $prevEAP = $ErrorActionPreference
     try {
-        # Relax ErrorActionPreference around the nested astral installer.
-        # The astral installer (a separate `powershell -c "irm ... | iex"`)
-        # writes download progress to stderr.  With $ErrorActionPreference
-        # = "Stop" set at the top of this script, PowerShell wraps stderr
-        # lines from native commands (which `powershell -c` is, from our
-        # perspective) as ErrorRecord objects when captured via 2>&1, then
-        # throws a terminating exception on the first one -- even though
-        # uv installs successfully and the child exits 0.  Same fix
-        # pattern Test-Python uses for `uv python install`; verify success
-        # via Test-Path on the expected binary afterwards, which is more
-        # reliable than exit-code/stderr signal anyway.
         $ErrorActionPreference = "Continue"
+        $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
         powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
         $ErrorActionPreference = $prevEAP
 
-        # Find the installed binary
-        $uvExe = "$env:USERPROFILE\.local\bin\uv.exe"
-        if (-not (Test-Path $uvExe)) {
-            $uvExe = "$env:USERPROFILE\.cargo\bin\uv.exe"
-        }
-        if (-not (Test-Path $uvExe)) {
-            # Refresh PATH and try again
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command uv -ErrorAction SilentlyContinue) {
-                $uvExe = (Get-Command uv).Source
-            }
-        }
-        
-        if (Test-Path $uvExe) {
-            $script:UvCmd = $uvExe
-            $version = & $uvExe --version
-            Write-Success "uv installed ($version)"
+        if (Test-Path $managedUv) {
+            $script:UvCmd = $managedUv
+            $version = & $managedUv --version
+            Write-Success "Managed uv installed ($version)"
             return $true
         }
-        
-        Write-Err "uv installed but not found on PATH"
-        Write-Info "Try restarting your terminal and re-running"
+
+        Write-Err "uv installed but not found at $managedUv"
+        Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
     } catch {
-        # Restore EAP in case the try block threw before the assignment
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Write-Err "Failed to install uv: $_"
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
@@ -319,11 +349,9 @@ function Sync-EnvPath {
 # in a fresh powershell process, so $script:UvCmd set by Install-Uv in a
 # prior process is not visible here.  Later stages (Test-Python,
 # Install-Venv, Install-Dependencies, Install-PlatformSdks) call this
-# at the top to populate $script:UvCmd from PATH or known install paths.
-# Throws if uv is not findable -- the caller's stage then surfaces a
-# clean error via the stage-driver's try/catch.  Fast path is a single
-# Get-Command call when uv is on PATH (the common case after Stage-Uv
-# ran path-modifying installs in a sibling process).
+# at the top to populate $script:UvCmd from the managed location.
+# Throws if uv is not findable — the caller's stage then surfaces a
+# clean error via the stage-driver's try/catch.
 function Resolve-UvCmd {
     # Already resolved (default invocation path: Install-Uv ran earlier
     # in the same process and set $script:UvCmd).
@@ -338,9 +366,15 @@ function Resolve-UvCmd {
         # Stale; fall through to re-discover.
     }
 
-    # Try PATH first (covers `winget install astral.uv`, manual installs,
-    # and the post-Install-Uv state where uv.exe lives in
-    # %USERPROFILE%\.local\bin which the installer added to PATH).
+    # Check the managed location first — this is where Install-Uv puts it.
+    $managedUv = Join-Path $HermesHome "bin\uv.exe"
+    if (Test-Path $managedUv) {
+        $script:UvCmd = $managedUv
+        return
+    }
+
+    # Fall back to PATH (covers edge cases where the installer ran in a
+    # sibling process and HERMES_HOME wasn't propagated).
     if (Get-Command uv -ErrorAction SilentlyContinue) {
         $script:UvCmd = "uv"
         return
@@ -354,16 +388,7 @@ function Resolve-UvCmd {
         return
     }
 
-    # Check the well-known install locations the astral.sh installer drops
-    # uv into.  Mirrors the probe order Install-Uv uses.
-    foreach ($uvPath in @("$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.cargo\bin\uv.exe")) {
-        if (Test-Path $uvPath) {
-            $script:UvCmd = $uvPath
-            return
-        }
-    }
-
-    throw "uv is not installed or not on PATH. Run install.ps1 -Stage uv first."
+    throw "uv is not installed. Run install.ps1 -Stage uv first."
 }
 
 function Test-Python {
@@ -525,17 +550,18 @@ function Install-Git {
     Write-Info "(no admin rights required; isolated from any system Git install)"
 
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) {
-            # Detect ARM64 vs x64 explicitly; PortableGit ships separate assets.
-            if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
-                "arm64"
-            } else {
-                "64-bit"
-            }
+        $arch = Get-WindowsArch
+        if ($arch -eq 'arm64') {
+            $assetTag = 'arm64'
+            $downloadIsZip = $false
+        } elseif ($arch -eq 'x64') {
+            $assetTag = '64-bit'
+            $downloadIsZip = $false
         } else {
-            # PortableGit does not ship a 32-bit build -- fall back to MinGit 32-bit
-            # with a warning that bash-based features will be unavailable.
-            "32-bit-mingit"
+            # PortableGit does not ship 32-bit / arm builds -- fall back to MinGit
+            # 32-bit with a warning that bash-based features will be unavailable.
+            $assetTag = '32-bit-mingit'
+            $downloadIsZip = $true
         }
 
         # Pinned git-for-windows release. We deliberately do NOT hit
@@ -721,7 +747,7 @@ function Test-Node {
     Write-Info "Downloading portable Node.js $NodeVersion to $HermesHome\node\ ..."
     Write-Info "(no admin rights required; isolated from any system Node install)"
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+        $arch = Get-WindowsArch
         $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
         $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
         $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
@@ -783,7 +809,19 @@ function Test-Node {
             # check the post-condition.  See the long comment in Install-Uv
             # for the same pattern.
             $ErrorActionPreference = "Continue"
-            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # On ARM64, force winget to fetch the ARM64 installer.  Without
+            # the explicit override, winget on WoW64 sometimes still resolves
+            # to x64 manifests, leaving us with an emulated Node toolchain
+            # even after a "successful" install.  The OpenJS manifest does
+            # publish an arm64 installer, so this is safe.
+            $wingetArgs = @(
+                'install','OpenJS.NodeJS.LTS','--silent',
+                '--accept-package-agreements','--accept-source-agreements'
+            )
+            if ((Get-WindowsArch) -eq 'arm64') {
+                $wingetArgs += @('--architecture','arm64')
+            }
+            winget @wingetArgs 2>&1 | Out-Null
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -856,22 +894,57 @@ function Install-SystemPackages {
     # Try winget first (most common on modern Windows)
     if ($hasWinget) {
         Write-Info "Installing $description via winget..."
+        # Per-package log paths -- key the lookup by package id so we can
+        # decide AFTER the post-install Get-Command check whether to keep
+        # the log (still missing -> keep as breadcrumb) or delete it (now
+        # present -> happy path, no clutter).
+        $pkgLogs = @{}
         foreach ($pkg in $wingetPkgs) {
+            $log = "$env:TEMP\hermes-winget-$($pkg -replace '[^A-Za-z0-9]','_')-$(Get-Random).log"
+            $pkgLogs[$pkg] = $log
+            # --source winget pins us to the github-backed source.  Without this,
+            # a broken msstore source (cert validation failures like 0x8a15005e
+            # are common on Windows-on-ARM and some corporate networks) makes
+            # winget bail with "please specify --source" *before* attempting any
+            # install -- and it exits 0, so the surrounding try/catch never fires.
+            # We don't ship anything from msstore, so pinning is safe.
             try {
-                winget install $pkg --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            } catch { }
+                $output = winget install --exact --id $pkg --source winget --silent `
+                    --accept-package-agreements --accept-source-agreements 2>&1
+                $output | Out-File -FilePath $log -Encoding utf8
+                "winget exit: $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+            } catch {
+                $_ | Out-File -FilePath $log -Encoding utf8 -Append
+                "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
+            }
         }
-        # Refresh PATH and recheck
-        $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+        # Refresh PATH from both env-var hives AND winget's alias shim directory.
+        # winget exposes packages via "command line aliases" in %LOCALAPPDATA%\
+        # Microsoft\WinGet\Links, which is added to PATH by the AppExecutionAlias
+        # machinery only in *newly-spawned* shells -- not the current process.
+        # Without this addition, Get-Command rg below would falsely return null
+        # immediately after a successful install.
+        $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
+        $envPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if (Test-Path $wingetLinks) {
+            $envPath = "$envPath;$wingetLinks"
+        }
+        $env:Path = $envPath
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed"
             $script:HasRipgrep = $true
             $needRipgrep = $false
+            Remove-Item -Path $pkgLogs["BurntSushi.ripgrep.MSVC"] -ErrorAction SilentlyContinue
+        } elseif ($pkgLogs.ContainsKey("BurntSushi.ripgrep.MSVC")) {
+            Write-Warn "winget could not install ripgrep; details: $($pkgLogs['BurntSushi.ripgrep.MSVC'])"
         }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed"
             $script:HasFfmpeg = $true
             $needFfmpeg = $false
+            Remove-Item -Path $pkgLogs["Gyan.FFmpeg"] -ErrorAction SilentlyContinue
+        } elseif ($pkgLogs.ContainsKey("Gyan.FFmpeg")) {
+            Write-Warn "winget could not install ffmpeg; details: $($pkgLogs['Gyan.FFmpeg'])"
         }
         if (-not $needRipgrep -and -not $needFfmpeg) { return }
     }
@@ -1410,6 +1483,83 @@ function Set-PathVariable {
     Write-Success "hermes command ready"
 }
 
+function Write-BootstrapMarker {
+    # Writes $InstallDir\.hermes-bootstrap-complete which tells the Hermes
+    # desktop app (apps/desktop/electron/main.cjs) "install.ps1 ran
+    # successfully — DON'T trigger the legacy first-launch bootstrap
+    # runner."
+    #
+    # Schema mirrors what main.cjs's writeBootstrapMarker() / isBootstrap
+    # Complete() expect. Keep this in lockstep when either side changes:
+    #   apps/desktop/electron/main.cjs lines 1199-1222
+    #   BOOTSTRAP_MARKER_SCHEMA_VERSION = 1 (line 187)
+    #
+    # Pinned commit/branch come from -Commit + -Branch flags (passed by
+    # Hermes-Setup.exe) or fall back to whatever git resolves in the
+    # checkout. The desktop validates schemaVersion + pinnedCommit
+    # length but doesn't enforce that HEAD matches the pin (users
+    # update via `hermes update` which moves HEAD legitimately).
+    if (-not (Test-Path $InstallDir)) {
+        Write-Warn "Skipping bootstrap marker: $InstallDir doesn't exist"
+        return
+    }
+
+    # Resolve the pinned commit: explicit -Commit wins, otherwise read
+    # the checkout's HEAD via git. If git can't run, leave commit empty
+    # and the marker will fail desktop validation (pinnedCommit.length
+    # >= 7) — better to be invalid than wrong.
+    $pinnedCommit = $Commit
+    if (-not $pinnedCommit) {
+        # PS 5.1 doesn't support the ?. null-conditional operator, so
+        # check Get-Command's result explicitly before reading .Source.
+        $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+        $gitExe = if ($gitCmd) { $gitCmd.Source } else { $null }
+        if ($gitExe) {
+            Push-Location $InstallDir
+            try {
+                $resolved = & $gitExe rev-parse HEAD 2>$null
+                if ($LASTEXITCODE -eq 0 -and $resolved) {
+                    $pinnedCommit = $resolved.Trim()
+                }
+            } catch {
+                # Ignore — pinnedCommit stays empty, marker stays invalid,
+                # desktop falls through to its legacy bootstrap path.
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
+    $pinnedBranch = $Branch
+    if (-not $pinnedBranch) {
+        $pinnedBranch = "main"  # install.ps1's own default for -Branch
+    }
+
+    $markerPath = Join-Path $InstallDir ".hermes-bootstrap-complete"
+    $marker = [ordered]@{
+        schemaVersion = 1
+        pinnedCommit  = $pinnedCommit
+        pinnedBranch  = $pinnedBranch
+        completedAt   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+        # desktopVersion field intentionally omitted — only the desktop
+        # app knows its own version, and the marker validator doesn't
+        # require it. The desktop fills it in if/when it writes its
+        # own marker (e.g. after a future in-app upgrade).
+    }
+    $json = $marker | ConvertTo-Json -Compress:$false
+
+    # Write WITHOUT a UTF-8 BOM. PowerShell 5.1's `Set-Content -Encoding UTF8`
+    # always emits a BOM, and Node's plain JSON.parse rejects the BOM as an
+    # unexpected character — so a BOM'd marker would silently fail the
+    # desktop's readJson(), make isBootstrapComplete() return null, and the
+    # desktop would re-run the legacy bootstrap runner anyway. Defeats the
+    # whole point. Use the .NET API directly for BOM-less UTF-8.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($markerPath, $json, $utf8NoBom)
+
+    Write-Success "Bootstrap marker written: $markerPath"
+}
+
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
@@ -1508,8 +1658,15 @@ Delete the contents (or this file) to use the default personality.
 
 function Install-NodeDeps {
     if (-not $HasNode) {
-        Write-Info "Skipping Node.js dependencies (Node not installed)"
-        return
+        # Cross-process driver mode (Hermes-Setup.exe runs each -Stage NAME
+        # in a fresh powershell.exe) means $script:HasNode set by Stage-Node
+        # in the previous process isn't visible here. Re-probe rather than
+        # trust the stale global — Stage-Node already ran successfully or
+        # the bootstrap would've aborted, so npm is reachable.
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            Write-Info "Skipping Node.js dependencies (Node not installed)"
+            return
+        }
     }
 
     # Resolve npm explicitly to npm.cmd, NOT npm.ps1.  Node.js on Windows
@@ -1720,6 +1877,249 @@ function Install-NodeDeps {
         Write-Info "Installing TUI dependencies..."
         $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
         [void](_Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe)
+    }
+}
+
+function Install-Desktop {
+    # Build apps/desktop into a launchable Hermes.exe. Only called from
+    # Stage-Desktop, which is itself only included in the manifest when
+    # -IncludeDesktop was passed to install.ps1.
+    #
+    # The workspace npm install at repo root (done by Install-NodeDeps for
+    # browser tools) does NOT pull apps/desktop's dependencies, because the
+    # browser-tools workspace at $InstallDir\package.json is a separate
+    # workspace from apps/*. We do a full root-level `npm install` here
+    # so the workspace resolves apps/desktop's deps (including Electron
+    # itself, ~150MB), then run `npm run pack` in apps/desktop which
+    # produces the unpacked binary at apps/desktop/release/<os>-unpacked/.
+    #
+    # The Tauri bootstrap installer's launch_hermes_desktop command
+    # resolves apps/desktop/release/win-unpacked/Hermes.exe directly,
+    # so an "unpacked" build (electron-builder --dir) is enough — we
+    # don't need to produce an NSIS/MSI artifact here.
+
+    if (-not $HasNode) {
+        # Cross-process driver mode: each `-Stage NAME` invocation runs in a
+        # fresh PowerShell process, so $script:HasNode set by Stage-Node
+        # in the previous process isn't visible. Re-detect rather than
+        # trusting the global.
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            Write-Warn "Skipping desktop build (Node.js / npm not on PATH)"
+            $script:_StageSkippedReason = "Node.js not available"
+            return
+        }
+    }
+
+    $desktopDir = "$InstallDir\apps\desktop"
+    if (-not (Test-Path "$desktopDir\package.json")) {
+        Write-Warn "Skipping desktop build (apps/desktop not present in checkout)"
+        $script:_StageSkippedReason = "apps/desktop not present"
+        return
+    }
+
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        Write-Warn "Skipping desktop build (npm not on PATH)"
+        $script:_StageSkippedReason = "npm not found"
+        return
+    }
+    $npmExe = $npmCmd.Source
+    if ($npmExe -like "*.ps1") {
+        $sibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+        if (Test-Path $sibling) { $npmExe = $sibling }
+    }
+
+    # 1. Workspace-level install so apps/desktop's deps (Electron, Vite,
+    # node-pty prebuilds, etc.) actually land in node_modules. This is
+    # the SAME `npm install` Install-NodeDeps does for browser tools,
+    # but at the root rather than the browser-tools workspace, so all
+    # apps/* workspaces resolve.
+    Write-Info "Installing desktop workspace dependencies (this includes Electron ~150MB, takes 1-3min)..."
+    Push-Location $InstallDir
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        # Drop --silent so npm emits its full progress + error trail.
+        # When this fails on a non-dev box (e.g. native-module build
+        # without VS Build Tools, ETARGET on a transitive, etc.), the
+        # actual reason needs to reach the Tauri installer's log; with
+        # --silent it was completely suppressed and the user just saw
+        # "exit 1" with no actionable detail.
+        #
+        # The streaming sink in bootstrap.rs's run_install_script
+        # captures every stdout/stderr line as it's emitted, so we don't
+        # need a side TEMP log file — the installer's bootstrap log
+        # IS the artifact a support engineer reads.
+        & $npmExe install 2>&1 | ForEach-Object { "$_" }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($code -ne 0) {
+            throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
+        }
+        Write-Success "Desktop workspace dependencies installed"
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Pop-Location
+        throw
+    }
+    Pop-Location
+
+    # 2. Build apps/desktop. `npm run pack` runs:
+    #      assert-root-install + write-build-stamp + stage-native-deps +
+    #      tsc -b + vite build + electron-builder --dir
+    # The --dir mode produces an unpacked Hermes.exe in
+    # apps/desktop/release/win-unpacked/ without bundling NSIS/MSI;
+    # we don't need a distributable installer artifact, just a
+    # launchable binary the Tauri installer can spawn.
+    #
+    # CSC_IDENTITY_AUTO_DISCOVERY=false tells electron-builder we are
+    # NOT signing the output. Combined with signAndEditExecutable=false in
+    # apps/desktop/package.json's build.win block, electron-builder never
+    # invokes signtool and therefore never fetches/extracts winCodeSign
+    # (whose macOS symlinks crash 7-Zip on non-admin Windows — a dead end we
+    # are NOT trying to work around). The Hermes icon + product name are
+    # stamped onto Hermes.exe by our own rcedit step (Set-DesktopExeIdentity)
+    # AFTER this build, completely decoupled from electron-builder signing.
+    #
+    # WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD explicitly cleared as
+    # belt-and-suspenders: if the user's environment has them set
+    # for some other tool, electron-builder would still try to sign.
+    Write-Info "Building desktop app (this takes 1-3 minutes)..."
+    $buildLog = "$env:TEMP\hermes-desktop-build-$(Get-Random).log"
+    Push-Location $desktopDir
+    $prevEAP = $ErrorActionPreference
+    $prevCSCAuto = $env:CSC_IDENTITY_AUTO_DISCOVERY
+    $prevWinCscLink = $env:WIN_CSC_LINK
+    $prevWinCscKeyPassword = $env:WIN_CSC_KEY_PASSWORD
+    try {
+        $ErrorActionPreference = "Continue"
+        $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+        $env:WIN_CSC_LINK = ""
+        $env:WIN_CSC_KEY_PASSWORD = ""
+        & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($code -ne 0) {
+            $errText = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue
+            if ($errText) {
+                $snippet = if ($errText.Length -gt 1800) { $errText.Substring(0, 1800) + "..." } else { $errText }
+                Write-Info "  desktop build output:"
+                foreach ($line in $snippet -split "`n") { Write-Host "    $line" -ForegroundColor DarkGray }
+                Write-Info "  Full log: $buildLog"
+            }
+            throw "apps/desktop build failed (exit $code)"
+        }
+        Write-Success "Desktop app built"
+        Remove-Item -Force $buildLog -ErrorAction SilentlyContinue
+    } catch {
+        if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+        Pop-Location
+        throw
+    } finally {
+        # Restore env to whatever the caller had — don't leak our
+        # signing-off override into anything install.ps1 invokes later
+        # (Stage-PlatformSdks, etc.).
+        $env:CSC_IDENTITY_AUTO_DISCOVERY = $prevCSCAuto
+        $env:WIN_CSC_LINK = $prevWinCscLink
+        $env:WIN_CSC_KEY_PASSWORD = $prevWinCscKeyPassword
+    }
+    Pop-Location
+
+    # 3. Sanity-check the produced binary. Probe both arches so this works
+    # on x64 and arm64 build machines.
+    $exeCandidates = @(
+        "$desktopDir\release\win-unpacked\Hermes.exe",
+        "$desktopDir\release\win-arm64-unpacked\Hermes.exe"
+    )
+    $found = $false
+    $desktopExe = $null
+    foreach ($cand in $exeCandidates) {
+        if (Test-Path $cand) {
+            Write-Success "Desktop ready: $cand"
+            $desktopExe = $cand
+            $found = $true
+            break
+        }
+    }
+    if (-not $found) {
+        throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
+    }
+
+    # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
+    #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.cjs)
+    #     during `npm run pack` above — for every build, so the installer's
+    #     --update rebuild stays branded too. No separate stamp step needed here.
+    #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
+    #     =false) because enabling it drags in signtool -> winCodeSign -> the
+    #     unfixable symlink crash; the afterPack hook runs rcedit directly.
+
+    # 4. Create Start Menu + Desktop shortcuts pointing DIRECTLY at the packed
+    #    Hermes.exe. We deliberately do NOT point them at `hermes desktop`: that
+    #    command rebuilds (npm install + electron-builder) on every launch,
+    #    which would cost minutes each time. The packed exe is the consumer —
+    #    launching it directly is instant, and updates flow through the
+    #    installer's --update path (which rebuilds once, then relaunches).
+    New-DesktopShortcuts -TargetExe $desktopExe
+}
+
+function New-DesktopShortcuts {
+    param([Parameter(Mandatory = $true)][string]$TargetExe)
+
+    # Best-effort: a shortcut failure must never fail an otherwise-good install.
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $workDir = Split-Path -Parent $TargetExe
+
+        # Prefer the standalone icon.ico (shipped beside the exe via
+        # electron-builder extraResources -> resources/icon.ico) over the exe's
+        # embedded resource. An explicit .ico path is more stable across update
+        # cycles: pointing at "$TargetExe,0" makes Windows cache the icon it
+        # extracted from the exe at shortcut-creation time, and that cached
+        # bitmap can persist (showing the OLD/Electron icon) even after the exe
+        # is re-stamped on update. A dedicated .ico sidesteps that extraction.
+        $iconIco = Join-Path $workDir 'resources\icon.ico'
+        if (Test-Path $iconIco) {
+            $iconLocation = "$iconIco,0"
+        } else {
+            $iconLocation = "$TargetExe,0"
+        }
+
+        $targets = @(
+            (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes.lnk'),
+            (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes.lnk')
+        )
+
+        foreach ($lnkPath in $targets) {
+            try {
+                $parent = Split-Path -Parent $lnkPath
+                if (-not (Test-Path $parent)) {
+                    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+                }
+                $sc = $shell.CreateShortcut($lnkPath)
+                $sc.TargetPath = $TargetExe
+                $sc.WorkingDirectory = $workDir
+                $sc.IconLocation = $iconLocation
+                $sc.Description = 'Hermes Agent'
+                $sc.Save()
+                Write-Success "Shortcut created: $lnkPath"
+            } catch {
+                Write-Warn "Could not create shortcut $lnkPath : $($_.Exception.Message)"
+            }
+        }
+
+        # Bust the Windows shell icon cache so the desktop/Start-Menu shortcut
+        # repaints with the (possibly newly-stamped) icon instead of a stale
+        # cached bitmap. Critical on the --update path: the exe was re-stamped
+        # with the Hermes icon, but without this the shortcut can keep drawing
+        # the old Electron icon until the user manually refreshes / reboots.
+        # Best-effort and silent — never fail the install over a cosmetic cache.
+        try {
+            & ie4uinit.exe -show 2>$null
+        } catch {
+            # ie4uinit may be absent/renamed on some SKUs — ignore.
+        }
+    } catch {
+        Write-Warn "Skipping shortcut creation: $($_.Exception.Message)"
     }
 }
 
@@ -2080,9 +2480,18 @@ $InstallStages = @(
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
+)
+if ($IncludeDesktop) {
+    # Insert AFTER node-deps so workspace npm is already installed when
+    # the desktop build runs. Inserted only when explicitly requested
+    # (Hermes-Setup.exe), never via the irm|iex CLI one-liner.
+    $InstallStages += @{ Name = "desktop"; Title = "Building desktop app"; Category = "install"; NeedsUserInput = $false; Worker = "Stage-Desktop" }
+}
+$InstallStages += @(
     @{ Name = "path";             Title = "Adding Hermes to PATH";                Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-Path" }
     @{ Name = "config-templates"; Title = "Writing configuration templates";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-ConfigTemplates" }
     @{ Name = "platform-sdks";    Title = "Installing messaging platform SDKs";   Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-PlatformSdks" }
+    @{ Name = "bootstrap-marker"; Title = "Marking install complete";              Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-BootstrapMarker" }
     # Interactive stages.  In non-interactive mode these become no-ops; the
     # caller (GUI / CI) handles the equivalent UX themselves.
     @{ Name = "configure";        Title = "Configuring API keys and models";      Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Configure" }
@@ -2119,9 +2528,11 @@ function Stage-Repository       { Install-Repository }
 function Stage-Venv             { Resolve-UvCmd; Install-Venv }
 function Stage-Dependencies     { Resolve-UvCmd; Install-Dependencies }
 function Stage-NodeDeps         { Install-NodeDeps }
+function Stage-Desktop          { Install-Desktop }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }
+function Stage-BootstrapMarker  { Write-BootstrapMarker }
 function Stage-Configure        { Invoke-SetupWizard }
 function Stage-Gateway          { Start-GatewayIfConfigured }
 

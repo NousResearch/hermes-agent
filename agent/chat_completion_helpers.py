@@ -15,49 +15,23 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
-import concurrent.futures
-import contextvars
-import copy
 import json
 import logging
 import os
-import random
 import re
-import sys
 import threading
 import time
 import uuid
-from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, parse_qs, urlunparse
+from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.error_classifier import classify_api_error, FailoverReason
+from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
-    _sanitize_messages_surrogates,
-    _sanitize_structure_surrogates,
-    _sanitize_messages_non_ascii,
-    _sanitize_tools_non_ascii,
-    _sanitize_structure_non_ascii,
-    _strip_images_from_messages,
-    _strip_non_ascii,
     _repair_tool_call_arguments,
-    _escape_invalid_chars_in_json_strings,
-)
-from agent.tool_dispatch_helpers import (
-    _is_multimodal_tool_result,
-    _multimodal_text_summary,
-)
-from agent.retry_utils import jittered_backoff
-from agent.tool_guardrails import (
-    ToolGuardrailDecision,
-    append_toolguard_guidance,
-    toolguard_synthetic_result,
 )
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname
@@ -174,13 +148,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # for FD ownership during ``client.close()``.
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
-
-    def _take_request_client():
-        with request_client_lock:
-            client = request_client_holder.get("client")
-            request_client_holder["client"] = None
-            request_client_holder["owner_tid"] = None
-            return client
 
     def _close_request_client_once(reason: str) -> None:
         # #29507: dispatch on the calling thread.
@@ -310,8 +277,15 @@ def interruptible_api_call(agent, api_kwargs: dict):
     else:
         _codex_idle_timeout_default = 12.0
 
+    # No-byte TTFB cutoff. The OpenAI SDK's own streaming read timeout is far
+    # longer (openai 2.x DEFAULT_TIMEOUT.read = 600s), so a tight 12s default
+    # killed subscription-backed Codex requests mid-prefill before the backend
+    # had a chance to emit its first SSE event. Default to 120s — long enough to
+    # clear normal backend admission / prompt prefill, short enough to still
+    # reconnect promptly when the socket is genuinely wedged. Set
+    # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
     _ttfb_enabled = _codex_watchdog_enabled
-    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 12.0)
+    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
@@ -333,7 +307,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _ttfb_disable_above,
             )
         else:
-            _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 20.0)
+            _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
             if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
                 logger.info(
                     "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
@@ -403,13 +377,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
             )
             if _silent_hint:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No first byte from provider in {int(_elapsed)}s "
                     f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting. {_silent_hint}"
                 )
             else:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No first byte from provider in {int(_elapsed)}s "
                     f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Reconnecting."
@@ -455,7 +429,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 api_kwargs.get("model", "unknown"),
                 f"{_est_tokens_for_codex_watchdog:,}",
             )
-            agent._emit_status(
+            agent._buffer_status(
                 f"⚠️ Codex stream sent no events for {int(_event_stale_elapsed)}s "
                 f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
                 f"Reconnecting."
@@ -493,13 +467,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
             if _silent_hint:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No response from provider for {int(_elapsed)}s "
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
                     f"{_silent_hint}"
                 )
             else:
-                agent._emit_status(
+                agent._buffer_status(
                     f"⚠️ No response from provider for {int(_elapsed)}s "
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
                     f"Aborting call."
@@ -614,12 +588,23 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # It also rejects ``enum`` values containing ``/`` (HuggingFace IDs
         # like ``Qwen/Qwen3.5-0.8B`` shipped by MCP servers) — same 400 with
         # the same opaque message; strip those enums too.
+        #
+        # Deep-copy ``tools_for_api`` before sanitizing: the sanitizers
+        # mutate in place (documented contract on ``strip_slash_enum`` /
+        # ``strip_pattern_and_format``), and ``tools_for_api`` is a direct
+        # reference to ``agent.tools``.  Without the copy, the first xAI
+        # request permanently strips constraints from the shared per-agent
+        # tool registry — every subsequent non-xAI call from the same
+        # agent (auxiliary task routed to Anthropic, OpenRouter fallback,
+        # main-model swap) sees the already-stripped schema.  See #27907.
         if is_xai_responses:
             try:
+                import copy as _copy
                 from tools.schema_sanitizer import (
                     strip_pattern_and_format,
                     strip_slash_enum,
                 )
+                tools_for_api = _copy.deepcopy(tools_for_api)
                 tools_for_api, _ = strip_pattern_and_format(tools_for_api)
                 tools_for_api, _ = strip_slash_enum(tools_for_api)
             except Exception as exc:
@@ -1262,7 +1247,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
-        agent._emit_status(
+        agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
@@ -1298,6 +1283,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             agent._copy_reasoning_content_for_api(msg, api_msg)
             for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                 api_msg.pop(internal_field, None)
+            # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go,
+            # Mistral, Moonshot/Kimi) reject any message key outside the Chat
+            # Completions schema. The main loop drops these via
+            # ChatCompletionsTransport.convert_messages(), but the summary path
+            # hand-builds messages and calls chat.completions.create() directly,
+            # bypassing the transport — so mirror that sanitization here:
+            # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers,
+            # and every Hermes-internal underscore-prefixed scaffolding key.
+            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items"):
+                api_msg.pop(schema_foreign, None)
+            for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+                api_msg.pop(internal_key, None)
             if _needs_sanitize:
                 agent._sanitize_tool_calls_for_strict_api(api_msg)
             api_messages.append(api_msg)
@@ -1635,13 +1632,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # See #29507 explanation in the non-streaming variant above.
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
-
-    def _take_request_client():
-        with request_client_lock:
-            client = request_client_holder.get("client")
-            request_client_holder["client"] = None
-            request_client_holder["owner_tid"] = None
-            return client
 
     def _close_request_client_once(reason: str) -> None:
         # See #29507 explanation in the non-streaming variant above. A
@@ -2251,7 +2241,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=False,
                             diag=request_client_holder.get("diag"),
                         )
-                        agent._emit_status(
+                        agent._buffer_status(
                             "❌ Provider returned malformed streaming data after "
                             f"{_max_stream_retries + 1} attempts. "
                             "The provider may be experiencing issues — "
@@ -2358,7 +2348,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _stale_elapsed, _stream_stale_timeout,
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
-            agent._emit_status(
+            agent._buffer_status(
                 f"⚠️ No response from provider for {int(_stale_elapsed)}s "
                 f"(model: {api_kwargs.get('model', 'unknown')}, "
                 f"context: ~{_est_ctx:,} tokens). "

@@ -52,16 +52,20 @@ validate_uid_gid() {
 # HERMES_GID still win when both are set.  See #15290, salvages #25872.
 HERMES_UID="${HERMES_UID:-${PUID:-}}"
 HERMES_GID="${HERMES_GID:-${PGID:-}}"
+uid_gid_remapped=false
 
 if [ -n "${HERMES_UID:-}" ] && validate_uid_gid "$HERMES_UID" && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
     usermod -u "$HERMES_UID" hermes
+    uid_gid_remapped=true
 fi
 if [ -n "${HERMES_GID:-}" ] && validate_uid_gid "$HERMES_GID" && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"
     # -o allows non-unique GID (e.g. macOS GID 20 "staff" may already
     # exist as "dialout" in the Debian-based container image).
-    groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
+    if groupmod -o -g "$HERMES_GID" hermes 2>/dev/null; then
+        uid_gid_remapped=true
+    fi
 fi
 
 # --- Docker socket group membership (docker-in-docker / DooD) ---
@@ -134,7 +138,7 @@ needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
 fi
-if [ "$needs_chown" = true ]; then
+if [ "$needs_chown" = true ] || [ "$uid_gid_remapped" = true ]; then
     echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"
     # In rootless Podman the container's "root" is mapped to an
     # unprivileged host UID — chown will fail. That's fine: the volume
@@ -162,6 +166,10 @@ if [ "$needs_chown" = true ]; then
     #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
     #     is set) and writes to ui-tui/dist/. Without this chown the new
     #     hermes UID can't write the build output (#28851).
+    #   - gateway: Python writes __pycache__ and runtime artifacts beneath the
+    #     gateway package on first use. After UID remap, those source-owned
+    #     paths still belong to numeric UID 10000 unless we repair them here
+    #     (#27221).
     #   - node_modules: root-level dependencies (puppeteer, web tooling)
     #     that runtime code may walk/update.
     # The set mirrors the build-time `chown -R hermes:hermes` line in the
@@ -171,6 +179,7 @@ if [ "$needs_chown" = true ]; then
     chown -R hermes:hermes \
         "$INSTALL_DIR/.venv" \
         "$INSTALL_DIR/ui-tui" \
+        "$INSTALL_DIR/gateway" \
         "$INSTALL_DIR/node_modules" \
         2>/dev/null || \
         echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"

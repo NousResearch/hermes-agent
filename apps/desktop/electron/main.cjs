@@ -28,6 +28,15 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const {
+  authModeFromStatus,
+  buildGatewayWsUrl,
+  buildGatewayWsUrlWithTicket,
+  cookiesHaveSession,
+  normalizeRemoteBaseUrl,
+  resolveAuthMode,
+  tokenPreview
+} = require('./connection-config.cjs')
+const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
@@ -466,10 +475,6 @@ let bootstrapFailure = null
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
 let bootstrapAbortController = null
-// Set by the renderer's "Repair install" IPC. While true, resolution skips the
-// existing-install adopt branch (3b) so repair re-drives the installer instead
-// of re-adopting the install we're repairing. Cleared once a bootstrap runs.
-let forceBootstrapRepair = false
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -1571,12 +1576,8 @@ function readJson(filePath) {
 // Marker schema (version 1):
 //   {
 //     schemaVersion: 1,
-//     pinnedCommit: "<40-char SHA>" | null, // what install.ps1 was driven against;
-//                                           // may be null for adopted installs
+//     pinnedCommit: "<40-char SHA>",       // what install.ps1 was driven against
 //     pinnedBranch: "<branch name>" | null,
-//     adopted: <bool>,                      // true when we adopted a pre-existing
-//                                           // install rather than bootstrapping it;
-//                                           // treated as authoritative even sans commit
 //     completedAt:  "<ISO 8601>",
 //     desktopVersion: "<app.getVersion()>"  // for forensics
 //   }
@@ -1584,25 +1585,11 @@ function readBootstrapMarker() {
   return readJson(BOOTSTRAP_COMPLETE_MARKER)
 }
 
-// Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually
-// runnable right now? A complete CLI install (`install.sh --include-desktop`)
-// or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
-// ever having written the bootstrap marker -- so we must be able to recognise
-// "already installed" off the filesystem alone, not just the marker.
-function isActiveRuntimeUsable() {
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
-}
-
 function isBootstrapComplete() {
   const marker = readBootstrapMarker()
   if (!marker || typeof marker !== 'object') return false
   if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) return false
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) {
-    // Adopted markers (an existing install we detected and took ownership of,
-    // possibly without a resolvable commit) are still authoritative -- they
-    // attest a runnable install we deliberately decided to forward to.
-    if (marker.adopted !== true) return false
-  }
+  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) return false
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
   // update`, which moves HEAD legitimately. The marker just attests "we
@@ -1610,22 +1597,7 @@ function isBootstrapComplete() {
   // a runnable venv: an interrupted or split-home install can leave the marker
   // + checkout without a venv, and trusting that spawns a dead backend
   // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isActiveRuntimeUsable()
-}
-
-// HEAD commit of ACTIVE_HERMES_ROOT so an adopted marker carries the same
-// provenance a freshly-bootstrapped one would. null when git is unavailable or
-// the root isn't a checkout -- the marker stays valid via its `adopted` flag.
-function readActiveHeadCommit() {
-  try {
-    const sha = execFileSync(resolveGitBinary(), ['-C', ACTIVE_HERMES_ROOT, 'rev-parse', 'HEAD'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore']
-    }).trim()
-    return /^[0-9a-f]{7,40}$/i.test(sha) ? sha : null
-  } catch {
-    return null
-  }
+  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
 }
 
 function writeBootstrapMarker(payload) {
@@ -1634,7 +1606,6 @@ function writeBootstrapMarker(payload) {
     schemaVersion: BOOTSTRAP_MARKER_SCHEMA_VERSION,
     pinnedCommit: payload.pinnedCommit || null,
     pinnedBranch: payload.pinnedBranch || null,
-    adopted: Boolean(payload.adopted),
     completedAt: new Date().toISOString(),
     desktopVersion: app.getVersion()
   }
@@ -1789,24 +1760,6 @@ function resolveHermesBackend(dashboardArgs) {
   //    to spawning hermes. Updates flow through the in-app update path
   //    (applyUpdates -> git pull) or `hermes update` from the CLI.
   if (isBootstrapComplete()) {
-    return createActiveBackend(dashboardArgs)
-  }
-
-  // 3b. Existing-but-unmarked install at ACTIVE_HERMES_ROOT. The marker is
-  //     written only by OUR bootstrap, so a runtime from `install.sh
-  //     --include-desktop` (or a DMG launch over a prior CLI install) is
-  //     runnable yet markerless -- without this we'd fall to step 6 and re-run
-  //     the WHOLE install on top of a working one. ACTIVE_HERMES_ROOT is our
-  //     canonical location (unlike a random `hermes` on PATH), so adopt it:
-  //     stamp the marker once and forward straight to the app. Repair skips
-  //     this so a broken-but-present venv still gets rebuilt.
-  if (!forceBootstrapRepair && isActiveRuntimeUsable()) {
-    rememberLog(`[bootstrap] adopting existing install at ${ACTIVE_HERMES_ROOT}; skipping first-launch setup`)
-    try {
-      writeBootstrapMarker({ pinnedCommit: readActiveHeadCommit(), pinnedBranch: null, adopted: true })
-    } catch (err) {
-      rememberLog(`[bootstrap] could not stamp adopted marker: ${err.message}`)
-    }
     return createActiveBackend(dashboardArgs)
   }
 
@@ -2000,9 +1953,6 @@ async function ensureRuntime(backend) {
     }
 
     rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
-    // A repair (if any) has now re-run, so clear the gate -- the re-resolution
-    // below SHOULD land on the fresh marker fast-path rather than skip it.
-    forceBootstrapRepair = false
     // Re-resolve now that the install exists. The new resolution lands in
     // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
     return ensureRuntime(resolveHermesBackend(backend.args))
@@ -2149,6 +2099,80 @@ function fetchJson(url, token, options = {}) {
   })
 }
 
+function fetchPublicJson(url, options = {}) {
+  // Credential-free JSON GET/POST for public gateway endpoints
+  // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
+  // NO ``X-Hermes-Session-Token`` header — used by the auth-mode probe before
+  // any credentials exist, and any time we must not leak a token to an
+  // endpoint that doesn't need one.
+  return new Promise((resolve, reject) => {
+    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid URL: ${error.message}`))
+      return
+    }
+    const client = parsed.protocol === 'https:' ? https : http
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      return
+    }
+
+    const req = client.request(
+      parsed,
+      {
+        method: options.method || 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(body ? { 'Content-Length': String(body.length) } : {})
+        }
+      },
+      res => {
+        const chunks = []
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            return
+          }
+          if (!text) {
+            resolve(null)
+            return
+          }
+          const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
+          const contentType = String(res.headers['content-type'] || '')
+          if (looksHtml || contentType.includes('text/html')) {
+            reject(
+              new Error(
+                `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
+                  'The endpoint is likely missing on the Hermes backend.'
+              )
+            )
+            return
+          }
+          try {
+            resolve(JSON.parse(text))
+          } catch {
+            reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
+          }
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
+    if (body) req.write(body)
+    req.end()
+  })
+}
+
 function mimeTypeForPath(filePath) {
   const ext = path.extname(filePath || '').toLowerCase()
 
@@ -2212,6 +2236,7 @@ const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
 ])
 
 let linkTitleSession = null
+let oauthSession = null
 let renderTitleInFlight = 0
 const renderTitleQueue = []
 
@@ -3077,47 +3102,269 @@ function installMediaPermissions() {
   })
 }
 
-function normalizeRemoteBaseUrl(rawUrl) {
-  const value = String(rawUrl || '').trim()
+// ---------------------------------------------------------------------------
+// OAuth remote-gateway auth.
+//
+// Hosted Hermes gateways gate the dashboard behind an OAuth provider (e.g.
+// Nous Research) instead of a static session token. The auth model is
+// fundamentally different from the token path:
+//
+//   * REST is authed by HttpOnly session cookies (``hermes_session_at``),
+//     established by a browser redirect round-trip (/login → IDP →
+//     /auth/callback sets cookies). We cannot read the HttpOnly cookie value
+//     in JS — instead we let an Electron BrowserWindow complete the round
+//     trip into a PERSISTENT session partition, and thereafter route our REST
+//     through Electron's ``net`` bound to that same partition so the cookie
+//     jar attaches the cookie automatically.
+//   * WebSocket upgrades require a single-use ``?ticket=`` minted at
+//     ``POST /api/auth/ws-ticket`` (cookie-authed). The legacy ``?token=``
+//     path is unconditionally rejected by gated gateways.
+//   * Nous Portal contract v1 issues NO refresh token; the access cookie has
+//     a ~15-min TTL. On 401 we must re-run the login round trip.
+// ---------------------------------------------------------------------------
 
-  if (!value) {
-    throw new Error('Remote gateway URL is required.')
-  }
+const OAUTH_SESSION_PARTITION = 'persist:hermes-remote-oauth'
 
-  let parsed
-  try {
-    parsed = new URL(value)
-  } catch (error) {
-    throw new Error(`Remote gateway URL is not valid: ${error.message}`)
-  }
-
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`Remote gateway URL must be http:// or https://, got ${parsed.protocol}`)
-  }
-
-  parsed.hash = ''
-  parsed.search = ''
-  parsed.pathname = parsed.pathname.replace(/\/+$/, '')
-
-  return parsed.toString().replace(/\/+$/, '')
+function getOauthSession() {
+  if (oauthSession || !app.isReady()) return oauthSession
+  oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
+  return oauthSession
 }
 
-function buildGatewayWsUrl(baseUrl, token) {
+// Bare + prefixed variants of the access-token cookie live in
+// connection-config.cjs (cookiesHaveSession). See that module for details.
+
+async function hasOauthSessionCookie(baseUrl) {
+  const sess = getOauthSession()
+  if (!sess) return false
   const parsed = new URL(baseUrl)
-  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
-  const prefix = parsed.pathname.replace(/\/+$/, '')
-
-  return `${wsScheme}://${parsed.host}${prefix}/api/ws?token=${encodeURIComponent(token)}`
+  try {
+    // Query by URL so the cookie jar applies Domain/Path/Secure scoping for us.
+    const cookies = await sess.cookies.get({ url: baseUrl })
+    return cookiesHaveSession(cookies)
+  } catch {
+    // Fall back to a host match if the URL query path errors.
+    try {
+      const cookies = await sess.cookies.get({ domain: parsed.hostname })
+      return cookiesHaveSession(cookies)
+    } catch {
+      return false
+    }
+  }
 }
 
-function tokenPreview(value) {
-  const raw = String(value || '')
-
-  if (!raw) {
-    return null
+async function clearOauthSession(baseUrl) {
+  const sess = getOauthSession()
+  if (!sess) return
+  try {
+    const cookies = await sess.cookies.get(baseUrl ? { url: baseUrl } : {})
+    await Promise.all(
+      cookies.map(c => {
+        const scheme = c.secure ? 'https' : 'http'
+        const cookieUrl = `${scheme}://${c.domain.replace(/^\./, '')}${c.path || '/'}`
+        return sess.cookies.remove(cookieUrl, c.name).catch(() => undefined)
+      })
+    )
+  } catch {
+    // Best effort — a stale cookie self-expires anyway.
   }
+}
 
-  return raw.length <= 8 ? 'set' : `...${raw.slice(-6)}`
+// Open the gateway's /login page in a visible window using the OAuth session
+// partition, and resolve once the access-token cookie appears (login done) or
+// reject if the user closes the window first. The window navigates through the
+// IDP and back to /auth/callback, which sets the session cookies on the
+// partition; we poll the cookie jar rather than try to read the HttpOnly value.
+function openOauthLoginWindow(baseUrl) {
+  return new Promise((resolve, reject) => {
+    if (!app.isReady()) {
+      reject(new Error('Desktop is not ready to start an OAuth login.'))
+      return
+    }
+    const sess = getOauthSession()
+    if (!sess) {
+      reject(new Error('OAuth session partition is unavailable.'))
+      return
+    }
+
+    let settled = false
+    let win = null
+    let pollTimer = null
+
+    const finish = (err) => {
+      if (settled) return
+      settled = true
+      if (pollTimer) clearInterval(pollTimer)
+      try {
+        if (win && !win.isDestroyed()) win.destroy()
+      } catch {
+        // window already torn down
+      }
+      if (err) reject(err)
+      else resolve({ baseUrl, ok: true })
+    }
+
+    const checkCookie = async () => {
+      if (settled) return
+      if (await hasOauthSessionCookie(baseUrl)) finish(null)
+    }
+
+    try {
+      win = new BrowserWindow({
+        width: 520,
+        height: 720,
+        title: 'Sign in to Hermes gateway',
+        autoHideMenuBar: true,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          session: sess,
+          webSecurity: true
+        }
+      })
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)))
+      return
+    }
+
+    // Re-check the cookie jar on every successful navigation (the callback
+    // redirect is the moment cookies get set) plus a low-frequency poll as a
+    // belt-and-braces fallback for IDPs that finish via in-page JS.
+    win.webContents.on('did-navigate', () => void checkCookie())
+    win.webContents.on('did-redirect-navigation', () => void checkCookie())
+    win.webContents.on('did-frame-navigate', () => void checkCookie())
+    pollTimer = setInterval(() => void checkCookie(), 750)
+
+    win.on('closed', () => {
+      if (!settled) finish(new Error('Login window closed before authentication completed.'))
+    })
+
+    // ``next`` is intentionally omitted: the gateway lands on ``/`` after
+    // login, which is a valid authenticated page that sets the cookies. We
+    // only care that the cookie jar is populated.
+    const loginUrl = `${normalizeRemoteBaseUrl(baseUrl)}/login`
+    win.loadURL(loginUrl).catch(error => {
+      finish(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
+}
+
+// JSON request routed through the OAuth session partition so the HttpOnly
+// session cookie is attached automatically by Electron's net stack. Used for
+// authed REST against a gated gateway, including minting WS tickets.
+function fetchJsonViaOauthSession(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const sess = getOauthSession()
+    if (!sess) {
+      reject(new Error('OAuth session partition is unavailable.'))
+      return
+    }
+    let parsed
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      reject(new Error(`Invalid URL: ${error.message}`))
+      return
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      return
+    }
+    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
+    const request = electronNet.request({
+      method: options.method || 'GET',
+      url,
+      session: sess,
+      useSessionCookies: true,
+      redirect: 'follow'
+    })
+    request.setHeader('Content-Type', 'application/json')
+    if (body) request.setHeader('Content-Length', String(body.length))
+
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        request.abort()
+      } catch {
+        // already finished
+      }
+      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    request.on('response', res => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      res.on('end', () => {
+        if (timedOut) return
+        clearTimeout(timer)
+        const text = Buffer.concat(chunks).toString('utf8')
+        const statusCode = res.statusCode || 500
+        if (statusCode >= 400) {
+          const err = new Error(`${statusCode}: ${text || ''}`)
+          err.statusCode = statusCode
+          reject(err)
+          return
+        }
+        if (!text) {
+          resolve(null)
+          return
+        }
+        const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
+        const contentType = String((res.headers['content-type'] || res.headers['Content-Type'] || ''))
+        if (looksHtml || contentType.includes('text/html')) {
+          reject(new Error(`Expected JSON from ${url} but got HTML (status ${statusCode}).`))
+          return
+        }
+        try {
+          resolve(JSON.parse(text))
+        } catch {
+          reject(new Error(`Invalid JSON from ${url} (status ${statusCode}): ${text.slice(0, 200)}`))
+        }
+      })
+    })
+    request.on('error', error => {
+      if (timedOut) return
+      clearTimeout(timer)
+      reject(error)
+    })
+    if (body) request.write(body)
+    request.end()
+  })
+}
+
+// Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
+// Throws (with statusCode 401) if the session cookie is missing/expired —
+// callers treat that as "needs re-login".
+async function mintGatewayWsTicket(baseUrl) {
+  const body = await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
+    method: 'POST',
+    timeoutMs: 8_000
+  })
+  const ticket = body?.ticket
+  if (!ticket || typeof ticket !== 'string') {
+    throw new Error('Gateway did not return a WS ticket.')
+  }
+  return ticket
+}
+
+// Build a fresh WS URL for the *current* connection. Critical for reconnects:
+// OAuth WS tickets are single-use with a ~30s TTL, so the ticket baked into
+// the cached connection's wsUrl is stale on the second connect. The renderer
+// calls this immediately before every gateway.connect() so each WS upgrade
+// carries a freshly-minted ticket. For local/token connections this just
+// reuses the static token (no minting needed).
+async function freshGatewayWsUrl() {
+  const connection = await startHermes()
+  if (connection.authMode === 'oauth') {
+    const ticket = await mintGatewayWsTicket(connection.baseUrl)
+    return buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
+  }
+  // Local/token: the cached wsUrl already carries the (long-lived) token.
+  return connection.wsUrl
 }
 
 function encryptDesktopSecret(value) {
@@ -3168,9 +3415,14 @@ function readDesktopConnectionConfig() {
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed === 'object') {
+      const remote = parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
+      // authMode lives on the remote sub-object: 'oauth' (cookie + ws-ticket)
+      // or 'token' (legacy static session token). Default to 'token' for
+      // backward compatibility with configs written before OAuth support.
+      remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
       config = {
         mode: parsed.mode === 'remote' ? 'remote' : 'local',
-        remote: parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
+        remote
       }
     }
   } catch {
@@ -3190,12 +3442,25 @@ function writeDesktopConnectionConfig(config) {
   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
-function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
+async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
   const remoteToken = decryptDesktopSecret(config.remote?.token)
+  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
+  const remoteUrl = String(config.remote?.url || '')
+
+  let remoteOauthConnected = false
+  if (authMode === 'oauth' && remoteUrl) {
+    try {
+      remoteOauthConnected = await hasOauthSessionCookie(remoteUrl)
+    } catch {
+      remoteOauthConnected = false
+    }
+  }
 
   return {
     mode: config.mode === 'remote' ? 'remote' : 'local',
-    remoteUrl: String(config.remote?.url || ''),
+    remoteAuthMode: authMode,
+    remoteOauthConnected,
+    remoteUrl,
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
     envOverride: Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
@@ -3206,10 +3471,13 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   const persistToken = options.persistToken !== false
   const mode = input.mode === 'remote' ? 'remote' : 'local'
   const remoteUrl = String(input.remoteUrl ?? existing.remote?.url ?? '').trim()
+  // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
+  const authMode = resolveAuthMode(input.remoteAuthMode, existing.remote?.authMode)
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
   const existingToken = existing.remote?.token
   const nextRemote = {
     url: remoteUrl,
+    authMode,
     token: incomingToken
       ? persistToken
         ? encryptDesktopSecret(incomingToken)
@@ -3220,7 +3488,10 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   if (mode === 'remote') {
     nextRemote.url = normalizeRemoteBaseUrl(remoteUrl)
 
-    if (!decryptDesktopSecret(nextRemote.token)) {
+    // OAuth gateways authenticate via the session cookie established by the
+    // login window, NOT a static token — so no token is required here. The
+    // cookie presence is verified at connect time (resolveRemoteBackend).
+    if (authMode !== 'oauth' && !decryptDesktopSecret(nextRemote.token)) {
       throw new Error('Remote gateway session token is required.')
     }
   } else if (remoteUrl) {
@@ -3230,7 +3501,7 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   return { mode, remote: nextRemote }
 }
 
-function resolveRemoteBackend() {
+async function resolveRemoteBackend() {
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
 
@@ -3248,6 +3519,7 @@ function resolveRemoteBackend() {
       baseUrl,
       mode: 'remote',
       source: 'env',
+      authMode: 'token',
       token: rawEnvToken,
       wsUrl: buildGatewayWsUrl(baseUrl, rawEnvToken)
     }
@@ -3259,6 +3531,47 @@ function resolveRemoteBackend() {
     return null
   }
 
+  const baseUrl = normalizeRemoteBaseUrl(config.remote?.url)
+  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
+
+  if (authMode === 'oauth') {
+    // OAuth gateway: auth comes from the session cookie in the OAuth partition.
+    // Verify the cookie is present, then mint a single-use WS ticket (the
+    // gateway rejects ?token= in gated mode). A missing cookie / 401 means the
+    // user needs to (re-)log in via Settings → Gateway.
+    if (!(await hasOauthSessionCookie(baseUrl))) {
+      const err = new Error(
+        'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+          'Open Settings → Gateway and click "Sign in", or switch back to Local.'
+      )
+      err.needsOauthLogin = true
+      throw err
+    }
+
+    let ticket
+    try {
+      ticket = await mintGatewayWsTicket(baseUrl)
+    } catch (error) {
+      const err = new Error(
+        'Your remote gateway session has expired. ' +
+          'Open Settings → Gateway and click "Sign in" again.'
+      )
+      err.needsOauthLogin = true
+      err.cause = error
+      throw err
+    }
+
+    return {
+      baseUrl,
+      mode: 'remote',
+      source: 'settings',
+      authMode: 'oauth',
+      // No static token in OAuth mode; REST is cookie-authed via the partition.
+      token: null,
+      wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
+    }
+  }
+
   const token = decryptDesktopSecret(config.remote?.token)
 
   if (!token) {
@@ -3268,31 +3581,98 @@ function resolveRemoteBackend() {
     )
   }
 
-  const baseUrl = normalizeRemoteBaseUrl(config.remote?.url)
-
   return {
     baseUrl,
     mode: 'remote',
     source: 'settings',
+    authMode: 'token',
     token,
     wsUrl: buildGatewayWsUrl(baseUrl, token)
   }
 }
 
+async function probeRemoteAuthMode(rawUrl) {
+  // Determine how a remote gateway expects callers to authenticate, WITHOUT
+  // sending any credentials. ``/api/status`` is public on every Hermes
+  // gateway (it backs the portal liveness probe) and reports:
+  //   auth_required: true  → OAuth gate is engaged (cookie + ws-ticket auth)
+  //   auth_required: false → loopback/--insecure: legacy session-token auth
+  // ``/api/auth/providers`` (also public, only meaningful when gated) gives
+  // the human-facing provider name(s) for the login button label.
+  //
+  // The settings UI calls this as the user types a URL so it can render an
+  // OAuth login button vs a session-token entry box. Network/parse failures
+  // surface as ``reachable: false`` rather than throwing, so a half-typed or
+  // unreachable URL degrades to "can't tell yet" instead of a hard error.
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+
+  let status
+  try {
+    status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
+  } catch (error) {
+    return {
+      baseUrl,
+      reachable: false,
+      authMode: 'unknown',
+      providers: [],
+      version: null,
+      error: error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  const authRequired = authModeFromStatus(status) === 'oauth'
+  let providers = []
+
+  if (authRequired) {
+    // Best-effort: a gated gateway exposes the registered OAuth providers so
+    // the button can read "Log in with Nous Research" instead of a generic
+    // label. A failure here doesn't change the auth mode, so swallow it.
+    try {
+      const body = await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })
+      if (Array.isArray(body?.providers)) {
+        providers = body.providers
+          .filter(p => p && typeof p === 'object')
+          .map(p => ({ name: String(p.name || ''), displayName: String(p.display_name || p.name || '') }))
+          .filter(p => p.name)
+      }
+    } catch {
+      // Provider listing is optional metadata; the auth mode is already known.
+    }
+  }
+
+  return {
+    baseUrl,
+    reachable: true,
+    authMode: authRequired ? 'oauth' : 'token',
+    providers,
+    version: status?.version || null,
+    error: null
+  }
+}
+
 async function testDesktopConnectionConfig(input = {}) {
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
-  const remote =
-    config.mode === 'remote'
-      ? {
-          baseUrl: normalizeRemoteBaseUrl(config.remote.url),
-          token: decryptDesktopSecret(config.remote.token)
-        }
-      : resolveRemoteBackend() || (await startHermes())
-  const status = await fetchJson(`${remote.baseUrl}/api/status`, remote.token, { timeoutMs: 8_000 })
+  // ``/api/status`` is public on every gateway (no creds needed), so a
+  // reachability test works for local, token, and oauth modes alike — we only
+  // need a base URL. For a remote config we normalize the URL from the input;
+  // for local we fall back to the resolved/started backend.
+  let baseUrl
+  let token = null
+  if (config.mode === 'remote') {
+    baseUrl = normalizeRemoteBaseUrl(config.remote.url)
+    if ((config.remote.authMode || 'token') !== 'oauth') {
+      token = decryptDesktopSecret(config.remote.token)
+    }
+  } else {
+    const remote = (await resolveRemoteBackend()) || (await startHermes())
+    baseUrl = remote.baseUrl
+    token = remote.token
+  }
+  const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
 
   return {
     ok: true,
-    baseUrl: remote.baseUrl,
+    baseUrl,
     version: status?.version || null
   }
 }
@@ -3335,7 +3715,7 @@ async function startHermes() {
 
   connectionPromise = (async () => {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
-    const remote = resolveRemoteBackend()
+    const remote = await resolveRemoteBackend()
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
@@ -3350,6 +3730,7 @@ async function startHermes() {
         baseUrl: remote.baseUrl,
         mode: 'remote',
         source: remote.source,
+        authMode: remote.authMode || 'token',
         token: remote.token,
         wsUrl: remote.wsUrl,
         logs: hermesLog.slice(-80),
@@ -3454,6 +3835,7 @@ async function startHermes() {
       baseUrl,
       mode: 'local',
       source: 'local',
+      authMode: 'token',
       token,
       wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
       logs: hermesLog.slice(-80),
@@ -3605,13 +3987,13 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async () => startHermes())
+ipcMain.handle('hermes:gateway:ws-url', async () => freshGatewayWsUrl())
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the
   // full backend flow (including a fresh runBootstrap pass).
   rememberLog('[bootstrap] reset requested by renderer; clearing latched failure')
   bootstrapFailure = null
-  forceBootstrapRepair = false
   connectionPromise = null
   bootstrapState = {
     active: false,
@@ -3639,9 +4021,6 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
     rememberLog(`[bootstrap] failed to remove marker during repair: ${error.message}`)
   }
   bootstrapFailure = null
-  // Force the next resolution past both the marker fast-path and the adopt
-  // branch so the installer actually re-runs (the whole point of repair).
-  forceBootstrapRepair = true
   resetHermesConnection()
   return { ok: true }
 })
@@ -3661,6 +4040,21 @@ ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async () => sanitizeDesktopConnectionConfig())
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
+ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
+ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
+  // Open the gateway's OAuth login window and wait for the session cookie to
+  // land in the OAuth partition. The caller (settings UI) typically saves the
+  // remote config with authMode='oauth' first, then calls this. We normalize
+  // the URL defensively so a login can be driven from a raw URL too.
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  await openOauthLoginWindow(baseUrl)
+  return { ok: true, baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+})
+ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
+  const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
+  await clearOauthSession(baseUrl || undefined)
+  return { ok: true, connected: baseUrl ? await hasOauthSessionCookie(baseUrl) : false }
+})
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
@@ -3691,7 +4085,19 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 ipcMain.handle('hermes:api', async (_event, request) => {
   const connection = await startHermes()
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-  return fetchJson(`${connection.baseUrl}${request.path}`, connection.token, {
+  const url = `${connection.baseUrl}${request.path}`
+  // OAuth gateways authenticate REST via the HttpOnly session cookie held in
+  // the OAuth partition — route through Electron's net stack bound to that
+  // session so the cookie attaches automatically. Token/local modes keep using
+  // the static session-token header.
+  if (connection.authMode === 'oauth') {
+    return fetchJsonViaOauthSession(url, {
+      method: request?.method,
+      body: request?.body,
+      timeoutMs
+    })
+  }
+  return fetchJson(url, connection.token, {
     method: request?.method,
     body: request?.body,
     timeoutMs
@@ -4157,99 +4563,7 @@ ipcMain.handle('hermes:version', async () => ({
   hermesRoot: resolveUpdateRoot()
 }))
 
-// ---------------------------------------------------------------------------
-// macOS first-launch placement: move into /Applications and pin to the Dock
-// ---------------------------------------------------------------------------
-//
-// The DMG and CLI-built apps launch from wherever the user left them (a DMG
-// mount, ~/Downloads, ~/.hermes/...) -- which means Gatekeeper translocation,
-// no Dock tile, and "which icon do I click?" confusion. On first packaged
-// launch we relocate into /Applications (Electron relaunches from there) and,
-// once we're that canonical copy, pin to the Dock. Both macOS-only,
-// packaged-only, best-effort, run at most once.
-
-// Move the bundle into /Applications and relaunch. Returns true when a relaunch
-// is underway (caller must stop init). No-op in dev, off macOS, or already in
-// /Applications. `existsAndRunning` -> another copy owns the slot; don't fight
-// it. `exists` -> stale copy; replace it so there's exactly one current app.
-function maybeRelocateToApplications() {
-  if (!IS_MAC || !IS_PACKAGED || process.env.HERMES_DESKTOP_NO_AUTO_MOVE === '1') return false
-  try {
-    if (app.isInApplicationsFolder()) return false
-    const moved = app.moveToApplicationsFolder({ conflictHandler: type => type !== 'existsAndRunning' })
-    if (moved) rememberLog('[install] relocated into /Applications; relaunching')
-    return moved
-  } catch (err) {
-    rememberLog(`[install] move to /Applications skipped: ${err.message}`)
-    return false
-  }
-}
-
-const DOCK_PINNED_MARKER = 'dock-pinned.json'
-
-// Pin the /Applications copy to the Dock once. macOS has no Electron API for
-// this, so we append to com.apple.dock's persistent-apps and restart the Dock.
-// Guarded by a userData marker + membership check so we never duplicate the tile.
-function maybePinToDock() {
-  if (!IS_MAC || !IS_PACKAGED || process.env.HERMES_DESKTOP_NO_DOCK_PIN === '1') return
-  const marker = path.join(app.getPath('userData'), DOCK_PINNED_MARKER)
-  if (fileExists(marker)) return
-
-  let bundle
-  try {
-    if (!app.isInApplicationsFolder()) return // don't pin a soon-to-be-stale path
-    bundle = runningAppBundle()
-  } catch {
-    return
-  }
-  if (!bundle) return
-
-  // The Dock stores tiles as file-reference URLs (type 15), e.g.
-  // file:///Applications/Hermes.app/ -- NOT a raw POSIX path. A type-0/raw-path
-  // tile is silently dropped when the Dock rewrites persistent-apps on restart.
-  const url = pathToFileURL(bundle.endsWith('/') ? bundle : `${bundle}/`).href
-
-  const done = (note = {}) => {
-    try {
-      fs.writeFileSync(marker, JSON.stringify({ bundle, pinnedAt: new Date().toISOString(), ...note }) + '\n')
-    } catch {
-      // best-effort; we re-check next launch (membership guard dedupes)
-    }
-  }
-
-  try {
-    const apps = execFileSync('defaults', ['read', 'com.apple.dock', 'persistent-apps'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore']
-    })
-    if (apps.includes(url)) return done({ alreadyPresent: true })
-  } catch {
-    // persistent-apps may not exist yet; -array-add creates it
-  }
-
-  const tile =
-    '<dict><key>tile-data</key><dict><key>file-data</key><dict>' +
-    `<key>_CFURLString</key><string>${url}</string><key>_CFURLStringType</key><integer>15</integer>` +
-    '</dict></dict></dict>'
-  try {
-    execFileSync('defaults', ['write', 'com.apple.dock', 'persistent-apps', '-array-add', tile], { stdio: 'ignore' })
-    // Flush the write through cfprefsd before restarting the Dock, otherwise the
-    // Dock reloads stale prefs and our tile is lost in the race.
-    execFileSync('defaults', ['read', 'com.apple.dock', 'persistent-apps'], { stdio: 'ignore' })
-    execFileSync('killall', ['Dock'], { stdio: 'ignore' })
-    done()
-    rememberLog(`[install] pinned to Dock: ${url}`)
-  } catch (err) {
-    rememberLog(`[install] Dock pin skipped: ${err.message}`)
-  }
-}
-
 app.whenReady().then(() => {
-  // macOS: relocate into /Applications before anything else so setup + state
-  // land in the final location; on success this relaunches, so bail here.
-  if (maybeRelocateToApplications()) return
-  maybePinToDock()
-
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {

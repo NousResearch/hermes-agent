@@ -65,7 +65,7 @@ interface PromptActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
-  createBackendSessionForSend: () => Promise<string | null>
+  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -296,7 +296,7 @@ export function usePromptActions({
 
       if (!sessionId) {
         try {
-          sessionId = await createBackendSessionForSend()
+          sessionId = await createBackendSessionForSend(visibleText)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()

@@ -303,7 +303,7 @@ export function useSessionActions({
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
   )
 
-  const createBackendSessionForSend = useCallback(async (): Promise<string | null> => {
+  const createBackendSessionForSend = useCallback(async (preview: string | null = null): Promise<string | null> => {
     const startingActiveSessionId = activeSessionIdRef.current
     const startingStoredSessionId = selectedStoredSessionIdRef.current
     const startingRouteToken = getRouteToken()
@@ -330,7 +330,11 @@ export function useSessionActions({
       ensureSessionState(created.session_id, stored)
 
       if (stored) {
-        upsertOptimisticSession(created, stored)
+        // Seed the sidebar preview with the user's first message so the row
+        // reads meaningfully while the turn is in flight, instead of flashing
+        // "Untitled session" until the turn persists and auto-title runs. The
+        // server later returns its own preview/title and supersedes this.
+        upsertOptimisticSession(created, stored, null, preview?.trim() || null)
         navigate(sessionRoute(stored), { replace: true })
       }
 

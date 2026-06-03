@@ -589,11 +589,56 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     }))
     assert ok.get("ok") is True
 
+
+def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
+    """Goal-mode tasks must pass the auxiliary judge before completion.
+    Regression for #38367: workers bypassing the judge via early kanban_complete."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Set up isolated HERMES_HOME
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, worker_env).status == "done"
+        goal_task_id = kb.create_task(
+            conn, title="goal-mode-test", assignee="test-worker",
+            body="Must achieve X with verified evidence.", goal_mode=True
+        )
+        kb.claim_task(conn, goal_task_id)
     finally:
         conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
+
+    # Mock the judge to reject the completion
+    def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
+        return "continue", "missing verification evidence", False
+
+    monkeypatch.setattr("hermes_cli.goals.judge_goal", mock_judge_goal)
+
+    # Attempt to complete should be rejected
+    out = kt._handle_complete({"summary": "I did some stuff but not X"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "Goal completion rejected by judge" in d["error"]
+    assert "missing verification evidence" in d["error"]
+    assert "create continuation tasks" in d["error"]
+
+    # Verify the task is NOT completed in the DB
+    conn2 = kb.connect()
+    try:
+        task = kb.get_task(conn2, goal_task_id)
+        assert task.status == "running"  # Should still be running, not done
+    finally:
+        conn2.close()
 
 
 def test_block_happy_path(worker_env):

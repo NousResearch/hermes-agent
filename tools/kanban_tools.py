@@ -567,6 +567,33 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Goal-mode pre-completion judge gate (Issue #38367).
+            # Prevent workers from bypassing the auxiliary judge by
+            # calling kanban_complete before acceptance criteria are met.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode:
+                try:
+                    from hermes_cli.goals import judge_goal
+                    verdict, reason, _ = judge_goal(
+                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                        last_response=(summary or result or "").strip(),
+                    )
+                    if verdict != "done":
+                        return tool_error(
+                            f"Goal completion rejected by judge: {reason}. "
+                            f"To proceed, either: (1) provide explicit acceptance "
+                            f"evidence in your summary matching the task's criteria, "
+                            f"or (2) create continuation tasks with parent={tid} "
+                            f"and keep this task alive."
+                        )
+                except Exception as judge_exc:
+                    # Fail-open to avoid wedging the worker if the judge
+                    # is temporarily unavailable or misconfigured.
+                    logger.warning(
+                        "goal judge check failed, allowing completion: %s",
+                        judge_exc,
+                    )
+
             try:
                 ok = kb.complete_task(
                     conn, tid,

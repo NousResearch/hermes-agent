@@ -74,6 +74,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
@@ -637,7 +638,7 @@ function messageAttachmentRefs(value: unknown): string[] {
 function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
   return (
     <div
-      className="group/user-message sticky top-0 z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
+      className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
       data-role="user"
       data-slot="aui_user-message-root"
     >
@@ -685,6 +686,32 @@ const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
+  // doesn't dominate the viewport while the response streams underneath; the
+  // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
+  // inner wrapper so the ResizeObserver only fires on real content / width
+  // changes, not on every frame while the outer max-height animates open.
+  const clampInnerRef = useRef<HTMLDivElement | null>(null)
+  const [bodyClamped, setBodyClamped] = useState(false)
+
+  const measureClamp = useCallback(() => {
+    const inner = clampInnerRef.current
+    const outer = inner?.parentElement
+
+    if (!inner || !outer) {
+      return
+    }
+
+    const styles = getComputedStyle(inner)
+    const lineHeight = parseFloat(styles.lineHeight) || 1.5 * parseFloat(styles.fontSize) || 20
+    const fullHeight = inner.scrollHeight
+
+    outer.style.setProperty('--human-msg-full', `${fullHeight}px`)
+    setBodyClamped(fullHeight > lineHeight * 2 + 1)
+  }, [])
+
+  useResizeObserver(measureClamp, clampInnerRef)
+
   const hasBody = messageText.trim().length > 0
   const isLatestUser = messageId === latestUserId
   const showStop = isLatestUser && threadRunning && Boolean(onCancel)
@@ -707,7 +734,11 @@ const UserMessage: FC<{
         // Render the user's text through a minimal markdown pipeline:
         // backtick `code` and ``` fenced ``` blocks, with directive chips
         // (`@file:` etc.) still resolved inside the plain-text spans.
-        <UserMessageText className="wrap-anywhere" text={messageText} />
+        <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
+          <div ref={clampInnerRef}>
+            <UserMessageText className="wrap-anywhere" text={messageText} />
+          </div>
+        </div>
       )}
     </>
   )

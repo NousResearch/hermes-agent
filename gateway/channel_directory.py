@@ -244,13 +244,29 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     return channels
 
 
+def _slack_api_error_code(error: Exception) -> Optional[str]:
+    """Return Slack Web API error code from SlackApiError-like exceptions."""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        value = response.get("error")
+        return str(value) if value else None
+    if response is not None:
+        try:
+            value = response.get("error")
+            return str(value) if value else None
+        except Exception:
+            pass
+    return None
+
+
 async def _build_slack(adapter) -> List[Dict[str, Any]]:
     """List Slack channels the bot has joined across all workspaces.
 
     Uses ``users.conversations`` against each workspace's web client. Pulls
     public + private channels the bot is a member of, then merges in DMs
     discovered from session history (IMs aren't useful to enumerate
-    proactively).
+    proactively). If the Slack app lacks channels:read, fall back to session
+    history quietly instead of logging a recurring warning every refresh.
     """
     team_clients = getattr(adapter, "_team_clients", None) or {}
     if not team_clients:
@@ -270,8 +286,15 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                     cursor=cursor,
                 )
                 if not response.get("ok"):
-                    detail = f"users.conversations not ok: {response.get('error', 'unknown')}"
-                    _warn_slack_directory(team_id, detail)
+                    error_code = response.get("error", "unknown")
+                    if error_code == "missing_scope":
+                        logger.debug(
+                            "Channel directory: Slack team %s lacks channels:read; using session history only",
+                            team_id,
+                        )
+                    else:
+                        detail = f"users.conversations not ok: {error_code}"
+                        _warn_slack_directory(team_id, detail)
                     break
                 for ch in response.get("channels", []):
                     cid = ch.get("id")
@@ -288,7 +311,13 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                 if not cursor:
                     break
         except Exception as e:
-            _warn_slack_directory(team_id, str(e))
+            if _slack_api_error_code(e) == "missing_scope":
+                logger.debug(
+                    "Channel directory: Slack team %s lacks channels:read; using session history only",
+                    team_id,
+                )
+            else:
+                _warn_slack_directory(team_id, str(e))
             continue
 
     # Merge in DM/group entries discovered from session history.

@@ -280,6 +280,18 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "gemini",
             },
+            # MiniMax TTS — model field accepts speech-2.8-hd / speech-2.8-turbo
+            # (Plus plan) plus the older speech-02-hd / speech-01-* family.  See
+            # https://platform.minimax.io/docs/api-reference/speech-t2a-http
+            {
+                "name": "MiniMax TTS",
+                "badge": "paid",
+                "tag": "Speech 2.8 HD / Turbo — 32 languages, voice cloning",
+                "env_vars": [
+                    {"key": "MINIMAX_API_KEY", "prompt": "MiniMax API key", "url": "https://platform.minimax.io/user-center/basic-information/interface-key"},
+                ],
+                "tts_provider": "minimax",
+            },
             {
                 "name": "KittenTTS",
                 "badge": "local · free",

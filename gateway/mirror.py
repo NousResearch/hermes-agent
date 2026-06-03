@@ -14,6 +14,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from pathlib import Path
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,26 @@ def _find_session_id(
     best_entry = max(candidates, key=lambda entry: entry.get("updated_at", ""))
     return best_entry.get("session_id")
 
+
+
+
+def _read_jsonl(session_id: str) -> list:
+    """Read JSONL transcript, checking new location first then legacy."""
+    new_path = _SESSIONS_DIR / session_id / "messages.jsonl"
+    if new_path.exists():
+        try:
+            with open(new_path, "r", encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except Exception:
+            pass
+    legacy_path = _SESSIONS_DIR / f"{session_id}.jsonl"
+    if legacy_path.exists():
+        try:
+            with open(legacy_path, "r", encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except Exception:
+            pass
+    return []
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:

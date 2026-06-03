@@ -48,38 +48,39 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     }
   }, [])
 
+  // Returns a promise so callers can await the switch before applying
+  // follow-up changes (e.g. editing a model's reasoning/fast must land on the
+  // right active model). Resolves even on failure (error is surfaced inline).
   const selectModel = useCallback(
-    (selection: ModelSelection) => {
+    async (selection: ModelSelection): Promise<void> => {
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
       updateModelOptionsCache(selection.provider, selection.model, selection.persistGlobal || !activeSessionId)
 
-      void (async () => {
-        try {
-          if (activeSessionId) {
-            await requestGateway('slash.exec', {
-              session_id: activeSessionId,
-              command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
-            })
+      try {
+        if (activeSessionId) {
+          await requestGateway('slash.exec', {
+            session_id: activeSessionId,
+            command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
+          })
 
-            if (selection.persistGlobal) {
-              void refreshCurrentModel()
-            }
-
-            void queryClient.invalidateQueries({
-              queryKey: selection.persistGlobal ? ['model-options'] : ['model-options', activeSessionId]
-            })
-
-            return
+          if (selection.persistGlobal) {
+            void refreshCurrentModel()
           }
 
-          await setGlobalModel(selection.provider, selection.model)
-          void refreshCurrentModel()
-          void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-        } catch (err) {
-          notifyError(err, 'Model switch failed')
+          void queryClient.invalidateQueries({
+            queryKey: selection.persistGlobal ? ['model-options'] : ['model-options', activeSessionId]
+          })
+
+          return
         }
-      })()
+
+        await setGlobalModel(selection.provider, selection.model)
+        void refreshCurrentModel()
+        void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+      } catch (err) {
+        notifyError(err, 'Model switch failed')
+      }
     },
     [activeSessionId, queryClient, refreshCurrentModel, requestGateway, updateModelOptionsCache]
   )

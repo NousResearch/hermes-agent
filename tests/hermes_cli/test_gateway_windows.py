@@ -29,6 +29,49 @@ def test_schtasks_fallback_does_not_hide_unknown_errors():
     assert gateway_windows._should_fall_back(1, "ERROR: The system cannot find the file specified.") is False
 
 
+def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
+    """A broken/empty locale must not leave us without a decoder (issue #38172)."""
+
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "")
+    assert gateway_windows._schtasks_encoding() == "utf-8"
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("locale exploded")
+
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", _boom)
+    assert gateway_windows._schtasks_encoding() == "utf-8"
+
+
+def test_exec_schtasks_decodes_with_replace_errors(monkeypatch):
+    """schtasks output must be decoded with errors='replace' so localized
+    (non-UTF-8) bytes never surface a UnicodeDecodeError traceback (#38172)."""
+
+    captured: dict[str, object] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\\Windows\\System32\\schtasks.exe")
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
+
+    assert (code, out, err) == (0, "ok", "")
+    assert captured["errors"] == "replace", "schtasks output must decode with errors='replace'"
+    assert isinstance(captured["encoding"], str) and captured["encoding"], (
+        "an explicit non-empty encoding must be passed to subprocess.run"
+    )
+    assert captured["text"] is True
+
+
 def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
     """Avoid uv's venv pythonw launcher because it respawns console python.exe."""
 

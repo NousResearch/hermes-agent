@@ -23,6 +23,7 @@ import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { subscribeColumns } from '../lib/terminalColumns.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
@@ -144,16 +145,14 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const sync = () => setCols(stdout.columns ?? 80)
-
-    stdout.on('resize', sync)
+    const unsubscribeColumns = subscribeColumns(stdout, setCols)
 
     if (stdout.isTTY) {
       stdout.write(BRACKET_PASTE_ON)
     }
 
     return () => {
-      stdout.off('resize', sync)
+      unsubscribeColumns()
 
       if (stdout.isTTY) {
         stdout.write(BRACKET_PASTE_OFF)

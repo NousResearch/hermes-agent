@@ -298,3 +298,59 @@ Committed: `24356edcd` | Tests: 80 passed
 - Current dirty summary: 11 modified files, 1839 insertions, 124 deletions.
 - Planned next step per Phase 5 PLAN: Wave 1 merge/checkpoint before Wave 1.5 (`UA-P5-004`, `UA-P5-005`, `UA-P5-006`).
 - Approval gate: no commit, push, merge, deploy, or production mutation performed. Separate JC approval required for commit/push or to proceed past the Wave 1 merge/checkpoint with uncommitted stacked changes.
+
+## UA Phase 5 Development Hardening — Wave 1 Checkpoint Commit and Wave 1.5 Swarm Launch
+- Timestamp: 2026-06-02T20:42:34Z.
+- JC approved a local Wave 1 checkpoint commit covering UA-P5-000 through UA-P5-003 evidence only, no push or merge.
+- Local checkpoint commit created: `e6950d495` (`feat(code-scan): harden UA review evidence wave 1`).
+- Post-commit baseline status: clean on `feat/ua-phase5-development-hardening`.
+- Baseline verification before commit: `python -m pytest tests/code_scan -q` — PASS, `954 passed in 149.62s (0:02:29)`.
+- Swarm coordination skill reviewed and applied for Wave 1.5.
+- Swarm ledger: `.hermes/swarm-runs/2026-06-02-ua-phase5-wave1-5.md`.
+- Wave 1.5a ownership plan:
+  - `UA-P5-004` and `UA-P5-005` may run in parallel with exclusive file ownership.
+  - `UA-P5-006` deferred until P5-005 acceptance because both touch report boundary files.
+- Approval gate: Wave 1.5 execution approved; no Wave 1.5 commit, push, merge, deploy, or production mutation without separate JC approval.
+
+## UA Phase 5 Development Hardening — UA-P5-004 Completion Checkpoint
+- Timestamp: 2026-06-03T01:35:01Z.
+- Executed bead: `UA-P5-004 - JS/TS Import Resolution V2`.
+- Branch: `feat/ua-phase5-development-hardening`; baseline Wave 1 checkpoint commit `e6950d495`.
+- Initial reconciliation found inherited RED: focused P5-004 suite failed `3 failed, 242 passed` due missing `resolved` integration and graph raw/module targets.
+- E2E RED before final patch: `test_fixture_import_resolution_prevents_false_orphaning` failed with `KeyError: '@/lib/api'` and orphan warnings for imported fixture files.
+- Implemented resolved import-map emission, static alias discovery, resolved-file graph targeting, edge metadata, and import-resolution fixture.
+- Final E2E GREEN: `python -m pytest tests/code_scan/test_assemble_graph.py::TestImportResolutionV2Graph::test_fixture_import_resolution_prevents_false_orphaning -q --tb=short` — PASS, `1 passed in 0.27s`.
+- Focused P5-004 GREEN: `python -m pytest tests/code_scan/test_extract_imports.py tests/code_scan/test_assemble_graph.py tests/code_scan/test_classify_imports.py tests/code_scan/test_triage_orphans.py -q` — PASS, `246 passed in 2.80s`.
+- FULL code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `977 passed in 117.61s (0:01:57)`.
+- Compile/diff hygiene: `python -m py_compile ...` and scoped `git diff --check` — PASS.
+- Added-lines secret scan: PASS, no matches.
+- Diff artifact: `/tmp/ua-p5-004-diff.patch` — 938 lines / 39108 bytes.
+- Reviewer verdict: PASS.
+- Handoff: `.hermes/handoffs/2026-06-03-0135-ua-p5-004-js-ts-import-resolution-v2.md`.
+- Wave status: `UA-P5-004` accepted; `UA-P5-005` later accepted; `UA-P5-006` unblocked after P5-005 acceptance.
+- Approval gate: JC approved a local Wave 1.5 checkpoint commit for accepted P5-004/P5-005 only. No push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls approved.
+
+## UA Phase 5 Development Hardening — UA-P5-005 Completion Checkpoint
+- Timestamp: 2026-06-03T02:20:55Z.
+- Executed bead: `UA-P5-005 - Domain Surface Inventories`.
+- Branch: `feat/ua-phase5-development-hardening`; baseline Wave 1 checkpoint commit `e6950d495`.
+- Implemented deterministic path/metadata-only `domain-surfaces.json` inventory, integrated through `run_ua.py`, `run_bundle.py`, `report_data.py`, and `render_report.py`.
+- Changed in-scope files:
+  - `scripts/code-scan/domain_surfaces.py`
+  - `scripts/code-scan/run_ua.py`
+  - `scripts/code-scan/run_bundle.py`
+  - `scripts/code-scan/report_data.py`
+  - `scripts/code-scan/render_report.py`
+  - `tests/code_scan/test_domain_surfaces.py`
+  - `tests/code_scan/fixtures/domain_surfaces/**`
+- Claim boundary preserved: surfaces are labeled `claim_type=deterministic_inventory` and `semantic_status=not_validated`; report text states they are not semantic, security/RLS, runtime, or deployment-validity claims.
+- Coder status: two P5-005 coders hit `max_iterations`; Hermes implemented from the RED test contract and recorded exact GREEN/FULL evidence. RED classification: `N/A - subagent max_iterations truncated exact RED evidence`.
+- Focused P5-005/integration GREEN: `python -m pytest tests/code_scan/test_domain_surfaces.py tests/code_scan/test_report_data.py tests/code_scan/test_render_report.py tests/code_scan/test_run_ua.py tests/code_scan/test_run_bundle.py -q` — PASS, `213 passed in 34.45s`.
+- FULL code-scan verification: `python -m pytest tests/code_scan -q` — PASS, `988 passed in 133.03s (0:02:13)`.
+- Compile/diff hygiene: `python -m py_compile ... && git diff --check` — PASS, exit 0/no output.
+- Added-lines/patch secret scan: PASS, `SECRET_SCAN_PASS`.
+- Diff artifact: `/tmp/ua-p5-005-diff.patch` — 1186 lines / 42754 bytes, including untracked fixture files.
+- Reviewer verdict: PASS with no must-fix items.
+- Handoff: `.hermes/handoffs/2026-06-03-0220-ua-p5-005-domain-surface-inventories.md`.
+- Wave status: `UA-P5-004` and `UA-P5-005` accepted; `UA-P5-006` now unblocked but not yet executed.
+- Approval gate: JC approved a local Wave 1.5 checkpoint commit for accepted P5-004/P5-005 only. Approval quote: "I approve a local Wave 1.5 checkpoint commit for accepted UA-P5-004 and UA-P5-005 on feat/ua-phase5-development-hardening. Scope includes only the accepted P5-004/P5-005 implementation, tests, fixtures, handoffs, swarm ledger, and .hermes/PROJECT_STATE.md. No push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls are approved."

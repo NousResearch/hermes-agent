@@ -105,14 +105,19 @@ def build_nodes_from_scan(scan_data: dict) -> List[dict]:
 def build_nodes_from_imports(import_data: dict) -> List[dict]:
     """Extract module nodes from import data.
 
-    For each unique imported module across all files, create a module node.
+    Resolved imports target existing file nodes, so only unresolved raw imports need
+    standalone module nodes. This preserves compatibility for external/bare imports
+    while allowing resolved project files to avoid false orphaning.
     """
     seen_modules: set[str] = set()
     nodes: List[dict] = []
 
     files_map = import_data.get("files", {})
     for rel_path, file_info in files_map.items():
+        resolved = file_info.get("resolved") or {}
         for module_name in file_info.get("imports", []):
+            if module_name in resolved and resolved[module_name].get("resolved_path"):
+                continue
             if module_name not in seen_modules:
                 seen_modules.add(module_name)
                 node_id = normalize_node_id("module", module_name)
@@ -132,19 +137,33 @@ def build_edges_from_imports(import_data: dict) -> List[dict]:
     """Extract import edges from import data.
 
     For each file's imports, create edges: file -> module.
+    Prefer `file_info['resolved'][raw]['resolved_path']` as module target when present,
+    preserving compatibility for unresolved raw imports.
+    Edge meta carries at least `raw_import` and `strategy` when resolved metadata is present.
     """
     edges: List[dict] = []
     files_map = import_data.get("files", {})
 
     for rel_path, file_info in files_map.items():
         source_id = normalize_node_id("file", rel_path)
+        resolved = file_info.get("resolved") or {}
         for module_name in file_info.get("imports", []):
-            target_id = normalize_node_id("module", module_name)
+            res_info = resolved.get(module_name) or {}
+            resolved_path = res_info.get("resolved_path")
+            if resolved_path:
+                target_id = normalize_node_id("file", resolved_path)
+            else:
+                target_id = normalize_node_id("module", module_name)
+            meta = {}
+            if res_info:
+                meta["raw_import"] = module_name
+                if "strategy" in res_info:
+                    meta["strategy"] = res_info["strategy"]
             edges.append({
                 "source": source_id,
                 "target": target_id,
                 "edge_type": "imports",
-                "meta": {},
+                "meta": meta,
             })
 
     return edges

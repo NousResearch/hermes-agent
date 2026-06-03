@@ -292,3 +292,210 @@ def test_main_invalid_input(capsys) -> None:
     exit_code = main()
     captured = capsys.readouterr()
     assert exit_code != 0
+
+
+# ── UA-P5-004: JS/TS Import Resolution V2 ──────────────────────────────
+
+from extract_imports import (
+    resolve_js_relative_import,
+    resolve_alias_import,
+    _infer_extensions,
+    _is_index_candidate,
+)
+
+
+def test_infer_extensions_order() -> None:
+    """_infer_extensions returns the correct extension search order."""
+    tsx_exts = _infer_extensions("tsx")
+    assert tsx_exts.index(".tsx") < tsx_exts.index(".ts")
+    assert tsx_exts.index(".tsx") < tsx_exts.index(".jsx")
+
+    js_exts = _infer_extensions("javascript")
+    assert js_exts.index(".js") < js_exts.index(".jsx")
+    assert js_exts.index(".js") < js_exts.index(".ts")
+    assert js_exts.index(".js") < js_exts.index(".tsx")
+
+    js_exts = _infer_extensions("js")
+    assert ".js" in js_exts
+
+    # Unknown language should default reasonably
+    unknown_exts = _infer_extensions("unknown")
+    assert len(unknown_exts) > 0
+
+
+def test_infer_extensions_prefer_source_match(tmp_path: Path) -> None:
+    """If source is .jsx, prefer .jsx/.js before .ts/.tsx."""
+    jsx_exts = _infer_extensions("jsx")
+    # .jsx and .js should come before .ts/.tsx
+    jsx_js_pos = min(jsx_exts.index(".jsx"), jsx_exts.index(".js") if ".js" in jsx_exts else 99)
+    ts_pos = min(jsx_exts.index(".ts") if ".ts" in jsx_exts else 99,
+                 jsx_exts.index(".tsx") if ".tsx" in jsx_exts else 99)
+    assert jsx_js_pos < ts_pos
+
+
+def test_is_index_candidate() -> None:
+    """_is_index_candidate detects bare directory-style imports."""
+    assert _is_index_candidate("./utils") is True
+    assert _is_index_candidate("../helpers") is True
+    assert _is_index_candidate("./screens") is True
+
+    # Not an index candidate if it has an explicit extension
+    assert _is_index_candidate("./utils.ts") is False
+    assert _is_index_candidate("./Widget.jsx") is False
+
+    # Not an index candidate if it's a node_modules-style import
+    assert _is_index_candidate("react") is False
+    assert _is_index_candidate("@/lib/api") is False
+
+
+def test_resolve_js_relative_import_bare_file_extension_inference(tmp_path: Path) -> None:
+    """Resolve './components/Widget' where Widget.jsx exists."""
+    components = tmp_path / "components"
+    components.mkdir()
+    (components / "Widget.jsx").write_text("export default function Widget() {}")
+
+    source = str(tmp_path / "App.tsx")
+    result = resolve_js_relative_import("./components/Widget", source, tmp_path)
+    assert result is not None
+    assert result["resolved_path"].replace("\\", "/").endswith("components/Widget.jsx")
+    assert result["strategy"] == "extension_inference"
+
+
+def test_resolve_js_relative_import_bare_dir_index_lookup(tmp_path: Path) -> None:
+    """Resolve './utils' where utils/index.ts exists."""
+    utils = tmp_path / "utils"
+    utils.mkdir()
+    (utils / "index.ts").write_text("export const x = 1;")
+
+    source = str(tmp_path / "App.tsx")
+    result = resolve_js_relative_import("./utils", source, tmp_path)
+    assert result is not None
+    assert result["resolved_path"].replace("\\", "/").endswith("utils/index.ts")
+    assert result["strategy"] == "index_file"
+
+
+def test_resolve_js_relative_import_bare_dir_index_jsx(tmp_path: Path) -> None:
+    """Resolve './screens' where screens/index.jsx exists."""
+    screens = tmp_path / "screens"
+    screens.mkdir()
+    (screens / "index.jsx").write_text("export default function Screen() {}")
+
+    source = str(tmp_path / "App.tsx")
+    result = resolve_js_relative_import("./screens", source, tmp_path)
+    assert result is not None
+    assert result["resolved_path"].replace("\\", "/").endswith("screens/index.jsx")
+    assert result["strategy"] == "index_file"
+
+
+def test_resolve_js_relative_import_no_match(tmp_path: Path) -> None:
+    """Return None when no file or index exists."""
+    source = str(tmp_path / "App.tsx")
+    result = resolve_js_relative_import("./nonexistent", source, tmp_path)
+    assert result is None
+
+
+def test_resolve_js_relative_import_absolute_path(tmp_path: Path) -> None:
+    """Non-relative imports return None (handled by alias resolution)."""
+    source = str(tmp_path / "App.tsx")
+    result = resolve_js_relative_import("react", source, tmp_path)
+    assert result is None
+
+    result = resolve_js_relative_import("@/lib/api", source, tmp_path)
+    assert result is None
+
+
+def test_resolve_js_relative_import_already_has_extension(tmp_path: Path) -> None:
+    """When the path already has a known extension, just check existence."""
+    components = tmp_path / "components"
+    components.mkdir()
+    (components / "Widget.tsx").write_text("export default function Widget() {}")
+
+    source = str(tmp_path / "App.tsx")
+    result = resolve_js_relative_import("./components/Widget.tsx", source, tmp_path)
+    assert result is not None
+    assert result["resolved_path"].replace("\\", "/").endswith("components/Widget.tsx")
+    assert result["strategy"] == "direct"
+
+
+def test_resolve_alias_import_at_sign(tmp_path: Path) -> None:
+    """Resolve '@/lib/api' where @ maps to src/, and api.ts exists."""
+    src = tmp_path / "src" / "lib"
+    src.mkdir(parents=True)
+    (src / "api.ts").write_text("export function fetchData() {}")
+
+    aliases = {"@": "src"}
+    result = resolve_alias_import("@/lib/api", aliases, tmp_path)
+    assert result is not None
+    assert result["resolved_path"].replace("\\", "/").endswith("src/lib/api.ts")
+    assert result["strategy"] == "alias_with_extension"
+
+
+def test_resolve_alias_import_no_match(tmp_path: Path) -> None:
+    """Return None when alias doesn't have a matching file."""
+    aliases = {"@": "src"}
+    result = resolve_alias_import("@/nonexistent", aliases, tmp_path)
+    assert result is None
+
+
+def test_resolve_alias_import_no_alias_prefix(tmp_path: Path) -> None:
+    """Return None when import doesn't match any known alias."""
+    aliases = {"@": "src"}
+    result = resolve_alias_import("~/lib/something", aliases, tmp_path)
+    assert result is None
+
+
+def test_resolve_alias_import_tsconfig_paths_wildcard(tmp_path: Path) -> None:
+    """Resolve a tsconfig wildcard-style alias like @/lib/api → src/lib/api."""
+    components = tmp_path / "src" / "components"
+    components.mkdir(parents=True)
+    (components / "Button.tsx").write_text("export default function Button() {}")
+
+    aliases = {"@/*": "src/*"}
+    result = resolve_alias_import("@/components/Button", aliases, tmp_path)
+    assert result is not None
+    assert result["resolved_path"].replace("\\", "/").endswith("src/components/Button.tsx")
+
+
+def test_resolve_alias_import_exact_match(tmp_path: Path) -> None:
+    """Resolve an exact alias like @utils → src/utils/index.ts."""
+    utils = tmp_path / "src" / "utils"
+    utils.mkdir(parents=True)
+    (utils / "index.ts").write_text("export const x = 1;")
+
+    aliases = {"@utils": "src/utils"}
+    result = resolve_alias_import("@utils", aliases, tmp_path)
+    assert result is not None
+    assert result["resolved_path"].replace("\\", "/").endswith("src/utils/index.ts")
+    assert result["strategy"] == "alias_index_file"
+
+
+def test_js_ts_import_schema_preserves_raw_import(tmp_path: Path) -> None:
+    """build_import_map output includes resolved_to when resolution succeeds."""
+    src = tmp_path / "src"
+    src.mkdir()
+    # Create a file with a bare relative import
+    (src / "App.tsx").write_text("import Widget from './components/Widget';\n")
+    components = src / "components"
+    components.mkdir()
+    (components / "Widget.jsx").write_text("export default function Widget() {}")
+
+    scan = {
+        "project_root": str(tmp_path),
+        "total_files": 2,
+        "files": [
+            {"path": "src/App.tsx", "language": "typescript"},
+            {"path": "src/components/Widget.jsx", "language": "javascript"},
+        ],
+    }
+    result = build_import_map(scan, str(tmp_path))
+
+    app_imports = result["files"]["src/App.tsx"]["imports"]
+    # Raw import preserved
+    assert "./components/Widget" in app_imports
+    # Check resolved_to field is present
+    file_entry = result["files"]["src/App.tsx"]
+    assert "resolved" in file_entry
+    resolved = file_entry["resolved"]
+    assert "./components/Widget" in resolved
+    assert resolved["./components/Widget"]["resolved_path"].replace("\\", "/").endswith("components/Widget.jsx")
+    assert resolved["./components/Widget"]["strategy"] == "extension_inference"

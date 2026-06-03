@@ -1,0 +1,24 @@
+{
+  "project_root": "/tmp/test_empty_project",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 1,
+  "total_lines": 2,
+  "languages": {
+    "python": 1
+  },
+  "categories": {
+    "source": 1
+  },
+  "frameworks": [],
+  "files": [
+    {
+      "path": "src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "source",
+      "lines": 2,
+      "size_bytes": 71
+    }
+  ],
+  "warnings": []
+}

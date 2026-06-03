@@ -1,0 +1,42 @@
+{
+  "project_root": "/tmp/test_pwa",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 3,
+  "total_lines": 60,
+  "languages": {
+    "json": 2,
+    "javascript": 1
+  },
+  "categories": {
+    "config": 2,
+    "source": 1
+  },
+  "frameworks": [],
+  "files": [
+    {
+      "path": "manifest.json",
+      "relative_path": "manifest.json",
+      "language": "json",
+      "category": "config",
+      "lines": 20,
+      "size_bytes": 500
+    },
+    {
+      "path": "public/manifest.webmanifest",
+      "relative_path": "public/manifest.webmanifest",
+      "language": "json",
+      "category": "config",
+      "lines": 20,
+      "size_bytes": 500
+    },
+    {
+      "path": "service-worker.js",
+      "relative_path": "service-worker.js",
+      "language": "javascript",
+      "category": "source",
+      "lines": 20,
+      "size_bytes": 400
+    }
+  ],
+  "warnings": []
+}

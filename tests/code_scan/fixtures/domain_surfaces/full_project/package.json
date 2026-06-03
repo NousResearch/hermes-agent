@@ -1,0 +1,10 @@
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint src/"
+  }
+}

@@ -32,6 +32,7 @@ _SECTION_ORDER = [
     "import_profile",  # derived from classification
     "orphan_triage",
     "semantic_signals",
+    "domain_surfaces",
     "delta",
     "readiness",
     "reading_plan",
@@ -344,6 +345,52 @@ def _render_semantic_signals(semantic: Any) -> str:
     return "\n".join(lines)
 
 
+def _render_domain_surfaces(domain_surfaces: Any) -> str:
+    """Render deterministic domain-surface inventory section."""
+    lines = ["## Domain Surfaces", ""]
+    if domain_surfaces == "not_available":
+        lines.append("*Not available — domain-surfaces artifact not provided.*")
+        lines.append("")
+        return "\n".join(lines)
+    if not isinstance(domain_surfaces, dict):
+        lines.append("*Not available.*")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(
+        "Inventory-only deterministic path signals; these are not semantic, security, "
+        "runtime, RLS, or deployment-validity claims."
+    )
+    lines.append("")
+    summary = domain_surfaces.get("summary", {})
+    lines.append(f"Total surfaces: **{summary.get('total_surfaces', 0)}**")
+    lines.append("")
+
+    surface_types = summary.get("surface_types", {}) or {}
+    if surface_types:
+        lines.append("### Surface counts")
+        lines.append("")
+        lines.append("| Surface | Count |")
+        lines.append("|---------|-------|")
+        for surface, count in sorted(surface_types.items()):
+            lines.append(f"| {_safe_inline(surface)} | {count} |")
+        lines.append("")
+
+    surfaces = domain_surfaces.get("surfaces", []) or []
+    if surfaces:
+        lines.append("### Surface paths")
+        lines.append("")
+        lines.append("| Surface | Path | Claim | Status |")
+        lines.append("|---------|------|-------|--------|")
+        for item in sorted(surfaces, key=lambda x: (x.get("surface", ""), x.get("path", ""))):
+            lines.append(
+                f"| {_safe_inline(item.get('surface', ''))} | `{_safe_inline(item.get('path', ''))}` | "
+                f"{_safe_inline(item.get('claim_type', ''))} | {_safe_inline(item.get('semantic_status', ''))} |"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _render_delta(delta: Any) -> str:
     """Render Delta Summary section."""
     lines = ["## Delta Summary", ""]
@@ -613,6 +660,7 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
     hub_rankings = sections.get("hub_rankings", "not_available")
     orphan_triage = sections.get("orphan_triage", "not_available")
     semantic = sections.get("semantic_signals", "not_available")
+    domain_surfaces = sections.get("domain_surfaces", "not_available")
     delta = sections.get("delta", "not_available")
     readiness = sections.get("readiness", "not_available")
     graph = sections.get("graph_analysis", "not_available")
@@ -643,6 +691,9 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
 
     # 7. Semantic Signals
     parts.append(_render_semantic_signals(semantic))
+
+    # 7b. Domain Surfaces
+    parts.append(_render_domain_surfaces(domain_surfaces))
 
     # 8. Delta Summary
     parts.append(_render_delta(delta))

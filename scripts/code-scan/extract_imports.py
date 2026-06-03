@@ -17,7 +17,46 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Iterator
+
+# ── Extension inference ──────────────────────────────────────────────
+
+_JS_TS_EXTENSIONS_ORDER = [".js", ".jsx", ".ts", ".tsx"]
+
+_EXTENSION_PRIORITY = {
+    "javascript": [".js", ".jsx", ".ts", ".tsx"],
+    "typescript": [".ts", ".tsx", ".js", ".jsx"],
+    "js": [".js", ".jsx", ".ts", ".tsx"],
+    "jsx": [".jsx", ".js", ".ts", ".tsx"],
+    "tsx": [".tsx", ".ts", ".jsx", ".js"],
+    "ts": [".ts", ".tsx", ".js", ".jsx"],
+}
+
+_KNOWN_JS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
+
+
+def _infer_extensions(source_language: str) -> list[str]:
+    """Return ordered list of extensions to try when resolving bare imports.
+
+    Prioritises extensions matching the source language family (JS prefers
+    .js/.jsx, TS prefers .ts/.tsx), then falls back to the full set.
+    """
+    lang = source_language.lower()
+    return _EXTENSION_PRIORITY.get(lang, list(_JS_TS_EXTENSIONS_ORDER))
+
+
+def _is_index_candidate(import_path: str) -> bool:
+    """Check whether an import path is a bare directory-style import.
+
+    Returns True for paths like ``./utils`` or ``../helpers`` that lack
+    an explicit file extension, indicating the resolver should look for
+    an index file inside that directory.
+    """
+    if not (import_path.startswith("./") or import_path.startswith("../")):
+        return False
+    ext = Path(import_path).suffix
+    return ext not in _KNOWN_JS_EXTENSIONS
 
 
 # ── Regex patterns ──────────────────────────────────────────────────
@@ -172,6 +211,289 @@ def extract_shell_imports(source: str) -> list[str]:
     return paths
 
 
+# ── JS/TS import resolution helpers ─────────────────────────────────────
+
+def _probe_with_extensions(base_path: Path, extensions: list[str]) -> Path | None:
+    """Try *base_path* with each extension in order, returning the first hit."""
+    for ext in extensions:
+        candidate = base_path.with_suffix(base_path.suffix + ext)
+        # If base has no suffix yet (e.g., "./utils"), with_suffix adds ext directly
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _probe_index(directory: Path, extensions: list[str]) -> Path | None:
+    """Look for index.{ext} inside *directory* with given extensions."""
+    if not directory.is_dir():
+        return None
+    for ext in extensions:
+        candidate = directory / f"index{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def resolve_js_relative_import(
+    import_path: str,
+    source_file_path: str,
+    project_root: str | Path,
+) -> dict | None:
+    """Resolve a relative JS/TS import to an actual file on disk.
+
+    Handles:
+    - Extension inference (e.g. ``./Widget`` → ``./Widget.jsx``)
+    - Index file lookup (e.g. ``./utils`` → ``./utils/index.ts``)
+    - Direct matches (e.g. ``./Widget.tsx`` when that file exists)
+
+    Args:
+        import_path: The raw import string (e.g. ``"./components/Widget"``).
+        source_file_path: Absolute path of the file containing the import.
+        project_root: The project root directory (string or Path).
+
+    Returns:
+        ``{"resolved_path": <str>, "strategy": <str>}`` on success,
+        ``None`` if the import cannot be resolved.
+    """
+    if not (import_path.startswith("./") or import_path.startswith("../")):
+        return None
+
+    root = Path(project_root).resolve()
+    source = Path(source_file_path).resolve()
+
+    # Determine source file's language from its extension
+    source_ext = source.suffix.lower()
+    source_lang = {
+        ".tsx": "tsx",
+        ".jsx": "jsx",
+        ".ts": "ts",
+        ".js": "js",
+    }.get(source_ext, "javascript")
+
+    exts = _infer_extensions(source_lang)
+
+    # Resolve the relative import against the source file's directory
+    source_dir = source.parent
+    candidate = Path(import_path)
+
+    # Normalise: ./foo → foo, ../bar → ../bar
+    if import_path.startswith("./"):
+        candidate = source_dir / candidate.relative_to("./".strip())
+    else:
+        # For ../ paths, just join and normalise
+        candidate = (source_dir / import_path).resolve()
+
+    # 1. Direct match: if candidate already has an extension, just check existence
+    if source_ext in _KNOWN_JS_EXTENSIONS:
+        # Import already has a JS/TS extension
+        if candidate.suffix.lower() in _KNOWN_JS_EXTENSIONS:
+            if candidate.is_file():
+                try:
+                    rel = candidate.relative_to(root)
+                    return {"resolved_path": str(rel), "strategy": "direct"}
+                except ValueError:
+                    return {"resolved_path": str(candidate), "strategy": "direct"}
+            return None
+
+    # 2. Try extension inference on the bare path
+    # First, check if the path without any suffix matches a file with an extension
+    bare = candidate
+    if candidate.suffix:
+        bare = Path(str(candidate)[:-len(candidate.suffix)])
+
+    result = _probe_with_extensions(bare, exts)
+    if result is not None:
+        try:
+            rel = result.relative_to(root)
+            return {"resolved_path": str(rel), "strategy": "extension_inference"}
+        except ValueError:
+            return {"resolved_path": str(result), "strategy": "extension_inference"}
+
+    # 3. Try index file resolution
+    if _is_index_candidate(import_path):
+        if candidate.is_dir():
+            index_result = _probe_index(candidate, exts)
+            if index_result is not None:
+                try:
+                    rel = index_result.relative_to(root)
+                    return {"resolved_path": str(rel), "strategy": "index_file"}
+                except ValueError:
+                    return {"resolved_path": str(index_result), "strategy": "index_file"}
+
+    return None
+
+
+def _resolve_alias_base(import_path: str, aliases: dict[str, str], project_root: Path) -> tuple[Path | None, str]:
+    """Resolve an alias-prefixed import to a base path on disk.
+
+    Returns (resolved_base_path, strategy_hint).
+    """
+    for alias, target in sorted(aliases.items(), key=lambda x: -len(x[0])):
+        if alias.endswith("/*"):
+            prefix = alias[:-2]
+            if import_path.startswith(prefix + "/") or import_path == prefix + "/":
+                remainder = import_path[len(prefix) + 1:]
+                target_base = target[:-2] if target.endswith("/*") else target
+                base = project_root / target_base / remainder
+                return base, "alias_wildcard"
+        else:
+            if import_path == alias or import_path.startswith(alias + "/"):
+                remainder = import_path[len(alias):].lstrip("/")
+                base = project_root / target
+                if remainder:
+                    base = base / remainder
+                return base, "alias_exact"
+    return None, ""
+
+
+def _resolve_base_with_extensions(base: Path, extensions: list[str]) -> Path | None:
+    """Try *base* directly, then with extensions appended, then as a directory with index."""
+    # 1. Direct (already has extension)
+    if base.suffix.lower() in _KNOWN_JS_EXTENSIONS and base.is_file():
+        return base
+
+    # 2. Extension inference
+    if base.suffix:
+        bare = Path(str(base)[: -len(base.suffix)])
+        result = _probe_with_extensions(bare, extensions)
+        if result is not None:
+            return result
+    else:
+        result = _probe_with_extensions(base, extensions)
+        if result is not None:
+            return result
+
+    # 3. Index file
+    if base.is_dir():
+        idx = _probe_index(base, extensions)
+        if idx is not None:
+            return idx
+
+    return None
+
+
+def resolve_alias_import(
+    import_path: str,
+    aliases: dict[str, str],
+    project_root: str | Path,
+) -> dict | None:
+    """Resolve an aliased JS/TS import (e.g. ``@/lib/api``) to a file path.
+
+    Args:
+        import_path: The aliased import string (e.g. ``"@/lib/api"``).
+        aliases: Mapping from alias prefix to relative path (e.g. ``{"@": "src"}``).
+        project_root: The project root directory.
+
+    Returns:
+        ``{"resolved_path": <str>, "strategy": <str>}`` on success,
+        ``None`` if unresolvable.
+    """
+    root = Path(project_root).resolve()
+    base, kind = _resolve_alias_base(import_path, aliases, root)
+    if base is None:
+        return None
+
+    # Try to resolve with extension inference + index lookup
+    result = _resolve_base_with_extensions(base, _JS_TS_EXTENSIONS_ORDER)
+    if result is not None:
+        try:
+            rel = result.relative_to(root)
+            strategy = "alias_wildcard_index_file" if "index" in (kind or "") else f"alias_with_extension"
+            if result.name == "index" + result.suffix:
+                strategy = "alias_index_file"
+            return {"resolved_path": str(rel), "strategy": strategy}
+        except ValueError:
+            return {"resolved_path": str(result), "strategy": "alias_with_extension"}
+    return None
+
+
+# ── Config-based alias extraction ─────────────────────────────────────
+
+def _parse_tsconfig_paths(tsconfig_path: str | Path) -> dict[str, str]:
+    """Parse ``paths`` from tsconfig.json and return an alias map.
+
+    Only handles statically parseable JSON configs — no JSON5, no comments,
+    no extends resolution.  Returns empty dict on any parse error.
+    """
+    try:
+        with open(str(tsconfig_path), "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        paths = cfg.get("compilerOptions", {}).get("paths", {})
+        result = {}
+        for alias, targets in paths.items():
+            if targets:
+                # Take the first target; strip trailing "/*" from both sides
+                target = targets[0]
+                if alias.endswith("/*"):
+                    if target.endswith("/*"):
+                        target = target[:-2]
+                result[alias] = target
+        return result
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return {}
+
+
+def _parse_jsconfig_paths(jsconfig_path: str | Path) -> dict[str, str]:
+    """Parse ``paths`` from jsconfig.json (same format as tsconfig)."""
+    return _parse_tsconfig_paths(jsconfig_path)
+
+
+def _parse_vite_aliases(vite_config_path: str | Path) -> dict[str, str]:
+    """Statically parse ``resolve.alias`` from vite.config.* files.
+
+    Uses regex-based extraction — does NOT execute the config.
+    Supports simple object and array-of-{find,replacement} forms.
+    """
+    try:
+        with open(str(vite_config_path), "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return {}
+
+    aliases: dict[str, str] = {}
+
+    # Pattern: alias: { '@': 'src', ... }
+    obj_match = re.search(r"alias\s*:\s*\{([^}]+)\}", content, re.DOTALL)
+    if obj_match:
+        body = obj_match.group(1)
+        for m in re.finditer(
+            r"""['"]([^'"]+)['"]\s*:\s*['"]([^'"]+)['"]""", body
+        ):
+            aliases[m.group(1)] = m.group(2)
+
+    # Pattern: alias: [{ find: '@', replacement: 'src' }, ...]
+    for m in re.finditer(
+        r"find\s*:\s*['\"]([^'\"]+)['\"]\s*,\s*replacement\s*:\s*['\"]([^'\"]+)['\"]",
+        content,
+    ):
+        aliases[m.group(1)] = m.group(2)
+
+    return aliases
+
+
+def _discover_js_aliases(project_root: str | Path) -> dict[str, str]:
+    """Discover statically parseable JS/TS aliases from common config files.
+
+    This is intentionally best-effort and stdlib-only: malformed or dynamic
+    configs simply contribute no aliases.
+    """
+    root = Path(project_root)
+    aliases: dict[str, str] = {}
+    for config_name, parser in (
+        ("tsconfig.json", _parse_tsconfig_paths),
+        ("jsconfig.json", _parse_jsconfig_paths),
+    ):
+        config_path = root / config_name
+        if config_path.is_file():
+            aliases.update(parser(config_path))
+
+    for pattern in ("vite.config.js", "vite.config.ts", "vite.config.mjs", "vite.config.cjs"):
+        config_path = root / pattern
+        if config_path.is_file():
+            aliases.update(_parse_vite_aliases(config_path))
+    return aliases
+
+
 # Language → extractor dispatch
 _LANG_EXTRACTORS: dict[str, Callable] = {
     "python": extract_python_imports,
@@ -223,6 +545,7 @@ def build_import_map(scan_data: dict, scan_root: str) -> dict:
     files_with_imports = 0
     files_without_imports = 0
     total_warnings = 0
+    js_aliases = _discover_js_aliases(scan_root)
 
     for rel_path, language in iter_scanned_files(scan_data):
         imports, warnings = extract_imports_for_file(
@@ -232,6 +555,19 @@ def build_import_map(scan_data: dict, scan_root: str) -> dict:
             "imports": imports,
             "warnings": warnings,
         }
+        # For JS/TS-like files, add resolved dict by wiring existing resolver (only
+        # for relative imports that succeed; non-JS/TS and unresolved stay bare).
+        lang = language.lower()
+        if lang in {"javascript", "typescript", "js", "ts", "jsx", "tsx"}:
+            resolved: dict[str, dict] = {}
+            for mod in imports:
+                full_source = os.path.join(scan_root, rel_path)
+                res = resolve_js_relative_import(mod, full_source, scan_root)
+                if res is None and js_aliases:
+                    res = resolve_alias_import(mod, js_aliases, scan_root)
+                if res is not None:
+                    resolved[mod] = res
+            files_map[rel_path]["resolved"] = resolved
         total_warnings += len(warnings)
         if imports:
             files_with_imports += 1

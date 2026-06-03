@@ -1,0 +1,24 @@
+{
+  "project_root": "/tmp/test_pkg_scripts",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 1,
+  "total_lines": 11,
+  "languages": {
+    "json": 1
+  },
+  "categories": {
+    "config": 1
+  },
+  "frameworks": [],
+  "files": [
+    {
+      "path": "package.json",
+      "relative_path": "package.json",
+      "language": "json",
+      "category": "config",
+      "lines": 11,
+      "size_bytes": 175
+    }
+  ],
+  "warnings": []
+}

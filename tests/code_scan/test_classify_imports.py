@@ -489,3 +489,57 @@ def test_classify_relative_typescript_nested() -> None:
     # JS/TS relative imports start with ./ or ../
     assert classify_import("../utils/helpers", "typescript", local_roots) == "relative"
     assert classify_import("./index", "typescript", local_roots) == "relative"
+
+
+# ── UA-P5-004: JS/TS Import Resolution V2 ──────────────────────────────
+
+from classify_imports import classify_resolved_import
+
+
+def test_classify_resolved_import_local() -> None:
+    """A resolved import pointing to a file within the project is 'local'."""
+    local_roots = {"src"}
+    # resolved_path is within a known local root
+    result = classify_resolved_import(
+        raw_import="@/lib/api",
+        resolved_path="src/lib/api.ts",
+        language="typescript",
+        local_roots=local_roots,
+    )
+    assert result == "local"
+
+
+def test_classify_resolved_import_relative_to_local() -> None:
+    """A relative import that resolved to a local file is 'local'."""
+    local_roots = {"src"}
+    result = classify_resolved_import(
+        raw_import="./components/Widget",
+        resolved_path="src/components/Widget.jsx",
+        language="typescript",
+        local_roots=local_roots,
+    )
+    assert result == "local"
+
+
+def test_classify_resolved_import_unresolved_third_party() -> None:
+    """An unresolved import that looks like a package is 'third_party'."""
+    local_roots = {"src"}
+    result = classify_resolved_import(
+        raw_import="react",
+        resolved_path=None,
+        language="typescript",
+        local_roots=local_roots,
+    )
+    assert result == "third_party"
+
+
+def test_classify_resolved_import_unresolved_relative() -> None:
+    """An unresolved relative import stays 'relative'."""
+    local_roots = {"src"}
+    result = classify_resolved_import(
+        raw_import="./missing/component",
+        resolved_path=None,
+        language="typescript",
+        local_roots=local_roots,
+    )
+    assert result == "relative"

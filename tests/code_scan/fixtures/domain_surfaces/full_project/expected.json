@@ -1,0 +1,59 @@
+{
+  "surfaces": [
+    {
+      "surface": "supabase_migration",
+      "path": "supabase/migrations/20240101000000_create_users.sql",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    },
+    {
+      "surface": "supabase_migration",
+      "path": "supabase/migrations/20240102000000_create_profiles.sql",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    },
+    {
+      "surface": "supabase_edge_function",
+      "path": "supabase/functions/create-invite-code/index.ts",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    },
+    {
+      "surface": "vite_config",
+      "path": "vite.config.ts",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    },
+    {
+      "surface": "service_worker",
+      "path": "sw.js",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    },
+    {
+      "surface": "ci_workflow",
+      "path": ".github/workflows/ci.yml",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    },
+    {
+      "surface": "vercel_config",
+      "path": "vercel.json",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    }
+  ],
+  "summary": {
+    "total_surfaces": 7,
+    "surface_types": {
+      "supabase_migration": 2,
+      "supabase_edge_function": 1,
+      "vite_config": 1,
+      "service_worker": 1,
+      "ci_workflow": 1,
+      "vercel_config": 1
+    }
+  },
+  "claim_type": "deterministic_inventory",
+  "semantic_status": "not_validated"
+}

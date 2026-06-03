@@ -1,0 +1,9 @@
+{
+  "surfaces": [],
+  "summary": {
+    "total_surfaces": 0,
+    "surface_types": {}
+  },
+  "claim_type": "deterministic_inventory",
+  "semantic_status": "not_validated"
+}

@@ -37,6 +37,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 from extract_imports import build_import_map
 from assemble_graph import assemble_graph
 from graph_schema import validate_graph
+from domain_surfaces import scan_domain_surfaces
 
 # ── Optional enrichers (may be absent if upstream beads not yet available) ---
 try:
@@ -99,6 +100,7 @@ def _get_script_versions() -> dict:
         "extract_imports.py": _script_hash(_SCRIPT_DIR / "extract_imports.py"),
         "assemble_graph.py": _script_hash(_SCRIPT_DIR / "assemble_graph.py"),
         "graph_schema.py": _script_hash(_SCRIPT_DIR / "graph_schema.py"),
+        "domain_surfaces.py": _script_hash(_SCRIPT_DIR / "domain_surfaces.py"),
         "run_ua.py": _script_hash(_SCRIPT_DIR / "run_ua.py"),
         "run_bundle.py": _script_hash(_SCRIPT_DIR / "run_bundle.py"),
     }
@@ -416,6 +418,8 @@ class RunUA:
                 "issue_count": len(self.validation_data.get("issues", [])),
                 "warning_count": len(self.validation_data.get("warnings", [])),
             }
+        if getattr(self, "domain_surfaces_data", None):
+            summary["domain_surfaces"] = self.domain_surfaces_data.get("summary", {})
         return summary
 
     def _build_delta_summary(self) -> dict:
@@ -600,6 +604,13 @@ class RunUA:
         self.artifact_paths[filename] = path
         return path
 
+    def _run_domain_surfaces(self) -> None:
+        """Run deterministic domain surface inventory and write artifact."""
+        if not self.scan_data:
+            return
+        self.domain_surfaces_data = scan_domain_surfaces(self.scan_data)
+        self._write_json("domain-surfaces.json", self.domain_surfaces_data)
+
     def _run_runtime_readiness(self) -> None:
         """Run runtime readiness detection and write artifacts (UA-P1-003).
 
@@ -720,6 +731,7 @@ class RunUA:
         """inventory: scan + imports only."""
         self.scan_data = self._scan()
         self._write_json("scan.json", self.scan_data)
+        self._run_domain_surfaces()
 
         self.imports_data = self._extract_imports()
         self._write_json("imports.json", self.imports_data)
@@ -737,6 +749,7 @@ class RunUA:
         """structure: scan + imports + graph + validation."""
         self.scan_data = self._scan()
         self._write_json("scan.json", self.scan_data)
+        self._run_domain_surfaces()
 
         self.imports_data = self._extract_imports()
         self._write_json("imports.json", self.imports_data)
@@ -762,6 +775,7 @@ class RunUA:
         # Structure pipeline
         self.scan_data = self._scan()
         self._write_json("scan.json", self.scan_data)
+        self._run_domain_surfaces()
 
         self.imports_data = self._extract_imports()
         self._write_json("imports.json", self.imports_data)
@@ -803,6 +817,7 @@ class RunUA:
         """delta: incremental scan + delta summary against prior manifest."""
         self.scan_data = self._scan()
         self._write_json("scan.json", self.scan_data)
+        self._run_domain_surfaces()
 
         self.imports_data = self._extract_imports()
         self._write_json("imports.json", self.imports_data)
@@ -820,6 +835,7 @@ class RunUA:
         # Structure pipeline
         self.scan_data = self._scan()
         self._write_json("scan.json", self.scan_data)
+        self._run_domain_surfaces()
 
         self.imports_data = self._extract_imports()
         self._write_json("imports.json", self.imports_data)
@@ -852,6 +868,7 @@ class RunUA:
         # Everything in review (structure + analytics + context + report)
         self.scan_data = self._scan()
         self._write_json("scan.json", self.scan_data)
+        self._run_domain_surfaces()
 
         self.imports_data = self._extract_imports()
         self._write_json("imports.json", self.imports_data)

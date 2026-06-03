@@ -1,0 +1,18 @@
+{
+  "surfaces": [
+    {
+      "surface": "package_scripts",
+      "path": "package.json",
+      "claim_type": "deterministic_inventory",
+      "semantic_status": "not_validated"
+    }
+  ],
+  "summary": {
+    "total_surfaces": 1,
+    "surface_types": {
+      "package_scripts": 1
+    }
+  },
+  "claim_type": "deterministic_inventory",
+  "semantic_status": "not_validated"
+}

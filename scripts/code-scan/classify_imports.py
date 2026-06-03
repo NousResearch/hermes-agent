@@ -176,6 +176,35 @@ def classify_import(module: str, language: str, local_roots: set[str]) -> str:
     return "third_party"
 
 
+def classify_resolved_import(
+    raw_import: str,
+    resolved_path: str | None,
+    language: str,
+    local_roots: set[str],
+) -> str:
+    """Classify an import using its resolved filesystem path when available.
+
+    Resolution order:
+      1. If resolved_path is present and any segment matches a known local root
+         → 'local'
+      2. If raw_import starts with './' or '../' → 'relative' (even unresolved)
+      3. Fall back to classify_import(raw_import, language, local_roots)
+    """
+    # Resolved path available? Check if it falls under a local root
+    if resolved_path is not None:
+        path_parts = resolved_path.split("/")
+        if any(part in local_roots for part in path_parts):
+            return "local"
+
+    # No resolved path (or not under a local root).
+    # Preserve relative-import semantics even when resolution failed.
+    if raw_import.startswith("./") or raw_import.startswith("../"):
+        return "relative"
+
+    # Fallback to existing classification logic
+    return classify_import(raw_import, language, local_roots)
+
+
 # ── Build classified map ────────────────────────────────────────────
 
 

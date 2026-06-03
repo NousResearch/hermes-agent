@@ -838,3 +838,111 @@ class TestMain:
         assert abs_sources == [], (
             f"Found absolute-path edge sources that should have been canonicalized: {abs_sources}"
         )
+
+
+# ── UA-P5-004: JS/TS Import Resolution V2 ──────────────────────────────
+
+class TestImportResolutionV2Graph:
+    """Test that resolved imports produce correct graph edges."""
+
+    def test_edge_meta_carries_resolution_strategy(self, build_edges_from_imports):
+        """Edges from resolved imports should carry strategy and raw_import in meta."""
+        import_data = {"files": {
+            "src/App.tsx": {
+                "imports": ["./components/Widget"],
+                "resolved": {
+                    "./components/Widget": {
+                        "resolved_path": "src/components/Widget.jsx",
+                        "strategy": "extension_inference",
+                    },
+                },
+                "warnings": [],
+            },
+        }}
+        edges = build_edges_from_imports(import_data)
+        assert len(edges) == 1
+        edge = edges[0]
+        assert edge["source"] == "file:src/App.tsx"
+        assert edge["target"] == "file:src/components/Widget.jsx"
+        assert edge["meta"]["strategy"] == "extension_inference"
+        assert edge["meta"]["raw_import"] == "./components/Widget"
+
+    def test_edge_meta_unresolved_imports(self, build_edges_from_imports):
+        """Unresolved imports get standard module edges without resolution metadata."""
+        import_data = {"files": {
+            "src/App.tsx": {
+                "imports": ["react", "./missing/component"],
+                "resolved": {} ,
+                "warnings": [],
+            },
+        }}
+        edges = build_edges_from_imports(import_data)
+        assert len(edges) == 2
+        # The react import should have no resolution meta
+        react_edge = [e for e in edges if e["target"] == "module:react"][0]
+        assert "strategy" not in react_edge.get("meta", {})
+        # The missing import should also have no meta
+        missing_edge = [e for e in edges if "missing" in e["target"]][0]
+        assert "strategy" not in missing_edge.get("meta", {})
+
+    def test_build_nodes_from_imports_with_resolved_paths(self, build_nodes_from_imports):
+        """Module nodes should use resolved_path when available."""
+        import_data = {"files": {
+            "src/App.tsx": {
+                "imports": ["./components/Widget"],
+                "resolved": {
+                    "./components/Widget": {
+                        "resolved_path": "src/components/Widget.jsx",
+                        "strategy": "extension_inference",
+                    },
+                },
+                "warnings": [],
+            },
+        }}
+        nodes = build_nodes_from_imports(import_data)
+        ids = [n["node_id"] for n in nodes]
+        # Resolved project-file imports should target file nodes, not create parallel module nodes.
+        assert "module:src/components/Widget.jsx" not in ids
+
+    def test_fixture_import_resolution_prevents_false_orphaning(self, assemble_graph, count_orphans):
+        """Producer→consumer E2E: resolved JS/TS imports connect real fixture files."""
+        script_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        from extract_imports import build_import_map
+
+        fixture = PROJECT_ROOT / "tests" / "code_scan" / "fixtures" / "import_resolution" / "react_vite_alias"
+        scan = {
+            "project_root": str(fixture),
+            "total_files": 6,
+            "files": [
+                {"relative_path": "src/App.tsx", "path": "src/App.tsx", "language": "typescript"},
+                {"relative_path": "src/components/Widget.jsx", "path": "src/components/Widget.jsx", "language": "javascript"},
+                {"relative_path": "src/lib/api.ts", "path": "src/lib/api.ts", "language": "typescript"},
+                {"relative_path": "src/utils/index.ts", "path": "src/utils/index.ts", "language": "typescript"},
+                {"relative_path": "src/screens/index.jsx", "path": "src/screens/index.jsx", "language": "javascript"},
+                {"relative_path": "tsconfig.json", "path": "tsconfig.json", "language": "json"},
+            ],
+        }
+        import_map = build_import_map(scan, str(fixture))
+        graph = assemble_graph([scan], [import_map])
+
+        app_resolved = import_map["files"]["src/App.tsx"]["resolved"]
+        assert app_resolved["./components/Widget"]["resolved_path"] == "src/components/Widget.jsx"
+        assert app_resolved["@/lib/api"]["resolved_path"] == "src/lib/api.ts"
+        assert app_resolved["./utils"]["resolved_path"] == "src/utils/index.ts"
+        assert app_resolved["./screens"]["resolved_path"] == "src/screens/index.jsx"
+
+        graph_nodes = graph["nodes"]
+        graph_edges = graph["edges"]
+        assert count_orphans(graph_nodes, graph_edges) == 1  # App.tsx is the only entrypoint-like orphan.
+        orphan_ids = {
+            node["node_id"]
+            for node in graph_nodes
+            if node["node_type"] == "file"
+            and node["node_id"] not in {edge["target"] for edge in graph_edges}
+        }
+        assert "file:src/components/Widget.jsx" not in orphan_ids
+        assert "file:src/lib/api.ts" not in orphan_ids
+        assert "file:src/utils/index.ts" not in orphan_ids
+        assert "file:src/screens/index.jsx" not in orphan_ids

@@ -1,0 +1,86 @@
+{
+  "project_root": "/tmp/test_full_project",
+  "scanned_at": "2026-06-02T00:00:00Z",
+  "total_files": 8,
+  "total_lines": 200,
+  "languages": {
+    "python": 1,
+    "typescript": 2,
+    "sql": 2,
+    "yaml": 1,
+    "json": 2
+  },
+  "categories": {
+    "source": 3,
+    "config": 3,
+    "migration": 2
+  },
+  "frameworks": [],
+  "files": [
+    {
+      "path": "supabase/migrations/20240101000000_create_users.sql",
+      "relative_path": "supabase/migrations/20240101000000_create_users.sql",
+      "language": "sql",
+      "category": "migration",
+      "lines": 8,
+      "size_bytes": 200
+    },
+    {
+      "path": "supabase/migrations/20240102000000_create_profiles.sql",
+      "relative_path": "supabase/migrations/20240102000000_create_profiles.sql",
+      "language": "sql",
+      "category": "migration",
+      "lines": 6,
+      "size_bytes": 150
+    },
+    {
+      "path": "supabase/functions/create-invite-code/index.ts",
+      "relative_path": "supabase/functions/create-invite-code/index.ts",
+      "language": "typescript",
+      "category": "source",
+      "lines": 10,
+      "size_bytes": 300
+    },
+    {
+      "path": "vite.config.ts",
+      "relative_path": "vite.config.ts",
+      "language": "typescript",
+      "category": "config",
+      "lines": 9,
+      "size_bytes": 172
+    },
+    {
+      "path": "sw.js",
+      "relative_path": "sw.js",
+      "language": "javascript",
+      "category": "source",
+      "lines": 14,
+      "size_bytes": 337
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "relative_path": ".github/workflows/ci.yml",
+      "language": "yaml",
+      "category": "config",
+      "lines": 14,
+      "size_bytes": 209
+    },
+    {
+      "path": "vercel.json",
+      "relative_path": "vercel.json",
+      "language": "json",
+      "category": "config",
+      "lines": 6,
+      "size_bytes": 97
+    },
+    {
+      "path": "src/main.py",
+      "relative_path": "src/main.py",
+      "language": "python",
+      "category": "source",
+      "lines": 2,
+      "size_bytes": 50
+    }
+  ],
+  "warnings": []
+}

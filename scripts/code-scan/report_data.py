@@ -45,6 +45,7 @@ _ARTIFACT_KEYS = [
     ("orphan_triage", "orphan-triage"),
     ("hub_rankings", "hub-rankings"),
     ("semantic_signals", "semantic-signals"),
+    ("domain_surfaces", "domain-surfaces"),
     ("delta", "delta"),
     ("readiness", "readiness"),
 ]
@@ -455,6 +456,38 @@ def _reading_plan_from_semantic_hotspots(
         })
 
 
+def _build_domain_surfaces_section(domain_surfaces: Optional[dict], warnings: list[str]) -> Any:
+    """Build deterministic domain-surface inventory section."""
+    if domain_surfaces is None:
+        return "not_available"
+    if not isinstance(domain_surfaces, dict):
+        warnings.append("domain_surfaces: invalid artifact shape")
+        return "not_available"
+    surfaces = domain_surfaces.get("surfaces", [])
+    summary = domain_surfaces.get("summary", {})
+    return {
+        "surfaces": sorted(
+            [
+                {
+                    "surface": item.get("surface", ""),
+                    "path": item.get("path", ""),
+                    "claim_type": item.get("claim_type", "deterministic_inventory"),
+                    "semantic_status": item.get("semantic_status", "not_validated"),
+                }
+                for item in surfaces
+                if isinstance(item, dict)
+            ],
+            key=lambda item: (item.get("surface", ""), item.get("path", "")),
+        ),
+        "summary": {
+            "total_surfaces": summary.get("total_surfaces", len(surfaces)),
+            "surface_types": dict(sorted((summary.get("surface_types", {}) or {}).items())),
+        },
+        "claim_type": domain_surfaces.get("claim_type", "deterministic_inventory"),
+        "semantic_status": domain_surfaces.get("semantic_status", "not_validated"),
+    }
+
+
 # ── Totals builder ─────────────────────────────────────────────────────
 
 
@@ -466,6 +499,7 @@ def _build_totals(
     triage: Optional[dict],
     hubs: Optional[dict],
     semantic: Optional[dict],
+    domain_surfaces: Optional[dict] = None,
 ) -> dict:
     totals: dict[str, Any] = {}
     if scan_data:
@@ -495,6 +529,8 @@ def _build_totals(
         totals["hubs_count"] = len(hubs.get("hub_rankings", []))
     if semantic:
         totals["symbol_count"] = semantic.get("totals", {}).get("symbols", 0)
+    if domain_surfaces:
+        totals["domain_surfaces_count"] = domain_surfaces.get("summary", {}).get("total_surfaces", 0)
     return totals
 
 
@@ -509,6 +545,7 @@ def build_report_data(
     orphan_triage: Optional[dict] = None,
     hub_rankings: Optional[dict] = None,
     semantic_signals: Optional[dict] = None,
+    domain_surfaces: Optional[dict] = None,
     delta: Optional[dict] = None,
     readiness: Optional[dict] = None,
 ) -> dict[str, Any]:
@@ -535,10 +572,13 @@ def build_report_data(
         "orphan_triage": orphan_triage,
         "hub_rankings": hub_rankings,
         "semantic_signals": semantic_signals,
+        "domain_surfaces": domain_surfaces,
         "delta": delta,
         "readiness": readiness,
     }
     for key in sorted(source_map.keys()):
+        if key == "domain_surfaces" and source_map[key] is None:
+            continue
         sources[key] = "loaded" if source_map[key] is not None else "not_provided"
 
     # ── Warn about missing optional artifacts ──────────────────
@@ -549,6 +589,7 @@ def build_report_data(
         "orphan_triage": "orphan_triage",
         "hub_rankings": "hub_rankings",
         "semantic_signals": "semantic_signals",
+        "domain_surfaces": "domain_surfaces",
         "delta": "delta",
         "readiness": "readiness",
     }
@@ -571,6 +612,9 @@ def build_report_data(
     sections["hub_rankings"] = _build_hub_rankings_section(hub_rankings, warnings)
     sections["semantic_signals"] = _build_semantic_section(
         semantic_signals, warnings
+    )
+    sections["domain_surfaces"] = _build_domain_surfaces_section(
+        domain_surfaces, warnings
     )
     sections["delta"] = _build_delta_section(delta, warnings)
     sections["readiness"] = _build_readiness_section(readiness, warnings)
@@ -604,6 +648,7 @@ def build_report_data(
         orphan_triage,
         hub_rankings,
         semantic_signals,
+        domain_surfaces,
     )
 
     # ── Assemble report ────────────────────────────────────────
@@ -659,6 +704,12 @@ def main() -> int:
         help="Path to semantic-signals.json",
     )
     parser.add_argument(
+        "--domain-surfaces",
+        dest="domain_surfaces",
+        default=None,
+        help="Path to domain-surfaces.json",
+    )
+    parser.add_argument(
         "--delta",
         default=None,
         help="Path to delta.json",
@@ -692,6 +743,7 @@ def main() -> int:
     orphan_triage = _load_artifact(args.orphan_triage, "orphan_triage", warnings)
     hub_rankings = _load_artifact(args.hubs, "hub_rankings", warnings)
     semantic_signals = _load_artifact(args.semantic, "semantic_signals", warnings)
+    domain_surfaces = _load_artifact(args.domain_surfaces, "domain_surfaces", warnings)
     delta = _load_artifact(args.delta, "delta", warnings)
     readiness = _load_artifact(args.readiness, "readiness", warnings)
 
@@ -705,6 +757,7 @@ def main() -> int:
             orphan_triage=orphan_triage,
             hub_rankings=hub_rankings,
             semantic_signals=semantic_signals,
+            domain_surfaces=domain_surfaces,
             delta=delta,
             readiness=readiness,
         )

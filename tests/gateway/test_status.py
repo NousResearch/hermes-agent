@@ -358,6 +358,85 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_reset_platforms_clears_stale_fatal_errors(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: stale fatal errors from a previous run must not
+        survive a fresh gateway startup (issue #38423).
+
+        When two profiles share the same Telegram bot token and one
+        profile's gateway exits with a lock conflict, the ``platforms``
+        dict in ``gateway_state.json`` retains the ``fatal`` state.
+        On the next startup the gateway must wipe those entries so the
+        dashboard does not show phantom errors.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Simulate a previous run that recorded a fatal lock conflict.
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="telegram conflict",
+            platform="telegram",
+            platform_state="fatal",
+            error_code="telegram_lock",
+            error_message="Telegram bot token already in use (PID 12345).",
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["telegram"]["state"] == "fatal"
+        assert "already in use" in payload["platforms"]["telegram"]["error_message"]
+
+        # Fresh startup with reset_platforms=True must wipe old platform errors.
+        status.write_runtime_status(
+            gateway_state="starting", exit_reason=None, reset_platforms=True,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"] == {}
+
+    def test_write_runtime_status_reset_platforms_preserves_new_updates(
+        self, tmp_path, monkeypatch
+    ):
+        """When reset_platforms=True is combined with a per-platform update,
+        the reset happens first, then the new platform entry is written."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Old stale error from a previous run.
+        status.write_runtime_status(
+            platform="telegram",
+            platform_state="fatal",
+            error_code="telegram_lock",
+            error_message="stale error",
+        )
+        # Also a stale discord error.
+        status.write_runtime_status(
+            platform="discord",
+            platform_state="fatal",
+            error_code="discord_timeout",
+            error_message="stale discord error",
+        )
+
+        # Fresh startup: reset platforms, then write a new telegram connected entry.
+        status.write_runtime_status(
+            gateway_state="starting",
+            exit_reason=None,
+            reset_platforms=True,
+            platform="telegram",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        # Telegram is now connected (new entry after reset).
+        assert payload["platforms"]["telegram"]["state"] == "connected"
+        assert payload["platforms"]["telegram"]["error_message"] is None
+        # Discord stale error was wiped by reset and not re-added.
+        assert "discord" not in payload["platforms"]
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):

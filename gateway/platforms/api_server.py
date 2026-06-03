@@ -3336,10 +3336,67 @@ class APIServerAdapter(BasePlatformAdapter):
         for msg in input_messages[:-1]:
             conversation_history.append(msg)
 
-        # Last input message is the user_message
+        # Last input message is the user_message. Some clients may issue a
+        # post-turn/no-op Responses request with an empty input payload while
+        # reconciling state. Treat that as a completed no-op response instead
+        # of surfacing a 400 that the client may append to the assistant text.
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
         if not _content_has_visible_payload(user_message):
-            return web.json_response(_openai_error("No user message found in input"), status=400)
+            response_id = f"resp_{uuid.uuid4().hex[:28]}"
+            created_at = int(time.time())
+            model_name = body.get("model", self._model_name)
+            response_data = {
+                "id": response_id,
+                "object": "response",
+                "status": "completed",
+                "created_at": created_at,
+                "model": model_name,
+                "output": [],
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            }
+            if store:
+                self._response_store.put(response_id, {
+                    "response": response_data,
+                    "conversation_history": conversation_history,
+                    "instructions": instructions,
+                    "session_id": stored_session_id or str(uuid.uuid4()),
+                })
+                if conversation:
+                    self._response_store.set_conversation(conversation, response_id)
+            headers = {}
+            if stored_session_id:
+                headers["X-Hermes-Session-Id"] = stored_session_id
+            if gateway_session_key:
+                headers["X-Hermes-Session-Key"] = gateway_session_key
+            logger.debug("[api_server] returning no-op Responses result for empty input")
+            if _coerce_request_bool(body.get("stream"), default=False):
+                sse_headers = {
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    **headers,
+                }
+                response = web.StreamResponse(status=200, headers=sse_headers)
+                await response.prepare(request)
+                created_data = {
+                    "type": "response.created",
+                    "response": {**response_data, "status": "in_progress"},
+                    "sequence_number": 0,
+                }
+                completed_data = {
+                    "type": "response.completed",
+                    "response": response_data,
+                    "sequence_number": 1,
+                }
+                await response.write(
+                    f"event: response.created\ndata: {json.dumps(created_data)}\n\n".encode("utf-8")
+                )
+                await response.write(
+                    f"event: response.completed\ndata: {json.dumps(completed_data)}\n\n".encode("utf-8")
+                )
+                await response.write_eof()
+                return response
+            return web.json_response(response_data, headers=headers)
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:

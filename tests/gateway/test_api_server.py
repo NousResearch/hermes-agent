@@ -2269,6 +2269,33 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["text"] != f"provider auth failed OPENAI_API_KEY={raw_secret}"
 
     @pytest.mark.asyncio
+    async def test_responses_empty_input_returns_completed_noop(self, adapter):
+        """Responses clients may send empty post-turn reconciliation calls."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [],
+                        "conversation": "conv-empty-input",
+                    },
+                )
+
+            assert resp.status == 200
+            mock_run.assert_not_called()
+            data = await resp.json()
+            assert data["object"] == "response"
+            assert data["status"] == "completed"
+            assert data["output"] == []
+            assert data["usage"] == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            stored = adapter._response_store.get(data["id"])
+            assert stored is not None
+            assert stored["response"] == data
+            assert adapter._response_store.get_conversation("conv-empty-input") == data["id"]
+
+    @pytest.mark.asyncio
     async def test_invalid_input_type_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

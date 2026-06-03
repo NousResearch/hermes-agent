@@ -41,7 +41,8 @@ const DESKTOP_COMMAND_META = [
   ['/stop', 'Stop running background processes'],
   ['/title', 'Rename the current session'],
   ['/undo', 'Remove the last user/assistant exchange'],
-  ['/usage', 'Show token usage for this session']
+  ['/usage', 'Show token usage for this session'],
+  ['/yolo', 'Toggle YOLO — auto-approve dangerous commands']
 ] as const
 
 const DESKTOP_COMMANDS: ReadonlySet<string> = new Set(DESKTOP_COMMAND_META.map(([command]) => command))
@@ -114,8 +115,7 @@ const ADVANCED_COMMANDS = new Set([
   '/reasoning',
   '/reload-mcp',
   '/reload-skills',
-  '/voice',
-  '/yolo'
+  '/voice'
 ])
 
 const BLOCKED_COMMANDS = new Set([

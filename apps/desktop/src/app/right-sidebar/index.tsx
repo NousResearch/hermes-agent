@@ -35,11 +35,7 @@ const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
   { id: 'terminal', label: 'Terminal', icon: 'terminal' }
 ]
 
-export function RightSidebarPane({
-  onActivateFile,
-  onActivateFolder,
-  onChangeCwd
-}: RightSidebarPaneProps) {
+export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd }: RightSidebarPaneProps) {
   const activeTab = useStore($rightSidebarTab)
   const terminalTakeover = useStore($terminalTakeover)
   const currentBranch = useStore($currentBranch).trim()
@@ -53,8 +49,17 @@ export function RightSidebarPane({
         .pop() ?? currentCwd)
     : 'No folder selected'
 
-  const { collapseAll, collapseNonce, data, loadChildren, openState, refreshRoot, rootError, rootLoading, setNodeOpen } =
-    useProjectTree(currentCwd)
+  const {
+    collapseAll,
+    collapseNonce,
+    data,
+    loadChildren,
+    openState,
+    refreshRoot,
+    rootError,
+    rootLoading,
+    setNodeOpen
+  } = useProjectTree(currentCwd)
 
   const canCollapse = Object.values(openState).some(Boolean)
   const effectiveTab: RightSidebarTabId = terminalTakeover ? 'files' : activeTab
@@ -86,14 +91,12 @@ export function RightSidebarPane({
     }
   }
 
-  const tabs = terminalTakeover
-    ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal')
-    : RIGHT_SIDEBAR_TABS
+  const tabs = terminalTakeover ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal') : RIGHT_SIDEBAR_TABS
 
   return (
     <aside
       aria-label="Right sidebar"
-      className="before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary) shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)] before:absolute before:inset-x-0 before:top-(--titlebar-height) before:z-1 before:h-px before:bg-(--ui-stroke-tertiary)"
+      className="before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary) shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]"
     >
       <RightSidebarChrome activeTab={effectiveTab} branch={currentBranch} tabs={tabs} />
 
@@ -135,7 +138,7 @@ function RightSidebarChrome({
 }) {
   return (
     <header className="shrink-0 bg-transparent text-[0.75rem]">
-      <div className="flex items-center gap-2 border-b border-(--ui-stroke-tertiary) px-2.5 py-1">
+      <div className="flex items-center gap-2 px-2.5 py-1">
         <nav aria-label="Right sidebar panels" className="flex min-w-0 items-center gap-1">
           {tabs.map(tab => (
             <button

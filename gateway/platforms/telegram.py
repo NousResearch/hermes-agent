@@ -3582,19 +3582,23 @@ class TelegramAdapter(BasePlatformAdapter):
     # data is always passed as the first positional arg.
     # is_state=True means the verb is a sticky sender-rule change (mute, trust,
     # vip) that should leave the keyboard tappable for follow-on actions.
-    # is_state=False is a per-email one-shot (send, archive, draft, spam) that
-    # strips the keyboard on success.
+    # is_state=False is a per-email one-shot (send, archive, draft, calendar,
+    # spam) that strips the keyboard on success.
     _GT_VERB_DISPATCH = {
-        "send":         ("send-draft.sh",      [],         "✓ sent draft",         False),
-        "archive":      ("archive.sh",         [],         "✓ archived",           False),
-        "draft":        ("draft-blank.sh",     [],         "✓ drafted reply",      False),
-        "spam":         ("spam.sh",            [],         "✓ marked spam",        False),
-        "mute":         ("mute-add.sh",        ["email"],  "✓ muted",              True),
-        "mute-domain":  ("mute-add.sh",        ["domain"], "✓ muted domain",       True),
-        "trust":        ("trusted-ops-add.sh", ["email"],  "✓ trusted",            True),
-        "trust-domain": ("trusted-ops-add.sh", ["domain"], "✓ trusted domain",     True),
-        "vip":          ("vip-add.sh",         ["email"],  "✓ marked VIP",         True),
-        "vip-domain":   ("vip-add.sh",         ["domain"], "✓ marked VIP domain",  True),
+        # Current M4 email triage scripts are shadow-feedback only: labels below
+        # must not imply Gmail was actually mutated. The send script deliberately
+        # exits non-zero until Nathan approves live Gmail sending.
+        "send":         ("send-draft.sh",      [],         "✓ send requested",     False),
+        "archive":      ("archive.sh",         [],         "✓ archive noted",      False),
+        "draft":        ("draft-blank.sh",     [],         "✓ draft requested",    False),
+        "calendar":     ("calendar-add.sh",    [],         "✓ calendar handled",   False),
+        "spam":         ("spam.sh",            [],         "✓ junk noted",         False),
+        "mute":         ("mute-add.sh",        ["email"],  "✓ quiet noted",        True),
+        "mute-domain":  ("mute-add.sh",        ["domain"], "✓ quiet domain noted", True),
+        "trust":        ("trusted-ops-add.sh", ["email"],  "✓ trust noted",        True),
+        "trust-domain": ("trusted-ops-add.sh", ["domain"], "✓ trust domain noted", True),
+        "vip":          ("vip-add.sh",         ["email"],  "✓ always-show noted",  True),
+        "vip-domain":   ("vip-add.sh",         ["domain"], "✓ VIP domain noted",   True),
     }
 
     async def _handle_gmail_triage_callback(
@@ -3631,7 +3635,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         script_name, extra_args, success_label, is_state_verb = entry
 
-        script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
+        try:
+            from hermes_constants import get_hermes_home
+            script_path = get_hermes_home() / "scripts" / "gmail-triage" / script_name
+        except Exception:
+            script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
             await query.answer(text=f"❌ {script_name} missing")
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)

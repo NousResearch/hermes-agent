@@ -341,13 +341,15 @@ def resolve_proxy_url(
     platform_env_var: str | None = None,
     *,
     target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
+    include_system_proxy: bool = True,
 ) -> str | None:
     """Return a proxy URL from env vars, or macOS system proxy.
 
     Check order:
       0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority
       1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
-      2. macOS system proxy via ``scutil --proxy`` (auto-detect)
+      2. macOS system proxy via ``scutil --proxy`` when *include_system_proxy*
+         is true (auto-detect)
 
     Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
     of ``target_hosts``.
@@ -365,6 +367,8 @@ def resolve_proxy_url(
             if should_bypass_proxy(target_hosts):
                 return None
             return normalize_proxy_url(value)
+    if not include_system_proxy:
+        return None
     detected = normalize_proxy_url(_detect_macos_system_proxy())
     if detected and should_bypass_proxy(target_hosts):
         return None

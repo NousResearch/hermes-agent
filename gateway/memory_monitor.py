@@ -127,13 +127,18 @@ def log_memory_usage(prefix: str = "") -> None:
 
 
 def _monitor_loop(stop_event: threading.Event, interval: float) -> None:
-    """Background thread body — log every ``interval`` seconds until stopped."""
-    while not stop_event.wait(interval):
+    """Background thread body — log immediately, then every interval until stopped."""
+    # Emit one unprefixed sample as soon as the thread starts. This makes short
+    # runs and tests deterministic, while baseline/shutdown remain separately
+    # tagged lifecycle samples.
+    while not stop_event.is_set():
         try:
             log_memory_usage()
         except Exception as e:
             # Never let the monitor crash the gateway; just log and carry on.
             logger.debug("Memory monitor iteration failed: %s", e)
+        if stop_event.wait(interval):
+            break
 
 
 def start_memory_monitoring(interval_seconds: float = 300.0) -> bool:

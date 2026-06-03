@@ -19,11 +19,13 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
+from urllib import request as urllib_request
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
@@ -37,6 +39,125 @@ from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
+
+
+_LOCAL_FALLBACK_LAUNCHD_LABELS: dict[tuple[str, str], list[str]] = {
+    ("litellm-qwen", "qwen-core"): [
+        "ai.hermes.mlx-qwen3-8b",
+        "ai.hermes.litellm-qwen-router",
+    ],
+    ("litellm-qwen", "qwen-optiq"): [
+        "ai.hermes.litellm-qwen-router",
+    ],
+    ("litellm-qwen", "qwen-coder"): [
+        "ai.hermes.mlx-qwen-coder",
+        "ai.hermes.litellm-qwen-router",
+    ],
+    ("litellm-qwen", "glm-air"): [
+        "ai.hermes.litellm-qwen-router",
+    ],
+    ("ollama-local", "qwen3:32b"): ["homebrew.mxcl.ollama"],
+}
+
+
+def _launchd_domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def _launchagent_plist(label: str) -> str:
+    return os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+
+
+def _launchd_service_loaded(label: str) -> bool:
+    return subprocess.run(
+        ["launchctl", "print", f"{_launchd_domain()}/{label}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=5,
+        check=False,
+    ).returncode == 0
+
+
+def _ensure_launchd_service(label: str) -> None:
+    """Load/kick a user LaunchAgent if present.
+
+    Local LLM services on Nathan's M4 are intentionally allowed to be unloaded
+    while idle.  Fallback activation is the right place to cold-start them.
+    """
+    plist = _launchagent_plist(label)
+    if not os.path.exists(plist):
+        logger.warning("Local fallback autostart skipped: missing plist for %s", label)
+        return
+
+    if not _launchd_service_loaded(label):
+        subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), plist],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    subprocess.run(
+        ["launchctl", "kickstart", "-k", f"{_launchd_domain()}/{label}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+        check=False,
+    )
+
+
+def _http_ready(url: str, *, timeout: float = 2.0) -> bool:
+    try:
+        with urllib_request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - localhost readiness probe
+            return 200 <= int(getattr(resp, "status", 0)) < 500
+    except Exception:
+        return False
+
+
+def _wait_http_ready(url: str, *, deadline_seconds: float = 90.0) -> bool:
+    deadline = time.monotonic() + deadline_seconds
+    while time.monotonic() < deadline:
+        if _http_ready(url):
+            return True
+        time.sleep(1.5)
+    return False
+
+
+def _maybe_autostart_local_fallback(provider: str, model: str, base_url: str | None = None) -> None:
+    provider_norm = (provider or "").strip().lower()
+    model_norm = (model or "").strip().lower()
+    labels = _LOCAL_FALLBACK_LAUNCHD_LABELS.get((provider_norm, model_norm))
+    if not labels:
+        return
+
+    readiness_url = ""
+    if provider_norm == "litellm-qwen":
+        readiness_url = (base_url or "http://127.0.0.1:4000/v1").rstrip("/") + "/models"
+    elif provider_norm == "ollama-local":
+        readiness_url = (base_url or "http://127.0.0.1:11434/v1").rstrip("/") + "/models"
+
+    if readiness_url and _http_ready(readiness_url):
+        return
+
+    logger.info(
+        "Local fallback autostart: provider=%s model=%s labels=%s",
+        provider_norm,
+        model,
+        ",".join(labels),
+    )
+    for label in labels:
+        try:
+            _ensure_launchd_service(label)
+        except Exception as exc:
+            logger.warning("Local fallback autostart failed for %s: %s", label, exc)
+
+    if readiness_url and not _wait_http_ready(readiness_url):
+        logger.warning(
+            "Local fallback autostart did not become ready: provider=%s model=%s url=%s",
+            provider_norm,
+            model,
+            readiness_url,
+        )
 
 
 def _ra():
@@ -1080,6 +1201,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # (not substring) — see GHSA-76xc-57q6-vm5m.
         if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
             fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
+        _maybe_autostart_local_fallback(fb_provider, fb_model, fb_base_url_hint)
         fb_client, _resolved_fb_model = resolve_provider_client(
             fb_provider, model=fb_model, raw_codex=True,
             explicit_base_url=fb_base_url_hint,

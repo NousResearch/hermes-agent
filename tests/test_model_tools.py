@@ -61,6 +61,8 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
             ),
             call(
                 "post_tool_call",
@@ -70,7 +72,12 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
             ),
             call(
                 "transform_tool_result",
@@ -80,7 +87,12 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
             ),
         ]
 
@@ -136,7 +148,10 @@ class TestPreToolCallBlocking:
     """Verify that pre_tool_call hooks can block tool execution."""
 
     def test_blocked_tool_returns_error_and_skips_dispatch(self, monkeypatch):
+        hook_calls = []
+
         def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
             if hook_name == "pre_tool_call":
                 return [{"action": "block", "message": "Blocked by policy"}]
             return []
@@ -155,6 +170,11 @@ class TestPreToolCallBlocking:
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"error": "Blocked by policy"}
         assert not dispatch_called
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["status"] == "blocked"
+        assert post_call[1]["error_type"] == "plugin_block"
+        assert post_call[1]["error_message"] == "Blocked by policy"
+        assert post_call[1]["duration_ms"] == 0
 
     def test_blocked_tool_skips_read_loop_notification(self, monkeypatch):
         notifications = []

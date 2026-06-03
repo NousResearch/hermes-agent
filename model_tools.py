@@ -799,12 +799,60 @@ def _coerce_boolean(value: str):
     return value
 
 
+def _emit_post_tool_call_hook(
+    *,
+    function_name: str,
+    function_args: Dict[str, Any],
+    result: Any,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    api_request_id: Optional[str] = None,
+    duration_ms: int = 0,
+    status: str = "ok",
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    try:
+        from hermes_cli.plugins import invoke_hook
+        invoke_hook(
+            "post_tool_call",
+            tool_name=function_name,
+            args=function_args,
+            result=result,
+            task_id=task_id or "",
+            session_id=session_id or "",
+            tool_call_id=tool_call_id or "",
+            turn_id=turn_id or "",
+            api_request_id=api_request_id or "",
+            duration_ms=duration_ms,
+            status=status,
+            error_type=error_type,
+            error_message=error_message,
+        )
+    except Exception as _hook_err:
+        logger.debug("post_tool_call hook error: %s", _hook_err)
+
+
+def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
+    try:
+        parsed_result = json.loads(result) if isinstance(result, str) else result
+        if isinstance(parsed_result, dict) and parsed_result.get("error"):
+            return "error", "tool_error", str(parsed_result.get("error"))
+    except Exception:
+        pass
+    return "ok", None, None
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    api_request_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
@@ -837,6 +885,8 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+    if not isinstance(function_args, dict):
+        function_args = {}
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
@@ -935,12 +985,28 @@ def handle_function_call(
                     task_id=task_id or "",
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
+                    turn_id=turn_id or "",
+                    api_request_id=api_request_id or "",
                 )
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
-                return json.dumps({"error": block_message}, ensure_ascii=False)
+                result = json.dumps({"error": block_message}, ensure_ascii=False)
+                _emit_post_tool_call_hook(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="plugin_block",
+                    error_message=block_message,
+                )
+                return result
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
@@ -973,37 +1039,60 @@ def handle_function_call(
         # to wrap every tool manually.  We use monotonic() so the value is
         # unaffected by wall-clock adjustments during the call.
         _dispatch_start = time.monotonic()
-        if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                enabled_tools=sandbox_enabled,
-            )
-        else:
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                user_task=user_task,
-            )
-        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
-
+        _approval_tokens = None
         try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook(
-                "post_tool_call",
-                tool_name=function_name,
-                args=function_args,
-                result=result,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-                duration_ms=duration_ms,
+            from tools.approval import (
+                reset_current_observability_context,
+                set_current_observability_context,
             )
-        except Exception as _hook_err:
-            logger.debug("post_tool_call hook error: %s", _hook_err)
+            _approval_tokens = set_current_observability_context(
+                turn_id=turn_id or "",
+                tool_call_id=tool_call_id or "",
+            )
+        except Exception:
+            reset_current_observability_context = None
+        try:
+            if function_name == "execute_code":
+                # Prefer the caller-provided list so subagents can't overwrite
+                # the parent's tool set via the process-global.
+                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    return registry.dispatch(
+                        function_name, next_args,
+                        task_id=task_id,
+                        enabled_tools=sandbox_enabled,
+                    )
+            else:
+                def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    return registry.dispatch(
+                        function_name, next_args,
+                        task_id=task_id,
+                        user_task=user_task,
+                    )
+            result = _dispatch(function_args)
+        finally:
+            if _approval_tokens is not None and reset_current_observability_context is not None:
+                try:
+                    reset_current_observability_context(_approval_tokens)
+                except Exception:
+                    pass
+        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+        status, error_type, error_message = _tool_result_observer_fields(result)
+
+        _emit_post_tool_call_hook(
+            function_name=function_name,
+            function_args=function_args,
+            result=result,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+            duration_ms=duration_ms,
+            status=status,
+            error_type=error_type,
+            error_message=error_message,
+        )
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by
@@ -1021,7 +1110,12 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
                 duration_ms=duration_ms,
+                status=status,
+                error_type=error_type,
+                error_message=error_message,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):

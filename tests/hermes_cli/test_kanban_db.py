@@ -4086,3 +4086,258 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Token accounting columns
+# ---------------------------------------------------------------------------
+
+_TOKEN_SAMPLE = dict(
+    total_input_tokens=1500,
+    total_output_tokens=800,
+    total_cache_read_tokens=200,
+    total_cache_write_tokens=100,
+    total_reasoning_tokens=50,
+    total_tokens=2600,
+    estimated_cost_usd=0.012,
+    cost_status="estimated",
+)
+
+
+@pytest.fixture
+def claimed_task(kanban_home):
+    """Create + claim a task so it can be completed."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="token-test", assignee="coder")
+        # Simulate a dispatcher claim
+        claimed = kb.claim_task(conn, tid, claimer="test-claimer")
+        assert claimed is not None
+    yield tid
+    with kb.connect() as conn:
+        try:
+            task = kb.get_task(conn, tid)
+            if task and task.status != "done":
+                kb.release_stale_claims(conn)
+        except Exception:
+            pass
+
+
+def test_schema_has_token_columns(kanban_home):
+    """Verify both tasks and task_runs tables carry the 8 new columns."""
+    with kb.connect() as conn:
+        for table in ("tasks", "task_runs"):
+            cols = {r["name"] for r in conn.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()}
+            for col in ("total_input_tokens", "total_output_tokens",
+                        "total_cache_read_tokens", "total_cache_write_tokens",
+                        "total_reasoning_tokens", "total_tokens",
+                        "estimated_cost_usd", "cost_status"):
+                assert col in cols, f"{table} missing column {col}"
+
+
+def test_task_dataclass_reads_token_fields(kanban_home):
+    """Task.from_row() parses token columns when present, None when absent."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="token-dc-test", assignee="coder")
+        # Simulate token data via direct SQL UPDATE
+        conn.execute(
+            """UPDATE tasks SET
+               total_input_tokens=100,
+               total_output_tokens=50,
+               total_cache_read_tokens=10,
+               total_cache_write_tokens=5,
+               total_reasoning_tokens=2,
+               total_tokens=165,
+               estimated_cost_usd=0.005,
+               cost_status='estimated'
+               WHERE id=?""",
+            (tid,),
+        )
+        conn.commit()
+        task = kb.get_task(conn, tid)
+        assert task.total_input_tokens == 100
+        assert task.total_output_tokens == 50
+        assert task.total_cache_read_tokens == 10
+        assert task.total_cache_write_tokens == 5
+        assert task.total_reasoning_tokens == 2
+        assert task.total_tokens == 165
+        assert task.estimated_cost_usd == 0.005
+        assert task.cost_status == "estimated"
+
+
+def test_complete_task_persists_token_data(claimed_task):
+    """complete_task with token kwargs writes to both tasks and task_runs."""
+    tid = claimed_task
+    with kb.connect() as conn:
+        ok = kb.complete_task(
+            conn, tid,
+            result="done",
+            **_TOKEN_SAMPLE,
+        )
+        assert ok
+        conn.commit()
+        task = kb.get_task(conn, tid)
+        assert task.total_input_tokens == 1500
+        assert task.total_output_tokens == 800
+        assert task.total_cache_read_tokens == 200
+        assert task.total_cache_write_tokens == 100
+        assert task.total_reasoning_tokens == 50
+        assert task.total_tokens == 2600
+        assert task.estimated_cost_usd == 0.012
+        assert task.cost_status == "estimated"
+        # Verify the run row also has the data
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        assert run.total_input_tokens == 1500
+        assert run.total_output_tokens == 800
+
+
+def test_complete_task_without_token_params(claimed_task):
+    """complete_task called without token kwargs leaves columns NULL."""
+    tid = claimed_task
+    with kb.connect() as conn:
+        ok = kb.complete_task(conn, tid, result="no-tokens")
+        assert ok
+        conn.commit()
+        task = kb.get_task(conn, tid)
+        assert task.total_tokens is None
+        assert task.estimated_cost_usd is None
+
+
+def test_complete_task_on_ready_task_synthesizes_run_with_tokens(kanban_home):
+    """Synthesized run (no claim) still carries token data."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="synth-token", assignee="coder")
+        # complete_task on a ready task (no claim) → _synthesize_ended_run path
+        ok = kb.complete_task(
+            conn, tid, result="synth",
+            total_tokens=999,
+            total_input_tokens=500,
+            total_output_tokens=499,
+            cost_status="estimated",
+        )
+        assert ok
+        run = kb.latest_run(conn, tid)
+        assert run is not None
+        assert run.total_tokens == 999
+        assert run.total_input_tokens == 500
+        assert run.total_output_tokens == 499
+        assert run.cost_status == "estimated"
+
+
+def test_run_dataclass_reads_token_fields(kanban_home):
+    """Run.from_row() parses token columns when present."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="run-token", assignee="coder")
+        claimed = kb.claim_task(conn, tid, claimer="run-token-claimer")
+        assert claimed is not None
+        kb.complete_task(
+            conn, tid, result="done",
+            total_tokens=777, total_input_tokens=400,
+            total_output_tokens=377, cost_status="actual",
+        )
+        run = kb.latest_run(conn, tid)
+        assert run.total_tokens == 777
+        assert run.total_input_tokens == 400
+        assert run.total_output_tokens == 377
+        assert run.cost_status == "actual"
+
+
+def test_inject_kanban_token_args():
+    """_inject_kanban_token_args copies non-None session attrs to function_args."""
+    from agent.tool_executor import _inject_kanban_token_args
+
+    class FakeAgent:
+        session_input_tokens = 100
+        session_output_tokens = 50
+        session_cache_read_tokens = 10
+        session_cache_write_tokens = 5
+        session_reasoning_tokens = 2
+        session_total_tokens = 167
+        session_estimated_cost_usd = 0.008
+        session_cost_status = "estimated"
+
+    args: dict = {}
+    # Simulate a 'total_tokens' attr that is None (cost data only)
+    # noinspection PyShadowingBuiltins
+    class FakeAgentNoCost:
+        session_input_tokens = 0
+        session_output_tokens = 0
+        session_cache_read_tokens = None
+        session_cache_write_tokens = None
+        session_reasoning_tokens = None
+        session_total_tokens = 0
+        session_estimated_cost_usd = None
+        session_cost_status = None
+
+    _inject_kanban_token_args(FakeAgent(), args)
+    assert args.get("input_tokens") == 100
+    assert args.get("output_tokens") == 50
+    assert args.get("total_tokens") == 167
+    assert args.get("estimated_cost_usd") == 0.008
+    assert args.get("cost_status") == "estimated"
+
+    args2: dict = {}
+    _inject_kanban_token_args(FakeAgentNoCost(), args2)
+    # Only 0-values are injected (not None), cost fields remain absent
+    assert args2.get("input_tokens") == 0
+    assert "estimated_cost_usd" not in args2
+    assert "cost_status" not in args2
+    assert "cache_read_tokens" not in args2
+
+
+def test_notification_token_count_format():
+    """_fmt_notification_token_count produces human-readable shorts."""
+    from gateway.run import _fmt_notification_token_count
+    assert _fmt_notification_token_count(None) == "0"
+    assert _fmt_notification_token_count(0) == "0"
+    assert _fmt_notification_token_count(456) == "456"
+    assert _fmt_notification_token_count(1200) == "1.2k"
+    assert _fmt_notification_token_count(1000000) == "1.0M"
+    assert _fmt_notification_token_count(2500000) == "2.5M"
+
+
+def test_notification_token_suffix(kanban_home):
+    """_kanban_token_notification_suffix formats token line from a task."""
+    from gateway.run import _kanban_token_notification_suffix
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="notif-test", assignee="coder")
+        claimed = kb.claim_task(conn, tid, claimer="notif-claimer")
+        assert claimed is not None
+        kb.complete_task(
+            conn, tid, result="done",
+            total_input_tokens=1200, total_output_tokens=456,
+            total_tokens=1656, estimated_cost_usd=0.012,
+            cost_status="estimated",
+        )
+        task = kb.get_task(conn, tid)
+        suffix = _kanban_token_notification_suffix(task)
+        assert "1.2k in" in suffix
+        assert "456 out" in suffix
+        assert "$0.012" in suffix
+
+
+def test_notification_token_suffix_no_cost(kanban_home):
+    """When cost is None the suffix omits the cost portion."""
+    from gateway.run import _kanban_token_notification_suffix
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="notif-nocost", assignee="coder")
+        claimed = kb.claim_task(conn, tid, claimer="nocost-claimer")
+        assert claimed is not None
+        kb.complete_task(
+            conn, tid, result="done",
+            total_input_tokens=500, total_output_tokens=300,
+            total_tokens=800,
+        )
+        task = kb.get_task(conn, tid)
+        suffix = _kanban_token_notification_suffix(task)
+        assert "500 in" in suffix
+        assert "300 out" in suffix
+        assert "· $" not in suffix  # no cost
+
+
+def test_notification_token_suffix_task_none():
+    """_kanban_token_notification_suffix returns '' for None task."""
+    from gateway.run import _kanban_token_notification_suffix
+    assert _kanban_token_notification_suffix(None) == ""

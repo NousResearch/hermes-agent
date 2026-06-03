@@ -1556,9 +1556,21 @@ fi
     return { ok: true, backendUpdated: true, rebuiltApp }
   }
 
-  const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+  // On macOS, use osascript to run the swap script so it survives app.quit()
+  // without showing any UI (osascript runs under launchd, not tied to this process).
+  let child
+  if (IS_MAC) {
+    // Escape the script path for AppleScript single-quote handling
+    const escapedScriptPath = scriptPath.replace(/'/g, "'\\''")
+    child = spawn('osascript', ['-e', `do shell script "bash '${escapedScriptPath}'" &`], {
+      detached: true,
+      stdio: 'ignore'
+    })
+  } else {
+    child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
+  }
   child.unref()
-  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
+  rememberLog(`[updates] launched mac swap+relaunch via ${IS_MAC ? 'osascript' : 'spawn'}: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
   setTimeout(() => app.quit(), 600)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }

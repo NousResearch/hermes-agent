@@ -17,6 +17,7 @@ typed.
 
 from unittest.mock import patch
 
+import hermes_cli.models as models
 from hermes_cli.models import validate_requested_model
 
 
@@ -30,10 +31,19 @@ def _stub_probe(*_args, **_kwargs):
     }
 
 
-def test_anthropic_messages_warning_names_provider_and_endpoint():
+def test_anthropic_messages_warning_names_provider_and_endpoint(monkeypatch):
     """The fallback warning must name the active provider and endpoint, not
     just say "Anthropic-compatible proxies" generically.
     """
+    # ``claude-api-proxy`` is not a built-in canonical provider — it is
+    # registered at runtime only when a user/fleet plugin under
+    # ``$HERMES_HOME/plugins/model-providers/`` is present. Seed its friendly
+    # label explicitly so this test exercises the message-building code path
+    # deterministically, regardless of which providers happen to be registered
+    # in the current environment (CI ships no user plugins, so the label would
+    # otherwise fall through to the raw ``claude-api-proxy`` slug).
+    monkeypatch.setitem(models._PROVIDER_LABELS, "claude-api-proxy", "Claude API Proxy")
+
     with patch("hermes_cli.models.fetch_api_models", return_value=None), \
          patch("hermes_cli.models.probe_api_models", side_effect=_stub_probe):
         result = validate_requested_model(
@@ -58,10 +68,12 @@ def test_anthropic_messages_warning_names_provider_and_endpoint():
     assert "Many Anthropic-compatible proxies" not in message, message
 
 
-def test_anthropic_messages_warning_handles_missing_base_url():
+def test_anthropic_messages_warning_handles_missing_base_url(monkeypatch):
     """If base_url is not provided we must still produce a sensible message
     rather than embedding ``None`` or a blank.
     """
+    monkeypatch.setitem(models._PROVIDER_LABELS, "claude-api-proxy", "Claude API Proxy")
+
     with patch("hermes_cli.models.fetch_api_models", return_value=None), \
          patch("hermes_cli.models.probe_api_models", side_effect=_stub_probe):
         result = validate_requested_model(

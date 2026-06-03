@@ -1621,6 +1621,33 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.warning("[%s] voice download failed: %s", self.name, exc)
             return None
 
+    async def _ensure_typing_ticket(self, user_id: str) -> Optional[str]:
+        """Return a valid typing ticket, refreshing from iLink if cached ticket expired."""
+        ticket = self._typing_cache.get(user_id)
+        if ticket:
+            return ticket
+        if not self._poll_session or not self._token:
+            return None
+        try:
+            context_token = self._token_store.get(self._account_id, user_id)
+            response = await _get_config(
+                self._poll_session,
+                base_url=self._base_url,
+                token=self._token,
+                user_id=user_id,
+                context_token=context_token or None,
+            )
+            ticket = str(response.get("typing_ticket") or "")
+            if ticket:
+                self._typing_cache.set(user_id, ticket)
+                return ticket
+        except Exception as exc:
+            logger.warning(
+                "[%s] typing ticket refresh failed for %s: %s",
+                self.name, _safe_id(user_id), exc,
+            )
+        return None
+
     async def _maybe_fetch_typing_ticket(self, user_id: str, context_token: Optional[str]) -> None:
         if not self._poll_session or not self._token:
             return
@@ -1811,7 +1838,7 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
             return
         try:
@@ -1829,8 +1856,12 @@ class WeixinAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
+            logger.warning(
+                "[%s] Cannot stop typing for %s: no typing ticket (will retry on next message)",
+                self.name, _safe_id(chat_id),
+            )
             return
         try:
             await _send_typing(

@@ -330,6 +330,9 @@ export default function ProfilesPage() {
   const [descText, setDescText] = useState("");
   const [descSaving, setDescSaving] = useState(false);
   const [describing, setDescribing] = useState(false);
+  // Tracks the latest description request (save / auto-describe) so a late
+  // response can't overwrite state for a different, newly-opened editor.
+  const activeDescRequest = useRef<string | null>(null);
 
   // Inline model editor state
   const [editingModelFor, setEditingModelFor] = useState<string | null>(null);
@@ -462,10 +465,12 @@ export default function ProfilesPage() {
   const handleSetActive = async (name: string) => {
     setSettingActive(name);
     try {
-      await api.setActiveProfile(name);
-      showToast(`${L.activeSet}: ${name}`, "success");
+      // The backend normalizes/validates the name; trust the canonical
+      // value it returns rather than the raw input.
+      const { active } = await api.setActiveProfile(name);
+      showToast(`${L.activeSet}: ${active}`, "success");
       setActiveInfo((prev) =>
-        prev ? { ...prev, active: name } : { active: name, current: name },
+        prev ? { ...prev, active } : { active, current: active },
       );
     } catch (e) {
       showToast(`${t.status.error}: ${e}`, "error");
@@ -477,6 +482,7 @@ export default function ProfilesPage() {
   // Closes whichever editor dialog is open (model / description / SOUL).
   const closeEditor = useCallback(() => {
     activeSoulRequest.current = null;
+    activeDescRequest.current = null;
     setEditingModelFor(null);
     setEditingDescFor(null);
     setEditingSoulFor(null);
@@ -484,6 +490,12 @@ export default function ProfilesPage() {
 
   const openSoulEditor = useCallback(
     async (name: string) => {
+      // Re-selecting the action for the already-open editor collapses it,
+      // matching the chevron-down affordance in the actions menu.
+      if (editingSoulFor === name) {
+        closeEditor();
+        return;
+      }
       setEditingDescFor(null);
       setEditingModelFor(null);
       setEditingSoulFor(name);
@@ -500,7 +512,7 @@ export default function ProfilesPage() {
         }
       }
     },
-    [showToast, t.status.error],
+    [closeEditor, editingSoulFor, showToast, t.status.error],
   );
 
   const handleSaveSoul = async (name: string) => {
@@ -517,18 +529,28 @@ export default function ProfilesPage() {
     }
   };
 
-  const openDescEditor = useCallback((p: ProfileInfo) => {
-    setEditingSoulFor(null);
-    setEditingModelFor(null);
-    setEditingDescFor(p.name);
-    setDescText(p.description ?? "");
-  }, []);
+  const openDescEditor = useCallback(
+    (p: ProfileInfo) => {
+      if (editingDescFor === p.name) {
+        closeEditor();
+        return;
+      }
+      activeDescRequest.current = p.name;
+      setEditingSoulFor(null);
+      setEditingModelFor(null);
+      setEditingDescFor(p.name);
+      setDescText(p.description ?? "");
+    },
+    [closeEditor, editingDescFor],
+  );
 
   const handleSaveDesc = async (name: string) => {
     setDescSaving(true);
+    activeDescRequest.current = name;
     try {
       const res = await api.updateProfileDescription(name, descText);
-      showToast(`${L.descriptionSaved}: ${name}`, "success");
+      // Profile-list state always reflects the persisted result, but only
+      // touch the open editor if it's still showing this profile.
       setProfiles((prev) =>
         prev.map((p) =>
           p.name === name
@@ -540,9 +562,14 @@ export default function ProfilesPage() {
             : p,
         ),
       );
-      setEditingDescFor(null);
+      if (activeDescRequest.current === name) {
+        showToast(`${L.descriptionSaved}: ${name}`, "success");
+        setEditingDescFor(null);
+      }
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      if (activeDescRequest.current === name) {
+        showToast(`${t.status.error}: ${e}`, "error");
+      }
     } finally {
       setDescSaving(false);
     }
@@ -550,10 +577,12 @@ export default function ProfilesPage() {
 
   const handleAutoDescribe = async (name: string) => {
     setDescribing(true);
+    activeDescRequest.current = name;
     try {
       const res = await api.describeProfileAuto(name);
+      const current = activeDescRequest.current === name;
       if (res.ok && res.description != null) {
-        setDescText(res.description);
+        if (current) setDescText(res.description);
         setProfiles((prev) =>
           prev.map((p) =>
             p.name === name
@@ -565,12 +594,14 @@ export default function ProfilesPage() {
               : p,
           ),
         );
-        showToast(`${L.descriptionSaved}: ${name}`, "success");
-      } else {
+        if (current) showToast(`${L.descriptionSaved}: ${name}`, "success");
+      } else if (current) {
         showToast(`${L.describeFailed}: ${res.reason}`, "error");
       }
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      if (activeDescRequest.current === name) {
+        showToast(`${t.status.error}: ${e}`, "error");
+      }
     } finally {
       setDescribing(false);
     }
@@ -578,13 +609,17 @@ export default function ProfilesPage() {
 
   const openModelEditor = useCallback(
     (p: ProfileInfo) => {
+      if (editingModelFor === p.name) {
+        closeEditor();
+        return;
+      }
       setEditingSoulFor(null);
       setEditingDescFor(null);
       setEditingModelFor(p.name);
       setModelEditChoice(modelKey(p.provider, p.model));
       loadModelChoices();
     },
-    [loadModelChoices],
+    [closeEditor, editingModelFor, loadModelChoices],
   );
 
   const handleSaveModel = async (name: string) => {

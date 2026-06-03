@@ -1,0 +1,5 @@
+name: modelscope-provider
+kind: model-provider
+version: 1.0.0
+description: ModelScope API Inference
+author: Nous Research

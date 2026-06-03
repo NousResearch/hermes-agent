@@ -3682,6 +3682,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "MODELSCOPE_API_KEY": {
+        "description": "ModelScope Access Token for open-source model inference (Qwen, DeepSeek, Llama, Mistral)",
+        "prompt": "ModelScope Access Token",
+        "url": "https://modelscope.cn",
+        "password": True,
+        "category": "provider",
+    },
+    "MODELSCOPE_BASE_URL": {
+        "description": "ModelScope API base URL override (default: https://api-inference.modelscope.cn/v1)",
+        "prompt": "ModelScope base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "AWS_REGION": {
         "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
         "prompt": "AWS Region",

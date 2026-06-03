@@ -163,6 +163,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "kilocode": "kilo",
     "fireworks": "fireworks-ai",
     "huggingface": "huggingface",
+    "modelscope": "modelscope",
     "gemini": "google",
     "google": "google",
     "xai": "xai",

@@ -64,6 +64,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `IDENTITY_ENDPOINT` / `MSI_ENDPOINT` | Managed Identity endpoint for App Service, Functions, and Container Apps; VMs usually use IMDS instead and do not set these |
 | `HF_TOKEN` | Hugging Face token for Inference Providers ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |
 | `HF_BASE_URL` | Override Hugging Face base URL (default: `https://router.huggingface.co/v1`) |
+| `MODELSCOPE_API_KEY` | ModelScope Access Token for open-source model inference ([modelscope.cn/my/access/token](https://modelscope.cn/my/access/token)) |
+| `MODELSCOPE_BASE_URL` | Override ModelScope base URL (default: `https://api-inference.modelscope.cn/v1`) |
 | `GOOGLE_API_KEY` | Google AI Studio API key ([aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)) |
 | `GEMINI_API_KEY` | Alias for `GOOGLE_API_KEY` |
 | `GEMINI_BASE_URL` | Override Google AI Studio base URL |

@@ -32,6 +32,7 @@ class TestProviderRegistry:
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
+        ("modelscope", "ModelScope", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
@@ -110,6 +111,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
         assert pconfig.base_url_env_var == "HF_BASE_URL"
 
+    def test_modelscope_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["modelscope"]
+        assert pconfig.api_key_env_vars == ("MODELSCOPE_API_KEY",)
+        assert pconfig.base_url_env_var == "MODELSCOPE_BASE_URL"
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
@@ -121,6 +127,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
+        assert PROVIDER_REGISTRY["modelscope"].inference_base_url == "https://api-inference.modelscope.cn/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -147,6 +154,7 @@ PROVIDER_ENV_VARS = (
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+    "MODELSCOPE_API_KEY", "MODELSCOPE_BASE_URL",
 )
 
 
@@ -241,6 +249,12 @@ class TestResolveProvider:
     def test_alias_huggingface_hub(self):
         assert resolve_provider("huggingface-hub") == "huggingface"
 
+    def test_explicit_modelscope(self):
+        assert resolve_provider("modelscope") == "modelscope"
+
+    def test_alias_ms(self):
+        assert resolve_provider("ms") == "modelscope"
+
     def test_unknown_provider_raises(self):
         with pytest.raises(AuthError):
             resolve_provider("nonexistent-provider-xyz")
@@ -284,6 +298,10 @@ class TestResolveProvider:
     def test_auto_detects_hf_token(self, monkeypatch):
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
         assert resolve_provider("auto") == "huggingface"
+
+    def test_auto_detects_modelscope_key(self, monkeypatch):
+        monkeypatch.setenv("MODELSCOPE_API_KEY", "ms_test_token")
+        assert resolve_provider("auto") == "modelscope"
 
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
@@ -1305,3 +1323,51 @@ class TestMinimaxOAuthProvider:
             "doesn't fire the 'No auxiliary LLM provider configured' warning "
             "for every minimax-oauth session."
         )
+
+
+# =============================================================================
+# ModelScope provider tests
+# =============================================================================
+
+class TestModelScopeProvider:
+    """Tests for ModelScope — OpenAI-compatible open-source model aggregator."""
+
+    def test_main_provider_models_has_modelscope(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "modelscope" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["modelscope"]) >= 1
+
+    def test_models_py_has_modelscope(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "modelscope" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["modelscope"]) >= 1
+
+    def test_modelscope_model_lists_match(self):
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["modelscope"] == models_models["modelscope"]
+
+    def test_modelscope_models_use_org_name_format(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS["modelscope"]:
+            assert "/" in model, f"ModelScope model {model!r} missing org/ prefix"
+
+    def test_modelscope_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("ms") == "modelscope"
+
+    def test_modelscope_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "modelscope" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["modelscope"] == "ModelScope"
+
+    def test_model_metadata_has_context_lengths(self):
+        """Every ModelScope model should have a context length entry."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+        lower_keys = {k.lower() for k in DEFAULT_CONTEXT_LENGTHS}
+        ms_models = _PROVIDER_MODELS["modelscope"]
+        for model in ms_models:
+            assert model.lower() in lower_keys, (
+                f"ModelScope model {model!r} missing from DEFAULT_CONTEXT_LENGTHS"
+            )

@@ -61,6 +61,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
     "ollama",
     "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
+    "modelscope", "ms",
     "mimo", "xiaomi-mimo",
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
@@ -345,6 +346,17 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-omni": 262144,
     "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
+    # ModelScope — model IDs use org/name format
+    "Qwen/Qwen3-235B-A22B": 131072,
+    "Qwen/Qwen3.5-27B": 131072,
+    "deepseek-ai/DeepSeek-V4-Flash": 1_000_000,
+    "deepseek-ai/DeepSeek-V4-Pro": 1_000_000,
+    "deepseek-ai/DeepSeek-R1-0528": 1_000_000,
+    "ZhipuAI/GLM-5": 202752,
+    "ZhipuAI/GLM-5.1": 202752,
+    "MiniMax/MiniMax-M2.7": 204800,
+    "stepfun-ai/Step-3.5-Flash": 262144,
+    "stepfun-ai/Step-3.7-Flash": 262144,
 }
 
 # xAI Grok models that ACCEPT the `reasoning.effort` parameter on

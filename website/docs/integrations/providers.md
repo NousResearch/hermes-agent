@@ -39,6 +39,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
+| **ModelScope** | `MODELSCOPE_API_KEY` in `~/.hermes/.env` (provider: `modelscope`, alias: `ms`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **Google Vertex AI** | `hermes model` → "Google Vertex AI" (provider: `vertex`; OAuth2 via service-account JSON or ADC, GCP billing) |
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
@@ -557,6 +558,30 @@ Get your token at [huggingface.co/settings/tokens](https://huggingface.co/settin
 You can append routing suffixes to model names: `:fastest` (default), `:cheapest`, or `:provider_name` to force a specific backend.
 
 The base URL can be overridden with `HF_BASE_URL`.
+
+### ModelScope
+
+[ModelScope](https://modelscope.cn) (魔搭社区) provides OpenAI-compatible API inference for open-source models including Qwen, DeepSeek, Llama, and Mistral.
+
+```bash
+# Use any available model
+hermes chat --provider modelscope --model Qwen/Qwen3.5-397B-A17B
+# Requires: MODELSCOPE_API_KEY in ~/.hermes/.env
+
+# Short alias
+hermes chat --provider ms --model deepseek-ai/DeepSeek-V4-Flash
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "modelscope"
+  default: "Qwen/Qwen3.5-397B-A17B"
+```
+
+Get your Access Token at [modelscope.cn](https://modelscope.cn). The base URL can be overridden with `MODELSCOPE_BASE_URL`.
+
+Qwen3 and DeepSeek-R1 models support thinking/reasoning mode automatically.
 
 ## Custom & Self-Hosted LLM Providers
 

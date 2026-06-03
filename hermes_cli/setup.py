@@ -113,6 +113,12 @@ _DEFAULT_PROVIDER_MODELS = {
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
         "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
     ],
+    "modelscope": [
+        "Qwen/Qwen3.5-397B-A17B","Qwen/Qwen3-235B-A22B", "Qwen/Qwen3.5-27B",
+        "deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro",
+        "deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-R1-0528",
+        "ZhipuAI/GLM-5.1", "MiniMax/MiniMax-M2.7", "moonshotai/Kimi-K2.5",
+    ],
 }
 
 

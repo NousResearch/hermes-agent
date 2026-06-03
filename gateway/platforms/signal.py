@@ -1002,6 +1002,19 @@ class SignalAdapter(BasePlatformAdapter):
             if len(self._recent_sent_timestamps) > self._max_recent_timestamps:
                 self._recent_sent_timestamps.pop()
 
+    async def _build_typing_params(self, chat_id: str) -> Dict[str, Any]:
+        """Build signal-cli sendTyping params for a DM or group."""
+        params: Dict[str, Any] = {
+            "account": self.account,
+        }
+
+        if chat_id.startswith("group:"):
+            params["groupId"] = chat_id[6:]
+        else:
+            params["recipient"] = [await self._resolve_recipient(chat_id)]
+
+        return params
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator.
 
@@ -1025,15 +1038,7 @@ class SignalAdapter(BasePlatformAdapter):
         if now < skip_until:
             return
 
-        params: Dict[str, Any] = {
-            "account": self.account,
-        }
-
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
-
+        params = await self._build_typing_params(chat_id)
         fails = self._typing_failures.get(chat_id, 0)
         result = await self._rpc(
             "sendTyping",
@@ -1382,10 +1387,29 @@ class SignalAdapter(BasePlatformAdapter):
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)
 
+    async def _send_typing_stop(self, chat_id: str) -> None:
+        """Send a best-effort platform-level typing stop."""
+        try:
+            params = await self._build_typing_params(chat_id)
+            params["stop"] = True
+            await self._rpc(
+                "sendTyping",
+                params,
+                rpc_id="typing-stop",
+                log_failures=False,
+            )
+        except Exception:
+            logger.debug(
+                "Signal typing stop failed for %s",
+                chat_id,
+                exc_info=True,
+            )
+
     async def stop_typing(self, chat_id: str) -> None:
         """Public interface for stopping typing — called by base adapter's
         _keep_typing finally block to clean up platform-level typing tasks."""
         await self._stop_typing_indicator(chat_id)
+        await self._send_typing_stop(chat_id)
 
     # ------------------------------------------------------------------
     # Reactions

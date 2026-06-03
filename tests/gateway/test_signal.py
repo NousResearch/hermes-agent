@@ -874,10 +874,99 @@ class TestSignalStopTyping:
     async def test_stop_typing_calls_private_method(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         adapter._stop_typing_indicator = AsyncMock()
+        adapter._send_typing_stop = AsyncMock()
 
         await adapter.stop_typing("+155****4567")
 
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
+        adapter._send_typing_stop.assert_awaited_once_with("+155****4567")
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_sends_signal_stop_for_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._resolve_recipient = AsyncMock(return_value="+15551230000")
+        adapter._typing_failures["+15551230000"] = 2
+        adapter._typing_skip_until["+15551230000"] = 123.0
+        calls = []
+
+        async def _fake_rpc(method, params, rpc_id=None, **kwargs):
+            calls.append(
+                {
+                    "method": method,
+                    "params": dict(params),
+                    "rpc_id": rpc_id,
+                    "kwargs": dict(kwargs),
+                }
+            )
+            return {"ok": True}
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.stop_typing("+15551230000")
+
+        assert calls == [
+            {
+                "method": "sendTyping",
+                "params": {
+                    "account": adapter.account,
+                    "recipient": ["+15551230000"],
+                    "stop": True,
+                },
+                "rpc_id": "typing-stop",
+                "kwargs": {"log_failures": False},
+            }
+        ]
+        assert "+15551230000" not in adapter._typing_failures
+        assert "+15551230000" not in adapter._typing_skip_until
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_sends_signal_stop_for_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        calls = []
+
+        async def _fake_rpc(method, params, rpc_id=None, **kwargs):
+            calls.append(
+                {
+                    "method": method,
+                    "params": dict(params),
+                    "rpc_id": rpc_id,
+                    "kwargs": dict(kwargs),
+                }
+            )
+            return {"ok": True}
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.stop_typing("group:abc123")
+
+        assert calls == [
+            {
+                "method": "sendTyping",
+                "params": {
+                    "account": adapter.account,
+                    "groupId": "abc123",
+                    "stop": True,
+                },
+                "rpc_id": "typing-stop",
+                "kwargs": {"log_failures": False},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_ignores_signal_stop_failure(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._typing_failures["group:abc123"] = 2
+        adapter._typing_skip_until["group:abc123"] = 123.0
+
+        async def _fake_rpc(method, params, rpc_id=None, **kwargs):
+            return None
+
+        adapter._rpc = _fake_rpc
+
+        await adapter.stop_typing("group:abc123")
+
+        assert "group:abc123" not in adapter._typing_failures
+        assert "group:abc123" not in adapter._typing_skip_until
 
 
 # ---------------------------------------------------------------------------

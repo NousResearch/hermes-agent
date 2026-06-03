@@ -1,3 +1,13 @@
+---
+type: note
+title: Profiling renderer typing lag
+created: 2026-05-31
+tags:
+  - workflow
+  - desktop
+  - performance
+---
+
 # Profiling renderer typing lag
 
 Workflow for empirically measuring (and fixing) typing/submit lag in the

@@ -230,6 +230,15 @@ hermes-acp = "acp_adapter.entry:main"
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
 
+[tool.setuptools.data-files]
+# i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is
+# neither a package (packages.find) nor package-data (which attaches to a
+# package). data-files ships it in the wheel; MANIFEST.in `graft locales`
+# ships it in the sdist. Without this, sealed installs (pip wheel, Nix store
+# venv) drop the catalogs and gateway/CLI commands surface raw i18n keys like
+# `gateway.reset.header_default` (#27632, #35374, #23943).
+locales = ["locales/*.yaml"]
+
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]

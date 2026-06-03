@@ -67,6 +67,21 @@ let
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 
+  # i18n locale catalogs (locales/*.yaml). Shipped into the store and pointed
+  # at by HERMES_BUNDLED_LOCALES so the wrapped binary always resolves human
+  # strings instead of raw i18n keys (#23943 / #27632 / #35374).
+  #
+  # Defense-in-depth, not load-bearing: the wheel already declares locales/ as
+  # setuptools data-files, so uv2nix materializes them into the venv's data
+  # scheme and agent/i18n.py resolves them with no env var. The wrapper override
+  # pins the store path so a future uv2nix change that drops data-files can't
+  # silently ship raw keys via `nix build` (checks don't run on a plain build).
+  # The bundled-locales flake check verifies BOTH paths independently.
+  #
+  # Plain cleanSource (no __pycache__ filter): locales/ is bare *.yaml, never
+  # compiled, so it never carries a __pycache__ dir to exclude.
+  bundledLocales = lib.cleanSource ../locales;
+
   runtimeDeps = [
     nodejs
     ripgrep
@@ -151,6 +166,7 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
     cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
+    cp -r ${bundledLocales} $out/share/hermes-agent/locales
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
     mkdir -p $out/ui-tui
@@ -162,6 +178,7 @@ stdenv.mkDerivation (finalAttrs: {
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
+          --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \

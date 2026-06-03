@@ -604,7 +604,7 @@ def init_agent(
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
             # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
-            _is_native_anthropic = agent.provider == "anthropic"
+            _is_native_anthropic = agent.provider in {"anthropic", "claude-cli"}
             effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
 
             # MiniMax OAuth issues short-lived (~15-min) access tokens. The
@@ -954,7 +954,7 @@ def init_agent(
     
     # Show prompt caching status
     if agent._use_prompt_caching and not agent.quiet_mode:
-        if agent._use_native_cache_layout and agent.provider == "anthropic":
+        if agent._use_native_cache_layout and agent.provider in {"anthropic", "claude-cli"}:
             source = "native Anthropic"
         elif agent._use_native_cache_layout:
             source = "Anthropic-compatible endpoint"

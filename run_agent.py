@@ -3346,7 +3346,7 @@ class AIAgent:
         # the Anthropic protocol must not trip OAuth paths (#1739 & third-party
         # identity-injection guard).
         from agent.anthropic_adapter import _is_oauth_token
-        self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
+        self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider in {"anthropic", "claude-cli"} else False
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
@@ -3407,7 +3407,7 @@ class AIAgent:
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
-            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider in {"anthropic", "claude-cli"} else False
             self.api_key = runtime_key
             self.base_url = runtime_base
             return

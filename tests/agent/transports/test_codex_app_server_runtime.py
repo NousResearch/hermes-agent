@@ -296,3 +296,107 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+
+# ---------------------------------------------------------------------------
+# run_codex_app_server_turn — session persistence (#38210)
+# ---------------------------------------------------------------------------
+
+
+class TestCodexSessionPersistence:
+    """After a successful codex app-server turn, messages must be persisted
+    to the session DB so desktop clients don't reconcile the reply away."""
+
+    @pytest.fixture
+    def mock_agent(self):
+        """Minimal mock agent with only the attributes run_codex_app_server_turn needs."""
+        from unittest.mock import MagicMock
+
+        agent = MagicMock()
+        agent._codex_session = MagicMock()
+        agent._iters_since_skill = 0
+        agent._skill_nudge_interval = 0
+        agent.valid_tool_names = set()
+        agent._persist_session = MagicMock()
+        agent._sync_external_memory_for_turn = MagicMock()
+        return agent
+
+    @pytest.fixture
+    def successful_turn(self):
+        """A turn result that represents a clean, completed response."""
+        from types import SimpleNamespace
+
+        turn = SimpleNamespace()
+        turn.final_text = "Hello from codex!"
+        turn.projected_messages = [
+            {"role": "assistant", "content": "Hello from codex!"},
+        ]
+        turn.interrupted = False
+        turn.error = None
+        turn.tool_iterations = 0
+        turn.thread_id = "thread-001"
+        turn.turn_id = "turn-001"
+        turn.should_retire = False
+        return turn
+
+    def test_persist_called_on_success(self, mock_agent, successful_turn):
+        """_persist_session(messages) is called after a successful turn."""
+        from agent.codex_runtime import run_codex_app_server_turn
+
+        mock_agent._codex_session.run_turn.return_value = successful_turn
+
+        messages = [{"role": "user", "content": "hi"}]
+        run_codex_app_server_turn(
+            agent=mock_agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=messages,
+            effective_task_id="task-1",
+            should_review_memory=False,
+        )
+
+        mock_agent._persist_session.assert_called_once()
+        # The persisted messages list includes the assistant reply
+        persisted_msgs = mock_agent._persist_session.call_args[0][0]
+        assert len(persisted_msgs) == 2
+        assert persisted_msgs[1]["role"] == "assistant"
+
+    def test_persist_not_called_on_interrupt(self, mock_agent, successful_turn):
+        """_persist_session is skipped when the turn was interrupted."""
+        from agent.codex_runtime import run_codex_app_server_turn
+
+        successful_turn.interrupted = True
+        successful_turn.final_text = ""
+        successful_turn.projected_messages = []
+        mock_agent._codex_session.run_turn.return_value = successful_turn
+
+        messages = [{"role": "user", "content": "hi"}]
+        run_codex_app_server_turn(
+            agent=mock_agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=messages,
+            effective_task_id="task-1",
+        )
+
+        mock_agent._persist_session.assert_not_called()
+
+    def test_persist_not_called_on_error(self, mock_agent, successful_turn):
+        """_persist_session is skipped when the turn errored."""
+        from agent.codex_runtime import run_codex_app_server_turn
+
+        successful_turn.error = "Connection lost"
+        successful_turn.final_text = ""
+        successful_turn.projected_messages = []
+        mock_agent._codex_session.run_turn.return_value = successful_turn
+
+        messages = [{"role": "user", "content": "hi"}]
+        run_codex_app_server_turn(
+            agent=mock_agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=messages,
+            effective_task_id="task-1",
+        )
+
+        mock_agent._persist_session.assert_not_called()

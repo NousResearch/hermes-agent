@@ -161,6 +161,17 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    # Persist the completed turn to the session DB so that session.resume /
+    # session.info report the real message_count and the desktop SPA does not
+    # reconcile away the just-streamed reply.  The chat_completions path does
+    # this in conversation_loop.py; the codex app-server path bypasses that
+    # loop entirely and must persist here.
+    if not turn.interrupted and turn.error is None:
+        try:
+            agent._persist_session(messages)
+        except Exception:
+            logger.debug("session persist after codex turn raised", exc_info=True)
+
     return {
         "final_response": turn.final_text,
         "messages": messages,

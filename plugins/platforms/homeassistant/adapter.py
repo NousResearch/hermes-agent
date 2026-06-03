@@ -565,6 +565,7 @@ def register(ctx) -> None:
         validate_config=validate_ha_config,
         is_connected=_is_connected,
         required_env=["HASS_TOKEN"],
+        teardown_env=("HASS_TOKEN", "HASS_URL"),
         install_hint="pip install aiohttp",
         # Out-of-process cron delivery via the HA ``notify.notify`` service.
         # Without this hook, ``deliver=homeassistant`` cron jobs would fail

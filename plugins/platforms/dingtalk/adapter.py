@@ -1695,6 +1695,11 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"],
+        teardown_env=(
+            "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
+            "DINGTALK_ALLOWED_USERS", "DINGTALK_WEBHOOK_URL",
+            "DINGTALK_HOME_CHANNEL", "DINGTALK_HOME_CHANNEL_NAME",
+        ),
         install_hint="pip install 'dingtalk-stream>=0.20' httpx",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,

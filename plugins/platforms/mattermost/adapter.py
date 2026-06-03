@@ -1257,6 +1257,12 @@ def register(ctx) -> None:
         validate_config=validate_mattermost_config,
         is_connected=_is_connected,
         required_env=["MATTERMOST_URL", "MATTERMOST_TOKEN"],
+        teardown_env=(
+            "MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS",
+            "MATTERMOST_ALLOW_ALL_USERS", "MATTERMOST_HOME_CHANNEL",
+            "MATTERMOST_REPLY_MODE", "MATTERMOST_REQUIRE_MENTION",
+            "MATTERMOST_ALLOWED_CHANNELS", "MATTERMOST_FREE_RESPONSE_CHANNELS",
+        ),
         install_hint="pip install aiohttp",
         # Interactive setup wizard — replaces the central
         # hermes_cli/setup.py::_setup_mattermost function.

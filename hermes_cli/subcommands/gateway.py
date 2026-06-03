@@ -223,6 +223,39 @@ def build_gateway_parser(
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
+    # gateway remove
+    gateway_remove = gateway_subparsers.add_parser(
+        "remove",
+        help="Remove a configured messaging platform",
+        description=(
+            "Disconnect a messaging platform from the gateway by clearing its "
+            "platform-owned env vars and config.yaml state. Pass no platform "
+            "name to pick from an interactive list."
+        ),
+    )
+    gateway_remove.add_argument(
+        "platform",
+        nargs="?",
+        help="Platform key (e.g. telegram, slack, discord, matrix)",
+    )
+    gateway_remove.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the confirmation prompt",
+    )
+    gateway_remove.add_argument(
+        "--keep-env",
+        dest="keep_env",
+        action="store_true",
+        help="Comment env vars out instead of deleting them",
+    )
+    gateway_remove.add_argument(
+        "--no-config",
+        dest="no_config",
+        action="store_true",
+        help="Leave platform configuration in config.yaml untouched",
+    )
+
     # gateway migrate-legacy
     gateway_migrate_legacy = gateway_subparsers.add_parser(
         "migrate-legacy",

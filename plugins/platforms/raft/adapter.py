@@ -832,6 +832,7 @@ def register(ctx) -> None:
         check_fn=check_raft_requirements,
         is_connected=_is_connected,
         required_env=["RAFT_PROFILE"],
+        teardown_env=("RAFT_PROFILE",),
         install_hint="Install the Raft CLI from https://raft.build",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,

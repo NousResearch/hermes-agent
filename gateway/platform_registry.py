@@ -66,6 +66,13 @@ class PlatformEntry:
     # Env vars this platform needs (for ``hermes setup`` display).
     required_env: list = field(default_factory=list)
 
+    # Complete inventory of platform-owned env vars removed by
+    # ``hermes gateway remove``.  This is deliberately separate from
+    # ``required_env``: setup/status only need the minimum credentials,
+    # while teardown must also clear optional policy, allowlist, and home
+    # channel values written by the platform's setup flow.
+    teardown_env: tuple[str, ...] = ()
+
     # Hint shown when check_fn returns False.
     install_hint: str = ""
 

@@ -5154,6 +5154,10 @@ def register(ctx) -> None:
         check_fn=check_slack_requirements,
         is_connected=_is_connected,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+        teardown_env=(
+            "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS",
+            "SLACK_ALLOW_ALL_USERS", "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME",
+        ),
         install_hint="pip install 'hermes-agent[slack]'",
         # Interactive setup wizard — replaces hermes_cli/setup.py::_setup_slack
         # and the static _PLATFORMS["slack"] dict in hermes_cli/gateway.py.

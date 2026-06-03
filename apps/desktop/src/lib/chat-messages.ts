@@ -44,6 +44,7 @@ export type GatewayEventPayload = {
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
+  yolo?: boolean
   running?: boolean
   cwd?: string
   branch?: string

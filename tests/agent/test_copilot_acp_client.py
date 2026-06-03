@@ -145,6 +145,60 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertIn("error", response)
         self.assertFalse(outside.exists())
 
+    def test_text_file_shim_uses_utf8_for_non_ascii_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "notes.txt"
+            content = "Hermes handles 中文 and emoji ⚕"
+            original_read_text = Path.read_text
+            original_write_text = Path.write_text
+
+            def read_text_with_cp1252_default(path, encoding=None, errors=None):
+                return original_read_text(
+                    path,
+                    encoding=encoding or "cp1252",
+                    errors=errors,
+                )
+
+            def write_text_with_cp1252_default(path, data, encoding=None, errors=None, newline=None):
+                return original_write_text(
+                    path,
+                    data,
+                    encoding=encoding or "cp1252",
+                    errors=errors,
+                    newline=newline,
+                )
+
+            with patch.object(Path, "read_text", read_text_with_cp1252_default), \
+                 patch.object(Path, "write_text", write_text_with_cp1252_default):
+                write_response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 6,
+                        "method": "fs/write_text_file",
+                        "params": {
+                            "path": str(target),
+                            "content": content,
+                        },
+                    },
+                    cwd=str(root),
+                )
+
+                self.assertNotIn("error", write_response)
+                self.assertEqual(target.read_bytes(), content.encode("utf-8"))
+
+                read_response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(target)},
+                    },
+                    cwd=str(root),
+                )
+
+        self.assertEqual((read_response.get("result") or {}).get("content"), content)
+
 
 if __name__ == "__main__":
     unittest.main()

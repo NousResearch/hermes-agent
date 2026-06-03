@@ -4617,14 +4617,15 @@ def main(
     model: str = "",
     api_key: str = None,
     base_url: str = "",
-    max_turns: int = 10,
+    max_iterations: int = None,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
     save_trajectories: bool = False,
     save_sample: bool = False,
     verbose: bool = False,
-    log_prefix_chars: int = 20
+    log_prefix_chars: int = 20,
+    max_turns: int = None,
 ):
     """
     Main function for running the agent directly.
@@ -4634,7 +4635,11 @@ def main(
         model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4.6.
         api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
         base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
-        max_turns (int): Maximum number of API call iterations. Defaults to 10.
+        max_iterations (int): Maximum number of API call iterations. Defaults to 10.
+            Matches the canonical ``AIAgent(max_iterations=...)`` parameter name.
+        max_turns (int): Deprecated alias for ``max_iterations`` retained for
+            backwards compatibility. Emits ``DeprecationWarning`` when used.
+            Passing both ``max_iterations`` and ``max_turns`` raises ``TypeError``.
         enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
                               toolsets (e.g., "research", "development", "safe").
                               Multiple toolsets can be combined: "web,vision"
@@ -4648,6 +4653,25 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    # Resolve the deprecated max_turns alias against the canonical
+    # max_iterations parameter (#38113). Both-at-once is ambiguous; refuse.
+    _DEFAULT_MAX_ITER = 10
+    if max_turns is not None:
+        if max_iterations is not None and max_iterations != _DEFAULT_MAX_ITER:
+            raise TypeError(
+                "main() received both max_iterations and max_turns; "
+                "max_turns is a deprecated alias — pass only max_iterations."
+            )
+        import warnings as _warnings
+        _warnings.warn(
+            "run_agent.main(max_turns=...) is deprecated; use max_iterations instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        max_iterations = max_turns
+    if max_iterations is None:
+        max_iterations = _DEFAULT_MAX_ITER
+
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     
@@ -4757,7 +4781,7 @@ def main(
             base_url=base_url,
             model=model,
             api_key=api_key,
-            max_iterations=max_turns,
+            max_iterations=max_iterations,
             enabled_toolsets=enabled_toolsets_list,
             disabled_toolsets=disabled_toolsets_list,
             save_trajectories=save_trajectories,

@@ -473,7 +473,7 @@ Gateway and messaging sessions never collect secrets in-band; they instruct the 
 - The skill relies on a CLI tool that may not be installed (e.g., `himalaya`, `openhue`, `ddgs`)
 - Treat command checks as guidance, not discovery-time hiding
 
-See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
+See `skills/media/gif-search/` and `skills/email/himalaya/` for examples.
 
 ### Skill authoring standards (HARDLINE)
 

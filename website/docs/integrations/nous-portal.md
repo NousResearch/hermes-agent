@@ -14,7 +14,7 @@ If you only have time to set up one thing, set up this. The fastest path:
 hermes setup --portal
 ```
 
-That single command runs the Portal OAuth, sets Nous as your inference provider in `config.yaml`, and turns on the Tool Gateway. You're ready to `hermes chat` immediately after.
+That single command runs the Portal OAuth, lets you pick a Nous model, sets Nous as your inference provider in `config.yaml`, and turns on the Tool Gateway. You're ready to `hermes chat` immediately after.
 
 Don't have a subscription yet? [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) — sign up, then come back and run the command above.
 
@@ -99,9 +99,10 @@ This runs the full setup in one shot:
 
 1. Opens your browser to portal.nousresearch.com for OAuth login
 2. Stores the refresh token at `~/.hermes/auth.json`
-3. Sets Nous as your inference provider in `~/.hermes/config.yaml`
-4. Turns on the Tool Gateway (web, image, TTS, browser routing)
-5. Returns you to your terminal ready to `hermes chat`
+3. Lets you pick a Nous model from the curated list (or skip to keep your current one)
+4. Sets Nous as your inference provider in `~/.hermes/config.yaml` (when you pick a model)
+5. Turns on the Tool Gateway (web, image, TTS, browser routing)
+6. Returns you to your terminal ready to `hermes chat`
 
 If you don't have a subscription yet, sign up at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) first.
 

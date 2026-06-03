@@ -488,6 +488,7 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
+    const [showCreateTriage, setShowCreateTriage] = useState(false);
     const [selectedTaskId, setSelectedTaskId] = useState(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
@@ -495,6 +496,7 @@
     const [draggingTaskId, setDraggingTaskId] = useState(null);
     const handleDragStart = useCallback(function (taskId) { setDraggingTaskId(taskId); }, []);
     const handleDragEnd = useCallback(function () { setDraggingTaskId(null); }, []);
+
     // Per-task event counter incremented whenever the WS stream reports
     // a new event for that task id. TaskDrawer useEffect-depends on its
     // own task's counter so it reloads itself on live events instead of
@@ -563,6 +565,7 @@
     }, [board]);
 
     useEffect(function () { loadBoardList(); }, [loadBoardList]);
+
 
     const scheduleReload = useCallback(function () {
       if (reloadTimerRef.current) return;
@@ -975,6 +978,9 @@
 
     const renderMd = !config || config.render_markdown !== false;
 
+    var allTasks = boardData ? boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []) : [];
+    var availableProfiles = (boardData && boardData.available_profiles) || [];
+
     return h(ErrorBoundary, null,
       h("div", { className: "hermes-kanban flex flex-col gap-4" },
         h(BoardSwitcher, {
@@ -1008,15 +1014,26 @@
               .catch(function (e) { setError(String(e.message || e)); });
           },
           onRefresh: loadBoard,
+          onCreate: createTask,
+          onCreateIssue: function () { setShowCreateTriage(true); },
         }),
-       selectedIds.size > 0 ? h(BulkActionBar, {
-         count: selectedIds.size,
-         assignees: (boardData && boardData.assignees) || [],
-         onApply: applyBulk,
-         onClear: clearSelected,
-         onSelectAllVisible: selectAllVisible,
-         onDelete: deleteSelected,
-       }) : null,
+        showCreateTriage ? h(CreateTaskModal, {
+          columnName: "triage",
+          assignees: availableProfiles,
+          allTasks: allTasks,
+          onCancel: function () { setShowCreateTriage(false); },
+          onSubmit: function (body) {
+            createTask(body).then(function () { setShowCreateTriage(false); });
+          },
+        }) : null,
+        selectedIds.size > 0 ? h(BulkActionBar, {
+          count: selectedIds.size,
+          assignees: availableProfiles,
+          onApply: applyBulk,
+          onClear: clearSelected,
+          onSelectAllVisible: selectAllVisible,
+          onDelete: deleteSelected,
+        }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
@@ -1034,7 +1051,8 @@
           onDelete: deleteTask,
           onOpen: setSelectedTaskId,
           onCreate: createTask,
-          allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          allTasks: allTasks,
+          assignees: availableProfiles,
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
@@ -1042,8 +1060,8 @@
           onClose: function () { setSelectedTaskId(null); },
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
-          allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
-          assignees: (boardData && boardData.assignees) || [],
+          allTasks: allTasks,
+          assignees: availableProfiles,
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
@@ -1453,7 +1471,7 @@
     );
   }
 
-    // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
   // Board switcher (multi-project)
   // -------------------------------------------------------------------------
 
@@ -1596,96 +1614,96 @@
         settings === null ? "…" : (autoOn ? "Auto" : "Manual"))
     );
 
-    if (!expanded) {
-      return h("div", { className: "flex items-center gap-3 text-xs" },
-        modePill,
-        h("button", {
-          type: "button",
-          onClick: function () { setExpanded(true); },
-          className: "underline text-muted-foreground hover:text-foreground",
-          title: "Configure the kanban orchestrator (profile picker, default assignee, auto-decompose, profile descriptions)",
-        }, headerLabel),
-      );
-    }
-
     const profileOptions = profiles.map(function (p) {
       const tag = p.is_default ? " (default)" : "";
       return h(SelectOption, { key: p.name, value: p.name }, p.name + tag);
     });
 
-    return h(Card, { className: "p-3" },
-      h(CardContent, { className: "p-2 flex flex-col gap-3" },
-        h("div", { className: "flex items-center justify-between" },
-          h("button", {
+    return h("div", { className: "border border-border rounded-md overflow-hidden" },
+      // Header row — click to toggle expand/collapse
+      h("div", {
+        className: "flex items-center justify-between gap-3 px-3 py-2 cursor-pointer select-none hover:bg-muted/30 transition-colors",
+        style: { background: "var(--color-card-subtle, rgba(255,255,255,0.02))" },
+        onClick: function () { setExpanded(function (v) { return !v; }); },
+      },
+        h("div", { className: "flex items-center gap-2" },
+          h("span", { className: "text-xs text-muted-foreground flex items-center gap-1.5" },
+            h("span", { className: "text-[10px]" }, expanded ? "▾" : "▸"),
+            "Orchestration settings",
+          ),
+          expanded ? h("span", { className: "text-xs text-muted-foreground/40 select-none" }, "·") : null,
+          expanded ? h("button", {
             type: "button",
-            onClick: function () { setExpanded(false); },
-            className: "text-sm font-medium underline-offset-2 hover:underline",
-          }, headerLabel),
-          modePill,
-          h(Button, { onClick: loadAll, size: "sm" }, "Reload"),
+            onClick: function (e) { e.stopPropagation(); loadAll(); },
+            className: "text-xs text-muted-foreground hover:text-foreground underline cursor-pointer",
+          }, "Reload") : null,
         ),
+        // Stop propagation so pill click doesn't toggle the panel
+        h("div", { onClick: function (e) { e.stopPropagation(); } },
+          modePill,
+        ),
+      ),
+
+      // Expanded content
+      expanded ? h("div", { className: "border-t border-border px-3 py-3 flex flex-col gap-3" },
         msg ? h("div", {
           className: msg.ok ? "hermes-kanban-msg-ok" : "hermes-kanban-msg-err",
         }, msg.text) : null,
 
-        settings ? h("div", { className: "grid gap-3 sm:grid-cols-3" },
-          h("div", { className: "flex flex-col gap-1" },
-            h(Label, { className: "text-xs text-muted-foreground" },
-              "Orchestrator profile"),
-            h(Select, Object.assign({
-              value: settings.orchestrator_profile || "",
-              className: "h-8",
-            }, selectChangeHandler(function (v) {
-              saveSettings({ orchestrator_profile: v });
-            })),
-              h(SelectOption, { value: "" },
-                "(default: " + (settings.active_profile || "default") + ")"),
-              profileOptions,
+        settings ? h("div", { className: "flex flex-col gap-3" },
+          h("div", { className: "flex gap-3" },
+            h("div", { className: "flex flex-col gap-1 flex-1" },
+              h(Label, { className: "text-xs text-muted-foreground" }, "Orchestrator profile"),
+              h(Select, Object.assign({
+                value: settings.orchestrator_profile || "",
+                className: "h-8",
+              }, selectChangeHandler(function (v) {
+                saveSettings({ orchestrator_profile: v });
+              })),
+                h(SelectOption, { value: "" },
+                  "(default: " + (settings.active_profile || "default") + ")"),
+                profileOptions,
+              ),
+              h("div", { className: "text-[10px] text-muted-foreground mt-1" },
+                "Resolved: " + (settings.resolved_orchestrator_profile || "default")),
             ),
-            h("div", { className: "text-[10px] text-muted-foreground" },
-              "Resolved: " + (settings.resolved_orchestrator_profile || "default")),
+            h("div", { className: "flex flex-col gap-1 flex-1" },
+              h(Label, { className: "text-xs text-muted-foreground" }, "Default assignee"),
+              h(Select, Object.assign({
+                value: settings.default_assignee || "",
+                className: "h-8",
+              }, selectChangeHandler(function (v) {
+                saveSettings({ default_assignee: v });
+              })),
+                h(SelectOption, { value: "" },
+                  "(default: " + (settings.active_profile || "default") + ")"),
+                profileOptions,
+              ),
+              h("div", { className: "text-[10px] text-muted-foreground mt-1" },
+                "Resolved: " + (settings.resolved_default_assignee || "default")),
+            ),
           ),
-          h("div", { className: "flex flex-col gap-1" },
-            h(Label, { className: "text-xs text-muted-foreground" },
-              "Default assignee"),
-            h(Select, Object.assign({
-              value: settings.default_assignee || "",
-              className: "h-8",
-            }, selectChangeHandler(function (v) {
-              saveSettings({ default_assignee: v });
-            })),
-              h(SelectOption, { value: "" },
-                "(default: " + (settings.active_profile || "default") + ")"),
-              profileOptions,
-            ),
-            h("div", { className: "text-[10px] text-muted-foreground" },
-              "Resolved: " + (settings.resolved_default_assignee || "default")),
-          ),
-          h("div", { className: "flex flex-col gap-1" },
-            h(Label, { className: "text-xs text-muted-foreground" },
-              "Orchestration mode"),
-            h("label", { className: "flex items-center gap-2 text-xs h-8" },
-              h(Checkbox, {
-                checked: !!settings.auto_decompose,
-                onCheckedChange: function (checked) {
-                  saveSettings({ auto_decompose: checked === true });
-                },
-              }),
-              "Auto-decompose triage tasks",
-            ),
-            h("div", { className: "text-[10px] text-muted-foreground" },
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h(Checkbox, {
+              checked: !!settings.auto_decompose,
+              onCheckedChange: function (checked) {
+                saveSettings({ auto_decompose: checked === true });
+              },
+            }),
+            "Auto-decompose triage tasks",
+            h("span", { className: "text-[10px] text-muted-foreground" },
               settings.auto_decompose
-                ? "The dispatcher decomposes new triage tasks automatically."
-                : "Triage tasks stay in triage until you click ⚗ Decompose."),
+                ? "— dispatcher decomposes new triage tasks automatically"
+                : "— triage tasks stay until you click ⚗ Decompose"),
           ),
-        ) : h("div", { className: "text-xs text-muted-foreground" },
-          "Loading…"),
+        ) : h("div", { className: "text-xs text-muted-foreground" }, "Loading…"),
 
-        h("div", { className: "border-t pt-3" },
-          h(Label, { className: "text-xs text-muted-foreground" },
-            "Profile descriptions"),
-          h("div", { className: "text-[10px] text-muted-foreground pb-2" },
-            "Descriptions guide the orchestrator's routing. Click ⚗ to auto-generate, or edit and save."),
+        h("div", { className: "border-t border-border pt-3 flex flex-col gap-2" },
+          h("div", { className: "flex flex-col gap-0.5" },
+            h(Label, { className: "text-xs text-muted-foreground" }, "Profile descriptions"),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              "Descriptions guide the orchestrator's routing. Click ⚗ to auto-generate, or edit and save."),
+          ),
           profiles.length === 0
             ? h("div", { className: "text-xs text-muted-foreground" }, "No profiles installed.")
             : h("div", { className: "flex flex-col gap-2" },
@@ -1700,7 +1718,7 @@
                 }),
               ),
         ),
-      ),
+      ) : null,
     );
   }
 
@@ -1715,7 +1733,7 @@
     }, [p.description]);
 
     const tag = p.description_auto && p.description ? " [auto, review]" : "";
-    return h("div", { className: "flex flex-col gap-1 border-l-2 pl-2",
+    return h("div", { className: "flex flex-col gap-1 border-l-2 pl-4",
       style: { borderColor: p.description ? "#888" : "#cc6" } },
       h("div", { className: "flex items-center gap-2 text-xs" },
         h("span", { className: "font-medium" }, p.name),
@@ -1779,15 +1797,14 @@
       );
     }
 
-    return h("div", { className: "hermes-kanban-boardswitcher" },
-      h("div", { className: "hermes-kanban-boardswitcher-inner" },
-        h("div", { className: "flex flex-col gap-0.5" },
-          h("div", { className: "text-[11px] tracking-wider text-muted-foreground" },
-            tx(t, "board", "Board")),
+    return h("div", { className: "flex flex-col gap-1" },
+      h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "board", "Board")),
+      h("div", { className: "hermes-kanban-boardswitcher" },
+        h("div", { className: "hermes-kanban-boardswitcher-inner" },
           h("div", { className: "flex items-center gap-2" },
             h(Select, Object.assign({
               value: props.board,
-              className: "h-8 min-w-[220px]",
+              className: "min-w-[220px]",
               "aria-label": "Switch kanban board",
               title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
@@ -1801,28 +1818,28 @@
             h("span", { className: "text-xs text-muted-foreground" },
               `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
           ),
-        ),
-        h("div", { className: "flex-1" }),
-        h(DocsLink, null),
-        h(Button, {
-          onClick: props.onNewClick,
-          size: "sm",
-          className: "h-8",
-          title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
-        }, tx(t, "newBoard", "+ New board")),
-        props.board !== "default"
-          ? h(Button, {
-            onClick: function () {
-              const msg = tx(t, "archiveBoardConfirm",
-                "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
-                { name: currentName });
-              if (window.confirm(msg)) props.onDeleteBoard(props.board);
-            },
+          h("div", { className: "flex-1" }),
+          h(DocsLink, null),
+          h(Button, {
+            onClick: props.onNewClick,
             size: "sm",
             className: "h-8",
-            title: tx(t, "archiveBoardTitle", "Archive this board"),
-          }, tx(t, "archive", "Archive"))
-          : null,
+            title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
+          }, tx(t, "newBoard", "+ New board")),
+          props.board !== "default"
+            ? h(Button, {
+              onClick: function () {
+                const msg = tx(t, "archiveBoardConfirm",
+                  "Archive board '{name}'? It will be moved to boards/_archived/ so you can recover it later. Tasks on this board will no longer appear anywhere in the UI.",
+                  { name: currentName });
+                if (window.confirm(msg)) props.onDeleteBoard(props.board);
+              },
+              size: "sm",
+              className: "h-8",
+              title: tx(t, "archiveBoardTitle", "Archive this board"),
+            }, tx(t, "archive", "Archive"))
+            : null,
+        ),
       ),
     );
   }
@@ -1950,13 +1967,563 @@
   }
 
   // -------------------------------------------------------------------------
+  // Shared autocomplete primitives
+  // -------------------------------------------------------------------------
+
+  // Single-value autocomplete input. Props: value, onChange, options (string[]),
+  // allowEmpty, placeholder, className
+  function useDropdownPos(open) {
+    const inputRef = useRef(null);
+    const [pos, setPos] = useState(null);
+    useEffect(function () {
+      if (!open) { setPos(null); return; }
+      function recalc() {
+        if (inputRef.current) {
+          var r = inputRef.current.getBoundingClientRect();
+          setPos({ top: r.bottom + 2, left: r.left, width: r.width });
+        }
+      }
+      recalc();
+      var ro = new ResizeObserver(recalc);
+      if (inputRef.current) ro.observe(inputRef.current);
+      return function () { ro.disconnect(); };
+    }, [open]);
+    return [inputRef, pos];
+  }
+
+  function ComboInput(props) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState(props.value || "");
+    const rootRef = useRef(null);
+    const [inputRef, dropPos] = useDropdownPos(open);
+
+    useEffect(function () { setQuery(props.value || ""); }, [props.value]);
+
+    useEffect(function () {
+      function onDown(e) {
+        if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+      }
+      document.addEventListener("mousedown", onDown);
+      return function () { document.removeEventListener("mousedown", onDown); };
+    }, []);
+
+    const filtered = useMemo(function () {
+      const q = query.toLowerCase();
+      return (props.options || []).filter(function (o) {
+        return !q || o.toLowerCase().includes(q);
+      });
+    }, [props.options, query]);
+
+    function pick(val) {
+      setQuery(val);
+      props.onChange(val);
+      setOpen(false);
+    }
+
+    return h("div", { ref: rootRef, className: "hermes-kanban-combo-root" },
+      h("input", {
+        ref: inputRef,
+        type: "text",
+        value: query,
+        onChange: function (e) { setQuery(e.target.value); props.onChange(e.target.value); setOpen(true); },
+        onFocus: function () { setOpen(true); },
+        onBlur: function () { if (props.onBlur) props.onBlur(query); },
+        placeholder: props.placeholder || "",
+        className: "h-7 text-xs w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring " + (props.className || ""),
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        spellCheck: false,
+      }),
+      open && dropPos && (filtered.length > 0 || props.allowEmpty) ? h("div", {
+        className: "hermes-kanban-combo-dropdown",
+        style: { top: dropPos.top, left: dropPos.left, width: dropPos.width },
+      },
+        props.allowEmpty ? h("div", {
+          className: "hermes-kanban-combo-item hermes-kanban-combo-item--empty",
+          onMouseDown: function (e) { e.preventDefault(); pick(""); },
+        }, "— unassigned —") : null,
+        filtered.map(function (opt) {
+          return h("div", {
+            key: opt,
+            className: "hermes-kanban-combo-item" + (opt === props.value ? " hermes-kanban-combo-item--selected" : ""),
+            onMouseDown: function (e) { e.preventDefault(); pick(opt); },
+          }, opt);
+        }),
+      ) : null,
+    );
+  }
+
+  // Multi-value skill picker with checkbox dropdown. Fetches /api/skills on mount.
+  // Props: values (string[]), onChange
+  function MultiSkillPicker(props) {
+    const [query, setQuery] = useState("");
+    const [open, setOpen] = useState(false);
+    const [available, setAvailable] = useState(null);
+    const rootRef = useRef(null);
+    const [triggerRef, dropPos] = useDropdownPos(open);
+
+    useEffect(function () {
+      SDK.fetchJSON("/api/skills").then(function (data) {
+        setAvailable((data || []).map(function (s) { return s.name; }));
+      }).catch(function () { setAvailable([]); });
+    }, []);
+
+    useEffect(function () {
+      function onDown(e) {
+        if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+      }
+      document.addEventListener("mousedown", onDown);
+      return function () { document.removeEventListener("mousedown", onDown); };
+    }, []);
+
+    const values = props.values || [];
+
+    const filtered = useMemo(function () {
+      if (!available) return [];
+      const q = query.toLowerCase();
+      return available.filter(function (s) { return !q || s.toLowerCase().includes(q); });
+    }, [available, query]);
+
+    function toggle(skill) {
+      if (values.includes(skill)) {
+        props.onChange(values.filter(function (s) { return s !== skill; }));
+      } else {
+        props.onChange(values.concat([skill]));
+      }
+    }
+
+    function selectAll() {
+      var next = values.slice();
+      filtered.forEach(function (s) { if (!next.includes(s)) next.push(s); });
+      props.onChange(next);
+    }
+
+    function clearAll() {
+      var filteredSet = new Set(filtered);
+      props.onChange(values.filter(function (s) { return !filteredSet.has(s); }));
+    }
+
+    var allChecked = filtered.length > 0 && filtered.every(function (s) { return values.includes(s); });
+
+    return h("div", { ref: rootRef, className: "hermes-kanban-combo-root" },
+      h("button", {
+        ref: triggerRef,
+        type: "button",
+        className: "hermes-kanban-skill-trigger",
+        onClick: function () { setOpen(function (o) { return !o; }); },
+        disabled: available === null,
+      },
+        available === null
+          ? h("span", { className: "text-xs text-muted-foreground" }, "Loading skills…")
+          : values.length === 0
+            ? h("span", { className: "text-xs text-muted-foreground" }, "No skills selected")
+            : h("div", { className: "hermes-kanban-skill-chips" },
+                values.map(function (v) {
+                  return h("span", { key: v, className: "hermes-kanban-skill-chip" },
+                    v,
+                    h("span", {
+                      role: "button",
+                      className: "hermes-kanban-skill-chip-x",
+                      onMouseDown: function (e) {
+                        e.stopPropagation();
+                        props.onChange(values.filter(function (s) { return s !== v; }));
+                      },
+                    }, "×"),
+                  );
+                }),
+              ),
+        h("span", { className: "hermes-kanban-skill-chevron" }, open ? "▴" : "▾"),
+      ),
+      open && dropPos ? h("div", {
+        className: "hermes-kanban-combo-dropdown",
+        style: { top: dropPos.top, left: dropPos.left, width: dropPos.width },
+      },
+        h("div", { className: "hermes-kanban-skill-search" },
+          h("input", {
+            type: "text",
+            value: query,
+            onChange: function (e) { setQuery(e.target.value); },
+            placeholder: "Filter skills…",
+            autoFocus: true,
+            autoComplete: "off",
+          }),
+        ),
+        h("div", { className: "hermes-kanban-skill-controls" },
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-skill-ctrl-btn",
+            onMouseDown: function (e) { e.preventDefault(); allChecked ? clearAll() : selectAll(); },
+          }, allChecked ? "Unselect all" : "Select all"),
+        ),
+        filtered.length === 0
+          ? h("div", { className: "hermes-kanban-combo-empty" }, "No matching skills")
+          : filtered.map(function (skill) {
+              var checked = values.includes(skill);
+              return h("label", {
+                key: skill,
+                className: "hermes-kanban-skill-check-item",
+                onMouseDown: function (e) { e.preventDefault(); toggle(skill); },
+              },
+                h("input", {
+                  type: "checkbox",
+                  checked: checked,
+                  readOnly: true,
+                }),
+                skill,
+              );
+            }),
+      ) : null,
+    );
+  }
+
+  // Searchable task picker for the parent-task field.
+  // Props: value (task id | ""), onChange, tasks (task[]), placeholder
+  function TaskSearchSelect(props) {
+    const [query, setQuery] = useState("");
+    const [open, setOpen] = useState(false);
+    const rootRef = useRef(null);
+    const [inputRef, dropPos] = useDropdownPos(open);
+    const tasks = props.tasks || [];
+
+    useEffect(function () {
+      function onDown(e) {
+        if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+      }
+      document.addEventListener("mousedown", onDown);
+      return function () { document.removeEventListener("mousedown", onDown); };
+    }, []);
+
+    const selected = useMemo(function () {
+      return tasks.find(function (t) { return t.id === props.value; }) || null;
+    }, [tasks, props.value]);
+
+    const filtered = useMemo(function () {
+      if (!query) return tasks.slice(0, 30);
+      const q = query.toLowerCase();
+      return tasks.filter(function (t) {
+        return (t.title || "").toLowerCase().includes(q) || t.id.toLowerCase().includes(q);
+      }).slice(0, 30);
+    }, [tasks, query]);
+
+    function pick(task) {
+      props.onChange(task ? task.id : "");
+      setQuery("");
+      setOpen(false);
+    }
+
+    return h("div", { ref: rootRef, className: "hermes-kanban-combo-root" },
+      selected
+        ? h("div", { className: "hermes-kanban-task-selected" },
+            h("span", { className: "hermes-kanban-task-selected-title" },
+              (selected.title || "").slice(0, 70) || selected.id),
+            h("span", { className: "hermes-kanban-task-selected-id" }, selected.id.slice(0, 8)),
+            h("button", {
+              type: "button",
+              className: "hermes-kanban-task-selected-clear",
+              onClick: function () { pick(null); },
+            }, "×"),
+          )
+        : h("input", {
+            ref: inputRef,
+            type: "text",
+            value: query,
+            onChange: function (e) { setQuery(e.target.value); setOpen(true); },
+            onFocus: function () { setOpen(true); },
+            placeholder: props.placeholder || "Search tasks…",
+            className: "h-7 text-xs w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+            autoComplete: "off",
+          }),
+      open && !selected && dropPos ? h("div", {
+        className: "hermes-kanban-combo-dropdown",
+        style: { top: dropPos.top, left: dropPos.left, width: dropPos.width },
+      },
+        h("div", {
+          className: "hermes-kanban-combo-item hermes-kanban-combo-item--empty",
+          onMouseDown: function (e) { e.preventDefault(); pick(null); },
+        }, "— no parent —"),
+        filtered.length === 0
+          ? h("div", { className: "hermes-kanban-combo-empty" }, "No tasks match")
+          : filtered.map(function (task) {
+              return h("div", {
+                key: task.id,
+                className: "hermes-kanban-combo-item",
+                onMouseDown: function (e) { e.preventDefault(); pick(task); },
+              },
+                h("span", { className: "hermes-kanban-task-item-title" },
+                  (task.title || "").slice(0, 60) || "(untitled)"),
+                h("span", { className: "hermes-kanban-task-item-id" }, task.id.slice(0, 8)),
+              );
+            }),
+      ) : null,
+    );
+  }
+
+  function validateAssignee(val, assignees) {
+    if (!val || !val.trim()) return null;
+    if (!assignees || assignees.length === 0) return null;
+    if (!assignees.includes(val.trim())) return "Not a known profile";
+    return null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Create task modal
+  // -------------------------------------------------------------------------
+
+  function CreateTaskModal(props) {
+    const { t } = useI18n();
+    const [title, setTitle] = useState("");
+    const [description, setDescription] = useState("");
+    const [assignee, setAssignee] = useState("");
+    const [priority, setPriority] = useState(0);
+    const [parent, setParent] = useState("");
+    const [skills, setSkills] = useState([]);
+    const [workspaceKind, setWorkspaceKind] = useState("scratch");
+    const [workspacePath, setWorkspacePath] = useState("");
+    const [goalMode, setGoalMode] = useState(false);
+    const [goalMaxTurns, setGoalMaxTurns] = useState("");
+    const [errors, setErrors] = useState({});
+    const dialogRef = useRef(null);
+
+    var isDirty = !!(title.trim() || description.trim() || assignee.trim() ||
+      skills.length > 0 || parent || goalMode ||
+      workspacePath.trim() || workspaceKind !== "scratch");
+
+    function tryCancel() {
+      if (!isDirty || window.confirm(tx(t, "discardChanges", "Discard unsaved changes?"))) {
+        props.onCancel();
+      }
+    }
+
+    // ESC key to close
+    useEffect(function () {
+      function onKeyDown(e) {
+        if (e.key === "Escape") tryCancel();
+      }
+      window.addEventListener("keydown", onKeyDown);
+      return function () { window.removeEventListener("keydown", onKeyDown); };
+    }, [isDirty]);
+
+    // Focus first element on mount
+    useEffect(function () {
+      const el = dialogRef.current;
+      if (!el) return;
+      var focusable = el.querySelectorAll(
+        "input, textarea, select, button, [tabindex]:not([tabindex=\"-1\"])"
+      );
+      if (focusable.length > 0) {
+        setTimeout(function () { focusable[0].focus(); }, 0);
+      }
+    }, []);
+
+    function submit(e) {
+      if (e) e.preventDefault();
+      var trimmed = title.trim();
+      if (!trimmed) return;
+      var newErrors = {};
+      var aErr = validateAssignee(assignee, props.assignees);
+      if (aErr) newErrors.assignee = aErr;
+      if (Object.keys(newErrors).length > 0) { setErrors(newErrors); return; }
+      setErrors({});
+      var body = {
+        title: trimmed,
+        assignee: assignee.trim() || null,
+        priority: Number(priority) || 0,
+        triage: props.columnName === "triage",
+      };
+      if (description.trim()) body.body = description.trim();
+      if (parent) body.parents = [parent];
+      if (skills.length > 0) body.skills = skills;
+      if (workspaceKind && workspaceKind !== "scratch") {
+        body.workspace_kind = workspaceKind;
+      }
+      var wpTrim = workspacePath.trim();
+      if (wpTrim) body.workspace_path = wpTrim;
+      if (goalMode) {
+        body.goal_mode = true;
+        var gmt = parseInt(goalMaxTurns, 10);
+        if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
+      }
+      props.onSubmit(body);
+    }
+
+    var showPathInput = workspaceKind !== "scratch";
+    var pathPlaceholder = workspaceKind === "dir"
+      ? tx(t, "workspacePathDir", "workspace path (required, e.g. ~/projects/my-app)")
+      : tx(t, "workspacePathOptional",
+          "workspace path (optional, derived from assignee if blank)");
+
+    return h("div", {
+      className: "hermes-kanban-dialog-backdrop",
+      onClick: function (e) { if (e.target === e.currentTarget) tryCancel(); },
+    },
+      h("form", {
+        ref: dialogRef,
+        className: "hermes-kanban-dialog",
+        onSubmit: submit,
+      },
+        h("div", { className: "hermes-kanban-dialog-title" },
+          tx(t, "createTaskModalTitle", "Create issue")),
+        h("div", { className: "flex flex-col gap-3" },
+          // Title (required)
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" },
+              tx(t, "taskTitle", "Title"), " ",
+              h("span", { className: "text-destructive" }, "*")),
+            h("textarea", {
+              value: title,
+              onChange: function (e) { setTitle(e.target.value); },
+              onKeyDown: function (e) {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(e); }
+              },
+              placeholder: props.columnName === "triage"
+                ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it\u2026")
+                : tx(t, "taskTitlePlaceholder", "New task title\u2026"),
+              className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+              rows: 2,
+              autoFocus: true,
+            }),
+          ),
+          // Description (optional)
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" },
+              tx(t, "description", "Description"), " ",
+              h("span", { className: "text-muted-foreground" },
+                tx(t, "optional", "(optional)"))),
+            h("textarea", {
+              value: description,
+              onChange: function (e) { setDescription(e.target.value); },
+              placeholder: tx(t, "descriptionPlaceholder", "Task description or opening post\u2026"),
+              className: "text-sm min-h-[3rem] max-h-48 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+              rows: 3,
+            }),
+          ),
+          // Assignee + Priority
+          h("div", { className: "flex gap-2" },
+            h("div", { className: "flex-1 flex flex-col gap-1" },
+              h(Label, { className: "text-xs" }, tx(t, "assignee", "Assignee")),
+              h(ComboInput, {
+                value: assignee,
+                onChange: function (v) { setAssignee(v); if (errors.assignee) setErrors(function(prev) { return Object.assign({}, prev, { assignee: null }); }); },
+                onBlur: function (v) { var e = validateAssignee(v, props.assignees); setErrors(function(prev) { return Object.assign({}, prev, { assignee: e }); }); },
+                options: props.assignees || [],
+                allowEmpty: true,
+                placeholder: props.columnName === "triage"
+                  ? tx(t, "specifier", "specifier")
+                  : tx(t, "assigneePlaceholder", "assignee"),
+              }),
+              errors.assignee ? h("p", { className: "text-xs text-destructive mt-0.5" }, errors.assignee) : null,
+            ),
+            h("div", { className: "w-20 flex flex-col gap-1" },
+              h(Label, { className: "text-xs" }, tx(t, "priority", "Priority")),
+              h(Input, {
+                type: "number",
+                value: priority,
+                onChange: function (e) { setPriority(e.target.value); },
+                placeholder: "pri",
+                className: "h-7 text-xs",
+              }),
+            ),
+          ),
+          // Skills
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "skills", "Skills")),
+            h(MultiSkillPicker, {
+              values: skills,
+              onChange: setSkills,
+            }),
+          ),
+          // Workspace kind + path
+          h("div", { className: "flex gap-2 items-end" },
+            h("div", { className: "w-28 flex flex-col gap-1" },
+              h(Label, { className: "text-xs" }, tx(t, "workspace", "Workspace")),
+              h(Select, Object.assign({
+                value: workspaceKind,
+                className: "h-7 text-xs",
+              }, selectChangeHandler(setWorkspaceKind)),
+                h(SelectOption, { value: "scratch" }, "scratch"),
+                h(SelectOption, { value: "worktree" }, "worktree"),
+                h(SelectOption, { value: "dir" }, "dir"),
+              ),
+            ),
+            showPathInput ? h("div", { className: "flex-1 flex flex-col gap-1" },
+              h(Label, { className: "text-xs" }, tx(t, "workspacePath", "Path")),
+              h(Input, {
+                value: workspacePath,
+                onChange: function (e) { setWorkspacePath(e.target.value); },
+                placeholder: pathPlaceholder,
+                className: "h-7 text-xs",
+              }),
+            ) : null,
+          ),
+          // Goal mode
+          h("div", { className: "flex flex-col gap-1 pt-2" },
+            h("div", { className: "flex gap-2 items-center" },
+              h("label", {
+                className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
+              },
+                h("input", {
+                  type: "checkbox",
+                  checked: goalMode,
+                  onChange: function (e) { setGoalMode(!!e.target.checked); },
+                  className: "h-3.5 w-3.5 accent-current",
+                }),
+                tx(t, "goalMode", "goal mode"),
+              ),
+              goalMode ? h(Input, {
+                type: "number",
+                value: goalMaxTurns,
+                onChange: function (e) { setGoalMaxTurns(e.target.value); },
+                placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
+                className: "h-7 text-xs w-40",
+                min: 1,
+              }) : null,
+            ),
+            h("p", { className: "text-xs text-muted-foreground leading-snug" },
+              tx(t, "goalModeHint",
+                "The worker runs autonomously in a loop until it decides the goal is complete or hits the turn limit, rather than stopping after a single attempt.")),
+          ),
+          // Parent task
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "parentTask", "Parent task")),
+            h(TaskSearchSelect, {
+              value: parent,
+              onChange: setParent,
+              tasks: props.allTasks || [],
+              placeholder: tx(t, "searchParentTask", "Search by title\u2026"),
+            }),
+          ),
+        ),
+        h("div", { className: "hermes-kanban-dialog-actions" },
+          h(Button, {
+            type: "button",
+            onClick: props.onCancel,
+            size: "sm",
+            ghost: true,
+          }, tx(t, "cancel", "Cancel")),
+          h(Button, {
+            type: "submit",
+            size: "sm",
+            disabled: !title.trim(),
+          }, tx(t, "create", "Create")),
+        ),
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Toolbar
   // -------------------------------------------------------------------------
 
   function BoardToolbar(props) {
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
-    const assignees = (props.board && props.board.assignees) || [];
+    const assignees = (props.board && props.board.available_profiles) || [];
+    function clearFilters() {
+      props.setSearch("");
+      props.setTenantFilter("");
+      props.setAssigneeFilter("");
+      props.setIncludeArchived(false);
+    }
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
@@ -1965,7 +2532,7 @@
           placeholder: tx(t, "filterCards", "Filter cards…"),
           value: props.search,
           onChange: function (e) { props.setSearch(e.target.value); },
-          className: "w-56 h-8",
+          className: "w-56",
         }),
       ),
       h("div", { className: "flex flex-col gap-1",
@@ -1973,7 +2540,6 @@
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "tenant", "Tenant")),
         h(Select, Object.assign({
           value: props.tenantFilter,
-          className: "h-8",
         }, selectChangeHandler(props.setTenantFilter)),
           h(SelectOption, { value: "" }, tx(t, "allTenants", "All tenants")),
           tenants.map(function (tn) {
@@ -1986,7 +2552,6 @@
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "assignee", "Assignee")),
         h(Select, Object.assign({
           value: props.assigneeFilter,
-          className: "h-8",
         }, selectChangeHandler(props.setAssigneeFilter)),
           h(SelectOption, { value: "" }, tx(t, "allProfiles", "All profiles")),
           assignees.map(function (a) {
@@ -1994,43 +2559,47 @@
           }),
         ),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs",
-                   title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
-        h(Checkbox, {
-          checked: props.includeArchived,
-          onCheckedChange: function (checked) { props.setIncludeArchived(checked === true); },
-        }),
-        tx(t, "showArchived", "Show archived"),
+      h("div", { className: "flex flex-col gap-1" },
+        h("button", {
+          type: "button",
+          className: "text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground text-left mb-1",
+          title: "Clear all active filters (search, tenant, assignee, archived).",
+          onClick: clearFilters,
+        }, tx(t, "clearFilters", "Clear filters")),
+        h("label", { className: "flex items-center gap-2 text-xs whitespace-nowrap",
+                     title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
+          h(Checkbox, {
+            checked: props.includeArchived,
+            onCheckedChange: function (checked) { props.setIncludeArchived(checked === true); },
+          }),
+          tx(t, "showArchived", "Show archived"),
+        ),
+        h("label", { className: "flex items-center gap-2 text-xs whitespace-nowrap",
+                     title: "Group the Running column by assigned profile" },
+          h(Checkbox, {
+            checked: props.laneByProfile,
+            onCheckedChange: function (checked) { props.setLaneByProfile(checked === true); },
+          }),
+          tx(t, "lanesByProfile", "Lanes by profile"),
+        ),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs",
-                   title: "Group the Running column by assigned profile" },
-        h(Checkbox, {
-          checked: props.laneByProfile,
-          onCheckedChange: function (checked) { props.setLaneByProfile(checked === true); },
-        }),
-        tx(t, "lanesByProfile", "Lanes by profile"),
+      h("div", { className: "flex gap-2 items-end ml-auto" },
+        h(Button, {
+          onClick: props.onCreateIssue,
+          size: "sm",
+          title: "Create a new issue in the Triage column.",
+        }, tx(t, "createIssue", "Create Issue")),
+        h(Button, {
+          onClick: props.onNudgeDispatch,
+          size: "sm",
+          title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
+        }, tx(t, "nudge", "Nudge")),
+        h(Button, {
+          onClick: props.onRefresh,
+          size: "sm",
+          title: "Reload the board from the database. The board auto-refreshes on task events; this is for forcing a re-read.",
+        }, tx(t, "refresh", "Refresh")),
       ),
-      h("div", { className: "flex-1" }),
-      h(Button, {
-        onClick: props.onNudgeDispatch,
-        size: "sm",
-        title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
-      }, tx(t, "nudgeDispatcher", "Nudge dispatcher")),
-      h(Button, {
-        onClick: props.onRefresh,
-        size: "sm",
-        title: "Reload the board from the database. The board auto-refreshes on task events; this is for forcing a re-read.",
-      }, tx(t, "refresh", "Refresh")),
-      h(Button, {
-        onClick: function () {
-          props.setSearch("");
-          props.setTenantFilter("");
-          props.setAssigneeFilter("");
-          props.setIncludeArchived(false);
-        },
-        size: "sm",
-        title: "Clear all active filters (search, tenant, assignee, archived).",
-      }, tx(t, "clearFilters", "Clear filters")),
     );
   }
 
@@ -2245,6 +2814,7 @@
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
+          assignees: props.assignees,
         });
       }),
       h(TrashDropZone, {
@@ -2252,6 +2822,176 @@
         selectedIds: props.selectedIds,
         onDelete: props.onDelete,
       }),
+    );
+  }
+
+  // Maps a column name to the initial_status value the API accepts.
+  var COLUMN_INITIAL_STATUS = { running: "running", blocked: "blocked" };
+
+  function InlineTaskCreator(props) {
+    const { t } = useI18n();
+    const [title, setTitle] = useState("");
+    const [description, setDescription] = useState("");
+    const [assignee, setAssignee] = useState("");
+    const [priority, setPriority] = useState(0);
+    const [parent, setParent] = useState("");
+    const [skills, setSkills] = useState([]);
+    const [workspaceKind, setWorkspaceKind] = useState("scratch");
+    const [workspacePath, setWorkspacePath] = useState("");
+    const [goalMode, setGoalMode] = useState(false);
+    const [goalMaxTurns, setGoalMaxTurns] = useState("");
+    const [errors, setErrors] = useState({});
+    const [submitting, setSubmitting] = useState(false);
+
+    useEffect(function () {
+      function onKey(e) {
+        if (e.key === "Escape") {
+          var dirty = !!(title.trim() || description.trim() || assignee.trim() ||
+            skills.length > 0 || parent || goalMode || workspacePath.trim() || workspaceKind !== "scratch");
+          if (!dirty || window.confirm(tx(t, "discardChanges", "Discard unsaved changes?"))) props.onCancel();
+        }
+      }
+      window.addEventListener("keydown", onKey);
+      return function () { window.removeEventListener("keydown", onKey); };
+    }, [title, description, assignee, skills, parent, goalMode, workspacePath, workspaceKind]);
+
+    function submit(e) {
+      if (e) e.preventDefault();
+      var trimmed = title.trim();
+      if (!trimmed) { setErrors({ title: "Title is required." }); return; }
+      var aErr = validateAssignee(assignee, props.assignees);
+      if (aErr) { setErrors({ assignee: aErr }); return; }
+      setErrors({});
+      setSubmitting(true);
+      var body = {
+        title: trimmed,
+        assignee: assignee.trim() || null,
+        priority: Number(priority) || 0,
+        triage: props.columnName === "triage",
+      };
+      var is = COLUMN_INITIAL_STATUS[props.columnName];
+      if (is) body.initial_status = is;
+      if (description.trim()) body.body = description.trim();
+      if (parent) body.parents = [parent];
+      if (skills.length > 0) body.skills = skills;
+      if (workspaceKind && workspaceKind !== "scratch") body.workspace_kind = workspaceKind;
+      var wpTrim = workspacePath.trim();
+      if (wpTrim) body.workspace_path = wpTrim;
+      if (goalMode) {
+        body.goal_mode = true;
+        var gmt = parseInt(goalMaxTurns, 10);
+        if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
+      }
+      props.onSubmit(body).catch(function () { setSubmitting(false); setErrors({ submit: "Failed to create." }); });
+    }
+
+    var showPathInput = workspaceKind !== "scratch";
+    var pathPlaceholder = workspaceKind === "dir"
+      ? tx(t, "workspacePathDir", "workspace path (required, e.g. ~/projects/my-app)")
+      : tx(t, "workspacePathOptional", "workspace path (optional, derived from assignee if blank)");
+
+    return h("div", { className: "hermes-kanban-inline-creator" },
+      h("textarea", {
+        value: title,
+        onChange: function (e) { setTitle(e.target.value); if (errors.title) setErrors({}); },
+        onKeyDown: function (e) {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(e); }
+        },
+        placeholder: props.columnName === "triage"
+          ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it…")
+          : tx(t, "taskTitlePlaceholder", "New task title…"),
+        autoFocus: true,
+        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+        rows: 2,
+        disabled: submitting,
+      }),
+      errors.title ? h("p", { className: "text-xs text-destructive mt-0.5" }, errors.title) : null,
+      h("textarea", {
+        value: description,
+        onChange: function (e) { setDescription(e.target.value); },
+        placeholder: tx(t, "descriptionPlaceholder", "Task description or opening post…"),
+        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+        rows: 2,
+        disabled: submitting,
+      }),
+      h("div", { className: "flex gap-2" },
+        h("div", { style: { flex: 1, minWidth: 0 } },
+          h(ComboInput, {
+            value: assignee,
+            onChange: function (v) { setAssignee(v); if (errors.assignee) setErrors({}); },
+            onBlur: function (v) { var e = validateAssignee(v, props.assignees); if (e) setErrors(function(prev) { return Object.assign({}, prev, { assignee: e }); }); },
+            options: props.assignees || [],
+            placeholder: tx(t, "assigneePlaceholder", "assignee"),
+          }),
+        ),
+        h(Input, {
+          type: "number",
+          value: priority,
+          onChange: function (e) { setPriority(e.target.value); },
+          placeholder: "pri",
+          className: "h-7 text-xs",
+          style: { flex: 1 },
+          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
+          disabled: submitting,
+        }),
+      ),
+      errors.assignee ? h("p", { className: "text-xs text-destructive mt-0.5" }, errors.assignee) : null,
+      h(MultiSkillPicker, { values: skills, onChange: setSkills }),
+      h("div", { className: "flex gap-2 items-center" },
+        h("label", {
+          className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
+          title: "Goal mode: the worker keeps going until a judge agrees the card is done (or the turn budget runs out, which blocks it for review).",
+        },
+          h("input", {
+            type: "checkbox",
+            checked: goalMode,
+            onChange: function (e) { setGoalMode(!!e.target.checked); },
+            className: "h-3.5 w-3.5 accent-current",
+          }),
+          tx(t, "goalMode", "goal mode"),
+        ),
+        goalMode ? h(Input, {
+          type: "number",
+          value: goalMaxTurns,
+          onChange: function (e) { setGoalMaxTurns(e.target.value); },
+          placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
+          className: "h-7 text-xs w-40",
+          title: "Turn budget for the goal loop. Blank = backend default (20).",
+          min: 1,
+        }) : null,
+      ),
+      h("div", { className: "flex gap-2" },
+        h(Select, Object.assign({
+          value: workspaceKind,
+          title: "scratch: isolated temp dir (default). worktree: git worktree. dir: exact path.",
+          className: "h-7 text-xs w-28",
+        }, selectChangeHandler(setWorkspaceKind)),
+          h(SelectOption, { value: "scratch" }, "scratch"),
+          h(SelectOption, { value: "worktree" }, "worktree"),
+          h(SelectOption, { value: "dir" }, "dir"),
+        ),
+        showPathInput ? h(Input, {
+          value: workspacePath,
+          onChange: function (e) { setWorkspacePath(e.target.value); },
+          placeholder: pathPlaceholder,
+          className: "h-7 text-xs flex-1",
+          disabled: submitting,
+        }) : null,
+      ),
+      h("div", { style: { marginTop: "0.15rem" } },
+        h(TaskSearchSelect, {
+          value: parent,
+          onChange: setParent,
+          tasks: props.allTasks || [],
+          placeholder: tx(t, "searchParentTask", "Search parent by title…"),
+        }),
+      ),
+      errors.submit ? h("p", { className: "text-xs text-destructive" }, errors.submit) : null,
+      h("div", { className: "flex gap-2" },
+        h(Button, { onClick: submit, size: "sm", disabled: submitting || !title.trim() },
+          submitting ? tx(t, "creating", "Creating…") : tx(t, "create", "Create")),
+        h(Button, { onClick: props.onCancel, size: "sm" }, tx(t, "cancel", "Cancel")),
+      ),
     );
   }
 
@@ -2345,16 +3085,17 @@
           type: "button",
           className: "hermes-kanban-column-add",
           title: tx(t, "createTask", "Create task in this column"),
-          onClick: function () { setShowCreate(function (v) { return !v; }); },
-        }, showCreate ? "×" : "+"),
+          onClick: function () { setShowCreate(true); },
+        }, "+"),
       ),
       h("div", { className: "hermes-kanban-column-sub" },
         colHelp || ""),
-      showCreate ? h(InlineCreate, {
+      showCreate ? h(InlineTaskCreator, {
         columnName: props.column.name,
         allTasks: props.allTasks,
+        assignees: props.assignees || [],
         onSubmit: function (body) {
-          props.onCreate(body).then(function () { setShowCreate(false); });
+          return props.onCreate(body).then(function () { setShowCreate(false); });
         },
         onCancel: function () { setShowCreate(false); },
       }) : null,
@@ -2466,9 +3207,11 @@
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         props.onOpen(t.id);
+        return;
       }
       if (e.key === "Escape") {
         if (props.toggleSelected) props.toggleSelected(t.id, false);
+        return;
       }
     };
     const handleCheckedChange = function () {
@@ -2579,187 +3322,6 @@
               timeAgo ? timeAgo(t.created_at) : ""),
           ),
         ),
-      ),
-    );
-  }
-
-  // -------------------------------------------------------------------------
-  // Inline create (with parent selector)
-  // -------------------------------------------------------------------------
-
-  function InlineCreate(props) {
-    const { t } = useI18n();
-    const [title, setTitle] = useState("");
-    const [assignee, setAssignee] = useState("");
-    const [priority, setPriority] = useState(0);
-    const [parent, setParent] = useState("");
-    const [skills, setSkills] = useState("");
-    // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
-    // takes a path (dispatcher derives one from the assignee profile otherwise);
-    // `dir` requires a path. Backend enforces the rule — we only hide/show the
-    // input here to save vertical space in the common `scratch` case.
-    const [workspaceKind, setWorkspaceKind] = useState("scratch");
-    const [workspacePath, setWorkspacePath] = useState("");
-    // Goal-mode: when on, the dispatched worker runs the Ralph-style /goal
-    // loop — a judge re-checks the card after each turn and the worker keeps
-    // going in the same session until done, or the turn budget runs out
-    // (which blocks the card for review). goalMaxTurns is optional; blank
-    // = backend default.
-    const [goalMode, setGoalMode] = useState(false);
-    const [goalMaxTurns, setGoalMaxTurns] = useState("");
-
-    const submit = function () {
-      const trimmed = title.trim();
-      if (!trimmed) return;
-      const body = {
-        title: trimmed,
-        assignee: assignee.trim() || null,
-        priority: Number(priority) || 0,
-        triage: props.columnName === "triage",
-      };
-      if (parent) body.parents = [parent];
-      // Parse comma-separated skills into a clean list. Blank = no
-      // extras (omit key so backend leaves it null). The dispatcher
-      // always auto-loads kanban-worker; these are extras on top.
-      const skillList = skills
-        .split(",")
-        .map(function (s) { return s.trim(); })
-        .filter(function (s) { return s.length > 0; });
-      if (skillList.length > 0) body.skills = skillList;
-      // Only send workspace_kind when it's non-default. Keeps the request
-      // shape small and interoperable with older dispatcher versions.
-      if (workspaceKind && workspaceKind !== "scratch") {
-        body.workspace_kind = workspaceKind;
-      }
-      const wpTrim = workspacePath.trim();
-      if (wpTrim) body.workspace_path = wpTrim;
-      // Goal-mode toggle. Only send the keys when enabled so the request
-      // shape stays small and old dispatchers ignore it cleanly.
-      if (goalMode) {
-        body.goal_mode = true;
-        const gmt = parseInt(goalMaxTurns, 10);
-        if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
-      }
-      props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind("scratch"); setWorkspacePath("");
-      setGoalMode(false); setGoalMaxTurns("");
-    };
-
-    const showPathInput = workspaceKind !== "scratch";
-    const pathPlaceholder = workspaceKind === "dir"
-      ? tx(t, "workspacePathDir", "workspace path (required, e.g. ~/projects/my-app)")
-      : tx(t, "workspacePathOptional",
-          "workspace path (optional, derived from assignee if blank)");
-
-    return h("div", { className: "hermes-kanban-inline-create" },
-      h("textarea", {
-        value: title,
-        onChange: function (e) { setTitle(e.target.value); },
-        onKeyDown: function (e) {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-          if (e.key === "Escape") props.onCancel();
-        },
-        placeholder: props.columnName === "triage"
-          ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it…")
-          : tx(t, "taskTitlePlaceholder", "New task title…"),
-        autoFocus: true,
-        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
-        rows: 2,
-      }),
-      h("div", { className: "flex gap-2" },
-        h(Input, {
-          value: assignee,
-          onChange: function (e) { setAssignee(e.target.value); },
-          placeholder: props.columnName === "triage"
-            ? tx(t, "specifier", "specifier")
-            : tx(t, "assigneePlaceholder", "assignee"),
-          className: "h-7 text-xs flex-1",
-          title: props.columnName === "triage"
-            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
-          style: { textTransform: "none" },
-          autoCapitalize: "none",
-          autoCorrect: "off",
-          spellCheck: false,
-        }),
-        h(Input, {
-          type: "number",
-          value: priority,
-          onChange: function (e) { setPriority(e.target.value); },
-          placeholder: "pri",
-          className: "h-7 text-xs w-16",
-          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
-        }),
-      ),
-      h(Input, {
-        value: skills,
-        onChange: function (e) { setSkills(e.target.value); },
-        placeholder: tx(t, "skillsPlaceholder",
-          "skills (optional, comma-separated): translation, github-code-review"),
-        title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
-        className: "h-7 text-xs",
-      }),
-      h("div", { className: "flex gap-2 items-center" },
-        h("label", {
-          className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
-          title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
-        },
-          h("input", {
-            type: "checkbox",
-            checked: goalMode,
-            onChange: function (e) { setGoalMode(!!e.target.checked); },
-            className: "h-3.5 w-3.5 accent-current",
-          }),
-          tx(t, "goalMode", "goal mode"),
-        ),
-        goalMode ? h(Input, {
-          type: "number",
-          value: goalMaxTurns,
-          onChange: function (e) { setGoalMaxTurns(e.target.value); },
-          placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
-          className: "h-7 text-xs w-40",
-          title: "Turn budget for the goal loop. Blank = backend default (20).",
-          min: 1,
-        }) : null,
-      ),
-      h("div", { className: "flex gap-2" },
-        h(Select, Object.assign({
-          value: workspaceKind,
-          title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
-          className: "h-7 text-xs w-28",
-        }, selectChangeHandler(setWorkspaceKind)),
-          h(SelectOption, { value: "scratch" }, "scratch"),
-          h(SelectOption, { value: "worktree" }, "worktree"),
-          h(SelectOption, { value: "dir" }, "dir"),
-        ),
-        showPathInput ? h(Input, {
-          value: workspacePath,
-          onChange: function (e) { setWorkspacePath(e.target.value); },
-          placeholder: pathPlaceholder,
-          className: "h-7 text-xs flex-1",
-        }) : null,
-      ),
-      h(Select, Object.assign({
-        value: parent,
-        className: "h-7 text-xs",
-        title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
-      }, selectChangeHandler(setParent)),
-        h(SelectOption, { value: "" }, tx(t, "noParent", "— no parent —")),
-        (props.allTasks || []).map(function (task) {
-          return h(SelectOption, { key: task.id, value: task.id },
-            `${task.id} — ${(task.title || "").slice(0, 50)}`);
-        }),
-      ),
-      h("div", { className: "flex gap-2" },
-        h(Button, {
-          onClick: submit,
-          size: "sm",
-        }, "Create"),
-        h(Button, {
-          onClick: props.onCancel,
-          size: "sm",
-        }, tx(t, "cancel", "Cancel")),
       ),
     );
   }

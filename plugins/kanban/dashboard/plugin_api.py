@@ -44,7 +44,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
@@ -494,6 +494,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "available_profiles": [a["name"] for a in kanban_db.known_assignees(conn)],
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
@@ -583,6 +584,7 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    initial_status: Optional[Literal["running", "blocked"]] = None
 
 
 @router.post("/tasks")
@@ -602,6 +604,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             priority=payload.priority,
             parents=payload.parents,
             triage=payload.triage,
+            initial_status=payload.initial_status or "running",
             idempotency_key=payload.idempotency_key,
             max_runtime_seconds=payload.max_runtime_seconds,
             skills=payload.skills,

@@ -1979,8 +1979,22 @@ function Install-Desktop {
         # captures every stdout/stderr line as it's emitted, so we don't
         # need a side TEMP log file — the installer's bootstrap log
         # IS the artifact a support engineer reads.
-        & $npmExe install 2>&1 | ForEach-Object { "$_" }
+        #
+        # Prefer `npm ci`: it wipes node_modules and reinstalls from the
+        # lockfile, always producing a complete tree. Bare `npm install`
+        # can report "up to date" against a stale
+        # node_modules\.package-lock.json marker while node_modules is
+        # actually empty (Windows workspace-hoisting flake), leaving
+        # tsc/typescript unresolved so `npm run pack`'s `tsc -b` dies with
+        # no obvious cause. Fall back to `npm install` only if `npm ci`
+        # fails (lockfile out of sync / very old npm without ci).
+        & $npmExe ci 2>&1 | ForEach-Object { "$_" }
         $code = $LASTEXITCODE
+        if ($code -ne 0) {
+            Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
+            & $npmExe install 2>&1 | ForEach-Object { "$_" }
+            $code = $LASTEXITCODE
+        }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
             throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"

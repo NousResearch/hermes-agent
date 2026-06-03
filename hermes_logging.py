@@ -32,7 +32,7 @@ import os
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from hermes_constants import get_config_path, get_hermes_home
 
@@ -171,6 +171,7 @@ def setup_logging(
     backup_count: Optional[int] = None,
     mode: Optional[str] = None,
     force: bool = False,
+    audit_config: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Configure the Hermes logging subsystem.
 
@@ -200,6 +201,9 @@ def setup_logging(
         receives dashboard and TUI-gateway component records.
     force
         Re-run setup even if it has already been called.
+    audit_config
+        Optional audit configuration dict. When provided and ``audit.enabled: true``,
+        initializes the K8s-style audit logging system.
 
     Returns
     -------
@@ -278,6 +282,14 @@ def setup_logging(
     # Suppress noisy third-party loggers.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # Initialize audit logging if configured
+    if audit_config:
+        try:
+            from audit import setup_audit_logging
+            setup_audit_logging(audit_config, log_dir)
+        except Exception as e:
+            logging.getLogger(__name__).warning("Failed to initialize audit logging: %s", e)
 
     _logging_initialized = True
     return log_dir

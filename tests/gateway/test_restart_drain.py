@@ -116,22 +116,53 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
 
 
-def test_load_busy_text_mode_defaults_to_queue_and_allows_interrupt(tmp_path, monkeypatch):
+def test_load_busy_text_mode_inherits_from_busy_input_mode_when_unset(tmp_path, monkeypatch):
+    """When busy_text_mode is not configured, it should inherit from
+    busy_input_mode so that a single ``busy_input_mode: interrupt`` covers
+    all message types (#38390)."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
 
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+    # Default busy_input_mode is "interrupt", so busy_text_mode inherits that.
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
 
+    # Explicit busy_text_mode: interrupt still works.
     (tmp_path / "config.yaml").write_text(
         "display:\n  busy_text_mode: interrupt\n", encoding="utf-8"
     )
     assert gateway_run.GatewayRunner._load_busy_text_mode() == "interrupt"
 
+    # Explicit busy_text_mode: queue overrides the inheritance.
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_text_mode: queue\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    # When busy_text_mode is not set but busy_input_mode is queue,
+    # busy_text_mode inherits queue.
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: queue\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+
+    # When busy_text_mode is not set but busy_input_mode is steer,
+    # busy_text_mode inherits steer.
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: steer\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "steer"
+
+    # Env var overrides everything.
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue")
     assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
 
+    # Unknown env values fall through to busy_input_mode inheritance.
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "bogus")
-    assert gateway_run.GatewayRunner._load_busy_text_mode() == "queue"
+    # busy_input_mode is steer (from config above), so inherits that.
+    assert gateway_run.GatewayRunner._load_busy_text_mode() == "steer"
 
 
 def test_load_restart_drain_timeout_prefers_env_then_config_then_default(

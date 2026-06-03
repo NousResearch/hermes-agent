@@ -3192,14 +3192,31 @@ class GatewayRunner:
 
     @staticmethod
     def _load_busy_text_mode() -> str:
-        """Load normal busy TEXT follow-up behavior from config/env."""
+        """Load normal busy TEXT follow-up behavior from config/env.
+
+        When ``display.busy_text_mode`` is not explicitly configured,
+        inherits from ``display.busy_input_mode`` so that a single
+        ``busy_input_mode: interrupt`` setting covers all message types —
+        not just non-text.  Without this fallback, ``busy_text_mode``
+        silently defaults to ``queue`` even when the user has set
+        ``busy_input_mode: interrupt``, causing text messages to be queued
+        instead of interrupting (see #38390).
+        """
         mode = os.getenv("HERMES_GATEWAY_BUSY_TEXT_MODE", "").strip().lower()
         if not mode:
             cfg = _load_gateway_runtime_config()
             mode = str(cfg_get(cfg, "display", "busy_text_mode", default="") or "").strip().lower()
         if mode == "interrupt":
             return "interrupt"
-        return "queue"
+        if mode == "queue":
+            return "queue"
+        if mode == "steer":
+            return "steer"
+        # busy_text_mode not explicitly configured — inherit from
+        # busy_input_mode so that ``display.busy_input_mode: interrupt``
+        # also interrupts text messages, not just non-text (images/files).
+        # See #38390.
+        return GatewayRunner._load_busy_input_mode()
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:

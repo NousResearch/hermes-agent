@@ -242,6 +242,20 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
 
+    # Load .op.env AFTER .env so that .env values win, but the bootstrap
+    # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for
+    # apply_onepassword_secrets() even in cron / subprocess environments
+    # that inherit no shell state (no systemd EnvironmentFile, no op run).
+    # .op.env is gitignored — the service-account token never enters the
+    # committed .env file.
+    # Users on systemd can alternatively use:
+    #   EnvironmentFile=-/path/to/.hermes/.op.env
+    # in their gateway unit, which takes precedence (override=False below
+    # ensures .op.env never clobbers a token already in the environment).
+    op_env = home_path / ".op.env"
+    if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        _load_dotenv_with_fallback(op_env, override=False)
+
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)

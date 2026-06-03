@@ -2914,9 +2914,20 @@ class TestCompressionChainProjection:
         # The row surfaces the tip's identity but preserves the root's start
         # timestamp for stable ordering and lineage tracking.
         assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["compress_count"] == 2
         assert tip_row["preview"].startswith("latest message")
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
+
+    def test_compression_count_ignores_delegate_children(self, db):
+        """Only compression continuations count toward the surfaced total."""
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+
+        assert db.get_compression_count("tip1") == 2
+        assert db.get_compression_count("delegate1") == 0
+        assert db.get_compression_count("root1") == 0
 
     def test_list_projection_uses_tip_cwd(self, db):
         """Projected lineage rows should carry cwd from the live tip row.

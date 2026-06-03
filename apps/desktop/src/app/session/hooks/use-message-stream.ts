@@ -25,6 +25,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   setCurrentBranch,
+  setCurrentCompressCount,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
@@ -616,9 +617,11 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
       }
+
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -636,7 +639,15 @@ export function useMessageStream({
           const runtimeInfo: Partial<
             Pick<
               ClientSessionState,
-              'branch' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+              | 'branch'
+              | 'compressCount'
+              | 'cwd'
+              | 'fast'
+              | 'model'
+              | 'provider'
+              | 'reasoningEffort'
+              | 'serviceTier'
+              | 'yolo'
             >
           > = {}
 
@@ -658,6 +669,12 @@ export function useMessageStream({
           if (typeof payload?.branch === 'string') {
             setCurrentBranch(payload.branch)
             runtimeInfo.branch = payload.branch
+          }
+
+          if (typeof payload?.compress_count === 'number') {
+            const count = Math.max(0, payload.compress_count)
+            setCurrentCompressCount(count)
+            runtimeInfo.compressCount = count
           }
 
           if (typeof payload?.personality === 'string') {

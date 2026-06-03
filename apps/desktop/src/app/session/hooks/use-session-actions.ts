@@ -23,6 +23,7 @@ import {
   setAwaitingResponse,
   setBusy,
   setCurrentBranch,
+  setCurrentCompressCount,
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
@@ -210,14 +211,20 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
 }
 
 function applyRuntimeInfo(info: SessionCreateResponse['info'] | undefined): Partial<
-  Pick<ClientSessionState, 'branch' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'>
+  Pick<
+    ClientSessionState,
+    'branch' | 'compressCount' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+  >
 > | null {
   if (!info) {
     return null
   }
 
   const sessionState: Partial<
-    Pick<ClientSessionState, 'branch' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'>
+    Pick<
+      ClientSessionState,
+      'branch' | 'compressCount' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    >
   > = {}
 
   reportBackendContract(info.desktop_contract)
@@ -270,6 +277,12 @@ function applyRuntimeInfo(info: SessionCreateResponse['info'] | undefined): Part
     sessionState.yolo = info.yolo
   }
 
+  if (typeof info.compress_count === 'number') {
+    const count = Math.max(0, info.compress_count)
+    setCurrentCompressCount(count)
+    sessionState.compressCount = count
+  }
+
   if (info.usage) {
     setCurrentUsage(current => ({ ...current, ...info.usage }))
   }
@@ -316,6 +329,7 @@ export function useSessionActions({
         output: 0,
         total: 0
       })
+      setCurrentCompressCount(0)
       setSessionStartedAt(null)
       setTurnStartedAt(null)
       // New chats start in the configured default project dir when set,
@@ -474,6 +488,7 @@ export function useSessionActions({
         syncSessionStateToView(cachedRuntimeId, cachedState)
         setCurrentCwd(cachedState.cwd)
         setCurrentBranch(cachedState.branch)
+        setCurrentCompressCount(cachedState.compressCount)
         setSessionStartedAt(Date.now())
 
         try {

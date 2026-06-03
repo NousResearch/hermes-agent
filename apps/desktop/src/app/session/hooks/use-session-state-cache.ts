@@ -9,6 +9,7 @@ import {
   $busy,
   $messages,
   noteSessionActivity,
+  setCurrentCompressCount,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
@@ -146,6 +147,7 @@ export function useSessionStateCache({
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    setCurrentCompressCount(pending.state.compressCount)
     // Mirror the focused session's per-session turn clock into the global
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).

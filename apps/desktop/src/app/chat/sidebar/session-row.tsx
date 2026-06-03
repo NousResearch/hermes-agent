@@ -80,6 +80,7 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const compressionCount = Math.max(0, session.compress_count ?? 0)
 
   return (
     <SessionContextMenu
@@ -204,6 +205,14 @@ export function SidebarSessionRow({
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
+          {compressionCount > 0 && (
+            <span
+              className="shrink-0 rounded-[0.25rem] border border-(--ui-stroke-tertiary) px-1 text-[0.5625rem] font-medium leading-3 text-(--ui-text-tertiary)"
+              title={`Compressed ${compressionCount} time${compressionCount === 1 ? '' : 's'}`}
+            >
+              x{compressionCount}
+            </span>
+          )}
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
           {!isWorking && (

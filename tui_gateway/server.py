@@ -2293,7 +2293,16 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_command": "",
         "usage": _get_usage(agent),
         "profile_name": _current_profile_name(),
+        "compress_count": 0,
     }
+    session_key = str((session or {}).get("session_key") or getattr(agent, "session_id", "") or "")
+    if session_key:
+        db = _get_db()
+        if db is not None and hasattr(db, "get_compression_count"):
+            try:
+                info["compress_count"] = db.get_compression_count(session_key)
+            except Exception:
+                logger.exception("failed to compute compression count for session %s", session_key)
     try:
         from hermes_cli import __version__, __release_date__
 
@@ -3719,7 +3728,9 @@ def _(rid, params: dict) -> dict:
                         "preview": s.get("preview") or "",
                         "started_at": s.get("started_at") or 0,
                         "message_count": s.get("message_count") or 0,
+                        "compress_count": s.get("compress_count") or 0,
                         "source": s.get("source") or "",
+                        "_lineage_root_id": s.get("_lineage_root_id"),
                     }
                     for s in rows
                 ]

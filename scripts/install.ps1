@@ -1020,6 +1020,29 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Repair-ManagedCheckoutBeforeUpdate {
+    <#
+    The Windows desktop installer owns $InstallDir as app code; user data lives
+    under $HermesHome. A failed prior update can leave tracked files dirty
+    (often only CRLF churn) or deleted, and pinned `git checkout <commit>` then
+    refuses to proceed. Normalize line endings for this repo and reset tracked
+    app files before switching refs. `git clean -fd` removes only untracked
+    non-ignored files, preserving ignored caches such as venv/ and node_modules/.
+    #>
+    Write-Info "Preparing managed checkout for update..."
+
+    git -c windows.appendAtomically=false config core.autocrlf false 2>$null
+    if ($LASTEXITCODE -ne 0) { Write-Warn "Could not set core.autocrlf=false; continuing" }
+    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+    if ($LASTEXITCODE -ne 0) { Write-Warn "Could not set windows.appendAtomically=false; continuing" }
+
+    git -c windows.appendAtomically=false reset --hard HEAD
+    if ($LASTEXITCODE -ne 0) { throw "git reset --hard HEAD failed (exit $LASTEXITCODE)" }
+
+    git -c windows.appendAtomically=false clean -fd
+    if ($LASTEXITCODE -ne 0) { throw "git clean -fd failed (exit $LASTEXITCODE)" }
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -1064,19 +1087,7 @@ function Install-Repository {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                # This is a MANAGED checkout, not a repo the user edits. Git for
-                # Windows defaults to core.autocrlf=true, which renormalizes the
-                # repo's LF-only text files to CRLF in the working tree -- so
-                # tracked files (.envrc, AGENTS.md, agent/*.py, workflows, ...)
-                # show as locally modified even though nobody touched them. A
-                # bare `git checkout` then aborts with "Your local changes would
-                # be overwritten by checkout", which is exactly the failure GUI
-                # users hit on update. Two-part fix: (1) stop creating the dirt
-                # by pinning autocrlf=false on this clone, (2) discard any
-                # pre-existing dirt with a hard reset before the checkout. Safe
-                # because nothing here is user-authored.
-                git -c windows.appendAtomically=false config core.autocrlf false 2>$null
-                git -c windows.appendAtomically=false reset --hard HEAD 2>$null
+                Repair-ManagedCheckoutBeforeUpdate
                 git -c windows.appendAtomically=false fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check

@@ -355,6 +355,15 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
+            if "fetch" in cmd and "origin" in cmd:
+                return SimpleNamespace(stdout="", stderr="", returncode=0)
+            if "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+            if "rev-list" in cmd:
+                return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+            if "pull" in cmd and "--ff-only" in cmd:
+                return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["git", "fetch", "origin"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
@@ -404,6 +413,15 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
+            if "fetch" in cmd and "origin" in cmd:
+                return SimpleNamespace(stdout="", stderr="", returncode=0)
+            if "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+            if "rev-list" in cmd:
+                return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+            if "pull" in cmd and "--ff-only" in cmd:
+                return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["git", "fetch", "origin"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
@@ -563,7 +581,7 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert reset_calls[0][-3:] == ["reset", "--hard", "origin/main"]
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out

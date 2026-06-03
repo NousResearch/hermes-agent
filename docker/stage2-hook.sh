@@ -20,6 +20,9 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
+# Drop to hermes via s6-setuidgid, but skip it when already non-root.
+as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@"; }
+
 # --- Bootstrap HERMES_HOME as root ---
 # Create the directory (and any missing parents) while we still have root
 # privileges so the chown checks below see real metadata and the later
@@ -32,6 +35,14 @@ INSTALL_DIR="/opt/hermes"
 # is a no-op if the dir already exists. (#18482, salvages #18488)
 mkdir -p "$HERMES_HOME"
 
+# Numeric UID/GID validation: must be digits only, 1000-65534
+validate_uid_gid() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) [ "$1" -ge 1000 ] && [ "$1" -le 65534 ] ;;
+    esac
+}
+
 # --- UID/GID remap ---
 # Accept PUID/PGID as aliases for HERMES_UID/HERMES_GID.  NAS users (UGOS,
 # Synology, unRAID) expect the LinuxServer.io PUID/PGID convention and
@@ -42,11 +53,11 @@ mkdir -p "$HERMES_HOME"
 HERMES_UID="${HERMES_UID:-${PUID:-}}"
 HERMES_GID="${HERMES_GID:-${PGID:-}}"
 
-if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
+if [ -n "${HERMES_UID:-}" ] && validate_uid_gid "$HERMES_UID" && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
     echo "[stage2] Changing hermes UID to $HERMES_UID"
     usermod -u "$HERMES_UID" hermes
 fi
-if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
+if [ -n "${HERMES_GID:-}" ] && validate_uid_gid "$HERMES_GID" && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
     echo "[stage2] Changing hermes GID to $HERMES_GID"
     # -o allows non-unique GID (e.g. macOS GID 20 "staff" may already
     # exist as "dialout" in the Debian-based container image).
@@ -120,9 +131,7 @@ done
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
 needs_chown=false
-if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "10000" ]; then
-    needs_chown=true
-elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
 fi
 if [ "$needs_chown" = true ]; then
@@ -178,6 +187,33 @@ if [ -d "$HERMES_HOME/profiles" ]; then
     chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
 fi
 
+# Reset ownership of hermes-owned top-level state files on every boot.
+# The targeted data-volume chown above only covers hermes-owned
+# *subdirectories*; loose state files living directly under $HERMES_HOME
+# are missed. When those files are created or rewritten by
+# `docker exec <container> hermes …` (root unless `-u` is passed) they
+# land root-owned, and the unprivileged hermes runtime then hits
+# PermissionError on next startup (e.g. gateway.lock / state.db /
+# auth.json), producing a gateway restart loop.
+#
+# We use an explicit allowlist rather than a blanket `find -user root`
+# sweep so host-owned files in a bind-mounted $HERMES_HOME are never
+# touched — same targeted-ownership contract as the subdir chown above
+# (issue #19788, PR #19795). The list mirrors the top-level *file*
+# entries of hermes_cli.profile_distribution.USER_OWNED_EXCLUDE plus the
+# runtime lock files; keep them in sync if that set changes.
+for f in \
+    auth.json auth.lock .env \
+    state.db state.db-shm state.db-wal \
+    hermes_state.db \
+    response_store.db response_store.db-shm response_store.db-wal \
+    gateway.pid gateway.lock gateway_state.json processes.json \
+    active_profile; do
+    if [ -e "$HERMES_HOME/$f" ]; then
+        chown hermes:hermes "$HERMES_HOME/$f" 2>/dev/null || true
+    fi
+done
+
 # --- config.yaml permissions ---
 # Ensure config.yaml is readable by the hermes runtime user even if it
 # was edited on the host after initial ownership setup.
@@ -193,7 +229,7 @@ fi
 # Use direct `mkdir -p` invocation (no `sh -c "..."` wrapper) so the
 # shell isn't a second interpreter — defends against $HERMES_HOME values
 # containing shell metacharacters. PR #30136 review item O2.
-s6-setuidgid hermes mkdir -p \
+as_hermes mkdir -p \
     "$HERMES_HOME/cron" \
     "$HERMES_HOME/sessions" \
     "$HERMES_HOME/logs" \
@@ -210,7 +246,7 @@ s6-setuidgid hermes mkdir -p \
 # the hermes user so ownership matches the file's documented owner.
 # tee is invoked directly via s6-setuidgid (no `sh -c` wrapper) for the
 # same shell-metacharacter safety described above.
-printf 'docker\n' | s6-setuidgid hermes tee "$HERMES_HOME/.install_method" >/dev/null \
+printf 'docker\n' | as_hermes tee "$HERMES_HOME/.install_method" >/dev/null \
     || true
 
 # --- Seed config files (only on first boot) ---
@@ -218,7 +254,7 @@ seed_one() {
     dest=$1
     src=$2
     if [ ! -f "$HERMES_HOME/$dest" ] && [ -f "$INSTALL_DIR/$src" ]; then
-        s6-setuidgid hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
+        as_hermes cp "$INSTALL_DIR/$src" "$HERMES_HOME/$dest"
     fi
 }
 seed_one ".env" ".env.example"
@@ -242,6 +278,38 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     chmod 600 "$HERMES_HOME/auth.json"
 fi
 
+# gateway_state.json: declare the gateway's INITIAL supervised state on a
+# fresh volume. Same first-boot-only env-seed pattern as auth.json above.
+#
+# On a blank volume there is no gateway_state.json, so the boot reconciler
+# (cont-init.d/02-reconcile-profiles → container_boot.reconcile_profile_gateways)
+# registers the gateway-default s6 slot but leaves it DOWN — it only
+# auto-starts when the last recorded state was "running". That means a
+# freshly-provisioned container comes up with the gateway down until
+# someone starts it (e.g. from the dashboard). An orchestrator that
+# provisions a fresh volume and wants the gateway running from first boot
+# can set HERMES_GATEWAY_BOOTSTRAP_STATE=running; we seed the state file
+# here, BEFORE 02-reconcile-profiles runs (cont-init.d scripts run in
+# lexicographic order), so the reconciler sees prior_state=running and
+# brings the supervised slot up on the very first boot.
+#
+# This is a generic container contract, not specific to any host: it seeds
+# the SAME gateway_state.json the reconciler already consults, exactly as
+# HERMES_AUTH_JSON_BOOTSTRAP seeds auth.json. The [ ! -f ] guard is the
+# load-bearing part — on every subsequent boot the persisted state wins,
+# so a gateway the operator deliberately stopped stays stopped across
+# restarts and we never clobber real runtime state.
+#
+# Only a literal "running" is honoured (the sole value in the reconciler's
+# _AUTOSTART_STATES); any other value is ignored so a typo can't write a
+# bogus state the reconciler would treat as "no prior state" anyway.
+if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
+        [ "${HERMES_GATEWAY_BOOTSTRAP_STATE:-}" = "running" ]; then
+    printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
+    chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
+    chmod 644 "$HERMES_HOME/gateway_state.json"
+fi
+
 # --- Sync bundled skills ---
 # Invoke the venv's python by absolute path so we don't need a `sh -c`
 # wrapper to source the activate script. This is safe because
@@ -249,7 +317,7 @@ fi
 # the python binary's own bin-stub already sets up (sys.path is rooted
 # at the venv's site-packages by virtue of running .venv/bin/python).
 if [ -d "$INSTALL_DIR/skills" ]; then
-    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
+    as_hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 
@@ -273,9 +341,10 @@ fi
 #   shared libraries (libGLESv2.so, libEGL.so, ...) which inherit the
 #   executable bit from Playwright's tarball but are NOT browser binaries.
 #   We only accept files whose basename is chrome / chromium /
-#   chrome-headless-shell / chromium-browser. Compare PR #18635's earlier
-#   ``find | grep -Ei 'chrome|chromium'`` which would match the path
-#   ``.../chrome-headless-shell-linux64/libGLESv2.so`` and pick a .so.
+#   chrome-headless-shell / headless_shell / chromium-browser. Compare
+#   PR #18635's earlier ``find | grep -Ei 'chrome|chromium'`` which would
+#   match the path ``.../chrome-headless-shell-linux64/libGLESv2.so`` and
+#   pick a .so.
 # - Quietly skipped when $PLAYWRIGHT_BROWSERS_PATH doesn't exist (e.g.
 #   custom builds that strip Playwright).
 if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
@@ -283,13 +352,17 @@ if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
         [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
     browser_bin=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -executable \
         \( -name 'chrome' -o -name 'chromium' \
-           -o -name 'chrome-headless-shell' -o -name 'chromium-browser' \) \
+           -o -name 'chrome-headless-shell' -o -name 'headless_shell' \
+           -o -name 'chromium-browser' \) \
         2>/dev/null | head -n 1)
     if [ -n "$browser_bin" ]; then
         echo "[stage2] Found agent-browser Chromium binary: $browser_bin"
         # Write to s6's container_environment so with-contenv picks it
         # up for all supervised services (main-hermes, dashboard, etc.).
         # Idempotent: each boot overwrites with the current path.
+        # Some container runtimes / s6-overlay versions do not create the
+        # envdir before cont-init hooks run, so create it defensively.
+        mkdir -p /run/s6/container_environment
         printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
     else
         echo "[stage2] Warning: no Chromium binary under $PLAYWRIGHT_BROWSERS_PATH; browser tool may fail"

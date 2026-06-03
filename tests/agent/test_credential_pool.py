@@ -1225,7 +1225,7 @@ def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-token",
                     "refresh_token": "refresh-token",
                     "expires_at": "2026-03-24T12:00:00+00:00",
@@ -1252,7 +1252,7 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
     expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
     token = _jwt_with_claims({
         "sub": "test-user",
-        "scope": ["inference:invoke", "inference:mint_agent_key"],
+        "scope": ["inference:invoke"],
         "exp": int(time.time() + 3600),
     })
     _write_auth_store(
@@ -1266,7 +1266,7 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:invoke inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": token,
                     "refresh_token": "refresh-token",
                     "expires_at": expires_at,
@@ -1293,6 +1293,29 @@ def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, m
     assert pool_entry["agent_key_expires_at"] == expires_at
 
 
+def test_nous_runtime_api_key_rejects_opaque_agent_key():
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential(
+        provider="nous",
+        id="nous-opaque",
+        label="opaque",
+        auth_type="oauth",
+        priority=0,
+        source="device_code",
+        access_token="opaque-access-token",
+        refresh_token="refresh-token",
+        agent_key="opaque-agent-key",
+        agent_key_expires_at=datetime.fromtimestamp(
+            time.time() + 3600,
+            tz=timezone.utc,
+        ).isoformat(),
+        extra={"scope": "inference:invoke"},
+    )
+
+    assert entry.runtime_api_key == ""
+
+
 def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
@@ -1307,7 +1330,7 @@ def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypa
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-token",
                     "refresh_token": "refresh-token",
                     "expires_at": "2026-03-24T12:00:00+00:00",
@@ -1479,7 +1502,7 @@ def test_load_pool_migrates_nous_provider_state_preserves_tls(tmp_path, monkeypa
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-token",
                     "refresh_token": "refresh-token",
                     "expires_at": "2026-03-24T12:00:00+00:00",
@@ -2405,7 +2428,7 @@ def test_sync_nous_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypat
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-OLD",
                     "refresh_token": "refresh-OLD",
                     "expires_at": "2026-03-24T12:00:00+00:00",
@@ -2435,7 +2458,7 @@ def test_sync_nous_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypat
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-NEW",
                     "refresh_token": "refresh-NEW",
                     "expires_at": "2026-03-24T12:30:00+00:00",
@@ -2467,7 +2490,7 @@ def test_sync_nous_entry_noop_when_tokens_match(tmp_path, monkeypatch):
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-token",
                     "refresh_token": "refresh-token",
                     "expires_at": "2026-03-24T12:00:00+00:00",
@@ -2504,7 +2527,7 @@ def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-OLD",
                     "refresh_token": "refresh-OLD",
                     "expires_at": "2026-03-24T12:00:00+00:00",
@@ -2541,7 +2564,7 @@ def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch
                     "inference_base_url": "https://inference.example.com/v1",
                     "client_id": "hermes-cli",
                     "token_type": "Bearer",
-                    "scope": "inference:mint_agent_key",
+                    "scope": "inference:invoke",
                     "access_token": "access-FRESH",
                     "refresh_token": "refresh-FRESH",
                     "expires_at": "2026-03-24T12:30:00+00:00",

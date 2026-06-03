@@ -6614,6 +6614,14 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # Kanban workers are always headless ``chat -q`` CLI runs.  If the
+    # dispatcher lives inside a TUI/dashboard process, inherited TUI launch
+    # variables (especially HERMES_TUI=1) would make the child try to start the
+    # Node TUI and crash on hosts where the dispatcher PATH has node but not
+    # npm.  Strip TUI-only state before adding worker-specific env below.
+    for key in list(env):
+        if key == "HERMES_TUI" or key.startswith("HERMES_TUI_"):
+            env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root

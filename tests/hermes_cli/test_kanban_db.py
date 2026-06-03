@@ -1559,6 +1559,51 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_default_spawn_forces_cli_mode_when_dispatcher_inherits_tui_env(
+    kanban_home, tmp_path, monkeypatch
+):
+    """Kanban workers are headless CLI runs, even if the dispatcher was
+    started from a TUI/dashboard process that has TUI-only env vars.
+
+    Regresses the failure where workers inherited ``HERMES_TUI=1``, launched
+    the TUI instead of ``chat -q``, then crashed with "npm not found" in
+    environments whose dispatcher PATH includes node but not npm.
+    """
+    captured = {}
+
+    class FakePopen:
+        pid = 4242
+
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env", {})
+            captured["cwd"] = kwargs.get("cwd")
+
+    monkeypatch.setenv("HERMES_TUI", "1")
+    monkeypatch.setenv("HERMES_TUI_QUERY", "stale dashboard prompt")
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://dashboard.invalid/api/ws")
+    monkeypatch.setattr("subprocess.Popen", FakePopen)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="spawn", assignee="default")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+
+    pid = kb._default_spawn(task, str(workspace), board="default")
+
+    assert pid == 4242
+    assert captured["cwd"] == str(workspace)
+    assert "--tui" not in captured["cmd"]
+    assert captured["cmd"][-3:] == ["chat", "-q", f"work kanban task {tid}"]
+    assert "HERMES_TUI" not in captured["env"]
+    assert "HERMES_TUI_QUERY" not in captured["env"]
+    assert "HERMES_TUI_GATEWAY_URL" not in captured["env"]
+    assert captured["env"]["HERMES_KANBAN_TASK"] == tid
+
+
 def test_dispatch_max_spawn_counts_existing_running_tasks(
     kanban_home, all_assignees_spawnable
 ):

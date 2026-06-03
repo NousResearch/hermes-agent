@@ -2934,9 +2934,26 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
 
     Poll in short intervals so the calling agent thread can honor user
     interrupts while the MCP work is still running on the background loop.
+
+    While polling, fire the thread-local activity callback (set by the agent
+    before dispatching the tool — see ``agent/tool_executor.py``) at a steady
+    cadence. A single synchronous MCP/hive tool call (e.g. ``ns_runreport``
+    against the NetSuite hive) can block this loop for many minutes; without
+    the periodic touch, the agent's last-activity timestamp goes stale, the
+    gateway inactivity monitor (or the kanban dispatcher's stuck-worker
+    watchdog, which is bridged through ``_touch_activity``) sees no liveness,
+    and an actively-running worker gets killed mid-call. The terminal tool's
+    ``_wait_for_process`` already heartbeats this way; this mirrors it for the
+    MCP transport so long hive calls are survivable (#cc4a1b4f).
     """
     from tools.interrupt import is_interrupted
     from agent.async_utils import safe_schedule_threadsafe
+
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover - defensive import guard
+        def touch_activity_if_due(state: dict, label: str) -> None:
+            return None
 
     with _lock:
         loop = _mcp_loop
@@ -2968,11 +2985,23 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
         raise RuntimeError("MCP event loop unavailable (failed to schedule)")
     start_time = time.monotonic()
     deadline = None if timeout is None else start_time + timeout
+    # Activity-heartbeat state for the long-call liveness touch. Cadence of
+    # 30s is well inside the gateway inactivity window and the kanban
+    # stuck-after-seconds default (15 min), and the underlying bridge is
+    # itself rate-limited to one write per 60s so an over-eager cadence is
+    # harmless.
+    _activity_state = {
+        "start": start_time,
+        "last_touch": start_time,
+        "interval": 30.0,
+    }
 
     while True:
         if is_interrupted():
             future.cancel()
             raise InterruptedError("User sent a new message")
+
+        touch_activity_if_due(_activity_state, "waiting for MCP tool call")
 
         wait_timeout = 0.1
         if deadline is not None:

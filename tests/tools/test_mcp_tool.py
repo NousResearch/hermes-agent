@@ -516,10 +516,56 @@ class TestRunOnMcpLoop:
         ]
         assert runtime_warnings == []
 
+    def test_activity_callback_fires_during_long_call(self):
+        """A blocking MCP call ticks the activity heartbeat while it waits.
 
-# ---------------------------------------------------------------------------
-# Tool handler
-# ---------------------------------------------------------------------------
+        Regression for the NetSuite-hive stuck-kill class (#cc4a1b4f): a single
+        synchronous ns_runreport call blocked _run_on_mcp_loop for >900s with
+        zero activity touches, starving the kanban worker heartbeat so the
+        dispatcher killed the worker as stale. The poll loop must fire the
+        thread-local activity callback on each iteration so liveness is
+        reported throughout the wait.
+        """
+        import tools.mcp_tool as mcp
+
+        # Real background event loop, same shape as the production _mcp_loop.
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+
+        # Coroutine that blocks long enough for several poll iterations
+        # (the loop polls every 0.1s).
+        async def _slow():
+            await asyncio.sleep(0.35)
+            return "done"
+
+        recorded = []
+
+        def _recording_touch(state, label):
+            recorded.append((dict(state), label))
+
+        try:
+            with patch.object(mcp, "_mcp_loop", loop):
+                with patch(
+                    "tools.environments.base.touch_activity_if_due",
+                    side_effect=_recording_touch,
+                ):
+                    result = mcp._run_on_mcp_loop(_slow, timeout=10)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=2)
+            loop.close()
+
+        assert result == "done"
+        # The callback must have been invoked at least once while waiting.
+        assert recorded, "activity callback never fired during the MCP wait"
+        # State carries the heartbeat cadence and start bookkeeping.
+        first_state, first_label = recorded[0]
+        assert first_label == "waiting for MCP tool call"
+        assert first_state["interval"] == 30.0
+        assert "start" in first_state and "last_touch" in first_state
+
+
 
 class TestToolHandler:
     """Tool handlers are sync functions that schedule work on the MCP loop."""

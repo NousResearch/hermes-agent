@@ -33,6 +33,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
+from agent.tool_dispatch_helpers import _is_multimodal_tool_result
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname
 
@@ -524,6 +525,57 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _evict_old_computer_use_screenshots(messages: list, keep: int = 3) -> list:
+    """Replace all but the most recent ``keep`` computer_use screenshots with a
+    text placeholder so a long vision session does not re-send every accumulated
+    image on every turn (super-linear prompt growth / latency).
+
+    This is the chat-completions-path counterpart to
+    ``anthropic_adapter._evict_old_screenshots`` — same ``keep`` budget and the
+    same ``"[screenshot removed to save context]"`` placeholder — so non-Anthropic
+    providers (OpenAI-compatible, local endpoints, OpenRouter, Bedrock, etc.) get
+    the same context hygiene the Anthropic path already enjoys. Copy-on-write: the
+    input list and its messages are never mutated.
+    """
+
+    def _is_image_part(part) -> bool:
+        return isinstance(part, dict) and part.get("type") == "image_url"
+
+    def _has_screenshot(message) -> bool:
+        content = message.get("content") if isinstance(message, dict) else None
+        if _is_multimodal_tool_result(content):
+            return any(_is_image_part(p) for p in content["content"])
+        if isinstance(content, list):
+            return any(_is_image_part(p) for p in content)
+        return False
+
+    screenshot_indices = [i for i, m in enumerate(messages) if _has_screenshot(m)]
+    if len(screenshot_indices) <= keep:
+        return messages
+
+    to_strip = set(screenshot_indices[:-keep])
+    placeholder = {"type": "text", "text": "[screenshot removed to save context]"}
+
+    def _strip_images(parts: list) -> list:
+        return [placeholder if _is_image_part(p) else p for p in parts]
+
+    new_messages = []
+    for i, message in enumerate(messages):
+        if i not in to_strip:
+            new_messages.append(message)
+            continue
+        new_message = dict(message)
+        content = message.get("content")
+        if _is_multimodal_tool_result(content):
+            new_content = dict(content)
+            new_content["content"] = _strip_images(content["content"])
+            new_message["content"] = new_content
+        elif isinstance(content, list):
+            new_message["content"] = _strip_images(content)
+        new_messages.append(new_message)
+    return new_messages
+
+
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
@@ -549,6 +601,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
         )
+
+    # Every path below feeds a non-Anthropic transport. The Anthropic path
+    # (returned above) evicts stale computer_use screenshots in
+    # anthropic_adapter; mirror that here so vision sessions on OpenAI-compatible
+    # providers don't re-send every accumulated screenshot each turn.
+    api_messages = _evict_old_computer_use_screenshots(api_messages)
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.

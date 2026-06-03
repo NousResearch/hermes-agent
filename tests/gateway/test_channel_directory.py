@@ -472,11 +472,27 @@ class TestBuildSlack:
 
         assert {e["id"] for e in entries} == {"C001"}
 
-    def test_response_not_ok_breaks_pagination_for_that_workspace(self, tmp_path):
+    def test_response_not_ok_missing_scope_falls_back_quietly(self, tmp_path, caplog):
         client = _make_slack_client([
             {"ok": False, "error": "missing_scope"},
         ])
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), caplog.at_level("WARNING"):
             entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
 
         assert entries == []
+        assert "missing_scope" not in caplog.text
+
+    def test_missing_scope_exception_falls_back_quietly(self, tmp_path, caplog):
+        class SlackLikeError(Exception):
+            def __init__(self):
+                super().__init__("The request to the Slack API failed")
+                self.response = {"ok": False, "error": "missing_scope"}
+
+        client = MagicMock()
+        client.users_conversations = AsyncMock(side_effect=SlackLikeError())
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), caplog.at_level("WARNING"):
+            entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+
+        assert entries == []
+        assert "missing_scope" not in caplog.text

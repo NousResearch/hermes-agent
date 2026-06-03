@@ -1,5 +1,8 @@
+# PEP 639 SPDX license expression (`license = "MIT"` below) requires
+# setuptools>=77. Keep this floor in lockstep with the `license` form in
+# [project]; an older build backend rejects the string form.
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0,<83"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +12,8 @@ description = "The self-improving AI agent — creates skills from experience, i
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
   # Rationale: ranges allow PyPI to ship a fresh version of a transitive

@@ -246,6 +246,21 @@ class TestUnifiedCronjobTool:
         monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
         monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("tools.cronjob_tools._last_cron_list_at", 0.0)
+        cronjob(action="list")
+
+    def test_mutating_actions_require_list_preflight(self, monkeypatch):
+        monkeypatch.setattr("tools.cronjob_tools._last_cron_list_at", 0.0)
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                name="Server Check",
+            )
+        )
+        assert result["success"] is False
+        assert "requires a fresh scheduler preflight" in result["error"]
 
     def test_create_and_list(self):
         created = json.loads(

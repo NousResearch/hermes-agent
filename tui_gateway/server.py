@@ -4083,6 +4083,46 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    # ---- CORTEX MODE TRIGGER (added 2026-05-28, rev3) ----
+    # Detect natural-language mode triggers BEFORE the agent runs.
+    # Uses the dashboard's own _apply_model_switch() (same code path as /model).
+    # Session-only switch; emits the indicator as the reply; no LLM call.
+    try:
+        if isinstance(text, str):
+            _trig = text.strip().lower()
+            _CORTEX_MODES = {
+                "learning mode":      ("gpt-5.4-mini", "Learning mode active — using gpt-5.4-mini"),
+                "normal mode":        ("gpt-5.5",      "Normal mode active — using gpt-5.5"),
+                "serious mode":       ("gpt-5.5",      "Normal mode active — using gpt-5.5"),
+                "exit learning mode": ("gpt-5.5",      "Normal mode active — using gpt-5.5"),
+            }
+            if _trig in _CORTEX_MODES:
+                _mdl, _ind = _CORTEX_MODES[_trig]
+                try:
+                    _apply_model_switch(sid, session, f"{_mdl} --provider openai-codex")
+                    import logging as _lg
+                    _lg.getLogger(__name__).info(
+                        "cortex mode switch (tui): sid=%s trigger=%r model=%s", sid, _trig, _mdl)
+                    _emit("message.start", sid)
+                    _emit("message.delta", sid, {"text": _ind})
+                    _emit("message.complete", sid, {})
+                except Exception as _e_trig:
+                    _emit("message.start", sid)
+                    _emit("message.delta", sid, {"text": f"{_ind} (switch raised: {_e_trig})"})
+                    _emit("message.complete", sid, {})
+                # Append a synthetic exchange to the visible history so the chat
+                # shows the user message + Cortex confirmation.
+                try:
+                    with session["history_lock"]:
+                        session["history"].append({"role": "user", "content": text})
+                        session["history"].append({"role": "assistant", "content": _ind})
+                        session["history_version"] = int(session.get("history_version", 0)) + 1
+                except Exception:
+                    pass
+                return
+    except Exception:
+        pass
+    # ---- /CORTEX MODE TRIGGER ----
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))

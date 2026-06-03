@@ -7393,6 +7393,12 @@ class GatewayRunner:
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
+        # Cortex SOUL mode triggers are exact plaintext control phrases. Handle
+        # them before update/clarify interception and before the LLM path.
+        _cortex_mode_trigger = self._cortex_mode_trigger_from_text(event.text)
+        if _cortex_mode_trigger is not None:
+            return await self._handle_cortex_mode_trigger(event, _cortex_mode_trigger)
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -7942,6 +7948,13 @@ class GatewayRunner:
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.
             return None
+
+        # Cold-path safety net for Cortex mode triggers. The normal case is
+        # already handled above before update/clarify interception; this catches
+        # any path that reaches command dispatch after running-agent checks.
+        _cortex_mode_trigger = self._cortex_mode_trigger_from_text(event.text)
+        if _cortex_mode_trigger is not None:
+            return await self._handle_cortex_mode_trigger(event, _cortex_mode_trigger)
 
         # Check for commands
         command = event.get_command()
@@ -9345,6 +9358,18 @@ class GatewayRunner:
         )
         if message_text is None:
             return
+
+        # Voice messages are transcribed inside _prepare_inbound_message_text(),
+        # after the normal slash-command dispatch window. Re-check the enriched
+        # text here so an exact spoken "Learning Mode" / "Normal Mode" switch is
+        # handled deterministically without starting an LLM turn.
+        _voice_mode_trigger = self._cortex_mode_trigger_from_text(message_text)
+        if _voice_mode_trigger is not None:
+            try:
+                event.text = message_text
+            except Exception:
+                pass
+            return await self._handle_cortex_mode_trigger(event, _voice_mode_trigger)
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
@@ -10880,6 +10905,134 @@ class GatewayRunner:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    def _cortex_mode_trigger_from_text(self, text: Optional[str]) -> Optional[tuple[str, str, str]]:
+        """Map Neil's exact Cortex mode phrases to safe session-only model switches.
+
+        The SOUL defines these as instruction-driven triggers, not normal chat.
+        Voice messages arrive later as a transcription wrapper, so accept either
+        the raw exact phrase or a single exact transcript inside the standard
+        ``[The user sent a voice message~ Here's what they said: "..."]`` text.
+        Do not fuzzily match longer utterances — phrases like "can you use a
+        lighter model?" must remain normal user messages.
+        """
+        if not text:
+            return None
+        candidate = text.strip()
+        voice_match = re.fullmatch(
+            r"\[The user sent a voice message~ Here's what they said: \"(?P<transcript>.*)\"\]",
+            candidate,
+            flags=re.DOTALL,
+        )
+        if voice_match:
+            candidate = voice_match.group("transcript").strip()
+        normalised = re.sub(r"[.!?\s]+$", "", candidate.strip().lower())
+        normalised = re.sub(r"\s+", " ", normalised)
+        if normalised == "learning mode":
+            return (
+                "Learning mode active — using gpt-5.4-mini",
+                "gpt-5.4-mini",
+                "learning mode",
+            )
+        if normalised in {"normal mode", "serious mode", "exit learning mode"}:
+            return (
+                "Normal mode active — using gpt-5.5",
+                "gpt-5.5",
+                "normal mode",
+            )
+        return None
+
+    def _persist_session_model_marker(
+        self,
+        source: SessionSource,
+        model: str,
+        provider: Optional[str],
+        *,
+        reason: str = "session_model_override",
+    ) -> None:
+        """Record a session-only model switch in the session DB for visibility.
+
+        Gateway /model switches intentionally live in memory (they must not
+        change config.yaml/global defaults).  However, operators verify model
+        routing via ``sessions.model`` and dashboard/status surfaces read the
+        same DB.  Without this marker a successful session-only switch looks
+        like it failed until the next LLM turn writes token metadata.  Store
+        only non-secret metadata; never persist api keys or bearer tokens here.
+        """
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            session_id = getattr(session_entry, "session_id", None)
+            if not session_id:
+                return
+            import json
+            import time
+            from hermes_state import SessionDB
+
+            marker = {
+                "model": model,
+                "provider": provider,
+                "session_override": True,
+                "reason": reason,
+                "updated_at": time.time(),
+            }
+            db = SessionDB()
+            try:
+                def _do(conn):
+                    conn.execute(
+                        "UPDATE sessions SET model = ?, model_config = ? WHERE id = ?",
+                        (model, json.dumps(marker, sort_keys=True), session_id),
+                    )
+                db._execute_write(_do)
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.debug("Failed to persist session model marker: %s", exc)
+
+    async def _handle_cortex_mode_trigger(
+        self,
+        event: MessageEvent,
+        trigger: tuple[str, str, str],
+    ) -> str:
+        """Execute Cortex SOUL learning/normal mode triggers without an LLM turn."""
+        prefix, target_model, label = trigger
+        original_text = event.text
+        session_key = self._session_key_for_source(event.source)
+        try:
+            event.text = f"/model {target_model} --provider openai-codex"
+            result = await self._handle_model_command(event)
+        finally:
+            event.text = original_text
+        if result and (
+            result.startswith("❌")
+            or result.startswith("✗")
+            or result.lower().startswith("error:")
+        ):
+            return f"{prefix} requested, but the switch failed:\n\n{result}"
+        override = {}
+        try:
+            override = self._session_model_overrides.get(session_key, {})
+        except Exception:
+            override = {}
+        if override.get("model") != target_model or override.get("provider") != "openai-codex":
+            detail = result or "No session model override was recorded."
+            return f"{prefix} requested, but the switch failed:\n\n{detail}"
+        effective_model = override.get("model") or target_model
+        effective_provider = override.get("provider") or "openai-codex"
+        self._persist_session_model_marker(
+            event.source,
+            effective_model,
+            effective_provider,
+            reason=f"cortex_{label.replace(' ', '_')}",
+        )
+        logger.info(
+            "Cortex plaintext mode trigger switched session %s to %s (%s)",
+            session_key,
+            effective_model,
+            label,
+        )
+        if result:
+            return f"{prefix}\n\n{result}"
+        return prefix
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.

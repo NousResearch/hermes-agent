@@ -373,6 +373,36 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
 
+    const scheduleTerminalRefocus = (clearSelection = false) => {
+      // Mouse text selection/copy can leave browser focus on <body> (or the
+      // selected DOM range) instead of xterm's hidden textarea.  When that
+      // happens the dashboard still shows a live terminal, but keystrokes no
+      // longer reach the PTY until the user refreshes or clicks just right.
+      // Restore focus on the next tick so the native copy operation can finish
+      // first, then typing continues in the same PTY/session.
+      window.setTimeout(() => {
+        if (!host.isConnected || document.hidden) return;
+        if (clearSelection) {
+          term.clearSelection();
+        }
+        term.focus();
+      }, 0);
+    };
+
+    const nativeSelectionIntersectsTerminal = () => {
+      const selection = window.getSelection?.();
+      if (!selection || selection.isCollapsed) return false;
+      for (let i = 0; i < selection.rangeCount; i += 1) {
+        const range = selection.getRangeAt(i);
+        try {
+          if (range.intersectsNode(host)) return true;
+        } catch {
+          // Some browsers throw if the range/node relationship is stale.
+        }
+      }
+      return false;
+    };
+
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
@@ -396,6 +426,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           });
           // Clear xterm.js's highlight after copy (matches gnome-terminal).
           term.clearSelection();
+          scheduleTerminalRefocus();
           ev.preventDefault();
           return false;
         }
@@ -418,6 +449,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       return true;
     });
+
+    const onHostPointerUp = () => {
+      // Finish drag-selection with focus back on xterm's hidden textarea so
+      // the following Cmd/Ctrl+Shift+C and subsequent typing target the PTY.
+      scheduleTerminalRefocus();
+    };
+    host.addEventListener("pointerup", onHostPointerUp);
+
+    const onDocumentCopy = () => {
+      if (term.getSelection() || nativeSelectionIntersectsTerminal()) {
+        // Let the browser's default copy read the current selection first.
+        // Then clear the highlight and restore PTY focus so the next typed
+        // character goes into the same live Hermes session.
+        scheduleTerminalRefocus(true);
+      }
+    };
+    document.addEventListener("copy", onDocumentCopy, true);
 
     const fit = new FitAddon();
     fitRef.current = fit;
@@ -660,6 +708,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onResizeDisposable?.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
+      document.removeEventListener("copy", onDocumentCopy, true);
+      host.removeEventListener("pointerup", onHostPointerUp);
       window.visualViewport?.removeEventListener(
         "resize",
         scheduleSyncTerminalMetrics,

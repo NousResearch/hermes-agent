@@ -14938,6 +14938,28 @@ class HermesCLI:
                         user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
                         if _had_mouse_reports:
                             self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
+                    # ---- CORTEX MODE TRIGGER (added 2026-05-28, rev3) ----
+                    # Rewrites trigger phrases to /model <name> --provider openai-codex
+                    # then lets the existing slash dispatcher (process_command) do the
+                    # actual model switch via _handle_model_switch. Session-only.
+                    if isinstance(user_input, str):
+                        _trig = user_input.strip().lower()
+                        _CORTEX_MODES = {
+                            "learning mode":      ("gpt-5.4-mini", "Learning mode active — using gpt-5.4-mini"),
+                            "normal mode":        ("gpt-5.5",      "Normal mode active — using gpt-5.5"),
+                            "serious mode":       ("gpt-5.5",      "Normal mode active — using gpt-5.5"),
+                            "exit learning mode": ("gpt-5.5",      "Normal mode active — using gpt-5.5"),
+                        }
+                        if _trig in _CORTEX_MODES:
+                            _mdl, _ind = _CORTEX_MODES[_trig]
+                            _slash = f"/model {_mdl} --provider openai-codex"
+                            try:
+                                self.process_command(_slash)
+                                _cprint(_ind)
+                            except Exception as _e:
+                                _cprint(f"{_ind} (switch raised: {_e})")
+                            continue
+                    # ---- /CORTEX MODE TRIGGER ----
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.

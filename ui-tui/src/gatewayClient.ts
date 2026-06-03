@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
@@ -18,6 +19,15 @@ const WS_CONNECTING = 0
 const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
+const nodeRequire = createRequire(import.meta.url)
+
+const loadNodeWebSocket = (): typeof WebSocket | null => {
+  try {
+    return nodeRequire('ws') as typeof WebSocket
+  } catch {
+    return null
+  }
+}
 
 const truncateLine = (line: string) =>
   line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
@@ -406,7 +416,9 @@ export class GatewayClient extends EventEmitter {
     const safeAttachUrl = redactUrl(attachUrl)
     this.startReadyTimer('websocket', safeAttachUrl)
 
-    if (typeof WebSocket === 'undefined') {
+    const WebSocketCtor = typeof WebSocket === 'undefined' ? loadNodeWebSocket() : WebSocket
+
+    if (!WebSocketCtor) {
       const line = `[startup] WebSocket API unavailable; cannot attach to ${safeAttachUrl}`
 
       this.pushLog(line)
@@ -417,7 +429,7 @@ export class GatewayClient extends EventEmitter {
     }
 
     try {
-      const ws = new WebSocket(attachUrl)
+      const ws = new WebSocketCtor(attachUrl)
       let settled = false
 
       this.ws = ws

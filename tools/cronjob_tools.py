@@ -7,14 +7,44 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 
 import json
 import logging
+import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+# Safety preflight for mutating cron operations. This makes the existing
+# "inspect the live scheduler before changing it" rule mechanical instead of
+# relying only on model discipline. The marker is deliberately process-local:
+# every fresh Hermes/gateway process must list jobs before create/update/remove.
+_CRON_PREFLIGHT_TTL_SECONDS = int(os.getenv("HERMES_CRON_PREFLIGHT_TTL_SECONDS", "600"))
+_last_cron_list_at: float = 0.0
+
+
+def _cron_preflight_required() -> bool:
+    return os.getenv("HERMES_CRON_PREFLIGHT_REQUIRED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _mark_cron_list_preflight() -> None:
+    global _last_cron_list_at
+    _last_cron_list_at = time.time()
+
+
+def _check_cron_list_preflight(action: str) -> str:
+    if not _cron_preflight_required():
+        return ""
+    age = time.time() - _last_cron_list_at if _last_cron_list_at else None
+    if age is not None and age <= _CRON_PREFLIGHT_TTL_SECONDS:
+        return ""
+    return (
+        f"Cron action '{action}' requires a fresh scheduler preflight first. "
+        "Call cronjob(action='list') to inspect existing jobs, then retry."
+    )
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -486,6 +516,9 @@ def cronjob(
         normalized = (action or "").strip().lower()
 
         if normalized == "create":
+            preflight_error = _check_cron_list_preflight(normalized)
+            if preflight_error:
+                return tool_error(preflight_error, success=False)
             if not schedule:
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
@@ -563,8 +596,14 @@ def cronjob(
             )
 
         if normalized == "list":
+            _mark_cron_list_preflight()
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+
+        if normalized in {"update", "pause", "resume", "remove", "run", "run_now", "trigger"}:
+            preflight_error = _check_cron_list_preflight(normalized)
+            if preflight_error:
+                return tool_error(preflight_error, success=False)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)

@@ -771,15 +771,23 @@ export function useMainApp(gw: GatewayClient) {
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
         turnController.pushActivity('gateway exited · recovering session…', 'warn')
-        sys('gateway exited — recovering your session (any in-flight reply was lost)')
-        gw.start()
+
+        // In dashboard/browser attach mode, GatewayClient can synchronously emit
+        // `exit` while React/Ink is still rendering the mounted App. Calling
+        // sys() immediately then schedules React state during render and trips
+        // React #301 (too many re-renders). Defer both the transcript update and
+        // retry so the recovery still happens, but outside the render phase.
+        setTimeout(() => {
+          sys('gateway exited — recovering your session (any in-flight reply was lost)')
+          gw.start()
+        }, 0)
 
         return
       }
 
       recoverSidRef.current = null
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      setTimeout(() => sys('error: gateway exited'), 0)
     }
 
     gw.on('event', handler)

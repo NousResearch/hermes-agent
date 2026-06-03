@@ -268,12 +268,51 @@ class TestHandleUpdateCommand:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Verify setsid was used
+        # Verify setsid was used. POSIX requires `--` to separate options
+        # destined for the child process — without it, Termux's `setsid`
+        # swallows `-c` and the update command silently fails. See #37124.
         call_args = mock_popen.call_args[0][0]
         assert call_args[0] == "/usr/bin/setsid"
-        assert call_args[1] == "bash"
+        assert call_args[1] == "--"
+        assert call_args[2] == "bash"
         assert ".update_exit_code" in call_args[-1]
         assert "Starting Hermes update" in result
+
+    @pytest.mark.asyncio
+    async def test_spawns_setsid_with_double_dash_separator(self, tmp_path):
+        """Regression test for #37124: argv must contain `--` between setsid and bash.
+
+        Termux's `setsid` (from util-linux) interprets leading dashes on
+        positional arguments as its own options unless `--` terminates the
+        option list. Inserting `--` between the setsid path and `bash`
+        ensures the `-c` flag reaches bash instead of being consumed by
+        setsid, which would cause the update to fail silently.
+        """
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen", mock_popen):
+            await runner._handle_update_command(event)
+
+        call_args = mock_popen.call_args[0][0]
+        setsid_index = call_args.index("/usr/bin/setsid")
+        # `--` must be the immediate next token, then `bash`, then `-c`.
+        assert call_args[setsid_index + 1] == "--"
+        assert call_args[setsid_index + 2] == "bash"
+        assert call_args[setsid_index + 3] == "-c"
 
     @pytest.mark.asyncio
     async def test_fallback_when_no_setsid(self, tmp_path):

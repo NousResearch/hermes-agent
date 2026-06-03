@@ -196,12 +196,50 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
-    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
+    # POSIX requires `--` to separate options destined for the child process.
+    # Without it, `setsid bash -lc` can have `-l`/`-c` swallowed by setsid
+    # itself on some implementations (notably Termux's util-linux), causing
+    # the command to fail silently. See issue #37124.
+    assert cmd[:3] == ["/usr/bin/setsid", "--", "bash"]
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_inserts_double_dash_separator(monkeypatch):
+    """Regression test for #37124: argv must contain `--` between setsid and bash.
+
+    POSIX convention requires `--` to terminate option parsing. Termux's
+    `setsid` (from util-linux) interprets `-l` and `-c` as its own options
+    if `--` is not present, so the spawned bash never sees them and the
+    gateway restart command silently fails.
+    """
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 654)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, _kwargs = popen_calls[0]
+    # The `--` separator MUST sit between the setsid path and `bash`.
+    setsid_index = cmd.index("/usr/bin/setsid")
+    assert cmd[setsid_index + 1] == "--"
+    assert cmd[setsid_index + 2] == "bash"
+    # And the `-lc` flags must reach bash, not be consumed by setsid.
+    assert cmd[setsid_index + 3] == "-lc"
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

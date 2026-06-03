@@ -19,6 +19,8 @@ interface ClarifyArgs {
   choices?: string[] | null
 }
 
+const clarifyDrafts = new Map<string, string>()
+
 function readClarifyArgs(args: unknown): ClarifyArgs {
   if (!args || typeof args !== 'object') {
     return {}
@@ -45,7 +47,7 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   return <ClarifyToolPending {...props} />
 }
 
-function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
+function ClarifyToolPending({ args, toolCallId }: ToolCallMessagePartProps) {
   const request = useStore($clarifyRequest)
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
@@ -70,11 +72,25 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   )
 
   const hasChoices = choices.length > 0
+  const draftKey = toolCallId || question || 'clarify'
 
   const [typing, setTyping] = useState(false)
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(() => clarifyDrafts.get(draftKey) ?? '')
   const [submitting, setSubmitting] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+
+  const updateDraft = useCallback(
+    (value: string) => {
+      setDraft(value)
+
+      if (value) {
+        clarifyDrafts.set(draftKey, value)
+      } else {
+        clarifyDrafts.delete(draftKey)
+      }
+    },
+    [draftKey]
+  )
 
   // Race: tool.start fires a tick before clarify.request, so request_id
   // arrives slightly after the tool block mounts. Show the question (from
@@ -103,6 +119,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           answer
         })
         triggerHaptic('submit')
+        clarifyDrafts.delete(draftKey)
         clearClarifyRequest(matchingRequest.requestId)
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
@@ -111,7 +128,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         setSubmitting(false)
       }
     },
-    [gateway, matchingRequest, ready]
+    [draftKey, gateway, matchingRequest, ready]
   )
 
   const handleTextareaKey = useCallback(
@@ -229,7 +246,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           <Textarea
             className="min-h-20 resize-y rounded-lg border-border/70 bg-background/60 text-sm"
             disabled={submitting}
-            onChange={event => setDraft(event.target.value)}
+            onChange={event => updateDraft(event.target.value)}
             onKeyDown={handleTextareaKey}
             placeholder="Type your answer…"
             ref={textareaRef}
@@ -243,7 +260,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                   disabled={submitting}
                   onClick={() => {
                     setTyping(false)
-                    setDraft('')
+                    updateDraft('')
                   }}
                   size="sm"
                   type="button"

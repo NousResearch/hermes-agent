@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [MCP, Tools, Integrations]
-    related_skills: [mcporter]
+    related_skills: []
 ---
 
 # Native MCP Client
@@ -23,8 +23,6 @@ Use this whenever you want to:
 - Run local stdio-based MCP servers (npx, uvx, or any command)
 - Connect to remote HTTP/StreamableHTTP MCP servers
 - Have MCP tools auto-discovered and available in every conversation
-
-For ad-hoc, one-off MCP tool calls from the terminal without configuring anything, see the `mcporter` skill instead.
 
 ## Prerequisites
 
@@ -352,6 +350,5 @@ Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 
 - MCP tools are called synchronously from the agent's perspective but run asynchronously on a dedicated background event loop
 - Tool results are returned as JSON with either `{"result": "..."}` or `{"error": "..."}`
-- The native MCP client is independent of `mcporter` -- you can use both simultaneously
 - Server connections are persistent and shared across all conversations in the same agent process
 - Adding or removing servers requires restarting the agent (no hot-reload currently)

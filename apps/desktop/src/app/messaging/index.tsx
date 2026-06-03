@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
-import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
@@ -14,6 +13,7 @@ import {
   type MessagingPlatformInfo,
   updateMessagingPlatform
 } from '@/hermes'
+import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -33,31 +33,15 @@ interface MessagingViewProps extends React.ComponentProps<'section'> {
 
 type EditMap = Record<string, Record<string, string>>
 
-const STATE_LABELS: Record<string, string> = {
-  connected: 'Connected',
-  connecting: 'Connecting',
-  disabled: 'Disabled',
-  fatal: 'Error',
-  gateway_stopped: 'Messaging gateway stopped',
-  not_configured: 'Needs setup',
-  pending_restart: 'Restart needed',
-  retrying: 'Retrying',
-  startup_failed: 'Startup failed'
+const PILL_TONE: Record<StatusTone, string> = {
+  good: 'bg-primary/10 text-primary',
+  muted: 'bg-muted text-muted-foreground',
+  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
+  bad: 'bg-destructive/10 text-destructive'
 }
 
-const TONE_VARIANT: Record<StatusTone, BadgeProps['variant']> = {
-  good: 'default',
-  muted: 'muted',
-  warn: 'warn',
-  bad: 'destructive'
-}
-
-const HINT_BY_STATE: Record<string, string> = {
-  pending_restart: 'Restart the gateway from the status bar to apply this change.',
-  gateway_stopped: 'Start the gateway from the status bar to connect.'
-}
-
-const stateLabel = (state?: null | string) => (state ? STATE_LABELS[state] || state.replace(/_/g, ' ') : 'Unknown')
+const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>
+  state ? m.states[state] || state.replace(/_/g, ' ') : m.unknown
 
 function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
   if (!enabled) {
@@ -86,7 +70,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   TELEGRAM_BOT_TOKEN: {
     label: 'Bot token',
     help: 'Create a bot with @BotFather, then paste the token it gives you.',
-    placeholder: '123456:ABC...'
+    placeholder: 'Paste Telegram bot token'
   },
   TELEGRAM_ALLOWED_USERS: {
     label: 'Allowed Telegram user IDs',
@@ -153,13 +137,13 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   SLACK_BOT_TOKEN: {
     label: 'Slack bot token',
-    help: 'Starts with xoxb-. Found under OAuth & Permissions after installing your Slack app.',
-    placeholder: 'xoxb-...'
+    help: 'Use the bot token from OAuth & Permissions after installing your Slack app.',
+    placeholder: 'Paste Slack bot token'
   },
   SLACK_APP_TOKEN: {
     label: 'Slack app token',
-    help: 'Starts with xapp-. Required for Socket Mode.',
-    placeholder: 'xapp-...'
+    help: 'Use the app-level token required for Socket Mode.',
+    placeholder: 'Paste Slack app token'
   },
   SLACK_ALLOWED_USERS: {
     label: 'Allowed Slack user IDs',
@@ -219,18 +203,21 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   }
 }
 
-function fieldCopy(field: MessagingEnvVarInfo) {
+function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   const copy = FIELD_COPY[field.key] || {}
+  const localized = m.fieldCopy[field.key] || {}
 
   return {
-    label: copy.label || field.prompt || field.key,
-    help: copy.help || field.description,
-    placeholder: copy.placeholder || field.prompt,
+    label: localized.label || copy.label || field.prompt || field.key,
+    help: localized.help || copy.help || field.description,
+    placeholder: localized.placeholder || copy.placeholder || field.prompt,
     advanced: Boolean(copy.advanced || field.advanced)
   }
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+  const { t } = useI18n()
+  const m = t.messaging
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -249,14 +236,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       setPlatforms(result.platforms)
     } catch (err) {
       if (!silent) {
-        notifyError(err, 'Messaging platforms failed to load')
+        notifyError(err, m.loadFailed)
       }
     } finally {
       if (!silent) {
         setRefreshing(false)
       }
     }
-  }, [])
+  }, [m])
 
   useRefreshHotkey(() => void refreshPlatforms())
 
@@ -330,11 +317,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       )
       notify({
         kind: 'success',
-        title: enabled ? `${platform.name} enabled` : `${platform.name} disabled`,
-        message: 'Restart the gateway for this change to take effect.'
+        title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
+        message: m.restartToApply
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${platform.name}`)
+      notifyError(err, m.failedUpdate(platform.name))
     } finally {
       setSaving(null)
     }
@@ -355,11 +342,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await refreshPlatforms()
       notify({
         kind: 'success',
-        title: `${platform.name} setup saved`,
-        message: 'Restart the gateway to reconnect with the new credentials.'
+        title: m.setupSaved(platform.name),
+        message: m.restartToReconnect
       })
     } catch (err) {
-      notifyError(err, `Failed to save ${platform.name}`)
+      notifyError(err, m.failedSave(platform.name))
     } finally {
       setSaving(null)
     }
@@ -378,9 +365,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: `${key} cleared`, message: `${platform.name} setup was updated.` })
+      notify({ kind: 'success', title: m.keyCleared(key), message: m.setupUpdated(platform.name) })
     } catch (err) {
-      notifyError(err, `Failed to clear ${key}`)
+      notifyError(err, m.failedClear(key))
     } finally {
       setSaving(null)
     }
@@ -391,11 +378,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
-      searchPlaceholder="Search messaging..."
+      searchPlaceholder={m.search}
       searchValue={query}
     >
       {!platforms ? (
-        <PageLoader label="Loading messaging platforms..." />
+        <PageLoader label={m.loading} />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-y-auto p-2">
@@ -485,12 +472,14 @@ function PlatformDetail({
   platform: MessagingPlatformInfo
   saving: string | null
 }) {
+  const { t } = useI18n()
+  const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const hasEdits = Object.keys(trimEdits(edits)).length > 0
   const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field).advanced)
+  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
+  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
   const hiddenCount = advancedFields.length
   const isSavingEnv = saving === `env:${platform.id}`
 
@@ -506,11 +495,11 @@ function PlatformDetail({
                 {platform.description}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state)}</StatePill>
+                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
                 <SetupPill active={platform.configured}>
-                  {platform.configured ? 'Credentials set' : 'Needs setup'}
+                  {platform.configured ? m.credentialsSet : m.needsSetup}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>Messaging gateway stopped</SetupPill>}
+                {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
               </div>
               <PlatformHint platform={platform} />
             </div>
@@ -524,14 +513,14 @@ function PlatformDetail({
           )}
 
           <section>
-            <SectionTitle>Get your credentials</SectionTitle>
+            <SectionTitle>{m.getCredentials}</SectionTitle>
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {introCopy(platform)}
+              {introCopy(platform, m)}
             </p>
             <div className="mt-3">
               <Button asChild size="sm" variant="textStrong">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  Open setup guide
+                  {m.openSetupGuide}
                   <ExternalLink className="size-3.5" />
                 </a>
               </Button>
@@ -539,7 +528,7 @@ function PlatformDetail({
           </section>
 
           <section>
-            <SectionTitle>Required</SectionTitle>
+            <SectionTitle>{m.required}</SectionTitle>
             <div className="mt-3 grid gap-1">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
@@ -554,7 +543,7 @@ function PlatformDetail({
                 ))
               ) : (
                 <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                  This platform does not need a token here. Use the setup guide above, then enable it below.
+                  {m.noTokenNeeded}
                 </p>
               )}
             </div>
@@ -562,7 +551,7 @@ function PlatformDetail({
 
           {optionalFields.length > 0 && (
             <section>
-              <SectionTitle>Recommended</SectionTitle>
+              <SectionTitle>{m.recommended}</SectionTitle>
               <div className="mt-3 grid gap-1">
                 {optionalFields.map(field => (
                   <MessagingField
@@ -585,7 +574,7 @@ function PlatformDetail({
                 onClick={() => setShowAdvanced(value => !value)}
                 type="button"
               >
-                <span>Advanced ({hiddenCount})</span>
+                <span>{m.advanced(hiddenCount)}</span>
                 <DisclosureCaret open={showAdvanced} size="0.875rem" />
               </button>
               {showAdvanced && (
@@ -609,19 +598,23 @@ function PlatformDetail({
 
       <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <Switch
-            aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
-            checked={platform.enabled}
-            disabled={saving === `enabled:${platform.id}`}
-            onCheckedChange={onToggle}
-            size="xs"
-          />
+          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
+            <Switch
+              aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+              checked={platform.enabled}
+              disabled={saving === `enabled:${platform.id}`}
+              onCheckedChange={onToggle}
+            />
+            <span className="text-xs font-medium text-muted-foreground">
+              {platform.enabled ? m.enabled : m.disabled}
+            </span>
+          </label>
 
           <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+            {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
               <Save />
-              {isSavingEnv ? 'Saving...' : 'Save changes'}
+              {isSavingEnv ? m.saving : m.saveChanges}
             </Button>
           </div>
         </div>
@@ -636,7 +629,7 @@ const PLATFORM_INTRO: Record<string, string> = {
   discord:
     'Open the Discord Developer Portal, create an application, add a Bot, then copy its token. Invite the bot to your server with the right scopes.',
   slack:
-    'Create a Slack app, enable Socket Mode, install it to your workspace, then copy the Bot token (xoxb-) and App-level token (xapp-).',
+    'Create a Slack app, enable Socket Mode, install it to your workspace, then copy the bot token and app-level token.',
   mattermost:
     'On your Mattermost server, create a bot account or personal access token, then paste the server URL and token here.',
   matrix: 'Sign in to your homeserver with the bot account, then copy the access token, user ID, and homeserver URL.',
@@ -667,7 +660,8 @@ const PLATFORM_INTRO: Record<string, string> = {
     'Run an HTTP server that other tools (GitHub, GitLab, custom apps) can POST to. Use the secret to verify signatures.'
 }
 
-const introCopy = (platform: MessagingPlatformInfo) => PLATFORM_INTRO[platform.id] || platform.description
+const introCopy = (platform: MessagingPlatformInfo, m: Translations['messaging']) =>
+  m.platformIntro[platform.id] || PLATFORM_INTRO[platform.id] || platform.description
 
 function MessagingField({
   edits,
@@ -682,7 +676,9 @@ function MessagingField({
   onEdit: (key: string, value: string) => void
   saving: string | null
 }) {
-  const copy = fieldCopy(field)
+  const { t } = useI18n()
+  const m = t.messaging
+  const copy = fieldCopy(field, m)
   const fieldId = `messaging-field-${field.key}`
 
   return (
@@ -693,12 +689,12 @@ function MessagingField({
             className={CREDENTIAL_CONTROL_CLASS}
             id={fieldId}
             onChange={event => onEdit(field.key, event.target.value)}
-            placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
+            placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
             type={field.is_password ? 'password' : 'text'}
             value={edits[field.key] || ''}
           />
           {field.url && (
-            <Button asChild className="size-8 shrink-0" title="Open docs" variant="ghost">
+            <Button asChild className="size-8 shrink-0" title={m.openDocs} variant="ghost">
               <a href={field.url} rel="noreferrer" target="_blank">
                 <ExternalLink className="size-3.5" />
               </a>
@@ -709,7 +705,7 @@ function MessagingField({
               className="size-8 shrink-0"
               disabled={saving === `clear:${field.key}`}
               onClick={() => onClear(field.key)}
-              title={`Clear ${field.key}`}
+              title={m.clearField(field.key)}
               variant="ghost"
             >
               <Trash2 className="size-3.5" />
@@ -721,7 +717,7 @@ function MessagingField({
       title={
         <span className="flex flex-wrap items-center gap-2">
           <label htmlFor={fieldId}>{copy.label}</label>
-          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{m.saved}</span>}
         </span>
       }
     />
@@ -733,24 +729,45 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+  const { t } = useI18n()
+
   if (!platform.enabled || platform.state === 'connected') {
     return null
   }
 
-  const hint = HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
+  const hint =
+    platform.state === 'pending_restart'
+      ? t.messaging.hintPendingRestart
+      : platform.gateway_running
+        ? null
+        : t.messaging.hintGatewayStopped
 
   return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
 }
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
   return (
-    <Badge variant={TONE_VARIANT[tone]}>
+    <span
+      className={cn(
+        'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
+        PILL_TONE[tone]
+      )}
+    >
       <StatusDot tone={tone} />
       {children}
-    </Badge>
+    </span>
   )
 }
 
 function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return <Badge variant={active ? 'default' : 'muted'}>{children}</Badge>
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
+        PILL_TONE[active ? 'good' : 'muted']
+      )}
+    >
+      {children}
+    </span>
+  )
 }

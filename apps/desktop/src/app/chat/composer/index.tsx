@@ -17,6 +17,7 @@ import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-te
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
@@ -83,29 +84,6 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
-
-// Resting composer placeholders. New sessions get open-ended starters; an
-// existing chat gets phrasings that read as a continuation of the thread.
-// One is picked at random per session (stable until the session changes).
-const NEW_SESSION_PLACEHOLDERS = [
-  'What are we building?',
-  'Give Hermes a task',
-  "What's on your mind?",
-  'Describe what you need',
-  'What should we tackle?',
-  'Ask anything',
-  'Start with a goal'
-]
-
-const FOLLOW_UP_PLACEHOLDERS = [
-  'Send a follow-up',
-  'Add more context',
-  'Refine the request',
-  "What's next?",
-  'Keep it going',
-  'Push it further',
-  'Adjust or continue'
-]
 
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
@@ -190,7 +168,10 @@ export function ChatBar({
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   const showHelpHint = draft === '?'
 
+  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const newSessionPlaceholders = t.composer.newSessionPlaceholders
+  const followUpPlaceholders = t.composer.followUpPlaceholders
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -198,7 +179,7 @@ export function ChatBar({
   // started session (null → id, on the first send) is treated as the same
   // conversation so the placeholder doesn't visibly flip mid-stream.
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS)
+    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
   )
 
   const prevSessionIdRef = useRef(sessionId)
@@ -217,16 +198,16 @@ export function ChatBar({
       return
     }
 
-    setRestingPlaceholder(pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS))
-  }, [sessionId])
+    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
   const placeholder = disabled
     ? gatewayState === 'closed' || gatewayState === 'error'
-      ? 'Reconnecting to Hermes…'
-      : 'Starting Hermes...'
+      ? t.composer.placeholderReconnecting
+      : t.composer.placeholderStarting
     : restingPlaceholder
 
   const focusInput = useCallback(() => {
@@ -1213,7 +1194,7 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label="Message"
+        aria-label={t.composer.message}
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(

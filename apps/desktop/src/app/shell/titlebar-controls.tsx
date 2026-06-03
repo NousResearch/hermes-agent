@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
@@ -44,6 +45,7 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const hapticsMuted = useStore($hapticsMuted)
@@ -76,7 +78,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     {
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: `${leftEdge.open ? 'Hide' : 'Show'} left sidebar`,
+      label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,
       onSelect: () => {
         triggerHaptic('tap')
         leftEdge.toggle()
@@ -85,12 +87,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     {
       icon: <Codicon name="arrow-swap" />,
       id: 'flip-panes',
-      label: 'Swap sidebar sides',
+      label: t.titlebar.swapSidebarSides,
       onSelect: () => {
         triggerHaptic('tap')
         togglePanesFlipped()
       },
-      title: 'Swap the sessions and file browser sides'
+      title: t.titlebar.swapSidebarSidesTitle
     },
     ...leftTools
   ]
@@ -98,7 +100,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const rightSidebarTool: TitlebarTool = {
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: `${rightEdge.open ? 'Hide' : 'Show'} right sidebar`,
+    label: rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar,
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()
@@ -111,13 +113,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       active: hapticsMuted,
       icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
       id: 'haptics',
-      label: hapticsMuted ? 'Unmute haptics' : 'Mute haptics',
+      label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
       onSelect: toggleHaptics
     },
     {
       icon: <Codicon name="settings-gear" />,
       id: 'settings',
-      label: 'Open settings',
+      label: t.titlebar.openSettings,
       onSelect: () => {
         triggerHaptic('open')
         onOpenSettings()
@@ -199,6 +201,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
           onPointerDown={event => event.stopPropagation()}
           rel="noreferrer"
           target="_blank"
+          title={tool.title ?? tool.label}
         >
           {tool.icon}
         </a>
@@ -221,6 +224,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
       }}
       onPointerDown={event => event.stopPropagation()}
       size="icon-titlebar"
+      title={tool.title ?? tool.label}
       type="button"
       variant="ghost"
     >

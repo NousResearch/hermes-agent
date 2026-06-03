@@ -129,6 +129,31 @@ class FeishuEntryAdapter:
         return {"entrypoint": "feishu", "status": "unconfigured", "reason": "app_id not set"}
 
 
+    def resolve_session_with_ambiguity(
+        self,
+        event: "EntryEvent",
+        *,
+        active_sessions: tuple[str, ...] | None = None,
+    ):
+        """Resolve a Feishu EntryEvent's session using the full priority chain.
+
+        Delegates to feishu_session_resolver.resolve_feishu_session().
+        Returns a ResolutionResult indicating whether ambiguity was detected
+        and whether an interactive card should be sent.
+
+        Args:
+            event: The EntryEvent to resolve.
+            active_sessions: Optional tuple of active session IDs for
+                ambiguity detection.
+
+        Returns:
+            ResolutionResult with workspace_id, session_id, source, and
+            ambiguity info.
+        """
+        from .feishu_session_resolver import resolve_feishu_session
+        return resolve_feishu_session(event, active_sessions=active_sessions)
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------

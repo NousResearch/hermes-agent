@@ -18,9 +18,7 @@ payload rewriter.
 from __future__ import annotations
 
 import base64
-from pathlib import Path
 
-import pytest
 
 from agent.error_classifier import FailoverReason, classify_api_error
 
@@ -275,3 +273,51 @@ class TestShrinkImagePartsHelper:
         assert agent._try_shrink_image_parts_in_messages(msgs) is False
         # Original URL still in place, not replaced by the bigger one.
         assert msgs[0]["content"][0]["image_url"]["url"] == oversized_url
+
+    def test_mixed_one_shrinkable_one_not_returns_false(self, monkeypatch):
+        """Regression for the wedged-session incident (May 2026).
+
+        When one oversized image shrinks but another oversized image can't,
+        the helper must return False — retrying would re-send the surviving
+        oversized payload and fail identically, burning the single retry on a
+        no-op.  The original bug returned True after shrinking *any* part,
+        which is what permanently wedged a session whose history held a 12 MB
+        tool-result image alongside a freshly-loaded shrinkable one.
+        """
+        agent = _make_agent()
+        shrinkable = _big_png_data_url(5000)
+        unshrinkable = _big_png_data_url(6000)
+        small = "data:image/jpeg;base64," + "C" * 500
+
+        # _resize_image_for_vision returns small for the shrinkable input but
+        # echoes the oversized payload back for the unshrinkable one.
+        def fake_resize(path, *a, **kw):
+            # The temp file written by the helper contains the decoded bytes;
+            # distinguish by size — the 6000 KB source stays "big".
+            try:
+                size = path.stat().st_size
+            except Exception:
+                size = 0
+            if size > 5500 * 1024:
+                return unshrinkable  # can't reduce — echo oversized back
+            return small
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "tool",
+            "content": [
+                {"type": "image_url", "image_url": {"url": shrinkable}},
+                {"type": "image_url", "image_url": {"url": unshrinkable}},
+            ],
+        }]
+        # One part shrank, one survived oversized → must NOT retry.
+        assert agent._try_shrink_image_parts_in_messages(msgs) is False
+        # The shrinkable one was still re-encoded (mutated in place).
+        assert msgs[0]["content"][0]["image_url"]["url"] == small
+        # The unshrinkable one is left as-is (caller surfaces original error).
+        assert msgs[0]["content"][1]["image_url"]["url"] == unshrinkable

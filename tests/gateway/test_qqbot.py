@@ -1,15 +1,13 @@
 """Tests for the QQ Bot platform adapter."""
 
 import asyncio
-import json
 import os
-import sys
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -2198,4 +2196,3 @@ class TestCloseCodeClassification:
         assert 4014 in fatal_codes
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
-

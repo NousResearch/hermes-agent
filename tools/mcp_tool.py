@@ -422,6 +422,17 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             candidates = [
                 os.path.join(hermes_home, "node", "bin", resolved_command),
                 os.path.join(os.path.expanduser("~"), ".local", "bin", resolved_command),
+                # /usr/local/bin is the canonical install location for Node on
+                # Linux from-source builds, the upstream node:bookworm-slim
+                # image (which the Hermes Docker image copies node + npm +
+                # corepack from since #4977), and macOS Homebrew on Intel.
+                # Without this candidate, any MCP server configured with an
+                # env.PATH that omits /usr/local/bin (a common pattern when
+                # users hand-author PATH for sandboxing) fails with ENOENT
+                # at execvp, and a naive symlink workaround into the user's
+                # PATH only fails one layer deeper because npx's shebang
+                # re-execs /usr/bin/env node which needs the same directory.
+                os.path.join(os.sep, "usr", "local", "bin", resolved_command),
             ]
             for candidate in candidates:
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
@@ -507,6 +518,21 @@ class InvalidMcpUrlError(ValueError):
     """
 
 
+class NonMcpEndpointError(ConnectionError):
+    """Raised when an HTTP MCP URL serves a non-MCP response.
+
+    A genuine MCP Streamable-HTTP endpoint answers with ``application/json``
+    or ``text/event-stream``.  Anything else on a 2xx response (typically
+    ``text/html`` from a web-app root) means the configured ``url`` points at
+    the wrong place.  This is non-retryable: every attempt returns the same
+    page, so the reconnect-backoff loop is skipped and the server is reported
+    failed immediately with an actionable message.
+
+    Subclasses :class:`ConnectionError` so callers that only catch the broad
+    class still treat it as a connection problem.
+    """
+
+
 def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     """Return the URL as a string if it's a valid http(s) remote MCP URL.
 
@@ -557,6 +583,79 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
             f"({stripped!r})"
         )
     return stripped
+
+
+def _resolve_client_cert(server_name: str, config: dict):
+    """Resolve the ``client_cert`` / ``client_key`` config for mTLS.
+
+    Returns whatever ``httpx``'s ``cert=`` parameter accepts, or ``None`` when
+    no client certificate is configured:
+
+      - ``None`` if neither ``client_cert`` nor ``client_key`` is set.
+      - A single absolute path string if ``client_cert`` is a string and
+        ``client_key`` is unset (PEM file with cert + key combined).
+      - A ``(cert_path, key_path)`` tuple when both are set, or when
+        ``client_cert`` is a 2-element list/tuple.
+      - A ``(cert_path, key_path, password)`` tuple when ``client_cert`` is
+        a 3-element list/tuple — the third element is the key passphrase.
+
+    User paths support ``~`` expansion. Missing files raise ``FileNotFoundError``
+    with a server-scoped message so the failure surfaces as a clear setup
+    error rather than an opaque TLS handshake error.
+    """
+    raw_cert = config.get("client_cert")
+    raw_key = config.get("client_key")
+
+    if raw_cert is None and raw_key is None:
+        return None
+
+    def _expand(path: Any, label: str) -> str:
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(
+                f"MCP server '{server_name}': {label} must be a non-empty "
+                f"string path (got {type(path).__name__})"
+            )
+        expanded = os.path.expanduser(path.strip())
+        if not os.path.isfile(expanded):
+            raise FileNotFoundError(
+                f"MCP server '{server_name}': {label} not found at "
+                f"{expanded!r}"
+            )
+        return expanded
+
+    # Tuple/list form for client_cert — (cert, key) or (cert, key, password).
+    if isinstance(raw_cert, (list, tuple)):
+        if raw_key is not None:
+            raise ValueError(
+                f"MCP server '{server_name}': specify either client_cert as "
+                f"a list [cert, key] OR client_cert + client_key, not both"
+            )
+        if len(raw_cert) == 2:
+            cert_path = _expand(raw_cert[0], "client_cert[0]")
+            key_path = _expand(raw_cert[1], "client_cert[1]")
+            return (cert_path, key_path)
+        if len(raw_cert) == 3:
+            cert_path = _expand(raw_cert[0], "client_cert[0]")
+            key_path = _expand(raw_cert[1], "client_cert[1]")
+            password = raw_cert[2]
+            if not isinstance(password, str):
+                raise ValueError(
+                    f"MCP server '{server_name}': client_cert[2] (key "
+                    f"passphrase) must be a string"
+                )
+            return (cert_path, key_path, password)
+        raise ValueError(
+            f"MCP server '{server_name}': client_cert list form must have 2 "
+            f"or 3 elements (got {len(raw_cert)})"
+        )
+
+    # String form for client_cert.
+    cert_path = _expand(raw_cert, "client_cert")
+    if raw_key is not None:
+        key_path = _expand(raw_key, "client_key")
+        return (cert_path, key_path)
+    # Single combined PEM file (cert + key in one file).
+    return cert_path
 
 
 def _format_connect_error(exc: BaseException) -> str:
@@ -1311,9 +1410,22 @@ class MCPServerTask:
                 # Capture the newly spawned subprocess PID for force-kill cleanup.
                 new_pids = _snapshot_child_pids() - pids_before
                 if new_pids:
+                    # Capture pgid while the child is alive — once it exits we
+                    # can no longer call ``os.getpgid`` on it, and the cleanup
+                    # sweep needs the pgid to reach any reparented descendants
+                    # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
+                    new_pgids: Dict[int, int] = {}
+                    for _pid in new_pids:
+                        try:
+                            new_pgids[_pid] = os.getpgid(_pid)
+                        except (AttributeError, ProcessLookupError, OSError):
+                            # AttributeError: Windows (os.getpgid is POSIX-only)
+                            # ProcessLookupError: child raced and already exited
+                            pass
                     with _lock:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
+                        _stdio_pgids.update(new_pgids)
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
@@ -1332,16 +1444,113 @@ class MCPServerTask:
             # on Linux, where setsid() children escape the parent cgroup).
             # Mark them as orphans so the next cleanup sweep can reap them.
             if new_pids:
+                from gateway.status import _pid_exists
+                _killpg = getattr(os, "killpg", None)
                 with _lock:
                     for _pid in new_pids:
                         _stdio_pids.pop(_pid, None)
                     for pid in new_pids:
                         # ``os.kill(pid, 0)`` is NOT a no-op on Windows
                         # (bpo-14484). Use the cross-platform check.
-                        from gateway.status import _pid_exists
-                        if not _pid_exists(pid):
-                            continue  # process already exited — nothing to do
-                        _orphan_stdio_pids.add(pid)
+                        pid_alive = _pid_exists(pid)
+                        pgroup_alive = False
+                        pgid = _stdio_pgids.get(pid)
+                        if not pid_alive and pgid is not None and _killpg is not None:
+                            # Direct child exited but descendants may still be
+                            # in its pgroup (e.g. ``claude mcp serve`` spawned
+                            # by an MCP wrapper that exited first).  Probe with
+                            # signal 0 — succeeds iff any pgroup member is alive.
+                            try:
+                                _killpg(pgid, 0)
+                                pgroup_alive = True
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pgroup_alive = False
+                        if pid_alive or pgroup_alive:
+                            _orphan_stdio_pids.add(pid)
+                        else:
+                            # Nothing left to reap — drop the pgid entry so
+                            # PID-reuse can't surface stale pgroup state later.
+                            _stdio_pgids.pop(pid, None)
+
+    # Content types a real MCP Streamable-HTTP endpoint may return on the
+    # initial POST/GET. Anything else on a 2xx response means the URL is not
+    # an MCP endpoint.
+    _MCP_CONTENT_TYPES = ("application/json", "text/event-stream")
+
+    async def _preflight_content_type(
+        self,
+        url: str,
+        *,
+        headers: Optional[dict] = None,
+        ssl_verify: bool = True,
+        client_cert=None,
+        timeout: float = 5.0,
+    ) -> None:
+        """Probe *url* for an MCP-shaped response before the SDK connects.
+
+        A misconfigured ``mcp_servers.<name>.url`` pointed at a plain web app
+        returns HTML (or some other non-MCP body). The MCP SDK then sits on
+        the connection for the full ``connect_timeout`` (default 60 s) before
+        surfacing an opaque ``CancelledError``. A cheap, short-timeout probe
+        here catches that in ≤ ``timeout`` seconds and raises
+        :class:`NonMcpEndpointError` with an actionable message.
+
+        Detection is allow-list based: a 2xx response is rejected only when it
+        carries a definite content type that is NOT one an MCP endpoint uses
+        (``application/json`` / ``text/event-stream``). A missing or empty
+        content type, non-2xx status, or any network/transport error passes
+        through silently — the probe is strictly best-effort, and the real
+        handshake remains the source of truth for everything except the
+        unambiguous "this is a web page, not MCP" case.
+
+        Runs on its own httpx client OUTSIDE the SDK's anyio task group, so the
+        raised error propagates as itself rather than being wrapped in an
+        ``ExceptionGroup`` (which is what defeats hooks installed inside the
+        SDK transport).
+        """
+        try:
+            import httpx as _httpx
+        except ImportError:
+            return  # No httpx → skip probe; SDK import would have failed first.
+
+        client_kwargs: dict = {
+            "verify": ssl_verify,
+            "follow_redirects": True,
+            "timeout": _httpx.Timeout(timeout),
+        }
+        if client_cert is not None:
+            client_kwargs["cert"] = client_cert
+
+        probe_headers = dict(headers) if headers else {}
+        try:
+            async with _httpx.AsyncClient(**client_kwargs) as client:
+                # HEAD is cheapest; fall back to GET if the server doesn't
+                # implement it (405 Method Not Allowed / 501 Not Implemented).
+                resp = await client.head(url, headers=probe_headers)
+                if resp.status_code in (405, 501):
+                    resp = await client.get(url, headers=probe_headers)
+        except _httpx.HTTPError:
+            return  # DNS/connect/timeout/transport error — let the SDK try.
+
+        # Only judge successful responses. A 4xx/5xx may be an auth challenge
+        # or a transient error the real handshake handles correctly.
+        if not (200 <= resp.status_code < 300):
+            return
+
+        ct_base = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not ct_base:
+            return  # No content type advertised — don't second-guess the SDK.
+        if ct_base in self._MCP_CONTENT_TYPES:
+            return  # Looks like a real MCP endpoint.
+
+        raise NonMcpEndpointError(
+            f"MCP server '{self.name}' at {url} returned Content-Type "
+            f"'{ct_base}', not an MCP response (expected one of: "
+            f"{', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
+            "points at a web page rather than an MCP endpoint — check it "
+            "resolves to a Streamable HTTP / SSE endpoint "
+            "(e.g. https://host/mcp, not https://host/)."
+        )
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -1362,6 +1571,7 @@ class MCPServerTask:
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
+        client_cert = _resolve_client_cert(self.name, config)
 
         # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
         # same provider instance is reused across reconnects, pre-flow
@@ -1413,6 +1623,37 @@ class MCPServerTask:
                 # behind OAuth 2.1 PKCE work. Previously built but never
                 # forwarded — SSE OAuth would silently fail with 401s.
                 _sse_kwargs["auth"] = _oauth_auth
+            if client_cert is not None or ssl_verify is not True:
+                # SSE transport doesn't expose verify/cert as kwargs, so route
+                # them through an httpx_client_factory that wraps the SDK's
+                # defaults (follow_redirects=True) and adds our TLS settings.
+                # The SDK calls the factory with (headers, auth, timeout); we
+                # forward all of those and layer verify/cert on top.
+                import httpx as _httpx_mod
+
+                _cert_for_factory = client_cert
+                _verify_for_factory = ssl_verify
+
+                def _mcp_http_client_factory(
+                    headers=None, timeout=None, auth=None,
+                ):
+                    kwargs: dict = {
+                        "follow_redirects": True,
+                        "verify": _verify_for_factory,
+                    }
+                    if timeout is not None:
+                        kwargs["timeout"] = timeout
+                    else:
+                        kwargs["timeout"] = _httpx_mod.Timeout(30.0, read=300.0)
+                    if headers is not None:
+                        kwargs["headers"] = headers
+                    if auth is not None:
+                        kwargs["auth"] = auth
+                    if _cert_for_factory is not None:
+                        kwargs["cert"] = _cert_for_factory
+                    return _httpx_mod.AsyncClient(**kwargs)
+
+                _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
             async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
                 async with ClientSession(
                     read_stream, write_stream, **sampling_kwargs
@@ -1456,6 +1697,8 @@ class MCPServerTask:
                 client_kwargs["headers"] = headers
             if _oauth_auth is not None:
                 client_kwargs["auth"] = _oauth_auth
+            if client_cert is not None:
+                client_kwargs["cert"] = client_cert
 
             # Caller owns the client lifecycle — the SDK skips cleanup when
             # http_client is provided, so we wrap in async-with.
@@ -1549,6 +1792,28 @@ class MCPServerTask:
                 self._error = exc
                 self._ready.set()
                 return
+
+            # Pre-flight content-type probe (Streamable HTTP only; SSE is
+            # exercised by its own client and legitimately serves
+            # text/event-stream). A URL pointed at a web-app root returns
+            # HTML, which makes the SDK hang for the full connect_timeout
+            # before surfacing an opaque CancelledError. Probing here — once,
+            # outside the SDK task group — fails fast and non-retryably with
+            # an actionable message, mirroring the URL-validation path above.
+            if config.get("transport") != "sse":
+                try:
+                    _probe_headers = dict(config.get("headers") or {})
+                    await self._preflight_content_type(
+                        config["url"],
+                        headers=_probe_headers,
+                        ssl_verify=config.get("ssl_verify", True),
+                        client_cert=_resolve_client_cert(self.name, config),
+                    )
+                except NonMcpEndpointError as exc:
+                    logger.warning("%s", exc)
+                    self._error = exc
+                    self._ready.set()
+                    return
 
         retries = 0
         initial_retries = 0
@@ -1892,14 +2157,27 @@ def _handle_auth_error_and_retry(
             loop = _mcp_loop
             if loop is not None and loop.is_running():
                 loop.call_soon_threadsafe(srv._reconnect_event.set)
+
                 # Wait briefly for the session to come back ready. Bounded
                 # so that a stuck reconnect falls through to the error
-                # path rather than hanging the caller.
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline:
-                    if srv.session is not None and srv._ready.is_set():
-                        break
-                    time.sleep(0.25)
+                # path rather than hanging the caller.  The async helper
+                # runs on the MCP event loop via _run_on_mcp_loop so it
+                # does NOT block the event loop during the poll interval.
+                async def _await_ready() -> bool:
+                    deadline = time.monotonic() + 15
+                    while time.monotonic() < deadline:
+                        if srv.session is not None and srv._ready.is_set():
+                            return True
+                        await asyncio.sleep(0.25)
+                    return False
+
+                try:
+                    _run_on_mcp_loop(_await_ready(), timeout=15)
+                except Exception as exc:
+                    logger.warning(
+                        "MCP OAuth '%s': ready poll failed: %s",
+                        server_name, exc,
+                    )
 
         # A successful OAuth recovery is independent evidence that the
         # server is viable again, so close the circuit breaker here —
@@ -2105,6 +2383,19 @@ _stdio_pids: Dict[int, str] = {}  # pid -> server_name
 # Separate from _stdio_pids so cleanup sweeps never race with active
 # sessions (e.g. concurrent cron jobs or live user chats).
 _orphan_stdio_pids: set = set()
+
+# Process-group IDs of stdio MCP subprocesses, captured at spawn time.
+# The MCP SDK spawns stdio children with ``start_new_session=True`` so each
+# direct child becomes its own session/pgroup leader (PGID == its own PID).
+# Grandchildren spawned by that child (e.g. a wrapper MCP server that itself
+# launches helper subprocesses like ``claude mcp serve``) inherit that PGID
+# unless they call ``setsid`` themselves.  When the direct child exits, those
+# grandchildren reparent to init/systemd-user but keep the original PGID, so
+# ``killpg(pgid, sig)`` still reaches them.  Tracked separately from
+# ``_stdio_pids`` so we retain the PGID even after the direct child has
+# exited and been removed from the active map.  Empty on Windows
+# (``os.getpgid`` is POSIX-only).
+_stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 
 
 def _snapshot_child_pids() -> set:
@@ -3248,7 +3539,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             return_exceptions=True,
         )
         for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
                 logger.warning(
                     "Failed to connect to MCP server '%s'%s: %s",
@@ -3522,6 +3813,12 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     survivors, avoiding shared-resource collisions when multiple hermes
     processes run on the same host (each has its own ``_stdio_pids`` dict).
 
+    On POSIX, signals are sent via ``os.killpg`` to the spawn-time pgid when
+    one is tracked, so reparented grandchildren in the same process group
+    (e.g. ``claude mcp serve`` spawned by a stdio MCP wrapper that exited
+    first) are reaped alongside the direct child.  Falls back to ``os.kill``
+    on Windows and when no pgid is recorded.
+
     With ``include_active=True`` also kills every PID in ``_stdio_pids`` —
     used only at final shutdown, after the MCP event loop has stopped and no
     sessions can still be in flight.
@@ -3536,19 +3833,41 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         if include_active:
             pids.update(dict(_stdio_pids))
             _stdio_pids.clear()
+        # Snapshot pgids for the pids we're about to kill, then drop the
+        # entries so a future spawn can't collide with stale state.
+        pgids: Dict[int, int] = {pid: _stdio_pgids[pid] for pid in pids if pid in _stdio_pgids}
+        for pid in pgids:
+            _stdio_pgids.pop(pid, None)
 
     # Fast path: no tracked stdio PIDs to reap. Skip the SIGTERM/sleep/SIGKILL
     # dance entirely — otherwise every MCP-free shutdown pays a 2s sleep tax.
     if not pids:
         return
 
-    # Phase 1: SIGTERM (graceful)
-    for pid, server_name in pids.items():
+    def _send_signal(pid: int, sig: int, server_name: str) -> None:
+        """SIGTERM/SIGKILL via pgroup on POSIX, fall back to pid signal."""
+        pgid = pgids.get(pid)
+        killpg = getattr(os, "killpg", None)
+        if pgid is not None and killpg is not None:
+            try:
+                killpg(pgid, sig)
+                return
+            except (ProcessLookupError, PermissionError, OSError) as exc:
+                # Pgroup gone (all members exited) or refused — fall back to
+                # the per-pid path so we still try the direct child if alive.
+                logger.debug(
+                    "killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
+                    pgid, sig, server_name, exc,
+                )
         try:
-            os.kill(pid, _signal.SIGTERM)
-            logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
+            os.kill(pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+    # Phase 1: SIGTERM (graceful)
+    for pid, server_name in pids.items():
+        _send_signal(pid, _signal.SIGTERM, server_name)
+        logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
 
     # Phase 2: Wait for graceful exit
     time.sleep(2)
@@ -3561,14 +3880,11 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     for pid, server_name in pids.items():
         if not _pid_exists(pid):
             continue  # Good — exited after SIGTERM
-        try:
-            os.kill(pid, _sigkill)
-            logger.warning(
-                "Force-killed MCP process %d (%s) after SIGTERM timeout",
-                pid, server_name,
-            )
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        _send_signal(pid, _sigkill, server_name)
+        logger.warning(
+            "Force-killed MCP process %d (%s) after SIGTERM timeout",
+            pid, server_name,
+        )
 
 
 def _stop_mcp_loop():

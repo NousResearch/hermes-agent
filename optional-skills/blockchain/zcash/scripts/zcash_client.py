@@ -1,54 +1,77 @@
 #!/usr/bin/env python3
-"""Zcash blockchain client for Hermes agent. Wraps the zcash-mcp MCP server."""
+"""Helper notes for the Hermes Zcash skill.
+
+zcash-mcp is a stdio MCP server, not a direct `--tool` shell CLI. This helper
+prints the MCP config and boundary reminders so agents wire the server through
+their MCP client instead of trying to call tools as subprocess flags.
+"""
+
+from __future__ import annotations
 
 import json
-import subprocess
 import sys
 
 
-def run_mcp_tool(tool_name: str, args: dict) -> dict:
-    """Call a zcash-mcp tool via npx."""
-    cmd = ["npx", "@frontiercompute/zcash-mcp", "--tool", tool_name, "--args", json.dumps(args)]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return json.loads(result.stdout)
-        return {"error": result.stderr.strip()}
-    except Exception as e:
-        return {"error": str(e)}
+MCP_CONFIG = {
+    "mcpServers": {
+        "zcash": {
+            "command": "npx",
+            "args": ["@frontiercompute/zcash-mcp"],
+        }
+    }
+}
 
 
-def get_blockchain_info() -> dict:
-    return run_mcp_tool("get_blockchain_info", {})
+BOUNDARY = {
+    "in_scope": [
+        "ZAP1 attestation leaves",
+        "receipt templates",
+        "Merkle proof bundles",
+        "anchor status and anchor history",
+        "receipt packet validation",
+        "agent-eval and external-action receipt requests",
+        "Zcash memo decoding",
+        "public chain context for interpreting anchors",
+    ],
+    "out_of_scope": [
+        "private key custody",
+        "seed handling",
+        "balance scanning",
+        "PCZT signing",
+        "shielded spend construction",
+        "wallet synchronization",
+        "broadcasting wallet transactions",
+    ],
+}
 
 
-def decode_memo(memo_hex: str) -> dict:
-    return run_mcp_tool("decode_memo", {"memo": memo_hex})
+WORKFLOW = [
+    "Call zcash_capability_manifest to confirm the boundary.",
+    "Call zcash_receipt_template for the receipt type.",
+    "Convert external evidence into bounded hashes.",
+    "Call attest_event or a receipt-request builder.",
+    "Check get_anchor_status before making finality claims.",
+    "Fetch zap1_prove_receipt when the leaf is ready.",
+    "Verify with verify_proof or the receipt verifier tools.",
+]
 
 
-def verify_proof(leaf_hash: str) -> dict:
-    return run_mcp_tool("get_receipt", {"leaf_hash": leaf_hash})
+def main() -> int:
+    command = sys.argv[1] if len(sys.argv) > 1 else "help"
 
+    if command == "config":
+        print(json.dumps(MCP_CONFIG, indent=2))
+        return 0
+    if command == "boundary":
+        print(json.dumps(BOUNDARY, indent=2))
+        return 0
+    if command == "workflow":
+        print(json.dumps(WORKFLOW, indent=2))
+        return 0
 
-def get_health() -> dict:
-    return run_mcp_tool("get_health", {})
+    print("Usage: zcash_client.py [config|boundary|workflow]")
+    return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: zcash_client.py <command> [args...]")
-        print("Commands: info, health, memo <hex>, verify <leaf_hash>")
-        sys.exit(0)
-
-    cmd = sys.argv[1]
-    if cmd == "info":
-        print(json.dumps(get_blockchain_info(), indent=2))
-    elif cmd == "health":
-        print(json.dumps(get_health(), indent=2))
-    elif cmd == "memo" and len(sys.argv) > 2:
-        print(json.dumps(decode_memo(sys.argv[2]), indent=2))
-    elif cmd == "verify" and len(sys.argv) > 2:
-        print(json.dumps(verify_proof(sys.argv[2]), indent=2))
-    else:
-        print(f"Unknown command: {cmd}")
-        sys.exit(1)
+    raise SystemExit(main())

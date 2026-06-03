@@ -3,6 +3,7 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1573,3 +1574,68 @@ class TestCopilotACPStreamingDecision:
             _use_streaming = False
 
         assert _use_streaming is True
+
+
+# ── Test: Stale-stream watchdog kill ceiling ─────────────────────────────
+
+
+class _BlockingStreamIterator:
+    """An iterator whose __next__ blocks for a long time and then raises
+    StopIteration — never yields, never errors.  Simulates a provider that
+    holds the SSE connection open with keepalive pings but delivers no real
+    chunks, wedging the worker thread forever (the scenario FIX 1 guards)."""
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        time.sleep(20)
+        raise StopIteration
+
+
+class TestStreamWatchdogKillCeiling:
+    """The stale-stream watchdog must give up after HERMES_STREAM_MAX_STALE_KILLS
+    consecutive kills instead of kill→rebuild→reset forever."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_streaming_watchdog_aborts_after_max_stale_kills(
+        self, mock_replace, mock_abort, mock_close, mock_create, monkeypatch
+    ):
+        """A wedged stream (no chunks, no error) must trip the bounded
+        watchdog and raise TimeoutError within ~10s, not hang."""
+        import time as _time
+
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.3")
+        monkeypatch.setenv("HERMES_STREAM_MAX_STALE_KILLS", "2")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _BlockingStreamIterator()
+        mock_create.return_value = mock_client
+        mock_close.return_value = None
+        mock_abort.return_value = None
+        mock_replace.return_value = True
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        _start = _time.time()
+        with pytest.raises(TimeoutError):
+            agent._interruptible_streaming_api_call({})
+        _elapsed = _time.time() - _start
+
+        # 2 kills × 0.3s threshold ≈ <1s of real stall detection; allow
+        # generous slack but well under the 20s blocking sleep.
+        assert _elapsed < 10.0, f"watchdog took {_elapsed:.1f}s — it hung"

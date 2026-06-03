@@ -1569,6 +1569,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 except Exception:
                     pass
 
+        # Track the timestamp of the last real delta so the poll loop can
+        # detect a wedged Bedrock stream (no chunks, no error) and kill the
+        # runtime client — mirroring the chat_completions stale watchdog.
+        # Read the region with .get BEFORE the worker pops it from api_kwargs.
+        _bedrock_last_chunk = {"t": time.time()}
+        _bedrock_region = api_kwargs.get("__bedrock_region__", "us-east-1")
+
         def _bedrock_call():
             try:
                 from agent.bedrock_adapter import (
@@ -1590,15 +1597,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     raise
 
                 def _on_text(text):
+                    _bedrock_last_chunk["t"] = time.time()
                     _fire_first()
                     agent._fire_stream_delta(text)
                     deltas_were_sent["yes"] = True
 
                 def _on_tool(name):
+                    _bedrock_last_chunk["t"] = time.time()
                     _fire_first()
                     agent._fire_tool_gen_started(name)
 
                 def _on_reasoning(text):
+                    _bedrock_last_chunk["t"] = time.time()
                     _fire_first()
                     agent._fire_reasoning_delta(text)
 
@@ -1612,12 +1622,53 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception as e:
                 result["error"] = e
 
+        # Compute the stale timeout with the same scaling as the main path:
+        # large contexts legitimately stall longer during prefill/thinking.
+        _bedrock_stale_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", "180.0"))
+        _bedrock_est_tokens = estimate_request_context_tokens(api_kwargs)
+        if _bedrock_est_tokens > 100_000:
+            _bedrock_stale_timeout = max(_bedrock_stale_base, 300.0)
+        elif _bedrock_est_tokens > 50_000:
+            _bedrock_stale_timeout = max(_bedrock_stale_base, 240.0)
+        else:
+            _bedrock_stale_timeout = _bedrock_stale_base
+        _BEDROCK_MAX_STALE_KILLS = int(os.getenv("HERMES_STREAM_MAX_STALE_KILLS", "3"))
+        _bedrock_stale_kills = 0
+
         t = threading.Thread(target=_bedrock_call, daemon=True)
         t.start()
         while t.is_alive():
             t.join(timeout=0.3)
             if agent._interrupt_requested:
                 raise InterruptedError("Agent interrupted during Bedrock API call")
+            # Stale watchdog: a wedged Bedrock stream delivers no deltas and
+            # no error.  Kill the cached runtime client so a fresh client/pool
+            # is built, and give up after _BEDROCK_MAX_STALE_KILLS.
+            if (time.time() - _bedrock_last_chunk["t"]) > _bedrock_stale_timeout:
+                logger.warning(
+                    "Bedrock stream stale for >%.0fs — no chunks received. "
+                    "region=%s. Invalidating runtime client.",
+                    _bedrock_stale_timeout, _bedrock_region,
+                )
+                try:
+                    from agent.bedrock_adapter import invalidate_runtime_client
+                    invalidate_runtime_client(_bedrock_region)
+                except Exception:
+                    pass
+                _bedrock_last_chunk["t"] = time.time()
+                _bedrock_stale_kills += 1
+                if _bedrock_stale_kills >= _BEDROCK_MAX_STALE_KILLS:
+                    logger.error(
+                        "Bedrock stream stalled %dx (>%.0fs each) — giving up "
+                        "after %d kills. region=%s",
+                        _bedrock_stale_kills, _bedrock_stale_timeout,
+                        _BEDROCK_MAX_STALE_KILLS, _bedrock_region,
+                    )
+                    result["error"] = TimeoutError(
+                        f"Bedrock stream stalled {_bedrock_stale_kills}x "
+                        f"(>{int(_bedrock_stale_timeout)}s each); aborting."
+                    )
+                    break
         if result["error"] is not None:
             raise result["error"]
         return result["response"]
@@ -2294,11 +2345,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     else:
         _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-    # for prefill on large contexts.  Disable the stale detector unless
-    # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
+    # for prefill on large contexts.  Use a generous-but-finite stale
+    # timeout (default 900s) unless the user explicitly set
+    # HERMES_STREAM_STALE_TIMEOUT.  A wedged local server (process hung,
+    # GPU stuck) must eventually trip the watchdog instead of hanging the
+    # worker forever — float("inf") here used to make a wedge permanent.
     if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = float("inf")
-        logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
+        _stream_stale_timeout = float(os.getenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "900.0"))
+        logger.debug(
+            "Local provider detected (%s) — using generous stale stream timeout %.0fs",
+            agent.base_url, _stream_stale_timeout,
+        )
     else:
         # Scale the stale timeout for large contexts: slow models (like Opus)
         # can legitimately think for minutes before producing the first token
@@ -2317,6 +2374,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Bounded stale-kill ceiling.  Without this, a provider that holds the
+    # connection open with SSE pings (no chunks, no error) makes the worker
+    # never return, and the watchdog's kill→rebuild→reset cycle repeats
+    # forever — the request wedges indefinitely.  After _MAX_STALE_KILLS
+    # consecutive stale kills with no real progress, give up and surface a
+    # TimeoutError so the outer retry/failover machinery can take over.
+    _stale_kills = 0
+    _stale_kill_marker = None
+    _MAX_STALE_KILLS = int(os.getenv("HERMES_STREAM_MAX_STALE_KILLS", "3"))
     while t.is_alive():
         t.join(timeout=0.3)
 
@@ -2339,6 +2405,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Detect stale streams: connections kept alive by SSE pings
         # but delivering no real chunks.  Kill the client so the
         # inner retry loop can start a fresh connection.
+        # If the worker advanced last_chunk_time past OUR reset marker, the
+        # stream made real progress (a chunk arrived) after the last kill —
+        # so a stall→recover→stall sequence isn't aborted prematurely.
+        if _stale_kill_marker is not None and last_chunk_time["t"] != _stale_kill_marker:
+            _stale_kills = 0
+            _stale_kill_marker = None
         _stale_elapsed = time.time() - last_chunk_time["t"]
         if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
@@ -2367,6 +2439,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()
+            _stale_kill_marker = last_chunk_time["t"]
+            _stale_kills += 1
+            if _stale_kills >= _MAX_STALE_KILLS:
+                logger.error(
+                    "Stream stalled %dx (>%.0fs each) with no progress — "
+                    "giving up after %d kills. model=%s",
+                    _stale_kills, _stream_stale_timeout, _MAX_STALE_KILLS,
+                    api_kwargs.get("model", "unknown"),
+                )
+                result["error"] = TimeoutError(
+                    f"Stream stalled {_stale_kills}x "
+                    f"(>{int(_stream_stale_timeout)}s each); aborting."
+                )
+                break
             agent._touch_activity(
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )

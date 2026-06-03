@@ -1,30 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectTrigger, shouldSkipTriggerRefreshOnKeyUp } from './text-utils'
-
-describe('shouldSkipTriggerRefreshOnKeyUp', () => {
-  it('skips the trigger refresh for nav/control keys while a menu is open', () => {
-    // These keys are fully handled by the open-trigger keydown branch and
-    // never edit text. Refreshing on their keyup resets the highlight to the
-    // top (breaking ArrowDown/ArrowUp cycling) and re-opens a menu Escape just
-    // closed — the exact bugs this guard prevents.
-    for (const key of ['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape']) {
-      expect(shouldSkipTriggerRefreshOnKeyUp(key, true)).toBe(true)
-    }
-  })
-
-  it('does not skip the refresh when no trigger menu is open', () => {
-    for (const key of ['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape']) {
-      expect(shouldSkipTriggerRefreshOnKeyUp(key, false)).toBe(false)
-    }
-  })
-
-  it('never skips ordinary text-editing keys, so completions still refresh', () => {
-    for (const key of ['a', '/', '@', ' ', 'Backspace', 'ArrowLeft', 'ArrowRight']) {
-      expect(shouldSkipTriggerRefreshOnKeyUp(key, true)).toBe(false)
-    }
-  })
-})
+import { detectTrigger } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {

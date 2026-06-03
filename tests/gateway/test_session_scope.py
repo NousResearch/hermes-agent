@@ -158,6 +158,83 @@ def test_session_db_create_session_persists_scope_metadata(tmp_path) -> None:
     assert row["scope_kind"] == "current_thread"
 
 
+def test_session_db_create_session_inherits_scope_metadata_from_parent(tmp_path) -> None:
+    db = SessionDB(tmp_path / "state.db")
+
+    db.create_session(
+        "parent-session",
+        source="discord",
+        user_id="user-1",
+        session_key="agent:main:discord:thread:thread-456",
+        chat_type="thread",
+        chat_id="thread-456",
+        thread_id="thread-456",
+        parent_chat_id="parent-123",
+        guild_id="guild-1",
+        scope_key="discord:thread:thread-456",
+        scope_kind="current_thread",
+    )
+    db.create_session(
+        "compression-child",
+        source="discord",
+        parent_session_id="parent-session",
+    )
+
+    row = db.get_session("compression-child")
+    assert row["user_id"] == "user-1"
+    assert row["session_key"] == "agent:main:discord:thread:thread-456"
+    assert row["chat_type"] == "thread"
+    assert row["chat_id"] == "thread-456"
+    assert row["thread_id"] == "thread-456"
+    assert row["parent_chat_id"] == "parent-123"
+    assert row["guild_id"] == "guild-1"
+    assert row["scope_key"] == "discord:thread:thread-456"
+    assert row["scope_kind"] == "current_thread"
+
+
+def test_session_db_create_session_preserves_explicit_child_scope_metadata(tmp_path) -> None:
+    db = SessionDB(tmp_path / "state.db")
+
+    db.create_session(
+        "parent-session",
+        source="discord",
+        user_id="parent-user",
+        session_key="agent:main:discord:thread:parent-thread",
+        chat_type="thread",
+        chat_id="parent-thread",
+        thread_id="parent-thread",
+        parent_chat_id="parent-channel",
+        guild_id="parent-guild",
+        scope_key="discord:thread:parent-thread",
+        scope_kind="current_thread",
+    )
+    db.create_session(
+        "child-session",
+        source="discord",
+        parent_session_id="parent-session",
+        user_id="child-user",
+        session_key="agent:main:discord:dm:child-dm",
+        chat_type="dm",
+        chat_id="child-dm",
+        thread_id="child-thread",
+        parent_chat_id="child-parent-channel",
+        guild_id="child-guild",
+        scope_key="discord:dm:child-dm",
+        scope_kind="dm",
+    )
+
+    row = db.get_session("child-session")
+    assert row["user_id"] == "child-user"
+    assert row["session_key"] == "agent:main:discord:dm:child-dm"
+    assert row["chat_type"] == "dm"
+    assert row["chat_id"] == "child-dm"
+    assert row["thread_id"] == "child-thread"
+    assert row["parent_chat_id"] == "child-parent-channel"
+    assert row["guild_id"] == "child-guild"
+    assert row["scope_key"] == "discord:dm:child-dm"
+    assert row["scope_kind"] == "dm"
+
+
 def _make_thread_store(tmp_path) -> tuple[SessionStore, SessionDB, SessionSource]:
     db = SessionDB(tmp_path / "state.db")
     store = SessionStore(

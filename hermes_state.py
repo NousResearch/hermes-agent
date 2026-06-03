@@ -934,8 +934,37 @@ class SessionDB:
         scope_kind: str = None,
         cwd: str = None,
     ) -> None:
-        """Shared INSERT OR IGNORE for session rows."""
+        """Shared INSERT OR IGNORE for session rows.
+
+        Compression creates a continuation session with only
+        ``parent_session_id`` available. Inherit gateway scope metadata from the
+        parent so scoped recall/search stays in the same Discord thread after a
+        compression split.
+        """
         def _do(conn):
+            inherited = {
+                "user_id": user_id,
+                "session_key": session_key,
+                "chat_type": chat_type,
+                "chat_id": chat_id,
+                "thread_id": thread_id,
+                "parent_chat_id": parent_chat_id,
+                "guild_id": guild_id,
+                "scope_key": scope_key,
+                "scope_kind": scope_kind,
+            }
+            if parent_session_id and any(value is None for value in inherited.values()):
+                parent = conn.execute(
+                    """SELECT user_id, session_key, chat_type, chat_id,
+                              thread_id, parent_chat_id, guild_id, scope_key, scope_kind
+                       FROM sessions WHERE id = ?""",
+                    (parent_session_id,),
+                ).fetchone()
+                if parent:
+                    for key in inherited:
+                        if inherited[key] is None:
+                            inherited[key] = parent[key]
+
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (
                    id, source, user_id, session_key, chat_type, chat_id,
@@ -945,15 +974,15 @@ class SessionDB:
                 (
                     session_id,
                     source,
-                    user_id,
-                    session_key,
-                    chat_type,
-                    chat_id,
-                    thread_id,
-                    parent_chat_id,
-                    guild_id,
-                    scope_key,
-                    scope_kind,
+                    inherited["user_id"],
+                    inherited["session_key"],
+                    inherited["chat_type"],
+                    inherited["chat_id"],
+                    inherited["thread_id"],
+                    inherited["parent_chat_id"],
+                    inherited["guild_id"],
+                    inherited["scope_key"],
+                    inherited["scope_kind"],
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,

@@ -189,6 +189,44 @@ class TestPerCapabilityBackendSelection:
         # Should fall back to firecrawl since exa isn't configured
         assert web_tools._get_search_backend() == "firecrawl"
 
+    def test_custom_plugin_backend_selected_when_registered(self, monkeypatch):
+        """Unknown backend names should consult plugin-registered providers."""
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import _reset_for_tests, register_provider
+        from tools import web_tools
+
+        class CustomExtractProvider(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "custom-extract"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_search(self) -> bool:
+                return False
+
+            def supports_extract(self) -> bool:
+                return True
+
+            def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+                return []
+
+        _reset_for_tests()
+        register_provider(CustomExtractProvider())
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "extract_backend": "custom-extract",
+        })
+
+        try:
+            assert web_tools._is_backend_available("custom-extract") is True
+            assert web_tools._get_extract_backend() == "custom-extract"
+            assert web_tools._is_backend_available("missing-custom") is False
+        finally:
+            _reset_for_tests()
+
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
 

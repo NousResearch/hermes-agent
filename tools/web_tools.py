@@ -218,6 +218,21 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+
+    # User-installed web backend plugins are not known to this static helper.
+    # After plugin discovery, trust the registered provider's own cheap
+    # availability check so custom backends can be selected via
+    # web.search_backend / web.extract_backend without hardcoding every
+    # provider name in core.
+    try:
+        _ensure_web_plugins_loaded()
+        from agent.web_search_registry import get_provider as _wsp_get_provider
+
+        provider = _wsp_get_provider(backend)
+        if provider is not None:
+            return bool(provider.is_available())
+    except Exception:
+        pass
     return False
 
 

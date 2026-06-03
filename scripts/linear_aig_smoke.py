@@ -29,11 +29,13 @@ from gateway.platforms.linear_aig import LinearAIGAdapter
 TOKEN_ENV_NAMES = (
     "LINEAR_OAUTH_TOKEN",
     "LINEAR_ACCESS_TOKEN",
+    "HERMES_LINEAR_AIG_ACCESS_TOKEN",
     "LINEAR_API_KEY",
 )
 SECRET_ENV_NAMES = (
     "LINEAR_AIG_WEBHOOK_SECRET",
     "LINEAR_WEBHOOK_SECRET",
+    "HERMES_LINEAR_AIG_WEBHOOK_SECRET",
 )
 
 
@@ -99,10 +101,19 @@ async def _doctor(adapter: LinearAIGAdapter, token_name: str, secret_name: str) 
     print(f"webhook secret source={secret_name or 'missing'}")
     if not adapter._resolved_access_token() or not adapter._resolved_webhook_secret():
         return 2
-    data = await adapter._graphql(
-        "query { viewer { id name } organization { name urlKey } }",
-        {},
-    )
+    try:
+        data = await adapter._graphql(
+            "query { viewer { id name } organization { name urlKey } }",
+            {},
+        )
+    except Exception as exc:
+        print(f"linear api failed: {exc}")
+        if token_name in {"LINEAR_OAUTH_TOKEN", "LINEAR_ACCESS_TOKEN", "HERMES_LINEAR_AIG_ACCESS_TOKEN"}:
+            print(
+                "hint: OAuth tokens can expire or be revoked. Refresh the Hermes "
+                "Linear Agent app OAuth token and rerun this doctor check."
+            )
+        return 1
     viewer = data.get("viewer") or {}
     organization = data.get("organization") or {}
     print(

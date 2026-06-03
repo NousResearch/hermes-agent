@@ -44,6 +44,17 @@ DEFAULT_GRAPHQL_URL = "https://api.linear.app/graphql"
 DEFAULT_MAX_BODY_BYTES = 1_048_576
 DEFAULT_MAX_SEEN_DELIVERIES = 5000
 DEFAULT_SIGNATURE_TOLERANCE_SECONDS = 60
+DEFAULT_ACCESS_TOKEN_ENV_NAMES = (
+    "LINEAR_ACCESS_TOKEN",
+    "LINEAR_OAUTH_TOKEN",
+    "HERMES_LINEAR_AIG_ACCESS_TOKEN",
+    "LINEAR_API_KEY",
+)
+DEFAULT_WEBHOOK_SECRET_ENV_NAMES = (
+    "LINEAR_WEBHOOK_SECRET",
+    "LINEAR_AIG_WEBHOOK_SECRET",
+    "HERMES_LINEAR_AIG_WEBHOOK_SECRET",
+)
 
 
 def check_linear_aig_requirements() -> bool:
@@ -107,31 +118,35 @@ class LinearAIGAdapter(BasePlatformAdapter):
         return path
 
     def _resolved_webhook_secret(self) -> str:
-        return (
-            self._webhook_secret
-            or os.getenv(self._webhook_secret_env, "")
-            or os.getenv("LINEAR_AIG_WEBHOOK_SECRET", "")
-        )
+        if self._webhook_secret:
+            return self._webhook_secret
+        for env_name in (self._webhook_secret_env, *DEFAULT_WEBHOOK_SECRET_ENV_NAMES):
+            value = os.getenv(env_name, "")
+            if value:
+                return value
+        return ""
 
     def _resolved_access_token(self) -> str:
-        return (
-            self._access_token
-            or os.getenv(self._access_token_env, "")
-            or os.getenv("LINEAR_OAUTH_TOKEN", "")
-            or os.getenv("LINEAR_API_KEY", "")
-        )
+        return self._resolved_access_token_with_source()[1]
+
+    def _resolved_access_token_with_source(self) -> tuple[str, str]:
+        if self._access_token:
+            source = "config.api_key" if self._access_token_is_api_key else "config.token"
+            return source, self._access_token
+        for env_name in (self._access_token_env, *DEFAULT_ACCESS_TOKEN_ENV_NAMES):
+            value = os.getenv(env_name, "")
+            if value:
+                return env_name, value
+        return "", ""
 
     def _authorization_header(self) -> str:
-        token = self._resolved_access_token()
+        token_source, token = self._resolved_access_token_with_source()
         if not token:
             return ""
         if (
             self._access_token_is_api_key
             or token.startswith("lin_api_")
-            or (
-                not (self._access_token or os.getenv(self._access_token_env, ""))
-                and os.getenv("LINEAR_API_KEY")
-            )
+            or token_source == "LINEAR_API_KEY"
         ):
             return token
         return f"Bearer {token}"
@@ -144,14 +159,16 @@ class LinearAIGAdapter(BasePlatformAdapter):
             raise ValueError(
                 "[linear_aig] Missing Linear webhook signing secret. "
                 "Set platforms.linear_aig.extra.webhook_secret or "
-                f"{self._webhook_secret_env}/LINEAR_AIG_WEBHOOK_SECRET."
+                f"{self._webhook_secret_env}/LINEAR_AIG_WEBHOOK_SECRET/"
+                "HERMES_LINEAR_AIG_WEBHOOK_SECRET."
             )
         if not self._resolved_access_token():
             raise ValueError(
                 "[linear_aig] Missing Linear OAuth access token. "
                 "Set platforms.linear_aig.token/api_key, "
                 "platforms.linear_aig.extra.access_token, or "
-                f"{self._access_token_env}/LINEAR_OAUTH_TOKEN/LINEAR_API_KEY."
+                f"{self._access_token_env}/LINEAR_OAUTH_TOKEN/"
+                "HERMES_LINEAR_AIG_ACCESS_TOKEN/LINEAR_API_KEY."
             )
 
         self._session = aiohttp.ClientSession()

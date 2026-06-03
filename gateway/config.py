@@ -438,6 +438,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         or cfg.extra.get("access_token")
         or os.getenv(str(cfg.extra.get("access_token_env") or "LINEAR_ACCESS_TOKEN"))
         or os.getenv("LINEAR_OAUTH_TOKEN")
+        or os.getenv("HERMES_LINEAR_AIG_ACCESS_TOKEN")
         or os.getenv("LINEAR_API_KEY")
     ),
     Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(

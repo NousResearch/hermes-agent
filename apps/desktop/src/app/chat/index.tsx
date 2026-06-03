@@ -16,6 +16,7 @@ import { NotificationStack } from '@/components/notifications'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { useDesktopI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
@@ -94,10 +95,11 @@ function ChatHeader({
   onToggleSelectedPin,
   selectedSessionId
 }: ChatHeaderProps) {
+  const { t } = useDesktopI18n()
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const activeStoredSession = sessions.find(session => session.id === selectedSessionId) || null
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : t('chat.newSession')
   const selectedIsPinned = selectedSessionId ? pinnedSessionIds.includes(selectedSessionId) : false
 
   return (

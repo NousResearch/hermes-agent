@@ -17,15 +17,12 @@ import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-te
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useDesktopI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import {
-  $composerAttachments,
-  clearComposerAttachments,
-  type ComposerAttachment
-} from '@/store/composer'
+import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
@@ -106,6 +103,7 @@ export function ChatBar({
   onSubmit,
   onTranscribeAudio
 }: ChatBarProps) {
+  const { t } = useDesktopI18n()
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
   const attachments = useStore($composerAttachments)
@@ -149,7 +147,7 @@ export function ChatBar({
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   const showHelpHint = draft === '?'
 
-  const placeholder = disabled ? 'Starting Hermes...' : 'Send follow-up'
+  const placeholder = disabled ? t('chat.startingHermes') : t('chat.sendFollowUp')
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -1023,9 +1021,9 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label="Message"
-        autoCorrect="off"
+        aria-label={t('chat.messageInput')}
         autoCapitalize="off"
+        autoCorrect="off"
         className={cn(
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
@@ -1159,9 +1157,7 @@ export function ChatBar({
                 <VoicePlaybackActivity />
                 {queueEdit && editingQueuedPrompt && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
-                    <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">
-                      Editing queued turn in composer
-                    </div>
+                    <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">{t('chat.editingQueuedTurn')}</div>
                     <div className="flex shrink-0 items-center gap-1">
                       <Button
                         className="h-6 rounded-md px-2 text-[0.68rem]"
@@ -1169,14 +1165,14 @@ export function ChatBar({
                         type="button"
                         variant="ghost"
                       >
-                        Cancel
+                        {t('common.cancel')}
                       </Button>
                       <Button
                         className="h-6 rounded-md px-2 text-[0.68rem]"
                         onClick={() => exitQueuedEdit('save')}
                         type="button"
                       >
-                        Save
+                        {t('common.save')}
                       </Button>
                     </div>
                   </div>

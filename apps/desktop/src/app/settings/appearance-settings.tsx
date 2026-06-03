@@ -1,13 +1,15 @@
 import { useStore } from '@nanostores/react'
 
+import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { DESKTOP_LANGUAGE_OPTIONS, type DesktopLanguage, setDesktopLanguage, useDesktopI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check, Monitor, Moon, Palette, Sun } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
-import { MODE_OPTIONS } from './constants'
 import { prettyName } from './helpers'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
 
@@ -53,32 +55,111 @@ function ThemePreview({ name }: { name: string }) {
 
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
+  const { language, t } = useDesktopI18n()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(t => t.name === themeName)
+  const modeOptions = [
+    {
+      id: 'light',
+      label: t('appearance.mode.light'),
+      description: t('appearance.mode.lightDescription'),
+      icon: BUILTIN_MODE_ICONS.light
+    },
+    {
+      id: 'dark',
+      label: t('appearance.mode.dark'),
+      description: t('appearance.mode.darkDescription'),
+      icon: BUILTIN_MODE_ICONS.dark
+    },
+    {
+      id: 'system',
+      label: t('appearance.mode.system'),
+      description: t('appearance.mode.systemDescription'),
+      icon: BUILTIN_MODE_ICONS.system
+    }
+  ] as const
+
+  const saveLanguage = async (nextLanguage: DesktopLanguage) => {
+    triggerHaptic('selection')
+    setDesktopLanguage(nextLanguage)
+
+    try {
+      const cfg = await getHermesConfigRecord()
+      await saveHermesConfig({
+        ...cfg,
+        display: {
+          ...((cfg.display || {}) as Record<string, unknown>),
+          language: nextLanguage
+        }
+      })
+    } catch (err) {
+      notifyError(err, t('appearance.language.saveFailed'))
+    }
+  }
 
   return (
     <SettingsContent>
       <div className="space-y-5">
         <div>
-          <SectionHeading icon={Palette} title="Appearance" />
+          <SectionHeading icon={Palette} title={t('appearance.title')} />
           <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
-            chat surface styling.
+            {t('appearance.description')}
           </p>
         </div>
 
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Color Mode</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Pick a fixed mode or let Hermes follow your system setting.
-              </div>
+              <div className="text-sm font-medium">{t('appearance.language.title')}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{t('appearance.language.description')}</div>
+            </div>
+            <Pill>{t(`language.${language}`)}</Pill>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {DESKTOP_LANGUAGE_OPTIONS.map(option => {
+              const active = language === option.id
+
+              return (
+                <button
+                  className={cn(
+                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
+                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
+                  )}
+                  key={option.id}
+                  onClick={() => void saveLanguage(option.id)}
+                  type="button"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[length:var(--conversation-text-font-size)] font-medium">
+                        {option.nativeLabel}
+                      </div>
+                      <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                        {option.label}
+                      </div>
+                    </div>
+                    {active && (
+                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
+                        <Check className="size-3.5" />
+                      </span>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">{t('appearance.colorMode.title')}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{t('appearance.colorMode.description')}</div>
             </div>
             <Pill>{prettyName(mode)}</Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            {MODE_OPTIONS.map(({ id, label, description, icon: Icon }) => {
+            {modeOptions.map(({ id, label, description, icon: Icon }) => {
               const active = mode === id
 
               return (
@@ -117,25 +198,25 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Tool Call Display</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Product hides raw tool payloads; Technical shows full input/output.
-              </div>
+              <div className="text-sm font-medium">{t('appearance.toolView.title')}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{t('appearance.toolView.description')}</div>
             </div>
-            <Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>
+            <Pill>
+              {toolViewMode === 'technical' ? t('appearance.toolView.technical') : t('appearance.toolView.product')}
+            </Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {(
               [
                 {
                   id: 'product',
-                  label: 'Product',
-                  description: 'Human-friendly tool activity with concise summaries.'
+                  label: t('appearance.toolView.product'),
+                  description: t('appearance.toolView.productDescription')
                 },
                 {
                   id: 'technical',
-                  label: 'Technical',
-                  description: 'Include raw tool args/results and low-level details.'
+                  label: t('appearance.toolView.technical'),
+                  description: t('appearance.toolView.technicalDescription')
                 }
               ] as const
             ).map(option => {
@@ -174,10 +255,8 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Theme</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Desktop palettes only. The selected mode is applied on top.
-              </div>
+              <div className="text-sm font-medium">{t('appearance.theme.title')}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{t('appearance.theme.description')}</div>
             </div>
             {activeTheme && <Pill>{activeTheme.label}</Pill>}
           </div>
@@ -222,4 +301,10 @@ export function AppearanceSettings() {
       </div>
     </SettingsContent>
   )
+}
+
+const BUILTIN_MODE_ICONS = {
+  dark: Moon,
+  light: Sun,
+  system: Monitor
 }

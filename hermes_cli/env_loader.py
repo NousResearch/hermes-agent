@@ -248,18 +248,25 @@ def load_hermes_dotenv(
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from external sources into env.
 
     Runs AFTER dotenv loads so .env values are visible (we use them to
     locate the access token) but BEFORE the rest of Hermes reads
-    ``os.environ`` for credentials.  Any failure here is logged and
+    ``os.environ`` for credentials. Any failure here is logged and
     swallowed — external secret sources must never block startup.
 
+    Sources are dispatched in two passes:
+
+      1. The built-in Bitwarden Secrets Manager, gated by
+         ``secrets.bitwarden.enabled`` in config.
+      2. Any sources registered by loaded plugins via
+         ``PluginContext.register_secret_source()``.
+
     Idempotent within a process: subsequent calls for the same
-    ``home_path`` are no-ops.  ``load_hermes_dotenv()`` runs at import
+    ``home_path`` are no-ops. ``load_hermes_dotenv()`` runs at import
     time from several hot modules (cli.py, hermes_cli/main.py,
     run_agent.py, trajectory_compressor.py, ...), so without this guard
-    the Bitwarden status line would print 3-5x per CLI startup.  Use
+    the Bitwarden status line would print 3-5x per CLI startup. Use
     ``reset_secret_source_cache()`` if you need to force a re-pull
     (tests, future ``hermes secrets bitwarden sync`` from a long-running
     process).
@@ -272,12 +279,43 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
-        return
+        cfg = {}
 
+    # Pass 1: built-in Bitwarden Secrets Manager
     bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
-        return
+    if bw_cfg.get("enabled"):
+        _apply_bitwarden_source(home_path, bw_cfg)
 
+    # Pass 2: plugin-registered sources. Lazy import: plugins may not
+    # be loaded yet during very early hermes_cli import, and that's
+    # fine — we'll catch them on the next process start.
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+    except ImportError:
+        return
+    manager = get_plugin_manager()
+    if not manager._discovered:
+        # Plugins not yet discovered; skip this pass. They'll be
+        # dispatched on the next process start (the env_loader
+        # idempotency guard means we only fire once per process).
+        return
+    for src_name, loader_info in manager._secret_source_loaders.items():
+        try:
+            loader_info["loader_fn"](home_path)
+        except Exception as e:  # noqa: BLE001 — plugins must not block startup
+            print(
+                f"  {src_name}: secret source failed: {e}",
+                file=sys.stderr,
+            )
+
+
+def _apply_bitwarden_source(home_path: Path, bw_cfg: dict) -> None:
+    """Built-in Bitwarden Secrets Manager source.
+
+    Extracted from ``_apply_external_secret_sources`` so the dispatcher
+    loop in that function can call it uniformly with plugin-registered
+    sources. Same behavior as the pre-refactor inline code path.
+    """
     try:
         from agent.secret_sources.bitwarden import apply_bitwarden_secrets
     except ImportError:

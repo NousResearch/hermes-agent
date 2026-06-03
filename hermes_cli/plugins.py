@@ -395,7 +395,8 @@ class PluginContext:
 
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
-        as the default dispatch function via ``set_defaults(func=...)``."""
+        as the default dispatch function via ``set_defaults(func=...)``.
+        """
         self._manager._cli_commands[name] = {
             "name": name,
             "help": help,
@@ -405,6 +406,44 @@ class PluginContext:
             "plugin": self.manifest.name,
         }
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
+    # -- external secret source registration --------------------------------
+
+    def register_secret_source(
+        self,
+        name: str,
+        loader_fn: Callable[[Path], None],
+        description: str = "",
+    ) -> None:
+        """Register an external secret source that runs after dotenv loads.
+
+        The loader is called once per Hermes process, AFTER the .env file
+        has been parsed and BEFORE the rest of Hermes reads ``os.environ``
+        for credentials. It receives the resolved ``~/.hermes`` path so it
+        can read its own config section.
+
+        Loaders MUST be idempotent and MUST swallow their own errors —
+        external secret sources must never block startup. The dispatch
+        loop in ``_apply_external_secret_sources`` logs failures and
+        continues to the next source.
+
+        Names must be unique across the loaded plugin set. Re-registering
+        a name (including by a different plugin) is logged and ignored.
+        """
+        if name in self._manager._secret_source_loaders:
+            logger.warning(
+                "Plugin %s tried to register secret source %r which is "
+                "already registered; ignoring.",
+                self.manifest.name, name,
+            )
+            return
+        self._manager._secret_source_loaders[name] = {
+            "name": name,
+            "loader_fn": loader_fn,
+            "description": description,
+            "plugin": self.manifest.name,
+        }
+        logger.debug("Plugin %s registered secret source: %s", self.manifest.name, name)
 
     # -- slash command registration -------------------------------------------
 
@@ -1019,6 +1058,11 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # External secret sources registered by plugins via
+        # ``PluginContext.register_secret_source()``. Dispatched from
+        # ``hermes_cli/env_loader._apply_external_secret_sources`` after
+        # dotenv loads. See that function for the contract.
+        self._secret_source_loaders: Dict[str, dict] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -1042,6 +1086,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._context_engine = None
+            self._secret_source_loaders.clear()
         self._discovered = True
 
         manifests: List[PluginManifest] = []

@@ -3512,6 +3512,35 @@ def run_conversation(
             continue
 
         if restart_with_length_continuation:
+            # Track token usage from the truncated response before continuing.
+            # Without this, tokens consumed by length-truncated responses are
+            # never counted, causing underreported usage in /insights and
+            # session DB (issue #38458).
+            if response is not None and hasattr(response, 'usage') and response.usage:
+                _length_usage = normalize_usage(
+                    response.usage,
+                    provider=agent.provider,
+                    api_mode=agent.api_mode,
+                )
+                agent.session_prompt_tokens += _length_usage.prompt_tokens
+                agent.session_completion_tokens += _length_usage.output_tokens
+                agent.session_total_tokens += _length_usage.total_tokens
+                agent.session_api_calls += 1
+                agent.session_input_tokens += _length_usage.input_tokens
+                agent.session_output_tokens += _length_usage.output_tokens
+                agent.session_cache_read_tokens += _length_usage.cache_read_tokens
+                agent.session_cache_write_tokens += _length_usage.cache_write_tokens
+                agent.session_reasoning_tokens += _length_usage.reasoning_tokens
+                _length_cost = estimate_usage_cost(
+                    agent.model,
+                    _length_usage,
+                    provider=agent.provider,
+                    base_url=agent.base_url,
+                    api_key=getattr(agent, "api_key", ""),
+                )
+                if _length_cost.amount_usd is not None:
+                    agent.session_estimated_cost_usd += float(_length_cost.amount_usd)
+
             # Progressively boost the output token budget on each retry.
             # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
             # Applies to all providers via _ephemeral_max_output_tokens.

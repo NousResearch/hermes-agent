@@ -4041,6 +4041,41 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_length_continuation_counts_truncated_tokens(self, agent):
+        """Tokens from length-truncated responses must be counted (issue #38458)."""
+        self._setup_agent(agent)
+        trunc_usage = {
+            "prompt_tokens": 1000,
+            "completion_tokens": 500,
+            "total_tokens": 1500,
+        }
+        cont_usage = {
+            "prompt_tokens": 1200,
+            "completion_tokens": 300,
+            "total_tokens": 1500,
+        }
+        first = _mock_response(
+            content="Part 1 ", finish_reason="length", usage=trunc_usage
+        )
+        second = _mock_response(
+            content="Part 2", finish_reason="stop", usage=cont_usage
+        )
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        # Both the truncated AND the continuation response tokens must be counted
+        assert agent.session_prompt_tokens == 2200  # 1000 + 1200
+        assert agent.session_completion_tokens == 800  # 500 + 300
+        assert agent.session_total_tokens == 3000  # 1500 + 1500
+        assert agent.session_api_calls == 2  # both calls counted
+
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
         """Continuation retries must not shrink a higher provider default cap."""
         self._setup_agent(agent)

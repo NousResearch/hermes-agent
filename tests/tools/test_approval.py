@@ -2370,3 +2370,72 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestCommandPositionAnchoring:
+    """Regression: command-leading destructive patterns (rm/chmod/chown/mkfs/dd)
+    must anchor to a command-start position so they don't false-positive when
+    the command name appears as plain text inside echo/grep/cat/heredoc.
+
+    HARDLINE_PATTERNS already anchor shutdown/reboot via ``_CMDPOS`` to avoid
+    matching "echo reboot" / "grep 'shutdown' log"; DANGEROUS_PATTERNS must get
+    the same protection for their command-leading entries. This guards both
+    directions: real danger still fires, non-execution mentions do not.
+    """
+
+    # ---- must NOT fire: command name is plain text, not an executed command ----
+    NON_EXECUTION_SAFE = [
+        # echo / print of a literal command (e.g. agent narrating an example)
+        "echo rm -rf /",
+        'echo "to delete a directory: rm -rf /some/path"',
+        "echo 'run chmod 777 file to fix perms'",
+        "echo dd if=/dev/sda of=backup.img",
+        "echo 'use mkfs.ext4 to format the disk'",
+        "echo chown -R root /opt",
+        # grep / search where the dangerous string is the search term or in data
+        'grep "rm -rf /" deploy.log',
+        'grep -r "chmod 777" .',
+        'grep -n "mkfs" install_notes.txt',
+        # cat / piping log content that mentions the command
+        "cat history.txt | grep 'rm -rf'",
+    ]
+
+    # ---- must STILL fire: real execution contexts ----
+    REAL_DANGER_FIRES = [
+        # plain command at start of line
+        "rm -rf /",
+        "rm -rf /home/user",
+        "chmod 777 /etc/passwd",
+        "chown -R root /opt",
+        "mkfs.ext4 /dev/sdb",
+        "dd if=/dev/zero of=/dev/sda",
+        # privilege / wrapper prefixes consumed by _CMDPOS
+        "sudo rm -rf /var",
+        "nohup rm -rf / &",
+        # after command separators (a real second command in the chain)
+        "cd /tmp; rm -rf /tmp/build",
+        "make clean && rm -rf /var/cache/app",
+        "false || rm -rf /opt/stale",
+        # after a pipe / inside a subshell (still executed)
+        "find . | rm -rf /tmp/x",
+        "$(rm -rf /tmp/x)",
+        # multiline continuation (DOTALL bypass guard) still caught
+        "dd \\\nif=/dev/sda of=/tmp/disk.img",
+        "chmod --recursive \\\n777 /var",
+    ]
+
+    def test_non_execution_mentions_do_not_false_positive(self):
+        for cmd in self.NON_EXECUTION_SAFE:
+            is_dangerous, _key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is False, (
+                f"false positive: {cmd!r} flagged dangerous as {desc!r}; the "
+                "command name is plain text, not an executed command"
+            )
+
+    def test_real_danger_still_fires(self):
+        for cmd in self.REAL_DANGER_FIRES:
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, (
+                f"missed real danger: {cmd!r} was not flagged dangerous"
+            )
+            assert key is not None and isinstance(desc, str) and desc

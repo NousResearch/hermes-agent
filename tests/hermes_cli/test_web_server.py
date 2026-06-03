@@ -1047,6 +1047,86 @@ class TestWebServerEndpoints:
         assert data["ok"] is True
         assert data.get("gateway_tools", []) == []
 
+    def test_parse_model_ids_handles_openai_and_bare_shapes(self):
+        """Model discovery must tolerate the common /v1/models shapes and
+        never raise (so a slightly non-standard local endpoint still works)."""
+        from hermes_cli.web_server import _parse_model_ids
+
+        class FakeResp:
+            def __init__(self, payload, ok=True):
+                self._payload = payload
+                self.is_success = ok
+
+            def json(self):
+                if isinstance(self._payload, Exception):
+                    raise self._payload
+                return self._payload
+
+        # OpenAI / vLLM / llama.cpp shape.
+        assert _parse_model_ids(
+            FakeResp({"data": [{"id": "llama-3.1-8b"}, {"id": "qwen2.5-7b"}]})
+        ) == ["llama-3.1-8b", "qwen2.5-7b"]
+        # Bare list of ids.
+        assert _parse_model_ids(FakeResp({"data": ["m1", "m2"]})) == ["m1", "m2"]
+        # Top-level list.
+        assert _parse_model_ids(FakeResp([{"id": "x"}])) == ["x"]
+        # Non-success / malformed / exception → [] (never raises).
+        assert _parse_model_ids(FakeResp({"data": []}, ok=False)) == []
+        assert _parse_model_ids(FakeResp({"nope": 1})) == []
+        assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
+
+    def test_set_model_main_custom_persists_base_url(self):
+        """Custom/local providers must persist model.base_url so the runtime
+        resolver (which ignores OPENAI_BASE_URL) can route to a self-hosted
+        endpoint without an API key. Regression for the desktop onboarding bug
+        where 'Local / custom endpoint' could never be configured."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "llama-3.1-8b",
+                "base_url": "http://127.0.0.1:8000/v1",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "custom"
+        assert data["base_url"] == "http://127.0.0.1:8000/v1"
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert model_cfg["provider"] == "custom"
+        assert model_cfg["default"] == "llama-3.1-8b"
+        assert model_cfg["base_url"] == "http://127.0.0.1:8000/v1"
+
+    def test_set_model_main_non_custom_clears_stale_base_url(self):
+        """Switching to a hosted provider must clear a stale base_url so the
+        resolver picks that provider's own default endpoint."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "provider": "custom",
+            "default": "llama-3.1-8b",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["base_url"] == ""
+
+        model_cfg = load_config().get("model")
+        assert model_cfg["provider"] == "openrouter"
+        assert model_cfg.get("base_url", "") == ""
+
     def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
         """A Portal/gateway hiccup must never prevent saving the model."""
         import hermes_cli.nous_subscription as ns

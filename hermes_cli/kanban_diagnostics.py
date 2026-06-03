@@ -145,6 +145,60 @@ def _task_field(task, name, default=None):
     return getattr(task, name, default)
 
 
+def _string_set(value) -> set[str]:
+    """Normalize config values that may be a list or comma string."""
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        parts = value.split(",")
+    elif isinstance(value, Iterable):
+        parts = value
+    else:
+        return set()
+    return {
+        str(part).strip().lower()
+        for part in parts
+        if str(part).strip()
+    }
+
+
+def _rolly_user_assignee_slugs() -> set[str]:
+    """Optional Rolly-local human assignees from ``rolly-users.json``.
+
+    Upstream Hermes installs do not have this file. When present, these
+    slugs represent human card owners, not worker profiles, so diagnostics
+    should not treat ready cards assigned to them as stranded worker jobs.
+    """
+    try:
+        from hermes_cli import kanban_db
+        path = kanban_db.kanban_home() / "rolly-users.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    users = data.get("users") if isinstance(data, dict) else None
+    if not isinstance(users, list):
+        return set()
+    out: set[str] = set()
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        slug = str(user.get("slug") or "").strip().lower()
+        if slug:
+            out.add(slug)
+    return out
+
+
+def _human_assignees(cfg: dict) -> set[str]:
+    """Return assignee names that are explicitly manual/human owners."""
+    names = _string_set(cfg.get("human_assignees"))
+    kanban_cfg = cfg.get("kanban")
+    if isinstance(kanban_cfg, dict):
+        names |= _string_set(kanban_cfg.get("human_assignees"))
+        names |= _string_set(kanban_cfg.get("manual_assignees"))
+    names |= _rolly_user_assignee_slugs()
+    return names
+
+
 def _parse_payload(ev) -> dict:
     """Tolerate event.payload being either a dict or a JSON string."""
     p = _task_field(ev, "payload", None)
@@ -890,10 +944,17 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if _task_field(task, "claim_lock"):
         return []
     assignee = _task_field(task, "assignee") or ""
-    if not assignee.strip():
+    assignee_name = assignee.strip()
+    if not assignee_name:
         # Unassigned tasks: the dispatcher's ``skipped_unassigned`` is
         # already the right signal. A separate diagnostic here would
         # double-flag the same condition.
+        return []
+    if assignee_name.lower() in _human_assignees(cfg):
+        # Rolly's simplified board uses assignee for human ownership too
+        # (deniz/arman/buket/etc.). Those cards are not expected to be
+        # claimed by the dispatcher, so worker-stranding diagnostics are
+        # noise.
         return []
 
     # Find the most recent event that put this task into ready.

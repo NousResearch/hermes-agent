@@ -496,6 +496,35 @@ def test_stranded_in_ready_skips_unassigned_tasks():
     assert [d for d in diags if d.kind == "stranded_in_ready"] == []
 
 
+def test_stranded_in_ready_skips_configured_human_assignees():
+    """Human card owners are not worker profiles; leaving a ready card
+    assigned to Deniz should not produce a worker-pool error."""
+    now = 100_000
+    task = _task(status="ready", assignee="Deniz", claim_lock=None)
+    events = [_event("created", ts=now - 6 * 3600)]
+    diags = kd.compute_task_diagnostics(
+        task,
+        events,
+        [],
+        now=now,
+        config={"human_assignees": ["deniz", "arman"]},
+    )
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
+def test_stranded_in_ready_skips_rolly_user_registry_slugs(kanban_home):
+    """Rolly-local rolly-users.json slugs are manual owners too."""
+    (kanban_home / "rolly-users.json").write_text(
+        '{"users":[{"slug":"deniz"},{"slug":"arman"}]}',
+        encoding="utf-8",
+    )
+    now = 100_000
+    task = _task(status="ready", assignee="deniz", claim_lock=None)
+    events = [_event("created", ts=now - 6 * 3600)]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
 def test_stranded_in_ready_skips_claimed_tasks():
     """A live claim_lock means a worker is on it — even an old one. Don't
     second-guess: the run-level liveness signal owns that decision."""

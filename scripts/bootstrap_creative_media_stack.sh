@@ -6,23 +6,34 @@ set -euo pipefail
 # are opt-in because they can be large and host-specific.
 
 ROOT="${HERMES_CREATIVE_TOOLS_ROOT:-$HOME/.hermes/tools/creative-media}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+VENV="${HERMES_CREATIVE_MEDIA_VENV:-$HOME/.hermes/tool-venvs/creative-media}"
+PYTHON_BOOTSTRAP="${PYTHON_BOOTSTRAP:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-$VENV/bin/python}"
 INSTALL_HEAVY="${INSTALL_HEAVY_CREATIVE_TOOLS:-0}"
 
-mkdir -p "$ROOT" "$ROOT/bin"
+mkdir -p "$ROOT" "$ROOT/bin" "$(dirname "$VENV")"
 
 log() { printf '\n[creative-media] %s\n' "$*"; }
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 log "checking base commands"
-for cmd in "$PYTHON_BIN" curl tar; do
+for cmd in "$PYTHON_BOOTSTRAP" curl tar; do
   if ! need_cmd "$cmd"; then
     echo "Missing required command: $cmd" >&2
     exit 1
   fi
 done
 
-log "installing Python media packages into active Python environment"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  log "creating isolated Python venv at $VENV"
+  "$PYTHON_BOOTSTRAP" -m venv "$VENV"
+fi
+
+log "installing Python media packages into isolated venv"
+"$PYTHON_BIN" -m pip install --upgrade pip >/tmp/hermes-creative-pip.log 2>&1 || {
+    cat /tmp/hermes-creative-pip.log >&2
+    exit 1
+  }
 "$PYTHON_BIN" -m pip install --upgrade \
   moviepy opencv-python pillow imageio imageio-ffmpeg numpy soundfile onnxruntime \
   faster-whisper openai-whisper elevenlabs >/tmp/hermes-creative-pip.log 2>&1 || {

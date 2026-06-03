@@ -53,7 +53,7 @@ Run:
 scripts/bootstrap_creative_media_stack.sh
 ```
 
-By default it installs lightweight Python/CLI dependencies into the active environment and verifies system tools. Heavy tool checkouts are opt-in:
+By default it creates/uses the isolated venv `~/.hermes/tool-venvs/creative-media`, installs lightweight Python/CLI dependencies there, and verifies system tools. Heavy tool checkouts are opt-in:
 
 ```bash
 INSTALL_HEAVY_CREATIVE_TOOLS=1 scripts/bootstrap_creative_media_stack.sh

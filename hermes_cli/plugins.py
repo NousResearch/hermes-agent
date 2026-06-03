@@ -1243,7 +1243,13 @@ class PluginManager:
         if not path.is_dir():
             return manifests
 
-        for child in sorted(path.iterdir()):
+        try:
+            children = sorted(path.iterdir())
+        except FileNotFoundError:
+            logger.debug("Skipping %s (disappeared during plugin scan)", path)
+            return manifests
+
+        for child in children:
             if not child.is_dir():
                 continue
             if depth == 0 and skip_names and child.name in skip_names:

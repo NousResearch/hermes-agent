@@ -157,6 +157,35 @@ class TestPluginDiscovery:
         }
         assert len(non_bundled) == 0
 
+    def test_discover_skips_directory_that_disappears_during_scan(
+        self, tmp_path, monkeypatch
+    ):
+        """Transient directories should not abort plugin discovery."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        volatile_dir = plugins_dir / "__pycache__"
+        volatile_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        original_iterdir = Path.iterdir
+
+        def fake_iterdir(path):
+            if path == volatile_dir:
+                volatile_dir.rmdir()
+                raise FileNotFoundError(str(path))
+            return original_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert len(non_bundled) == 0
+
     def test_entry_points_scanned(self, tmp_path, monkeypatch):
         """Entry-point based plugins are discovered (mocked)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))

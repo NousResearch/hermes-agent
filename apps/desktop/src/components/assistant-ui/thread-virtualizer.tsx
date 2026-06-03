@@ -235,6 +235,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
 
     const disarm = () => {
       armedRef.current = false
+      programmaticScrollPendingRef.current = 0
     }
 
     const onScroll = () => {

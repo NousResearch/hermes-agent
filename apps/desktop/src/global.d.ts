@@ -4,11 +4,15 @@ declare global {
   interface Window {
     hermesDesktop: {
       getConnection: () => Promise<HermesConnection>
+      getGatewayWsUrl: () => Promise<string>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: () => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
+      probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
+      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
+      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -141,6 +145,7 @@ export interface HermesConnection {
   baseUrl: string
   isFullscreen: boolean
   mode?: 'local' | 'remote'
+  authMode?: 'oauth' | 'token'
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string
@@ -163,6 +168,8 @@ export interface HermesWindowState {
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
+  remoteAuthMode: 'oauth' | 'token'
+  remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
   remoteUrl: string
@@ -170,6 +177,7 @@ export interface DesktopConnectionConfig {
 
 export interface DesktopConnectionConfigInput {
   mode: 'local' | 'remote'
+  remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string
 }
@@ -178,6 +186,31 @@ export interface DesktopConnectionTestResult {
   baseUrl: string
   ok: boolean
   version: string | null
+}
+
+export interface DesktopAuthProvider {
+  name: string
+  displayName: string
+}
+
+export interface DesktopConnectionProbeResult {
+  baseUrl: string
+  reachable: boolean
+  authMode: 'oauth' | 'token' | 'unknown'
+  providers: DesktopAuthProvider[]
+  version: string | null
+  error: string | null
+}
+
+export interface DesktopOauthLoginResult {
+  ok: boolean
+  baseUrl: string
+  connected: boolean
+}
+
+export interface DesktopOauthLogoutResult {
+  ok: boolean
+  connected: boolean
 }
 
 export interface DesktopBootProgress {

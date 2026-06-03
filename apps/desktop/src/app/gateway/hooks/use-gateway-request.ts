@@ -45,7 +45,10 @@ export function useGatewayRequest() {
         const conn = await desktop.getConnection()
         connectionRef.current = conn
         setConnection(conn)
-        await existing.connect(conn.wsUrl)
+        // Re-mint the WS URL before reconnecting — OAuth tickets are single-use
+        // and short-lived, so the cached conn.wsUrl ticket is stale here.
+        const wsUrl = (await desktop.getGatewayWsUrl?.().catch(() => null)) || conn.wsUrl
+        await existing.connect(wsUrl)
 
         return existing
       } catch {

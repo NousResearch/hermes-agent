@@ -230,7 +230,11 @@ export function useGatewayBoot({
           progress: 95
         })
         publish(conn)
-        await gateway.connect(conn.wsUrl)
+        // Mint a fresh WS URL right before connecting. For OAuth gateways the
+        // ticket is single-use with a short TTL, so the ticket baked into
+        // conn.wsUrl can already be stale; getGatewayWsUrl() re-mints it.
+        const wsUrl = (await desktop.getGatewayWsUrl?.().catch(() => null)) || conn.wsUrl
+        await gateway.connect(wsUrl)
 
         if (cancelled) {
           return

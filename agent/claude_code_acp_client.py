@@ -37,6 +37,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Iterator, List, Optional
 
 from agent.file_safety import get_read_block_error, is_write_denied
+from gateway.session_context import get_session_env
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +445,7 @@ class ClaudeCodeACPClient:
         self._hermes_home = Path(hermes_home) if hermes_home else None
         self._hermes_session_id = (
             hermes_session_id
-            or os.environ.get("HERMES_SESSION_ID", "").strip()
+            or get_session_env("HERMES_SESSION_ID", "").strip()
             or f"hermes-{int(time.time())}"
         )
         self._platform = platform or os.environ.get("HERMES_SESSION_PLATFORM") or None
@@ -1149,15 +1150,28 @@ class ClaudeCodeACPClient:
         lower = re.sub(r"\[\w+\]$", "", lower)
         if lower in ("haiku", "sonnet", "opus", "claude", "default"):
             return lower
-        m = re.match(r"^claude-(haiku|sonnet|opus)(?:-\d+(?:-\d+)*)?$", lower)
-        if m:
-            return m.group(1)
+        # Full names like "claude-opus-4-7" are passed through verbatim — the
+        # subprocess's session/set_config_option will receive the full string,
+        # and the alias validator below checks the same regex.
+        if re.match(r"^claude-(haiku|sonnet|opus)(?:-\d+(?:-\d+)*)?$", lower):
+            return lower
         return raw
 
     def _is_valid_claude_alias(self, name: str) -> bool:
-        """Return True if *name* is a Claude Code-recognizable model identifier."""
+        """Return True if *name* is a Claude Code-recognizable model identifier.
+
+        Accepts both short aliases (opus/sonnet/haiku) and full names
+        (claude-opus-4-7, claude-sonnet-4-6, etc.) so that callers can pin
+        a specific Claude Code version without losing the per-session
+        ``set_config_option`` call that isolates parallel subagents.
+        """
         normalized = self._normalize_model_name(name)
-        return normalized.lower() in ("haiku", "sonnet", "opus", "claude", "default")
+        if normalized in ("haiku", "sonnet", "opus", "claude", "default"):
+            return True
+        import re
+        if re.match(r"^claude-(haiku|sonnet|opus)(?:-\d+(?:-\d+)*)?$", normalized):
+            return True
+        return False
 
     def _create_chat_completion(
         self,

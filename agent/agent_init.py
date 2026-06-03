@@ -747,6 +747,14 @@ def init_agent(
             if agent.provider == "copilot-acp":
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
+            elif agent.provider == "claude-code-acp":
+                # Inject sandbox/session context so the ACP client can
+                # build per-session sandboxes with the agent's persona,
+                # memory, platform, and available tools.
+                client_kwargs["agent"] = agent
+                client_kwargs["hermes_home"] = get_hermes_home()
+                client_kwargs["hermes_session_id"] = getattr(agent, "session_id", None)
+                client_kwargs["platform"] = getattr(agent, "platform", None)
             effective_base = base_url
             if base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers

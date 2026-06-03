@@ -173,6 +173,19 @@ def build_session_sandbox(
     sandbox = session_sandbox_path(session_id, hermes_home=hermes_home)
     sandbox.mkdir(parents=True, exist_ok=True)
 
+    # --- Subagent fast-path ---
+    # When both skip_context_files and skip_memory are True, the caller
+    # is a subagent that doesn't need project context.  Build a minimal
+    # sandbox with only settings.local.json (bypassPermissions) and a
+    # short preamble CLAUDE.md — skip SOUL.md, memory, skills, .mcp.json,
+    # and manifest cache.
+    if getattr(agent, "skip_context_files", False) and getattr(agent, "skip_memory", False):
+        _write_settings_local(sandbox, model=model)
+        minimal_claude_md = _PREAMBLE.strip() + "\n"
+        (sandbox / "CLAUDE.md").write_text(minimal_claude_md, encoding="utf-8")
+        logger.info("Built minimal Claude Code sandbox %s (subagent fast-path)", sandbox)
+        return sandbox
+
     manifest_path = sandbox / SANDBOX_MANIFEST
     # The digest covers every input that should invalidate the cache —
     # SOUL.md mtime, memory snippets, enabled skills, platform, model. Any

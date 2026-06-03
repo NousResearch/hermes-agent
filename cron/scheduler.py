@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
+from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -1594,8 +1595,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
-            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
-            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
                 if not isinstance(entry, dict):
@@ -1617,7 +1617,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        fallback_model = get_fallback_chain(_cfg) or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
@@ -1963,7 +1963,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             )
 
         def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end: execute, save, deliver, mark."""
+            """Run one due job end-to-end: execute, save, deliver, mark.
+
+            ALL exceptions are caught here — including CronPromptInjectionBlocked
+            and any exception from mark_job_run itself — so that a single job
+            failure can never propagate out and kill the ticker thread (#36854).
+            """
             try:
                 success, output, final_response, error = run_job(job)
 
@@ -1998,12 +2003,18 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                try:
+                    mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                except Exception as mark_exc:
+                    logger.error("mark_job_run failed for job %s: %s", job["id"], mark_exc)
                 return True
 
             except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+                logger.error("Error processing job %s: %s", job['id'], e, exc_info=True)
+                try:
+                    mark_job_run(job["id"], False, str(e))
+                except Exception as mark_exc:
+                    logger.error("mark_job_run failed for job %s after error: %s", job["id"], mark_exc)
                 return False
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
@@ -2036,12 +2047,23 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 for job in parallel_jobs:
                     _ctx = contextvars.copy_context()
                     _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                for f in concurrent.futures.as_completed(_futures, timeout=600):
-                    try:
-                        _results.append(f.result())
-                    except Exception as exc:
-                        logger.error("Parallel cron job future failed: %s", exc)
-                        _results.append(False)
+                # Fire-and-forget semantics: release the file lock as soon as all
+                # futures are submitted so the ticker thread is never blocked for
+                # the full job duration (up to 10 min per job with the old
+                # as_completed(timeout=600) call — #37312).  Collect results with
+                # a short per-iteration timeout so completed futures are harvested
+                # promptly without blocking if slow jobs are still running.
+                pending = list(_futures)
+                while pending:
+                    done, pending = concurrent.futures.wait(
+                        pending, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED
+                    )
+                    for f in done:
+                        try:
+                            _results.append(f.result())
+                        except Exception as exc:
+                            logger.error("Parallel cron job future failed: %s", exc)
+                            _results.append(False)
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
         # session teardown during this tick.  Runs AFTER every job has

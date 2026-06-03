@@ -2404,6 +2404,114 @@ class TestParallelTick:
         start_s2 = [t for action, jid, t in call_times if action == "start" and jid == "s2"][0]
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
+    def test_injection_blocked_does_not_kill_ticker(self, tmp_path):
+        """Regression #36854: CronPromptInjectionBlocked (or any other exception)
+        raised inside _process_job must NOT propagate out of tick() and kill the
+        ticker thread.  The ticker must survive and the other job must still run.
+        """
+        from cron.scheduler import CronPromptInjectionBlocked, tick
+
+        jobs = [
+            {"id": "blocked-job", "name": "blocked", "deliver": "local"},
+            {"id": "good-job", "name": "good", "deliver": "local"},
+        ]
+        mark_calls = []
+
+        def mock_run_job(job):
+            if job["id"] == "blocked-job":
+                raise CronPromptInjectionBlocked("test injection block")
+            return (True, "output", "response", None)
+
+        def mock_mark(job_id, success, *args, **kwargs):
+            mark_calls.append((job_id, success))
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run", side_effect=mock_mark):
+            # Must not raise — the ticker thread must survive
+            result = tick(verbose=False)
+
+        # tick() returns the number of processed jobs (both attempted)
+        assert result == 2, f"Expected 2 jobs processed, got {result}"
+        # The blocked job was marked as failed
+        blocked = [s for jid, s in mark_calls if jid == "blocked-job"]
+        assert blocked == [False], f"Blocked job not marked failed: {mark_calls}"
+        # The good job still ran and succeeded
+        good = [s for jid, s in mark_calls if jid == "good-job"]
+        assert good == [True], f"Good job not marked ok: {mark_calls}"
+
+    def test_mark_job_run_exception_does_not_kill_ticker(self, tmp_path):
+        """If mark_job_run itself raises, tick() must still complete and not
+        propagate the exception (#36854 hardening).
+        """
+        from cron.scheduler import tick
+
+        jobs = [
+            {"id": "mark-fail-job", "name": "mark-fail", "deliver": "local"},
+            {"id": "ok-job", "name": "ok", "deliver": "local"},
+        ]
+        run_calls = []
+
+        def mock_run_job(job):
+            run_calls.append(job["id"])
+            return (True, "output", "response", None)
+
+        def mock_mark(job_id, *args, **kwargs):
+            if job_id == "mark-fail-job":
+                raise RuntimeError("DB write failed")
+
+        with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run", side_effect=mock_mark):
+            # Must not raise even though mark_job_run throws for one job
+            result = tick(verbose=False)
+
+        # Both jobs were attempted
+        assert set(run_calls) == {"mark-fail-job", "ok-job"}
+        assert result == 2
+
+
+class TestGetFallbackChainImport:
+    """Regression #36734: get_fallback_chain must be importable from cron.scheduler's
+    module-level imports so the AuthError fallback path and fallback_model
+    assignment work without NameError."""
+
+    def test_get_fallback_chain_is_importable_from_scheduler_module(self):
+        """Importing cron.scheduler must not raise NameError for get_fallback_chain."""
+        import importlib
+        import cron.scheduler as scheduler_mod
+        # The function must be resolvable in the module's namespace
+        assert callable(scheduler_mod.get_fallback_chain), (
+            "get_fallback_chain must be imported at module level in cron/scheduler.py"
+        )
+
+    def test_get_fallback_chain_merges_both_config_keys(self):
+        """get_fallback_chain must merge fallback_providers and fallback_model
+        entries without duplicates (contract preserved when called from scheduler).
+        """
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        cfg = {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "gpt-4o-mini"},
+            ],
+            "fallback_model": [
+                {"provider": "openrouter", "model": "gpt-4o-mini"},  # duplicate — deduplicated
+                {"provider": "openrouter", "model": "claude-3-haiku"},
+            ],
+        }
+        chain = get_fallback_chain(cfg)
+        models = [e["model"] for e in chain]
+        assert models == ["gpt-4o-mini", "claude-3-haiku"], (
+            f"Expected deduped chain, got: {models}"
+        )
+
 
 class TestDeliverResultTimeoutCancelsFuture:
     """When future.result(timeout=60) raises TimeoutError in the live

@@ -7738,6 +7738,17 @@ def _update_via_zip(args):
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
     if uv_bin:
+        try:
+            subprocess.run(
+                [uv_bin, "--version"],
+                capture_output=True,
+                timeout=10,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            print(f"  → uv found at {uv_bin} but cannot execute — falling back to pip")
+            uv_bin = None
+    if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
@@ -9939,6 +9950,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:
             uv_bin = _ensure_uv_for_termux(pip_cmd)
+        if uv_bin:
+            try:
+                subprocess.run(
+                    [uv_bin, "--version"],
+                    capture_output=True,
+                    timeout=10,
+                    check=True,
+                )
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                print(f"  → uv found at {uv_bin} but cannot execute — falling back to pip")
+                uv_bin = None
         install_group = "all"
 
         if uv_bin:

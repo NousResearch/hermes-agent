@@ -3746,19 +3746,35 @@ def run_conversation(
                         if repaired:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
+                deferred_tool_call_blocks = {}
+                _deferred_state = getattr(agent, "_deferred_tool_state", None)
+                if _deferred_state is not None:
+                    try:
+                        from tools import deferred_tool_search as _dts
+                        for tc in assistant_message.tool_calls:
+                            if tc.function.name not in agent.valid_tool_names:
+                                _dts_block = _dts.block_message(tc.function.name, _deferred_state)
+                                if _dts_block is not None:
+                                    deferred_tool_call_blocks[tc.function.name] = _dts_block
+                    except Exception:
+                        logger.debug("deferred_tool_search validation hook failed", exc_info=True)
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names
+                    and tc.function.name not in deferred_tool_call_blocks
                 ]
-                if invalid_tool_calls:
+                if invalid_tool_calls or deferred_tool_call_blocks:
                     # Track retries for invalid tool calls
                     agent._invalid_tool_retries += 1
 
                     # Return helpful error to model — model can agent-correct next turn
                     available = ", ".join(sorted(agent.valid_tool_names))
-                    invalid_name = invalid_tool_calls[0]
+                    invalid_name = invalid_tool_calls[0] if invalid_tool_calls else next(iter(deferred_tool_call_blocks))
                     invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
-                    agent._buffer_vprint(f"⚠️  Unknown tool '{invalid_preview}' — sending error to model for agent-correction ({agent._invalid_tool_retries}/3)")
+                    if invalid_tool_calls:
+                        agent._buffer_vprint(f"⚠️  Unknown tool '{invalid_preview}' — sending error to model for agent-correction ({agent._invalid_tool_retries}/3)")
+                    else:
+                        agent._buffer_vprint(f"⚠️  Deferred tool '{invalid_preview}' called before promotion — sending tool_search guidance ({agent._invalid_tool_retries}/3)")
 
                     if agent._invalid_tool_retries >= 3:
                         agent._flush_status_buffer()
@@ -3777,10 +3793,12 @@ def run_conversation(
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)
                     for tc in assistant_message.tool_calls:
-                        if tc.function.name not in agent.valid_tool_names:
+                        if tc.function.name in deferred_tool_call_blocks:
+                            content = deferred_tool_call_blocks[tc.function.name]
+                        elif tc.function.name not in agent.valid_tool_names:
                             content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                         else:
-                            content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
+                            content = "Skipped: another tool call in this turn used an invalid or unpromoted name. Please retry this tool call."
                         messages.append({
                             "role": "tool",
                             "name": tc.function.name,

@@ -765,6 +765,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
+        # Block direct calls to un-promoted deferred tools (feature-flagged).
+        # agent._deferred_tool_state is None when the feature is off → no-op.
+        if _block_msg is None and _guardrail_block_decision is None:
+            _deferred_state = getattr(agent, "_deferred_tool_state", None)
+            if _deferred_state is not None:
+                from tools import deferred_tool_search as _dts
+                _dts_block = _dts.block_message(function_name, _deferred_state)
+                if _dts_block is not None:
+                    _block_msg = _dts_block
+
         _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
 
         if _execution_blocked:
@@ -840,8 +850,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         tool_start_time = time.time()
 
         if _block_msg is not None:
-            # Tool blocked by plugin policy — return error without executing.
-            function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+            # Tool blocked by plugin policy or deferred-tool promotion policy.
+            # Deferred-tool blocks are already structured JSON; legacy plugin
+            # blocks are plain strings and keep the historical {"error": ...}
+            # wrapper.
+            try:
+                parsed_block = json.loads(_block_msg)
+            except Exception:
+                parsed_block = None
+            if isinstance(parsed_block, dict) and parsed_block.get("next_action"):
+                function_result = _block_msg
+            else:
+                function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
             _emit_terminal_post_tool_call(
                 agent,
@@ -967,6 +987,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
+        elif function_name == "tool_search":
+            # Deferred tool_search promotion (feature-flagged). Mutates the
+            # agent's per-session promotion state and tool surface.
+            from tools import deferred_tool_search as _dts
+            function_result = _dts.handle_tool_search_call(agent, function_args)
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('tool_search', function_args, tool_duration, result=function_result)}")
         elif agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
             # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
             spinner = None

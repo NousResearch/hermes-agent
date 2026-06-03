@@ -801,6 +801,15 @@ class HermesACPAgent(acp.Agent):
             state.agent.valid_tool_names = {
                 tool["function"]["name"] for tool in state.agent.tools or []
             }
+            # Re-apply deferred tool_search partitioning after the refresh so a
+            # mid-session MCP server change doesn't un-promote tools (no-op when
+            # the feature flag is off). Carries promotions forward via prior state.
+            try:
+                from tools import deferred_tool_search as _dts
+                state.agent._deferred_tool_surface_partitioned = False
+                _dts.apply_to_agent(state.agent)
+            except Exception:
+                logger.debug("deferred_tool_search reapply after MCP refresh failed", exc_info=True)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()

@@ -909,7 +909,7 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
-    
+
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
     if agent.tools:
@@ -1520,6 +1520,30 @@ def init_agent(
                 agent.valid_tool_names.add(_tname)
                 agent._context_engine_tool_names.add(_tname)
                 _existing_tool_names.add(_tname)
+
+    # Deferred tool_search (feature-flagged, disabled by default). Apply after
+    # all session-local tool injectors (base registry, memory provider, context
+    # engine) have populated agent.tools, so every advertised schema is either
+    # eager, deferred, or promoted under the same per-session state. When off,
+    # this leaves agent.tools untouched and clears any prior state.
+    try:
+        from tools import deferred_tool_search as _dts
+        agent._deferred_tool_surface_partitioned = False
+        _dts.apply_to_agent(agent)
+    except Exception as _dts_err:  # pragma: no cover - defensive
+        logger.debug("deferred_tool_search apply_to_agent failed: %s", _dts_err)
+
+    # Recompute validation/guidance after optional deferred partitioning.
+    agent.valid_tool_names = set()
+    if agent.tools:
+        agent.valid_tool_names = {
+            tool["function"]["name"]
+            for tool in agent.tools
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        }
+    agent._kanban_worker_guidance = (
+        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+    )
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

@@ -618,6 +618,67 @@ curl -s http://127.0.0.1:9119/api/status | jq '.auth_required, .auth_providers'
 
 The dashboard's React StatusPage shows the same fields under "Web server". A sidebar AuthWidget surfaces the current identity once you've signed in.
 
+## Connecting Hermes Desktop to a remote backend
+
+Hermes Desktop can drive a Hermes backend running on another machine (a VPS, a home server, a Mini behind Tailscale). In the app this lives under **Settings → Gateway → Remote gateway**, which asks for a **Remote URL** and a **Session token**.
+
+The "session token" is the dashboard's session token — the same secret the local web UI uses for `/api` and WebSocket calls. **Hermes does not print it for you to copy.** By default the dashboard mints a fresh random token on every boot and injects it straight into the served HTML, so there is nothing sitting in `config.yaml`, in `/gateway`, or in the logs to grab. For a remote connection you set the token yourself on the backend, then paste that same value into the desktop app.
+
+The desktop app sends the token as an `X-Hermes-Session-Token` header. The backend accepts it only in legacy session-token mode — i.e. when bound non-loopback **with `--insecure`**. A non-loopback bind *without* `--insecure` engages the [OAuth gate](#oauth-authentication-gated-mode) instead, which ignores the session token. So a remote desktop connection means: `--insecure` + a token you control.
+
+### On the backend (the remote machine)
+
+```bash
+# 1. Mint a stable token and store it in ~/.hermes/.env (secrets file, 0600).
+#    Setting HERMES_DASHBOARD_SESSION_TOKEN pins the token so it survives
+#    restarts and is the value the desktop app will use — without this,
+#    the token is random per boot and uncopyable.
+TOKEN=$(openssl rand -base64 32)
+echo "HERMES_DASHBOARD_SESSION_TOKEN=$TOKEN" >> ~/.hermes/.env
+chmod 600 ~/.hermes/.env
+echo "$TOKEN"   # copy this value into the desktop app
+
+# 2. Run the dashboard bound to a reachable address.
+#    --insecure is required for any non-loopback bind and keeps the
+#    legacy session-token auth path (instead of the OAuth gate).
+hermes dashboard --no-open --insecure --host 0.0.0.0 --port 9119
+```
+
+If you run the dashboard as a systemd service, `~/.hermes/.env` is picked up automatically when the unit has `EnvironmentFile=%h/.hermes/.env`, so the token is in the environment at boot.
+
+:::warning
+`--insecure` exposes a port that reads and writes your `.env` (API keys, secrets) and can run agent commands. Never expose it to the open internet. Put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL. Only devices on your tailnet can reach it.
+:::
+
+### In Hermes Desktop
+
+**Settings → Gateway → Remote gateway:**
+
+- **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` are supported if you front it with a reverse proxy)
+- **Session token** — paste the `$TOKEN` value from step 1
+- **Test remote** — confirms the backend is reachable and the token is accepted
+- **Save and reconnect** — switches the desktop shell onto the remote backend
+
+The token is stored encrypted in the desktop app's local config. Leave the token field blank on a later edit to keep the saved one.
+
+### Environment-variable override
+
+Instead of the in-app settings, you can point the desktop at a backend with two env vars before launching it. When `HERMES_DESKTOP_REMOTE_URL` is set, it overrides the saved in-app settings (the Gateway settings panel shows an "env override" badge and disables editing):
+
+| Env var | Value |
+|---------|-------|
+| `HERMES_DESKTOP_REMOTE_URL` | `http://<backend-host>:9119` |
+| `HERMES_DESKTOP_REMOTE_TOKEN` | the same token as `HERMES_DASHBOARD_SESSION_TOKEN` on the backend |
+
+Both must be set together — setting only the URL is an error.
+
+### Troubleshooting
+
+- **"Remote gateway incomplete"** — you haven't entered both a URL and a token. The token only needs re-entering if `remoteTokenSet` is false (no saved token yet).
+- **Test remote fails with 401** — the token doesn't match the backend's `HERMES_DASHBOARD_SESSION_TOKEN`, or the backend is running *without* `--insecure` on a non-loopback bind (the OAuth gate is on and ignores the session token). Confirm `--insecure` and that the env var is actually loaded (`curl -s -H "X-Hermes-Session-Token: $TOKEN" http://<host>:9119/api/status` should return JSON, not 401).
+- **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
+- **No token anywhere to copy** — expected. You mint it (`HERMES_DASHBOARD_SESSION_TOKEN`); Hermes never auto-surfaces the default ephemeral one.
+
 ## CORS
 
 The web server restricts CORS to localhost origins only:

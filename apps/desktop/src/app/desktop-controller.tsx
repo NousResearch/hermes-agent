@@ -78,6 +78,7 @@ import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
+import { type RefreshSessionsOptions, useSessionListAutoRefresh } from './session/hooks/use-session-list-auto-refresh'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
 import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
@@ -105,6 +106,7 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  const refreshSessionsLoadingRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
@@ -226,10 +228,15 @@ export function DesktopController() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [toggleCommandCenter])
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (options: RefreshSessionsOptions = {}) => {
+    const showLoading = options.showLoading ?? true
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
-    setSessionsLoading(true)
+
+    if (showLoading) {
+      refreshSessionsLoadingRequestRef.current = requestId
+      setSessionsLoading(true)
+    }
 
     try {
       const limit = $sessionsLimit.get()
@@ -249,7 +256,7 @@ export function DesktopController() {
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
       }
     } finally {
-      if (refreshSessionsRequestRef.current === requestId) {
+      if (showLoading && refreshSessionsLoadingRequestRef.current === requestId) {
         setSessionsLoading(false)
       }
     }
@@ -532,6 +539,11 @@ export function DesktopController() {
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  useSessionListAutoRefresh({
+    enabled: gatewayState === 'open',
+    refreshSessions
+  })
 
   useRouteResume({
     activeSessionId,

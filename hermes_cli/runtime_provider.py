@@ -335,6 +335,8 @@ def _resolve_runtime_from_pool_entry(
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
+    elif provider == "concentrate":
+        api_mode = "codex_responses"
     elif provider == "xai":
         api_mode = "codex_responses"
     elif provider == "nous":
@@ -1618,7 +1620,7 @@ def resolve_runtime_provider(
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
-        elif provider == "xai":
+        elif provider in {"xai", "concentrate"}:
             api_mode = "codex_responses"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()

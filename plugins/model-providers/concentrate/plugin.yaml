@@ -1,0 +1,5 @@
+name: concentrate-provider
+kind: model-provider
+version: 1.0.0
+description: Concentrate AI — multi-model gateway with Zero Data Retention
+author: Concentrate AI

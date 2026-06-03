@@ -2705,3 +2705,27 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def test_concentrate_provider_resolves_codex_responses(monkeypatch):
+    """Concentrate must resolve to api_mode=codex_responses, not fall through
+    to _resolve_openrouter_runtime which would mislabel it as 'openrouter'."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "concentrate")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "concentrate"})
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "sk-cn-test",
+            "base_url": "https://api.concentrate.ai/v1",
+            "source": "env",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="concentrate")
+
+    assert resolved["provider"] == "concentrate"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.concentrate.ai/v1"
+    assert resolved["api_key"] == "sk-cn-test"

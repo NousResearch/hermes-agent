@@ -34,6 +34,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `KIMI_API_KEY` | Kimi / Moonshot AI API key ([moonshot.ai](https://platform.moonshot.ai)) |
 | `KIMI_BASE_URL` | Override Kimi base URL (default: `https://api.moonshot.ai/v1`) |
 | `KIMI_CN_API_KEY` | Kimi / Moonshot China API key ([moonshot.cn](https://platform.moonshot.cn)) |
+| `CONCENTRATE_API_KEY` | Concentrate AI API key — unified gateway with Zero Data Retention ([concentrate.ai](https://concentrate.ai)) |
+| `CONCENTRATE_BASE_URL` | Override Concentrate base URL (default: `https://api.concentrate.ai/v1`) |
 | `ARCEEAI_API_KEY` | Arcee AI API key ([chat.arcee.ai](https://chat.arcee.ai/)) |
 | `ARCEE_BASE_URL` | Override Arcee base URL (default: `https://api.arcee.ai/api/v1`) |
 | `GMI_API_KEY` | GMI Cloud API key ([gmicloud.ai](https://www.gmicloud.ai/)) |

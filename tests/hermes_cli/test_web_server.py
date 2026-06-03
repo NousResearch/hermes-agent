@@ -823,6 +823,69 @@ class TestWebServerEndpoints:
         assert resp.json() == {"ok": True, "pid": 12345, "name": "hermes-update"}
         assert calls == [(["update"], "hermes-update")]
 
+    def test_action_status_reaps_completed_process(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        waited = {"done": False}
+
+        class _Proc:
+            pid = 42424
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                waited["done"] = True
+
+        proc = _Proc()
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS["hermes-update"] = proc
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["running"] is False
+        assert data["exit_code"] == 0
+        assert data["pid"] == 42424
+
+        # Process should have been reaped and moved to results.
+        assert waited["done"] is True
+        assert "hermes-update" not in web_server._ACTION_PROCS
+        assert web_server._ACTION_RESULTS["hermes-update"] == {
+            "exit_code": 0,
+            "pid": 42424,
+        }
+
+    def test_action_status_ignores_wait_failure(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class _Proc:
+            pid = 99
+
+            def poll(self):
+                return 1
+
+            def wait(self, timeout=None):
+                raise OSError("already reaped")
+
+        proc = _Proc()
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS["hermes-update"] = proc
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["exit_code"] == 1
+        # Still reaped despite wait() raising.
+        assert "hermes-update" not in web_server._ACTION_PROCS
+        assert web_server._ACTION_RESULTS["hermes-update"] == {
+            "exit_code": 1,
+            "pid": 99,
+        }
+
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

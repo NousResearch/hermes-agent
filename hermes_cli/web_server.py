@@ -1691,6 +1691,13 @@ async def get_action_status(name: str, lines: int = 200):
         exit_code = proc.poll()
         running = exit_code is None
         pid = proc.pid
+        if exit_code is not None:
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                pass
+            _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
+            _ACTION_PROCS.pop(name, None)
 
     return {
         "name": name,

@@ -161,6 +161,7 @@ def test_pr_ready_requires_complete_artifact_package(tmp_path):
 
     run = store.record_ci_result("BO-203", authority=_authority(), ci={"state": "success", "headSha": "abc"})
     assert run.state == "ci_passed"
+    store.record_cleanup_proof("BO-203", authority=_authority(), proof={"status": "passed", "retained": []})
     run = store.mark_review_ready("BO-203", authority=_authority())
     assert run.state == "review_ready"
     package = json.loads((tmp_path / ".hermes" / "goal-runs" / "BO-203" / "pr.json").read_text())
@@ -269,7 +270,9 @@ def test_successful_resume_clears_stale_pending_action(tmp_path):
     assert run.pending_action is not None
 
     run = store.tick("BO-203", authority=_authority(), budget_remaining=20)
-    assert run.pending_action is None
+    assert run.pending_action is not None
+    assert run.pending_action["executor"] == "hermes-direct-goal-loop"
+    assert run.pending_action["dispatcherUsed"] is False
     assert run.resumable is False
 
 
@@ -539,4 +542,5 @@ def test_cli_transition_subcommands_expose_existing_store_state_machine(tmp_path
     assert run(["record-reviewer-result", "t_parent", "--authority-json", authority_json, "--result-json", '{"recommendation":"APPROVE","securityConcerns":[],"logicErrors":[]}'])["state"] == "review_passed"
     assert run(["record-pr-created", "t_parent", "--authority-json", authority_json, "--pr-json", '{"url":"https://github.com/chriskim12/hermes-agent/pull/92","number":92,"headSha":"abc"}'])["state"] == "pr_created"
     assert run(["record-ci-result", "t_parent", "--authority-json", authority_json, "--ci-json", '{"state":"success","headSha":"abc"}'])["state"] == "ci_passed"
+    assert run(["record-cleanup-proof", "t_parent", "--authority-json", authority_json, "--proof-json", '{"status":"passed","retained":[]}'])["state"] == "ci_passed"
     assert run(["mark-review-ready", "t_parent", "--authority-json", authority_json])["state"] == "review_ready"

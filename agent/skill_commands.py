@@ -260,6 +260,139 @@ def _build_skill_message(
     return "\n".join(parts)
 
 
+
+_KANBAN_ID_RE = re.compile(r"\b(?:BO|DC|WS|RS)-\d+\b", re.IGNORECASE)
+_ULTRAGOAL_INGRESS_CMD = "/kanban-ultragoal-ingress"
+_ULTRAGOAL_EXACT_ALIASES = {
+    "ultragoal로 진행해",
+    "ultragoal로 구현해",
+    "ultragoal로 계속해",
+    "ultragoal 진행해",
+    "ultragoal 구현해",
+    "ultragoal 계속해",
+}
+_ULTRAGOAL_CONTEXTUAL_PATTERNS = (
+    re.compile(r"\b(?:BO|DC|WS|RS)-\d+\b\s+ultragoal\s*로\s*(?:진행|진행해|구현|구현해|계속|계속해)", re.IGNORECASE),
+    re.compile(r"(?:이\s*)?(?:카드|parent|부모)\s+ultragoal\s*로\s*(?:진행|진행해|구현|구현해|계속|계속해)", re.IGNORECASE),
+)
+def _normalize_authorized_user_ids(raw: object) -> set[str]:
+    if raw is None:
+        return set()
+    values: list[object]
+    if isinstance(raw, str):
+        values = re.split(r"[,\s]+", raw)
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        values = list(raw)
+    else:
+        values = [raw]
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _normalize_natural_text(message_text: str) -> str:
+    text = (message_text or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" \t\r\n.!?。！？")
+
+
+def _enumish_lower(value: object) -> str:
+    if value is None:
+        return ""
+    raw = getattr(value, "value", value)
+    text = str(raw).lower()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text
+
+
+def _is_discord_operating_surface(*, platform: str | None, chat_type: str | None, thread_id: str | None) -> bool:
+    platform_s = _enumish_lower(platform)
+    chat_type_s = _enumish_lower(chat_type)
+    return platform_s == "discord" and (chat_type_s == "thread" or bool(thread_id))
+
+
+def _ultragoal_runtime_note(message_text: str) -> str:
+    target = None
+    match = _KANBAN_ID_RE.search(message_text or "")
+    if match:
+        target = match.group(0).upper()
+    target_note = f" target={target}." if target else " target must be resolved from the current thread/card context before execution."
+    return (
+        "Natural Ultragoal ingress matched. Load the thin kanban-ultragoal-ingress contract first; "
+        "then load hermes-execution-routing and record the top-level lane as Kanban Ultragoal, not Autopilot. "
+        "Kanban remains execution authority SSOT; the current CLI wire value may still be routing_verdict=direct-kanban. "
+        "Confirm Kanban authority, execution approval, allowed/forbidden side effects, and target card/parent before calling kanban-ultragoal. "
+        "If any prerequisite is missing, fail closed as blocked; do not fall back to Autopilot, generic Hermes direct, or free-floating Codex."
+        + target_note
+    )
+
+
+def _is_authorized_natural_skill_sender(user_id: str | None, authorized_user_ids: object = None) -> bool:
+    if user_id is None:
+        return False
+    allowed = _normalize_authorized_user_ids(authorized_user_ids)
+    if not allowed:
+        return False
+    return str(user_id).strip() in allowed
+
+
+def resolve_natural_skill_invocation(
+    message_text: str,
+    *,
+    platform: str | None = None,
+    chat_type: str | None = None,
+    thread_id: str | None = None,
+    user_id: str | None = None,
+    authorized_user_ids: object = None,
+) -> tuple[str, str, str] | None:
+    """Resolve high-confidence natural-language skill shorthands.
+
+    Returns ``(cmd_key, user_instruction, runtime_note)`` when the message must
+    be routed through a specific skill before ordinary model inference can
+    reinterpret it. ``None`` means no natural skill route was intended.
+    """
+    if not matches_ultragoal_natural_invocation(
+        message_text,
+        platform=platform,
+        chat_type=chat_type,
+        thread_id=thread_id,
+    ):
+        return None
+    if not _is_authorized_natural_skill_sender(user_id, authorized_user_ids):
+        return None
+    return (
+        _ULTRAGOAL_INGRESS_CMD,
+        (message_text or "").strip(),
+        _ultragoal_runtime_note(message_text),
+    )
+
+
+def matches_ultragoal_natural_invocation(
+    message_text: str,
+    *,
+    platform: str | None = None,
+    chat_type: str | None = None,
+    thread_id: str | None = None,
+) -> bool:
+    if not _is_discord_operating_surface(platform=platform, chat_type=chat_type, thread_id=thread_id):
+        return False
+    normalized = _normalize_natural_text(message_text)
+    normalized_lower = normalized.lower()
+    return normalized_lower in _ULTRAGOAL_EXACT_ALIASES or any(
+        pattern.fullmatch(normalized) for pattern in _ULTRAGOAL_CONTEXTUAL_PATTERNS
+    )
+
+
+def build_natural_skill_fail_closed_message(cmd_key: str, user_instruction: str, runtime_note: str) -> str:
+    """Return an agent-visible blocker for matched but unavailable natural routes."""
+    return (
+        "[Natural skill routing blocked]\n"
+        f"Matched natural skill route: {cmd_key}\n"
+        f"User instruction: {user_instruction}\n"
+        "Status: blocked — required ingress skill is unavailable or could not be loaded.\n"
+        "Do not continue as Autopilot, generic Hermes direct, or ordinary conversation.\n"
+        f"Runtime note: {runtime_note}"
+    )
+
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
 

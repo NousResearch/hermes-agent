@@ -8152,6 +8152,92 @@ class GatewayRunner:
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
 
+        # High-confidence natural skill ingress must run before shared-thread
+        # sender prefixing and broader context decoration.  Otherwise exact
+        # operator shorthands such as "ULTRAGOAL로 진행해" can be hidden behind
+        # "[sender]" text and drift into ordinary conversation or Autopilot.
+        if message_text and not event.media_urls:
+            try:
+                from agent.skill_commands import (
+                    build_natural_skill_fail_closed_message,
+                    build_skill_invocation_message,
+                    matches_ultragoal_natural_invocation,
+                    resolve_natural_skill_invocation,
+                )
+
+                authorized_user_ids = os.getenv("HERMES_ULTRAGOAL_AUTHORIZED_DISCORD_USER_IDS", "")
+                config_platforms = getattr(self.config, "platforms", None) if self.config else None
+                platform_cfg = config_platforms.get(source.platform) if config_platforms else None
+                if platform_cfg:
+                    extra = getattr(platform_cfg, "extra", {}) or {}
+                    authorized_user_ids = extra.get(
+                        "ultragoal_authorized_user_ids",
+                        extra.get("natural_skill_authorized_user_ids", authorized_user_ids),
+                    )
+
+                natural_route = resolve_natural_skill_invocation(
+                    message_text,
+                    platform=getattr(source, "platform", None),
+                    chat_type=getattr(source, "chat_type", None),
+                    thread_id=getattr(source, "thread_id", None),
+                    user_id=getattr(source, "user_id", None),
+                    authorized_user_ids=authorized_user_ids,
+                )
+                if natural_route is None and matches_ultragoal_natural_invocation(
+                    message_text,
+                    platform=getattr(source, "platform", None),
+                    chat_type=getattr(source, "chat_type", None),
+                    thread_id=getattr(source, "thread_id", None),
+                ):
+                    blocked_msg = (
+                        "[Natural skill routing blocked]\n"
+                        "Matched natural skill route: /kanban-ultragoal-ingress\n"
+                        f"User instruction: {(message_text or '').strip()}\n"
+                        "Status: blocked — immutable sender ID is not authorized for Ultragoal natural ingress.\n"
+                        "Do not continue as Autopilot, generic Hermes direct, or ordinary conversation."
+                    )
+                    _natural_adapter = self.adapters.get(source.platform)
+                    if _natural_adapter:
+                        try:
+                            await _natural_adapter.send(source.chat_id, blocked_msg)
+                        except Exception:
+                            logger.debug("Failed to send natural routing authorization blocker", exc_info=True)
+                    return None
+                if natural_route is not None:
+                    cmd_key, user_instruction, runtime_note = natural_route
+                    routed_msg = build_skill_invocation_message(
+                        cmd_key,
+                        user_instruction,
+                        task_id=session_key,
+                        runtime_note=runtime_note,
+                    )
+                    if routed_msg:
+                        return routed_msg
+                    blocked_msg = build_natural_skill_fail_closed_message(
+                        cmd_key, user_instruction, runtime_note
+                    )
+                    _natural_adapter = self.adapters.get(source.platform)
+                    if _natural_adapter:
+                        try:
+                            await _natural_adapter.send(source.chat_id, blocked_msg)
+                        except Exception:
+                            logger.debug("Failed to send natural routing blocker", exc_info=True)
+                    return None
+            except Exception as exc:
+                logger.warning("Natural skill routing failed closed: %s", exc)
+                blocked_msg = (
+                    "[Natural skill routing blocked]\n"
+                    "Status: blocked — natural ingress raised an internal error.\n"
+                    "Do not continue as Autopilot, generic Hermes direct, or ordinary conversation."
+                )
+                _natural_adapter = self.adapters.get(source.platform)
+                if _natural_adapter:
+                    try:
+                        await _natural_adapter.send(source.chat_id, blocked_msg)
+                    except Exception:
+                        logger.debug("Failed to send natural routing error blocker", exc_info=True)
+                return None
+
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
             group_sessions_per_user=_group_sessions_per_user,

@@ -99,7 +99,7 @@ class TestRegistration:
     @pytest.mark.parametrize(
         "builtin",
         ["edge", "openai", "elevenlabs", "minimax", "gemini",
-         "mistral", "xai", "piper", "kittentts", "neutts"],
+         "mistral", "xai", "piper", "kittentts", "neutts", "stepfun"],
     )
     def test_rejects_builtin_shadow_with_warning(self, builtin, caplog):
         """Built-in names always win — plugin registration is silently ignored

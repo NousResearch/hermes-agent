@@ -254,6 +254,23 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "mistral",
             },
+            # StepFun TTS — native built-in (no command-type shim). Two
+            # models under one provider: step-tts-2 (flat ``emotion`` and
+            # ``style`` top-level voice-tag fields) and stepaudio-2.5-tts
+            # (natural-language direction via ``instruction``). The docs
+            # page shows a nested voice_label shape, but the actual API
+            # takes the tags as flat ``emotion``/``style`` fields and
+            # accepts both in a single request. Docs:
+            # https://platform.stepfun.ai/docs/en/guides/developer/tts
+            {
+                "name": "StepFun TTS",
+                "badge": "paid",
+                "tag": "step-tts-2 (emotion/style tags) + stepaudio-2.5-tts (instruction)",
+                "env_vars": [
+                    {"key": "STEPFUN_API_KEY", "prompt": "StepFun API key", "url": "https://platform.stepfun.ai/"},
+                ],
+                "tts_provider": "stepfun",
+            },
             {
                 "name": "Google Gemini TTS",
                 "badge": "preview",

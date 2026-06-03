@@ -124,6 +124,10 @@ export interface DesktopUpdateApplyResult {
   manual?: boolean
   command?: string
   hermesRoot?: string
+  /** True when the local update action was intentionally skipped. */
+  skipped?: boolean
+  /** True when the skip applies because Desktop is connected to a remote backend. */
+  remote?: boolean
 }
 
 export type DesktopUpdateStage = 'idle' | 'prepare' | 'fetch' | 'pull' | 'pydeps' | 'restart' | 'manual' | 'error'

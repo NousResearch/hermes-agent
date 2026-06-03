@@ -26,6 +26,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { shouldUseLocalUpdater } = require('./update-mode.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -1158,6 +1159,17 @@ async function resolveHealedBranch(updateRoot, branch) {
 }
 
 async function checkUpdates() {
+  const connectionMode = currentDesktopConnectionMode()
+  if (!shouldUseLocalUpdater({ mode: connectionMode })) {
+    return {
+      supported: false,
+      reason: 'remote-mode',
+      message: 'Desktop is connected to a remote Hermes backend; update that host instead of this local checkout.',
+      branch: readDesktopUpdateConfig().branch,
+      fetchedAt: Date.now()
+    }
+  }
+
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -1260,6 +1272,13 @@ async function applyUpdates(opts = {}) {
   updateInFlight = true
 
   try {
+    const connectionMode = currentDesktopConnectionMode()
+    if (!shouldUseLocalUpdater({ mode: connectionMode })) {
+      const message = 'Remote mode is active; skipping local Hermes updater handoff.'
+      rememberLog(`[updates] ${message}`)
+      return { ok: true, skipped: true, remote: true, message }
+    }
+
     const updater = resolveUpdaterBinary()
     if (!updater && !IS_WINDOWS) {
       // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
@@ -3079,6 +3098,16 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   }
 
   return { mode, remote: nextRemote }
+}
+
+function currentDesktopConnectionMode() {
+  if (process.env.HERMES_DESKTOP_REMOTE_URL) return 'remote'
+
+  try {
+    return readDesktopConnectionConfig().mode === 'remote' ? 'remote' : 'local'
+  } catch {
+    return 'local'
+  }
 }
 
 function resolveRemoteBackend() {

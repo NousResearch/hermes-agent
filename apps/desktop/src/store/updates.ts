@@ -235,6 +235,12 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         message: result.command ?? 'hermes update',
         command: result.command ?? 'hermes update'
       })
+    } else if (result?.skipped && result?.remote) {
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        message: result.message ?? 'Remote mode is active; update the remote Hermes host instead.'
+      })
     }
 
     return result

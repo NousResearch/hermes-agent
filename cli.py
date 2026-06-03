@@ -10237,14 +10237,19 @@ class HermesCLI:
                     _cprint(f"  {_DIM}Auto Router: ON — workers auto-picked across "
                             f"{_n} model(s); orchestrator unchanged.{_RST}")
 
-        parts = cmd.strip().split(maxsplit=1)
+        toks = cmd.strip().split()
         # Bare /caduceus toggles the mode (one-keystroke flip); /caduceus status
-        # only reports it. on/off force a specific state.
-        arg = parts[1].strip().lower() if len(parts) > 1 else "toggle"
+        # only reports it. on/off force a specific state. /caduceus auto [on|off]
+        # toggles the Auto Router (per-task worker model selection).
+        arg = toks[1].strip().lower() if len(toks) > 1 else "toggle"
+        sub = toks[2].strip().lower() if len(toks) > 2 else ""
 
         if arg == "status":
             _emit_state()
-            _cprint(f"  {_DIM}Usage: /caduceus [on|off|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /caduceus [on|off|status|auto on|off]{_RST}")
+            return
+        if arg in {"auto", "router"}:
+            self._handle_caduceus_auto(st, sub)
             return
         if arg == "toggle":
             want = not st.enabled
@@ -10254,7 +10259,7 @@ class HermesCLI:
             want = False
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /caduceus [on|off|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /caduceus [on|off|status|auto on|off]{_RST}")
             return
 
         if want:
@@ -10266,6 +10271,56 @@ class HermesCLI:
             st.deactivate()
             self._apply_caduceus_to_agent()
             _cprint(f"  ⚕ Caduceus {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET} — back to standard mode.")
+
+    def _handle_caduceus_auto(self, st, sub: str):
+        """Toggle the Caduceus Auto Router (per-task worker model selection).
+
+        `/caduceus auto` toggles; `auto on|off` forces a state. Flips
+        caduceus.router.enabled (session + persisted). Workers are then routed
+        per task to the cheapest configured candidate that can do it; the
+        orchestrator always keeps the session model.
+        """
+        from hermes_cli.colors import Colors as _Colors
+        router = getattr(st, "router", None)
+        if not isinstance(router, dict):
+            router = {}
+            st.router = router
+        cur = bool(router.get("enabled"))
+        if sub in {"on", "enable"}:
+            want = True
+        elif sub in {"off", "disable"}:
+            want = False
+        elif sub in {"", "toggle"}:
+            want = not cur
+        elif sub == "status":
+            want = cur
+        else:
+            _cprint(f"  {_DIM}Usage: /caduceus auto [on|off]{_RST}")
+            return
+
+        router["enabled"] = want
+        try:
+            save_config_value("caduceus.router.enabled", want)
+        except Exception as exc:
+            logger.debug("persist caduceus.router.enabled failed: %s", exc)
+
+        n = len(router.get("candidates") or [])
+        if want:
+            _cprint(f"  ⚕ Auto Router {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET} — "
+                    f"workers auto-picked per task; orchestrator keeps the session model.")
+            if n == 0:
+                _cprint(f"  {_DIM}No candidate models configured yet — add a few under "
+                        f"caduceus.router.candidates in config.yaml, e.g.{_RST}")
+                _cprint(f"  {_DIM}  - {{model: \"google/gemini-3-flash-preview\", provider: \"openrouter\", cost: 0.3}}{_RST}")
+                _cprint(f"  {_DIM}  - {{model: \"gpt-5.5\", provider: \"codex\", cost: 5.0}}{_RST}")
+                _cprint(f"  {_DIM}(until then workers just use the session model){_RST}")
+            else:
+                _cprint(f"  {_DIM}Routing across {n} configured model(s).{_RST}")
+            if not st.enabled:
+                _cprint(f"  {_DIM}Note: takes effect once Caduceus is on (/caduceus on).{_RST}")
+        else:
+            _cprint(f"  ⚕ Auto Router {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET} — "
+                    f"workers use the session model.")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

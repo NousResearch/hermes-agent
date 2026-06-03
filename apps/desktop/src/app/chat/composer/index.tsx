@@ -20,6 +20,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { isImeComposing } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
@@ -555,6 +556,10 @@ export function ChatBar({
       return
     }
 
+    if (event.key === 'Enter' && isImeComposing(event)) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -1024,8 +1029,8 @@ export function ChatBar({
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-label="Message"
-        autoCorrect="off"
         autoCapitalize="off"
+        autoCorrect="off"
         className={cn(
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',

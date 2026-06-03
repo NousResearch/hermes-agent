@@ -558,6 +558,69 @@ class TestToolCallOutputBackfill:
         }]
 
 
+class TestDeterministicRedactedEvidence:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_safe_value_redacts_nested_sensitive_keys_without_llm(self):
+        mod = self._fresh_plugin()
+
+        raw = {
+            "command": "curl -H 'Authorization: Bearer sk-live-abcdef1234567890' https://api.example.com/users?access_token=opaque-token&ok=1",
+            "env": {
+                "OPENAI_API_KEY": "sk-test-abcdef1234567890",
+                "DATABASE_URL": "postgres://user:supersecret@db.example.com/app",
+                "normal": "keep me",
+            },
+            "headers": {
+                "Authorization": "Bearer ghp_abcdefghijklmnopqrstuvwxyz",
+                "Cookie": "sid=abc123; csrf=def456",
+            },
+        }
+
+        safe = mod._safe_value(raw, parse_json_strings=True)
+        rendered = repr(safe)
+
+        assert "sk-live-abcdef1234567890" not in rendered
+        assert "sk-test-abcdef1234567890" not in rendered
+        assert "supersecret" not in rendered
+        assert "ghp_abcdefghijklmnopqrstuvwxyz" not in rendered
+        assert "sid=abc123" not in rendered
+        assert "opaque-token" not in rendered
+
+        assert "api.example.com" in rendered
+        assert "OPENAI_API_KEY" in rendered
+        assert "DATABASE_URL" in rendered
+        assert safe["env"]["normal"] == "keep me"
+        assert safe["headers"]["Cookie"] == "[REDACTED_SECRET]"
+
+    def test_serialize_messages_redacts_prompt_and_tool_payload_evidence(self):
+        mod = self._fresh_plugin()
+
+        messages = [
+            {
+                "role": "user",
+                "content": "Use token sk-user-abcdef1234567890 against https://api.example.com?token=opaque",
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_call_id": "call-1",
+                "content": '{"stdout": "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz\\n", "ok": true}',
+            },
+        ]
+
+        safe_messages = mod._serialize_messages(messages)
+        rendered = repr(safe_messages)
+
+        assert "sk-user-abcdef1234567890" not in rendered
+        assert "ghp_abcdefghijklmnopqrstuvwxyz" not in rendered
+        assert "opaque" not in rendered
+        assert "api.example.com" in rendered
+        assert safe_messages[1]["content"]["ok"] is True
+
+
 class TestToolObservationKeying:
     """Tests for pre/post tool_call observation matching when tool_call_id is absent."""
 

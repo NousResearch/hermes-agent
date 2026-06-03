@@ -42,6 +42,18 @@ HERMES_LANGFUSE_MAX_CHARS=12000      # max chars per field (default: 12000)
 HERMES_LANGFUSE_DEBUG=true           # verbose plugin logging
 ```
 
+## Evidence redaction
+
+Prompt, tool-argument, and tool-result payloads are redacted locally before
+being sent to Langfuse. The plugin uses Hermes' deterministic regex/key-name
+redactor with `force=True`; it does **not** call an LLM to decide what to mask.
+
+The redaction pass preserves useful audit context such as tool names, command
+shape, file paths, URLs/domains, and non-sensitive result fields, while masking
+Authorization headers, cookies, token/password/secret-like object keys,
+`.env`-style assignments, private keys, URL credentials, and sensitive query
+parameters.
+
 ## Disable
 
 ```bash

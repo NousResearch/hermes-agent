@@ -59,6 +59,29 @@ _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
 
+_SENSITIVE_EVIDENCE_KEYS = frozenset({
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth",
+    "bearer",
+    "client_secret",
+    "cookie",
+    "database_url",
+    "id_token",
+    "jwt",
+    "key",
+    "openai_api_key",
+    "password",
+    "private_key",
+    "refresh_token",
+    "secret",
+    "set-cookie",
+    "token",
+    "x-api-key",
+})
+_SECRET_PLACEHOLDER = "[REDACTED_SECRET]"
+
 # Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
 # the prefix is baked into the server-side issuance flow, not a UI hint).
 # Anything else (`placeholder`, `test-key`, `your-langfuse-key`, etc.) is a
@@ -361,6 +384,31 @@ def _normalize_payload(value: Any, *, tool_name: str = "", args: Any = None) -> 
     return value
 
 
+def _redact_evidence_text(value: str) -> str:
+    """Redact prompt/tool evidence locally before sending it to Langfuse.
+
+    Observability payloads can include prompts, tool args, commands, URLs,
+    and tool results.  They are useful audit evidence, but they must not
+    carry raw secrets to an external tracing sink.  This pass is deliberately
+    deterministic and local: no LLM is involved in deciding what to mask.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(value, force=True)
+    except Exception:  # pragma: no cover - fail-open to existing truncation path
+        return value
+
+
+def _is_sensitive_evidence_key(key: Any) -> bool:
+    normalized = str(key).strip().lower().replace("-", "_")
+    if normalized in _SENSITIVE_EVIDENCE_KEYS:
+        return True
+    return any(
+        marker in normalized
+        for marker in ("api_key", "apikey", "auth", "cookie", "password", "private_key", "secret", "token")
+    )
+
+
 def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
                 parse_json_strings: bool = False) -> Any:
     max_chars = max_chars if max_chars is not None else int(_env("HERMES_LANGFUSE_MAX_CHARS", "12000") or "12000")
@@ -375,13 +423,17 @@ def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
             parsed = _maybe_parse_json_string(value)
             if parsed is not value:
                 return _safe_value(parsed, max_chars=max_chars, depth=depth, parse_json_strings=True)
-        return _truncate_text(value, max_chars)
+        return _truncate_text(_redact_evidence_text(value), max_chars)
     if isinstance(value, dict):
         normalized = _normalize_payload(value)
         if normalized is not value:
             return _safe_value(normalized, max_chars=max_chars, depth=depth, parse_json_strings=parse_json_strings)
         return {
-            str(k): _safe_value(v, max_chars=max_chars, depth=depth + 1, parse_json_strings=parse_json_strings)
+            str(k): (
+                _SECRET_PLACEHOLDER
+                if _is_sensitive_evidence_key(k) and v not in (None, "")
+                else _safe_value(v, max_chars=max_chars, depth=depth + 1, parse_json_strings=parse_json_strings)
+            )
             for k, v in list(value.items())[:50]
         }
     if isinstance(value, (list, tuple, set)):

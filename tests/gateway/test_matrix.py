@@ -1659,6 +1659,44 @@ class TestMatrixMarkdownHtmlSecurity:
         assert "<script>" not in result
 
 
+class TestStandaloneMatrixSendHtmlSecurity:
+    """Regression coverage for the standalone send_message Matrix path."""
+
+    @pytest.mark.asyncio
+    async def test_formatted_body_escapes_raw_html(self):
+        """Standalone Matrix sends must not ship raw model-controlled HTML."""
+
+        from tools.send_message_tool import _send_matrix
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"event_id": "$evt123"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.put = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = await _send_matrix(
+                "test_token",
+                {"homeserver": "https://matrix.example.org"},
+                "!room:matrix.org",
+                '# title\nhi <img src=x onerror="alert(1)"> **bold**',
+            )
+
+        assert result["success"] is True
+        payload = mock_session.put.call_args.kwargs["json"]
+        assert payload["format"] == "org.matrix.custom.html"
+        assert "<img" not in payload["formatted_body"]
+        assert "&lt;img" in payload["formatted_body"]
+        assert "<h1>" not in payload["formatted_body"]
+        assert "<strong>title</strong>" in payload["formatted_body"]
+        assert "<strong>bold</strong>" in payload["formatted_body"]
+
+
 # ---------------------------------------------------------------------------
 # Markdown to HTML: extended formatting tests
 # ---------------------------------------------------------------------------

@@ -1373,8 +1373,8 @@ async def _send_sms(auth_token, chat_id, message):
 async def _send_matrix(token, extra, chat_id, message):
     """Send via Matrix Client-Server API.
 
-    Converts markdown to HTML for rich rendering in Matrix clients.
-    Falls back to plain text if the ``markdown`` library is not installed.
+    Converts markdown to Matrix-compatible HTML for rich rendering in Matrix
+    clients while preserving the gateway adapter's HTML escaping stance.
     """
     try:
         import aiohttp
@@ -1391,11 +1391,12 @@ async def _send_matrix(token, extra, chat_id, message):
         url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # Build message payload with optional HTML formatted_body.
+        # Build message payload with escaped HTML formatted_body.
         payload = {"msgtype": "m.text", "body": message}
         try:
-            import markdown as _md
-            html = _md.markdown(message, extensions=["fenced_code", "tables"])
+            from gateway.platforms.matrix import MatrixAdapter
+
+            html = MatrixAdapter._markdown_to_html_fallback(message)
             # Convert h1-h6 to bold for Element X compatibility.
             html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
             payload["format"] = "org.matrix.custom.html"

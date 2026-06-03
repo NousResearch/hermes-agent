@@ -53,7 +53,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "arcee",
     "gmi",
     "tencent-tokenhub",
-    "custom", "local",
+    "custom", "local", "tinfoil",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
@@ -252,6 +252,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-omni": 262144,
     "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
+    # Tinfoil.sh — HPKE-encrypted inference models
+    "kimi-k2-6": 262144,
+    "glm-5-1": 202752,
+    "deepseek-v4-pro": 1000000,
+    "gemma4-31b": 256000,
+    "qwen3-vl-30b": 131072,
+    "llama3-3-70b": 131072,
+    "gpt-oss-120b": 128000,
 }
 
 # xAI Grok models that ACCEPT the `reasoning.effort` parameter on

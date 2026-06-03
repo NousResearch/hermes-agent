@@ -418,6 +418,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    # Tinfoil.sh — HPKE end-to-end encrypted AI inference.
+    # Curated chat models; live API returns the full set including
+    # embedding/audio/tts/document/tool/safety types which are filtered
+    # out during automatic model discovery.
+    "tinfoil": [
+        "kimi-k2-6",
+        "glm-5-1",
+        "deepseek-v4-pro",
+        "gemma4-31b",
+        "qwen3-vl-30b",
+        "llama3-3-70b",
+        "gpt-oss-120b",
+    ],
     # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
     # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
     # Users with classic DashScope keys should override DASHSCOPE_BASE_URL

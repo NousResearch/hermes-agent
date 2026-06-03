@@ -45,12 +45,7 @@ def test_bundled_plugins_discovered():
 
 
 def test_all_profiles_register():
-    """After discovery, the registry must contain every bundled provider directory.
-
-    This is an invariant — the number of profiles matches the number of plugin
-    directories, not a hardcoded count. Counts shift when providers are
-    added/removed; that's expected and shouldn't break CI.
-    """
+    """After discovery, the registry must contain at least the expected profiles."""
     _clear_provider_caches()
     from providers import list_providers
 
@@ -59,8 +54,6 @@ def test_all_profiles_register():
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    # Some plugin __init__.py files register multiple profiles, so the registry
-    # count is >= the directory count (never less).
     assert len(names) >= plugin_dir_count, (
         f"Expected at least {plugin_dir_count} profiles (one per plugin dir), got {len(names)}: {names}"
     )
@@ -69,6 +62,7 @@ def test_all_profiles_register():
     for required in (
         "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
         "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
+        "tinfoil",
     ):
         assert required in names, f"Missing profile: {required}"
 

@@ -1645,6 +1645,20 @@ def _session_info(agent, session: dict | None = None) -> dict:
     warn = _probe_credentials(agent)
     if warn:
         info["credential_warning"] = warn
+    try:
+        if getattr(agent, "api_mode", "") == "tinfoil_ehbp":
+            # Read the agent's *cached* transport — the same instance that
+            # ``_build_tinfoil_client`` recorded the attestation result on.
+            # A fresh module-level ``get_transport`` instance would always
+            # report ``is_secure() == False`` (its ``_secure_client`` is None).
+            transport = None
+            getter = getattr(agent, "_get_transport", None)
+            if callable(getter):
+                transport = getter("tinfoil_ehbp")
+            if transport is not None:
+                info["tinfoil_secure"] = bool(transport.is_secure())
+    except Exception:
+        pass
     return info
 
 

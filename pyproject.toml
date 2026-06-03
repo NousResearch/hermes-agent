@@ -142,6 +142,9 @@ acp = ["agent-client-protocol==0.9.0"]
 # installs (see [all] policy comment below).
 mistral = ["mistralai==2.4.8"]
 bedrock = ["boto3==1.42.89"]
+# Tinfoil EHBP — attestation-verified enclave transport for secure inference.
+# Used by api_mode='tinfoil_ehbp'. Falls back to plain TLS when not installed.
+tinfoil = ["tinfoil>=0.12,<0.13"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.

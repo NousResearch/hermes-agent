@@ -155,6 +155,7 @@ export interface SessionInfo {
   service_tier?: string
   skills: Record<string, string[]>
   system_prompt?: string
+  tinfoil_secure?: boolean
   tools: Record<string, string[]>
   update_behind?: number | null
   update_command?: string

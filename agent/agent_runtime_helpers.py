@@ -1241,6 +1241,71 @@ def anthropic_prompt_cache_policy(
     return False, False
 
 
+def _tinfoil_require_secure() -> bool:
+    """Read ``tinfoil.require_secure`` from config (default False).
+
+    When True the agent fails closed rather than silently downgrading to
+    plain TLS if the verified HPKE enclave transport can't be established.
+    """
+    try:
+        from hermes_cli.config import load_config
+        return bool(load_config().get("tinfoil", {}).get("require_secure", False))
+    except Exception:
+        return False
+
+
+def _build_tinfoil_client(agent, client_kwargs: dict) -> Any:
+    """Build an OpenAI client with Tinfoil EHBP secure transport.
+
+    Delegates to ``TinfoilTransport.build_secure_openai_client()``, which
+    handles attestation verification, TLS pinning, and HPKE encryption.
+    Falls back to plain TLS if the SDK is not installed — unless
+    ``tinfoil.require_secure`` is set, in which case the inability to
+    establish the verified transport raises instead of downgrading.
+
+    The transport is fetched via ``agent._get_transport()`` (not the bare
+    module-level ``get_transport``) so the *cached* per-agent transport
+    instance records the attestation result.  That cached instance is the
+    same one queried later by the status-bar / TUI session-info probe, so
+    ``is_secure()`` reflects the live connection state instead of always
+    reporting ``False`` on a throwaway instance.
+    """
+    require_secure = _tinfoil_require_secure()
+    transport = agent._get_transport("tinfoil_ehbp")
+    if transport is None:
+        if require_secure:
+            from agent.transports.tinfoil import TinfoilSecureUnavailableError
+            raise TinfoilSecureUnavailableError(
+                "Tinfoil EHBP transport is not registered and "
+                "tinfoil.require_secure is enabled — refusing to downgrade "
+                "to plain TLS."
+            )
+        client_kwargs = dict(client_kwargs)
+        if "http_client" not in client_kwargs:
+            keepalive_http = agent._build_keepalive_http_client(
+                client_kwargs.get("base_url", ""),
+            )
+            if keepalive_http is not None:
+                client_kwargs["http_client"] = keepalive_http
+        _ra().logger.warning(
+            "Tinfoil EHBP transport not registered, "
+            "falling back to plain OpenAI client"
+        )
+        return _ra().OpenAI(**client_kwargs)
+
+    api_key = client_kwargs.get("api_key", "")
+    base_url = str(client_kwargs.get("base_url", "") or "")
+    timeout = client_kwargs.get("timeout")
+    default_headers = client_kwargs.get("default_headers")
+
+    return transport.build_secure_openai_client(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        default_headers=default_headers,
+        require_secure=require_secure,
+    )
+
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
@@ -1303,6 +1368,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 agent._client_log_context(),
             )
             return client
+    # Tinfoil EHBP secure client — attestation-verified enclave transport
+    if getattr(agent, "api_mode", "") == "tinfoil_ehbp":
+        return _build_tinfoil_client(agent, client_kwargs)
     # Inject TCP keepalives so the kernel detects dead provider connections
     # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
     # this, a peer that drops mid-stream leaves the socket in a state where

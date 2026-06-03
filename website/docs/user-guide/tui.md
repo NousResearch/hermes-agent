@@ -192,6 +192,8 @@ The TUI's status line tracks agent state in real time:
 
 The per-skin status-bar colors and thresholds are shared with the classic CLI — see [Skins](features/skins.md) for customization.
 
+When using the `tinfoil` provider (`api_mode: tinfoil_ehbp`), a lock icon appears in the status line: 🔒 (green) for active HPKE encryption, 🔓 (red) when the transport fell back to plain TLS.
+
 The status line also shows:
 
 - **Working directory with git branch** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. The branch suffix updates when you `git checkout` in a side terminal (mtime-cached) so the TUI reflects your actual active branch, not whatever it was at launch.

@@ -1,0 +1,5 @@
+name: tinfoil-provider
+kind: model-provider
+version: 1.0.0
+description: Tinfoil.sh — HPKE end-to-end encrypted AI inference
+author: Kellen Renshaw

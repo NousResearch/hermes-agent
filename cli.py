@@ -3691,6 +3691,19 @@ class HermesCLI:
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+        # Tinfoil HPKE transport security state — shown as a lock icon in the
+        # status bar. None when the active provider isn't tinfoil; True/False
+        # mirrors the cached transport's attestation result (False = the
+        # connection silently fell back to plain TLS).
+        try:
+            if getattr(agent, "api_mode", "") == "tinfoil_ehbp":
+                getter = getattr(agent, "_get_transport", None)
+                transport = getter("tinfoil_ehbp") if callable(getter) else None
+                if transport is not None:
+                    snapshot["tinfoil_secure"] = bool(transport.is_secure())
+        except Exception:
+            pass
+
         return snapshot
 
     @staticmethod
@@ -3883,6 +3896,18 @@ class HermesCLI:
         cont = " | Continuous" if self._voice_continuous else ""
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
+    @staticmethod
+    def _tinfoil_lock_glyph(snapshot: Dict[str, Any]) -> str:
+        """Return the Tinfoil HPKE lock glyph for the status bar, or ''.
+
+        🔒 = secure HPKE enclave transport active; 🔓 = silently fell back
+        to plain TLS. Empty string when the active provider isn't tinfoil.
+        """
+        secure = snapshot.get("tinfoil_secure")
+        if secure is None:
+            return ""
+        return "🔒" if secure else "🔓"
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
         try:
@@ -3894,13 +3919,18 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             yolo_active = self._is_session_yolo_active()
+            lock_glyph = self._tinfoil_lock_glyph(snapshot)
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                if lock_glyph:
+                    text += f" · {lock_glyph}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                if lock_glyph:
+                    parts.append(lock_glyph)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3924,6 +3954,8 @@ class HermesCLI:
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if lock_glyph:
+                parts.append(lock_glyph)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3955,6 +3987,12 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
+            lock_glyph = self._tinfoil_lock_glyph(snapshot)
+            lock_style = (
+                "class:status-bar-good"
+                if snapshot.get("tinfoil_secure")
+                else "class:status-bar-critical"
+            )
 
             if width < 52:
                 frags = [
@@ -3963,6 +4001,9 @@ class HermesCLI:
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
+                if lock_glyph:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append((lock_style, lock_glyph))
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -3980,6 +4021,9 @@ class HermesCLI:
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if lock_glyph:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append((lock_style, lock_glyph))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -4019,6 +4063,9 @@ class HermesCLI:
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if lock_glyph:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((lock_style, lock_glyph))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

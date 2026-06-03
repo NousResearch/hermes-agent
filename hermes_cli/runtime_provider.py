@@ -248,6 +248,7 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    "tinfoil_ehbp",
 }
 
 
@@ -1620,6 +1621,8 @@ def resolve_runtime_provider(
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         elif provider == "xai":
             api_mode = "codex_responses"
+        elif provider == "tinfoil":
+            api_mode = "tinfoil_ehbp"
         else:
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.

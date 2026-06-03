@@ -148,6 +148,7 @@ Look at these bundled plugins for idioms:
 
 | Plugin | Why look |
 |---|---|
+| `plugins/model-providers/tinfoil/` | HPKE end-to-end encryption, secure enclave routing, `fetch_models` with live API discovery + `type == "chat"` filtering, `build_extra_body` for endpoint mapping, `build_api_kwargs_extras` for custom headers |
 | `plugins/model-providers/openrouter/` | Aggregator with provider preferences, public model catalog |
 | `plugins/model-providers/gemini/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
 | `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`, `extra_body.thinking`, top-level `reasoning_effort` |

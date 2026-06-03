@@ -501,8 +501,9 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
 
     Resolution order:
       1. Known provider → transport → TRANSPORT_TO_API_MODE.
-      2. URL heuristics for unknown / custom providers.
-      3. Default: 'chat_completions'.
+      2. Plugin provider profiles (e.g. tinfoil_ehbp).
+      3. URL heuristics for unknown / custom providers.
+      4. Default: 'chat_completions'.
     """
     pdef = get_provider(provider)
     if pdef is not None:
@@ -516,7 +517,30 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
                 return "anthropic_messages"
             if "api.openai.com" in url_lower:
                 return "codex_responses"
+        # Check provider profiles for non-standard api_modes (e.g. tinfoil_ehbp).
+        # Plugin providers that declare a custom api_mode (not chat_completions)
+        # or a transport other than openai_chat must be handled here.
+        if pdef.source == "provider-plugin":
+            try:
+                from providers import get_provider_profile as _ppp
+                _profile = _ppp(pdef.id)
+                if _profile is not None and _profile.api_mode not in {"", "chat_completions"}:
+                    return _profile.api_mode
+            except Exception:
+                pass
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
+
+    # Check the provider plugin registry for providers not in models.dev or
+    # HERMES_OVERLAYS (e.g. tinfoil.sh).
+    try:
+        from providers import get_provider_profile as _ppp
+        _profile = _ppp(provider)
+        if _profile is not None:
+            if _profile.api_mode not in {"", "chat_completions"}:
+                return _profile.api_mode
+            return TRANSPORT_TO_API_MODE.get("openai_chat", "chat_completions")
+    except Exception:
+        pass
 
     # Direct provider checks for providers not in HERMES_OVERLAYS
     if provider == "bedrock":
@@ -724,6 +748,25 @@ def resolve_provider_full(
                 api_key_env_vars=mdev_info.env,
                 base_url=mdev_info.api,
                 source="models.dev",
+            )
+    except Exception:
+        pass
+
+    # 4. Fall back to the model-provider plugin registry (providers/ plugins).
+    #    Providers registered via register_provider() but absent from models.dev
+    #    and HERMES_OVERLAYS (e.g. tinfoil.sh) are resolved here.
+    try:
+        from providers import get_provider_profile as _plugin_profile
+        pp = _plugin_profile(canonical)
+        if pp is not None:
+            return ProviderDef(
+                id=canonical,
+                name=pp.display_name or canonical,
+                transport="openai_chat",
+                api_key_env_vars=pp.env_vars,
+                base_url=pp.base_url,
+                auth_type=pp.auth_type,
+                source="provider-plugin",
             )
     except Exception:
         pass

@@ -64,7 +64,10 @@ chat_completions transport all auto-wire from the registry.
 ## Non-trivial profiles
 
 Override the `ProviderProfile` hooks in a subclass for per-provider
-quirks — see `plugins/model-providers/openrouter/__init__.py` for
+quirks — see `plugins/model-providers/tinfoil/__init__.py` for
+HPKE encryption, secure enclave routing, and `fetch_models` with
+live API discovery + `type == "chat"` filtering,
+`plugins/model-providers/openrouter/__init__.py` for
 `build_extra_body` and `build_api_kwargs_extras` examples, and
 `plugins/model-providers/gemini/__init__.py` for `thinking_config`
 translation.

@@ -164,17 +164,26 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     ? 'Fast'
                     : ''
 
-                // Every row is a hover-Edit submenu trigger. Clicking switches
-                // to the family's base model; the Fast toggle inside swaps to
-                // the -fast sibling (or flips the speed param) as appropriate.
+                // Every row is a hover-Edit submenu trigger. Activating it
+                // (pointer or keyboard) switches to the family's base model;
+                // the Fast toggle inside swaps to the -fast sibling (or flips
+                // the speed param). The sub-trigger has no `onSelect`, so wire
+                // both click and Enter/Space for keyboard parity.
+                const activate = () => {
+                  if (!isCurrent) {
+                    void switchTo(family.id, group.provider.slug)
+                  }
+                }
+
                 return (
                   <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                     <DropdownMenuSubTrigger
                       className={cn(dropdownMenuRow, 'cursor-pointer')}
                       hideChevron
-                      onClick={() => {
-                        if (!isCurrent) {
-                          void switchTo(family.id, group.provider.slug)
+                      onClick={activate}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          activate()
                         }
                       }}
                     >

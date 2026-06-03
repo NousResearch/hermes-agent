@@ -597,6 +597,10 @@ def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatc
         hermes_main, "_stash_local_changes_if_needed",
         lambda *a, **kw: "abc123deadbeef",
     )
+    # Force the stash path (not the managed-clone clean path) so this test
+    # exercises stash restore. A real fork, or a clone where the managed
+    # clean fails, falls through to stash.
+    monkeypatch.setattr(hermes_main, "_clean_managed_worktree", lambda *a, **kw: False)
     restore_calls = []
     monkeypatch.setattr(
         hermes_main, "_restore_stashed_changes",
@@ -633,6 +637,81 @@ def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
 
     checkout_calls = [c for c in recorded if "checkout" in c]
     assert len(checkout_calls) == 0
+
+
+def test_cmd_update_managed_clone_cleans_instead_of_stashing(monkeypatch, tmp_path):
+    """On a non-fork (managed) clone, working-tree dirt is discarded via
+    _clean_managed_worktree, NOT preserved via stash/restore.
+
+    The stash/restore cycle has clobbered freshly-pulled source files
+    (apps/desktop/ deletion → [UNRESOLVED_ENTRY] index.html). A managed clone
+    has nothing the user authored, so the correct move is to throw the
+    git-artifact dirt away and pull cleanly.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    # Official origin → not a fork.
+    monkeypatch.setattr(
+        hermes_main, "_get_origin_url",
+        lambda *a, **kw: "https://github.com/NousResearch/hermes-agent.git",
+    )
+    clean_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_clean_managed_worktree",
+        lambda *a, **kw: clean_calls.append(1) or True,
+    )
+    stash_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_stash_local_changes_if_needed",
+        lambda *a, **kw: stash_calls.append(1) or "shouldnotbeused",
+    )
+    restore_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_restore_stashed_changes",
+        lambda *a, **kw: restore_calls.append(1) or True,
+    )
+
+    side_effect, _ = _make_update_side_effect(commit_count="0")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    # Managed clean path used; stash path never touched.
+    assert len(clean_calls) == 1
+    assert len(stash_calls) == 0
+    assert len(restore_calls) == 0
+
+
+def test_cmd_update_fork_still_uses_stash(monkeypatch, tmp_path):
+    """A fork (non-official origin) keeps the stash machinery so the user's
+    intentional local edits survive the update."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_main, "_get_origin_url",
+        lambda *a, **kw: "https://github.com/someuser/hermes-agent.git",
+    )
+    clean_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_clean_managed_worktree",
+        lambda *a, **kw: clean_calls.append(1) or True,
+    )
+    stash_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_stash_local_changes_if_needed",
+        lambda *a, **kw: stash_calls.append(1) or "abc123",
+    )
+    monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
+    monkeypatch.setattr(hermes_main, "_sync_with_upstream_if_needed", lambda *a, **kw: None)
+
+    side_effect, _ = _make_update_side_effect(commit_count="0")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    # Fork: stash path used, managed clean NOT used.
+    assert len(stash_calls) == 1
+    assert len(clean_calls) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +764,9 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
         hermes_main, "_stash_local_changes_if_needed",
         lambda *a, **kw: "abc123deadbeef",
     )
+    # Force the stash path so this test exercises the reset-failure handling
+    # of the stash branch (not the managed-clone clean path).
+    monkeypatch.setattr(hermes_main, "_clean_managed_worktree", lambda *a, **kw: False)
     restore_calls = []
     monkeypatch.setattr(
         hermes_main, "_restore_stashed_changes",

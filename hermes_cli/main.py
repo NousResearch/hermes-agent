@@ -7948,6 +7948,59 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     return stash_ref
 
 
+def _clean_managed_worktree(git_cmd: list[str], cwd: Path) -> bool:
+    """Discard working-tree dirt on a managed (non-fork) clone.
+
+    On a managed install (%LOCALAPPDATA%\\hermes\\hermes-agent or
+    ~/.hermes/hermes-agent) the user never edits the source tree, so any
+    "dirty" state is pure git artifact: CRLF renormalization, npm lockfile
+    churn, or files left behind when a directory was deleted upstream (e.g.
+    apps/bootstrap-installer/). Stashing that dirt and re-applying it after a
+    pull is actively dangerous — the stash/restore cycle has been observed to
+    clobber freshly-pulled source files (apps/desktop/ deletion →
+    "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
+
+    For a managed clone the correct move is to throw the dirt away with
+    ``git reset --hard HEAD`` + ``git clean -fd`` (mirroring install.ps1's
+    update path), NOT preserve it. Forks keep the stash machinery because
+    their local edits are intentional.
+
+    Returns True if the tree was cleaned (or was already clean), False on
+    a git failure (caller should fall back to the stash path).
+    """
+    status = subprocess.run(
+        git_cmd + ["status", "--porcelain"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if status.returncode != 0:
+        return False
+    if not status.stdout.strip():
+        return True
+
+    print("→ Discarding working-tree changes on managed clone before update...")
+    reset = subprocess.run(
+        git_cmd + ["reset", "--hard", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if reset.returncode != 0:
+        return False
+    # Drop untracked files too (e.g. orphaned build artifacts), but never
+    # touch ignored paths — node_modules, venv, build outputs, and the like
+    # are expensive to rebuild and not git-artifact dirt.
+    subprocess.run(
+        git_cmd + ["clean", "-fd"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    return True
+
+
+
 def _resolve_stash_selector(
     git_cmd: list[str], cwd: Path, stash_ref: str
 ) -> Optional[str]:
@@ -9734,6 +9787,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
+    # On Windows, Git-for-Windows defaults to core.autocrlf=true, which
+    # renormalizes the repo's LF-only text files to CRLF in the working tree.
+    # On a managed, never-user-edited clone that makes tracked files read as
+    # "locally modified", which forces an autostash on every update (and the
+    # stash/restore cycle can clobber source files — see _stash_local_changes_
+    # if_needed below). Pin autocrlf=false so the dirt is never created. This
+    # mirrors what install.ps1's update path already does (PR #38239).
+    if sys.platform == "win32" and git_dir.exists():
+        subprocess.run(
+            git_cmd + ["config", "core.autocrlf", "false"],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+        )
+
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
     # time (platform-specific optional deps, ideallyInert annotations, etc.),
@@ -9811,8 +9879,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 else f"branch '{current_branch}'"
             )
             print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            # Stash before checkout so uncommitted work isn't lost — but on a
+            # managed (non-fork) clone there's nothing to preserve, so discard
+            # git-artifact dirt instead (a dirty tree would otherwise block the
+            # checkout). Forks keep the stash so their edits survive.
+            if not is_fork and _clean_managed_worktree(git_cmd, PROJECT_ROOT):
+                auto_stash_ref = None
+            else:
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
             checkout_result = subprocess.run(
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
@@ -9846,7 +9920,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
                     sys.exit(1)
         else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            # On a managed (non-fork) clone the user never edits the source
+            # tree, so any dirt is git artifact (CRLF, lockfile churn,
+            # upstream-deleted dirs). Throw it away rather than stash/restore
+            # it — the stash/restore cycle has clobbered freshly-pulled source
+            # (apps/desktop/ → "[UNRESOLVED_ENTRY] index.html"). Forks fall
+            # through to the stash path so their intentional edits survive.
+            if not is_fork and _clean_managed_worktree(git_cmd, PROJECT_ROOT):
+                auto_stash_ref = None
+            else:
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = (
             auto_stash_ref is not None

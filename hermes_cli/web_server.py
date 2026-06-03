@@ -83,7 +83,11 @@ except ImportError:
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
         )
 
-WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
+WEB_DIST = (
+    Path(os.environ["HERMES_WEB_DIST"])
+    if "HERMES_WEB_DIST" in os.environ and Path(os.environ["HERMES_WEB_DIST"]).exists()
+    else Path(__file__).parent / "web_dist"
+)
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -133,6 +137,10 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 # injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+
+
+=======
+>>>>>>> theirs
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``

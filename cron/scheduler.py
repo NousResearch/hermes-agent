@@ -637,9 +637,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
-    # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # Optionally append cron metadata so the user knows this is a cron delivery
+    # without pushing the actual result down in chat clients.  Wrapping is on by
+    # default; set cron.wrap_response: false in config.yaml for clean output.
     wrap_response = True
     try:
         user_cfg = load_config()
@@ -651,10 +651,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
         delivery_content = (
+            f"{content}\n\n"
+            f"-------------\n"
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
             f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
     else:
@@ -1946,14 +1946,14 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     logger.info("Output saved to: %s", output_file)
 
                 # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
+                # If the agent responded with only [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                if should_deliver and success and deliver_content.strip().upper() == SILENT_MARKER:
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 

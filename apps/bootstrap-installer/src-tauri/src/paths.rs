@@ -103,6 +103,14 @@ pub fn copy_self_to_hermes_home() -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::copy(&src, &dest)?;
+    let _ = std::process::Command::new("codesign")
+        .args(["--sign", "-", "--force", "--preserve-metadata=identifier,entitlements,flags", dest.to_string_lossy().as_ref()])
+        .status();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755));
+    }
     tracing::info!(?src, ?dest, "copied installer to HERMES_HOME");
     Ok(())
 }

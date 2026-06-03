@@ -1268,7 +1268,19 @@ function Install-Venv {
     
     # uv creates the venv and pins the Python version in one step
     & $UvCmd venv venv --python $PythonVersion
-    
+
+    # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
+    # the user's shell). uv honours UV_PYTHON over an existing venv for the
+    # later `uv sync` / `uv pip install` tiers, so without this it would
+    # silently delete this 3.11 venv and recreate it at the inherited version
+    # -- building Rust transitives that have no wheel for that version from
+    # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
+    # just created forces every subsequent uv command onto it.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (Test-Path $venvPythonExe) {
+        $env:UV_PYTHON = $venvPythonExe
+    }
+
     Pop-Location
     
     Write-Success "Virtual environment ready (Python $PythonVersion)"
@@ -1282,6 +1294,20 @@ function Install-Dependencies {
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
+    }
+
+    # Re-pin UV_PYTHON to the venv interpreter. Install-Venv already does this,
+    # but the bootstrap runs install stages (venv, python-deps) as separate
+    # processes, so the env var set in Install-Venv does NOT survive into a
+    # separate python-deps invocation. Re-deriving it here covers that path.
+    # Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
+    # tiers below recreate the venv at 3.14 and fail the maturin source build
+    # (no cp314 wheels yet).
+    if (-not $NoVenv) {
+        $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+        if (Test-Path $venvPythonExe) {
+            $env:UV_PYTHON = $venvPythonExe
+        }
     }
 
     # Hash-verified install (Tier 0) -- when uv.lock is present, prefer
@@ -1979,8 +2005,22 @@ function Install-Desktop {
         # captures every stdout/stderr line as it's emitted, so we don't
         # need a side TEMP log file — the installer's bootstrap log
         # IS the artifact a support engineer reads.
-        & $npmExe install 2>&1 | ForEach-Object { "$_" }
+        #
+        # Prefer `npm ci`: it wipes node_modules and reinstalls from the
+        # lockfile, always producing a complete tree. Bare `npm install`
+        # can report "up to date" against a stale
+        # node_modules\.package-lock.json marker while node_modules is
+        # actually empty (Windows workspace-hoisting flake), leaving
+        # tsc/typescript unresolved so `npm run pack`'s `tsc -b` dies with
+        # no obvious cause. Fall back to `npm install` only if `npm ci`
+        # fails (lockfile out of sync / very old npm without ci).
+        & $npmExe ci 2>&1 | ForEach-Object { "$_" }
         $code = $LASTEXITCODE
+        if ($code -ne 0) {
+            Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
+            & $npmExe install 2>&1 | ForEach-Object { "$_" }
+            $code = $LASTEXITCODE
+        }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
             throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"

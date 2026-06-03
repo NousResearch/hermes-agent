@@ -321,6 +321,7 @@ export interface SessionRuntimeInfo {
   tools?: Record<string, string[]>
   usage?: Partial<UsageStats>
   version?: string
+  yolo?: boolean
 }
 
 export interface UsageStats {

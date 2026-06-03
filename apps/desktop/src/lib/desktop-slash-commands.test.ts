@@ -15,6 +15,8 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/branch')).toBe(true)
     expect(isDesktopSlashSuggestion('/skin')).toBe(true)
     expect(isDesktopSlashSuggestion('/usage')).toBe(true)
+    expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
+    expect(isDesktopSlashCommand('/yolo')).toBe(true)
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {

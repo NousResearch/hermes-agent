@@ -29,7 +29,8 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -653,6 +654,10 @@ export function useMessageStream({
 
           if (typeof payload?.fast === 'boolean') {
             setCurrentFastMode(payload.fast)
+          }
+
+          if (typeof payload?.yolo === 'boolean') {
+            setYoloActive(payload.yolo)
           }
 
           if (runningChanged && sessionId) {

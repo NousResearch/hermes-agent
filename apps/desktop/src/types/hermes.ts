@@ -48,7 +48,7 @@ export interface OAuthProviderStatus {
 export interface OAuthProvider {
   cli_command: string
   docs_url: string
-  flow: 'device_code' | 'external' | 'pkce'
+  flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string
   name: string
   status: OAuthProviderStatus
@@ -72,6 +72,12 @@ export type OAuthStartResponse =
       session_id: string
       user_code: string
       verification_url: string
+    }
+  | {
+      auth_url: string
+      expires_in: number
+      flow: 'loopback'
+      session_id: string
     }
 
 export interface OAuthSubmitResponse {
@@ -210,6 +216,14 @@ export interface ModelOptionProvider {
   free_tier?: boolean
   /** Nous only: paid models a free-tier user cannot select (shown disabled). */
   unavailable_models?: string[]
+  /** Per-model option support, keyed by model id (present when the picker
+   *  requested capabilities). Lets the UI gate fast/reasoning controls. */
+  capabilities?: Record<string, ModelCapabilities>
+}
+
+export interface ModelCapabilities {
+  fast: boolean
+  reasoning: boolean
 }
 
 export interface ModelOptionsResponse {

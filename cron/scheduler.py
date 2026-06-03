@@ -1115,10 +1115,36 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
+    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
 
     parts = []
     skipped: list[str] = []
     for skill_name in skill_names:
+        # Cron jobs historically accepted only skill names here, but the CLI/gateway
+        # slash-command path lets bundles shadow skills with the same slug. Mirror
+        # that behavior so `skills: ["my-bundle"]` expands bundle members instead
+        # of being treated as a missing skill.
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            bundle_payload = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction="",
+                task_id=str(job.get("id") or "") or None,
+            )
+            if bundle_payload:
+                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
+                if parts:
+                    parts.append("")
+                parts.append(bundle_message)
+                continue
+            logger.warning(
+                "Cron job '%s': bundle '%s' could not load any skills, skipping",
+                job.get("name", job.get("id")),
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
         try:
             loaded = json.loads(skill_view(skill_name))
         except (json.JSONDecodeError, TypeError):

@@ -734,7 +734,7 @@ canvas {
 .sticky-human-clamp {
   max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
-  transition: max-height 0.75s ease;
+  transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .sticky-human-clamp[data-clamped='true'] {

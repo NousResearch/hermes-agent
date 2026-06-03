@@ -2767,3 +2767,126 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+# ── WeCom media delivery (issue #37364) ─────────────────────────────────
+
+
+class TestSendWecomMedia:
+    """Issue #37364: ``send_message`` with ``target="wecom"`` and a
+    ``MEDIA:`` directive was silently dropping attachments — the
+    ``Platform.WECOM and media_files`` branch did not exist in
+    ``_send_to_platform``, so the media fell through to the
+    "Non-media platforms" catch-all.
+
+    The fix routes WeCom media through the existing
+    ``_send_via_adapter`` helper, which reuses the gateway's live
+    ``WeComAdapter`` instance (WeCom enforces a single WebSocket per
+    bot, so a fresh ``WeComAdapter().connect()`` would fail with
+    errcode 846609 when the gateway is already running).
+    """
+
+    def test_wecom_media_routes_to_send_via_adapter(self, tmp_path):
+        """WeCom + media_files must dispatch to ``_send_via_adapter``,
+        not the standalone ``_send_wecom`` fallback (regression test
+        for #37364)."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG fake image bytes")
+
+        via_adapter = AsyncMock(
+            return_value={"success": True, "message_id": "wm-1"}
+        )
+        legacy_send_wecom = AsyncMock()
+
+        with patch("tools.send_message_tool._send_via_adapter", via_adapter), \
+             patch("tools.send_message_tool._send_wecom", legacy_send_wecom):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token="", extra={}),
+                    "chat-1",
+                    "see attached",
+                    media_files=[(str(img), False)],
+                )
+            )
+
+        assert result["success"] is True
+        via_adapter.assert_awaited_once()
+        legacy_send_wecom.assert_not_awaited()
+
+        # Verify the correct platform and args are passed through
+        call = via_adapter.await_args
+        assert call.args[0] == Platform.WECOM
+        assert call.args[2] == "chat-1"
+        assert call.args[3] == "see attached"
+        assert call.kwargs["media_files"] == [(str(img), False)]
+
+    def test_wecom_text_only_uses_legacy_path(self):
+        """Plain text-only WeCom sends must continue to go through
+        ``_send_wecom`` (the standalone helper).  We don't break the
+        existing text-only contract here."""
+        via_adapter = AsyncMock()
+        legacy_send_wecom = AsyncMock(
+            return_value={"success": True, "message_id": "wm-t",
+                          "platform": "wecom", "chat_id": "chat-1"}
+        )
+
+        with patch("tools.send_message_tool._send_via_adapter", via_adapter), \
+             patch("tools.send_message_tool._send_wecom", legacy_send_wecom):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token="", extra={}),
+                    "chat-1",
+                    "no media here",
+                )
+            )
+
+        assert result["success"] is True
+        legacy_send_wecom.assert_awaited_once()
+        via_adapter.assert_not_awaited()
+
+    def test_wecom_media_single_chunk_gets_media(self):
+        """Short message (single chunk) still gets media_files passed through."""
+        via_adapter = AsyncMock(
+            return_value={"success": True, "message_id": "wm-1"}
+        )
+
+        with patch("tools.send_message_tool._send_via_adapter", via_adapter):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token="", extra={}),
+                    "chat-1",
+                    "short message",
+                    media_files=[("/tmp/test.pdf", False)],
+                )
+            )
+
+        assert result["success"] is True
+        via_adapter.assert_awaited_once()
+        # media_files must be passed through, not silently dropped
+        assert via_adapter.await_args.kwargs["media_files"] == [
+            ("/tmp/test.pdf", False)
+        ]
+
+    def test_wecom_media_error_propagates(self):
+        """When _send_via_adapter returns an error, it must propagate
+        back to the caller instead of being silently swallowed."""
+        via_adapter = AsyncMock(
+            return_value={"error": "WeCom adapter not available"}
+        )
+
+        with patch("tools.send_message_tool._send_via_adapter", via_adapter):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WECOM,
+                    SimpleNamespace(enabled=True, token="", extra={}),
+                    "chat-1",
+                    "with attachment",
+                    media_files=[("/tmp/missing.pdf", False)],
+                )
+            )
+
+        assert "error" in result
+        assert result["error"] == "WeCom adapter not available"

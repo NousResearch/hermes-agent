@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
 
 import { Switch } from '@/components/ui/switch'
 import { Cpu, Sparkles } from '@/lib/icons'
@@ -6,6 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   $caduceus,
   openTheater,
+  refreshCaduceus,
   setCaduceusEnabled,
   setCaduceusLocal,
   setCaduceusRouter
@@ -50,6 +52,13 @@ export function CaduceusMenuPanel({ sessionId }: CaduceusMenuPanelProps) {
   const live = workflowIsLive(run)
   const local = caduceus.local
   const noModels = local.models.length === 0
+
+  // Pull fresh Caduceus state when the popover opens so the local-model catalog
+  // (and router/loaded info) is correct even on a cold home screen — otherwise
+  // the store shows DEFAULT_STATE (no models) until the first toggle.
+  useEffect(() => {
+    void refreshCaduceus(sessionId)
+  }, [sessionId])
 
   return (
     <div className="text-sm">

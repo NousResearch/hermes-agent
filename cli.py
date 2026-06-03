@@ -10231,6 +10231,11 @@ class HermesCLI:
             if st.enabled:
                 _cprint(f"  {_DIM}Deep planning — live to-do list + methodical execution."
                         f" Say \"workflow\" to fan out.{_RST}")
+                _router = getattr(st, "router", None) or {}
+                if _router.get("enabled"):
+                    _n = len(_router.get("candidates") or [])
+                    _cprint(f"  {_DIM}Auto Router: ON — workers auto-picked across "
+                            f"{_n} model(s); orchestrator unchanged.{_RST}")
 
         parts = cmd.strip().split(maxsplit=1)
         # Bare /caduceus toggles the mode (one-keystroke flip); /caduceus status

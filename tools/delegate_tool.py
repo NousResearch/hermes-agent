@@ -1352,7 +1352,8 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
-def _resolve_leaf_creds(parent_agent, role: str, model_override, provider_override) -> dict:
+def _resolve_leaf_creds(parent_agent, role: str, model_override, provider_override,
+                        task_text: Optional[str] = None) -> dict:
     """Resolve credentials for a single Loom workflow leaf.
 
     Explicit per-call provider/model override wins; otherwise role-aware
@@ -1366,7 +1367,7 @@ def _resolve_leaf_creds(parent_agent, role: str, model_override, provider_overri
         except Exception as exc:
             logger.warning("Leaf model override resolution failed (%s); falling back", exc)
     base = _resolve_delegation_credentials(_load_config(), parent_agent)
-    return _apply_caduceus_tier(base, parent_agent, role)
+    return _apply_caduceus_tier(base, parent_agent, role, task_text=task_text)
 
 
 def run_workflow_leaf(
@@ -1399,7 +1400,8 @@ def run_workflow_leaf(
     """
     import model_tools as _mt
 
-    creds = _resolve_leaf_creds(parent_agent, role, model_override, provider_override)
+    creds = _resolve_leaf_creds(parent_agent, role, model_override, provider_override,
+                                task_text=prompt)
     if max_iterations is None:
         try:
             max_iterations = int(_load_config().get("max_iterations", DEFAULT_MAX_ITERATIONS))
@@ -2206,8 +2208,10 @@ def delegate_task(
             effective_role = _normalize_role(t.get("role") or top_role)
             # Role-aware Caduceus tiering: leaves + plain delegation use the
             # worker tier; role='orchestrator' children use the orchestrator
-            # tier. No-op when Caduceus is off or the tier is unset.
-            task_creds = _apply_caduceus_tier(creds, parent_agent, effective_role)
+            # tier. No-op when Caduceus is off or the tier is unset. The task
+            # goal is passed so the Auto Router can pick a per-task worker model.
+            task_creds = _apply_caduceus_tier(creds, parent_agent, effective_role,
+                                              task_text=t.get("goal"))
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2614,13 +2618,20 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
-def _apply_caduceus_tier(base_creds: dict, parent_agent, role: str) -> dict:
+def _apply_caduceus_tier(base_creds: dict, parent_agent, role: str,
+                         task_text: Optional[str] = None,
+                         has_images: bool = False) -> dict:
     """Role-aware Caduceus tiering for a delegated child.
 
     When the parent runs in Caduceus mode, override the child's credentials
     with the orchestrator tier (role='orchestrator') or the worker tier
     (leaves + plain delegation). Returns ``base_creds`` unchanged when the mode
     is off or the relevant tier is unset (so the child inherits as before).
+
+    When the Auto Router is enabled (``caduceus.router``) and this is a leaf with
+    a ``task_text``, the router's per-task pick takes precedence over the fixed
+    worker tier — each leaf goes to the cheapest configured model a classifier
+    judges can do that subtask. The orchestrator is never routed.
 
     The tier {provider, model} is resolved into a full credential bundle by
     reusing :func:`_resolve_delegation_credentials` with a synthetic config, so
@@ -2632,6 +2643,22 @@ def _apply_caduceus_tier(base_creds: dict, parent_agent, role: str) -> dict:
     except Exception:
         return base_creds
     state = getattr(parent_agent, "caduceus", None)
+    # Auto Router: per-task worker selection (leaves only) wins over the fixed
+    # worker tier when enabled + candidates configured. Safe no-op otherwise.
+    if task_text and role != "orchestrator":
+        try:
+            routed = _cad.route_worker_model(parent_agent, task_text, role=role,
+                                             has_images=has_images)
+        except Exception:
+            routed = None
+        if routed and (routed.get("model") or routed.get("provider")):
+            try:
+                return _resolve_delegation_credentials(
+                    {"provider": routed.get("provider") or "",
+                     "model": routed.get("model") or ""},
+                    parent_agent)
+            except Exception as exc:
+                logger.warning("Caduceus router resolution failed (%s); falling back to tier", exc)
     tier = _cad.tier_for_role(state, role)
     if not tier:
         return base_creds

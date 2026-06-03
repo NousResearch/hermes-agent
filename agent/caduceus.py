@@ -186,6 +186,9 @@ class CaduceusState:
     # Workflow/Loom knobs (copied from config for convenience).
     workflow: Dict[str, Any] = field(default_factory=dict)
 
+    # Auto Router knobs (caduceus.router) — per-task worker model selection.
+    router: Dict[str, Any] = field(default_factory=dict)
+
     # Reminder lifecycle config + bookkeeping.
     enter_style: str = "full"
     turns_between_maintenance: int = 8
@@ -235,6 +238,7 @@ def state_from_config(cfg: Optional[Dict[str, Any]]) -> CaduceusState:
     orch = dict(c.get("orchestrator") or {})
     work = dict(c.get("worker") or {})
     wf = dict(c.get("workflow") or {})
+    router = dict(c.get("router") or {})
     reminders = dict(c.get("reminders") or {})
     budget = wf.get("default_budget_tokens")
     try:
@@ -249,6 +253,7 @@ def state_from_config(cfg: Optional[Dict[str, Any]]) -> CaduceusState:
         worker={"provider": str(work.get("provider") or ""), "model": str(work.get("model") or "")},
         budget_tokens=budget,
         workflow=wf,
+        router=router,
         enter_style=str(reminders.get("enter") or "full"),
         turns_between_maintenance=int(reminders.get("turns_between_maintenance") or 8),
     )
@@ -382,6 +387,89 @@ def tier_for_role(state: Optional[CaduceusState], role: str) -> Optional[Dict[st
     if not provider and not model:
         return None
     return {"provider": provider, "model": model}
+
+
+# ---------------------------------------------------------------------------
+# Auto Router — per-task WORKER model selection (Pass 2)
+# ---------------------------------------------------------------------------
+
+def _build_router_classifier(classifier_model: str):
+    """Return a ``classify(system_prompt, user_content) -> str`` backed by a
+    cheap Hermes auxiliary completion, or None if no aux client is available.
+
+    The pure :mod:`agent.auto_router` stays network-free; this is the injected
+    I/O. ``classifier_model`` overrides the aux model; empty uses the aux default.
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, default_model = get_text_auxiliary_client("caduceus_router")
+        if client is None:
+            return None
+        model = (classifier_model or "").strip() or default_model
+        if not model:
+            return None
+
+        def classify(system_prompt: str, user_content: str) -> str:
+            resp = client.chat.completions.create(
+                model=model,
+                temperature=0,
+                max_tokens=600,
+                stream=False,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            )
+            if resp and getattr(resp, "choices", None):
+                return resp.choices[0].message.content or ""
+            return ""
+
+        return classify
+    except Exception:
+        return None
+
+
+def route_worker_model(parent_agent: Any, task_text: str, *, role: str = "leaf",
+                       has_images: bool = False, tool_count: int = 0) -> Optional[Dict[str, str]]:
+    """Pick the WORKER model for a delegated leaf via the Auto Router.
+
+    Returns ``{"provider", "model"}`` for the chosen candidate, or None to leave
+    routing to the normal tier/inherit path. NEVER raises. The orchestrator role
+    is never routed (it keeps the session model). Only active when Caduceus is on
+    AND ``caduceus.router.enabled``.
+    """
+    st = get_state(parent_agent)
+    if st is None or not st.enabled or role == "orchestrator":
+        return None
+    router = getattr(st, "router", None) or {}
+    if not router.get("enabled"):
+        return None
+    try:
+        from agent import auto_router
+        candidates = auto_router.candidates_from_config(router)
+        if not candidates:
+            return None
+        try:
+            threshold = float(router.get("threshold", 0.7) or 0.7)
+        except (TypeError, ValueError):
+            threshold = 0.7
+        classify = _build_router_classifier(str(router.get("classifier") or ""))
+        pick = auto_router.select(
+            task_text or "", candidates,
+            classify=classify,
+            threshold=threshold,
+            default=(router.get("default") or None),
+            has_images=bool(has_images),
+            tier="worker",
+            use_cache=bool(router.get("cache", True)),
+            tool_count=int(tool_count or 0),
+        )
+        if not pick:
+            return None
+        cand = next((c for c in candidates if c.id == pick), None)
+        return {"provider": (cand.provider if cand else ""), "model": pick}
+    except Exception:
+        return None
 
 
 def resolve_concurrency(state: Optional[CaduceusState]) -> int:

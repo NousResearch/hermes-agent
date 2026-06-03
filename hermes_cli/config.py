@@ -1731,6 +1731,35 @@ DEFAULT_CONFIG = {
             "provider": "",
             "model": "",
         },
+        # Auto Router (Pass 2): per-task WORKER model selection. When enabled AND
+        # Caduceus is on, each delegated worker/leaf is routed to the cheapest
+        # configured model a cheap classifier judges can do THAT specific subtask
+        # (capability scored; cost applied after). The orchestrator is NEVER
+        # routed (it keeps the session model). Off by default; with no candidates
+        # workers just inherit the session model (solo). See agent/auto_router.py.
+        "router": {
+            "enabled": False,
+            # Model id of the cheap classifier/scorer. Empty = the auxiliary fast
+            # model (auxiliary.caduceus_router, else the default aux provider).
+            "classifier": "",
+            # A candidate must score >= this to be "good enough" (then cheapest
+            # wins). Lower = more aggressive savings; higher = escalate sooner.
+            "threshold": 0.7,
+            # Fallback candidate model id when the classifier can't run
+            # (empty = cheapest candidate).
+            "default": "",
+            # Reuse one classification per (worker, task) across its tool-call
+            # round-trips, so you pay the classifier tax once per subtask.
+            "cache": True,
+            # Models to route among. Each: {model, provider, cost,
+            # supports_images, card}. `card` is the capability description the
+            # classifier reads — the single most important field. Leave it empty
+            # to auto-fill a sensible default for known model families
+            # (see agent/auto_router.py::default_card_for). Example:
+            #   - {model: "google/gemini-3-flash-preview", provider: "openrouter", cost: 0.3}
+            #   - {model: "gpt-5.5", provider: "codex", cost: 5.0, supports_images: true}
+            "candidates": [],
+        },
         # The Loom (workflow engine) runtime knobs.
         "workflow": {
             # "auto" = min(16, max(2, cpu-2)); an int overrides.

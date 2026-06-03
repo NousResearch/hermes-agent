@@ -403,3 +403,33 @@ class TestGetHermesDir:
             "platforms/whatsapp/session", "whatsapp/session"
         )
         assert result == legacy
+
+    def test_unstatable_legacy_dir_kept(self, tmp_path, monkeypatch):
+        """A ``PermissionError`` raised by the existence check itself (e.g.
+        an unreadable parent) must NOT be read as "absent".
+
+        The old ``Path.exists()``/``Path.is_dir()`` gate swallowed
+        ``PermissionError`` and returned ``False``, so an unreadable legacy
+        dir fell through to the new layout and orphaned legacy data —
+        contradicting the docstring's "assume occupied on errors" intent.
+        With the ``lstat()``-based gate this raises and is caught as
+        occupied. Regression guard for the #27602 follow-up.
+        """
+        self._set_home(tmp_path, monkeypatch)
+        legacy = tmp_path / "pairing"
+        legacy.mkdir()
+        # Populate the new path; it must NOT be selected.
+        new = tmp_path / "platforms" / "pairing"
+        new.mkdir(parents=True)
+        (new / "telegram-approved.json").write_text("[]")
+
+        real_lstat = Path.lstat
+
+        def boom(self):
+            if self == legacy:
+                raise PermissionError("simulated unreadable parent")
+            return real_lstat(self)
+
+        monkeypatch.setattr(Path, "lstat", boom)
+        result = get_hermes_dir("platforms/pairing", "pairing")
+        assert result == legacy

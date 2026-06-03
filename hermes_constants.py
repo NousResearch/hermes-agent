@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import stat
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -257,13 +258,21 @@ def _legacy_path_has_content(path: Path) -> bool:
     A populated *directory* (any entry inside) counts. A non-directory
     file at ``path`` also counts — the consumer presumably wrote it.
     An empty directory does **not** count, so a stale empty
-    legacy stub falls through to the new layout. If enumeration fails
-    (permissions, race), assume occupied so we don't accidentally orphan
-    legacy data.
+    legacy stub falls through to the new layout. If the path cannot be
+    inspected (``PermissionError`` on ``stat``/``iterdir``, or any other
+    ``OSError`` short of "not found"), assume occupied so we don't
+    accidentally orphan legacy data. Only a genuine
+    ``FileNotFoundError`` counts as absent.
     """
-    if not path.exists():
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
         return False
-    if not path.is_dir():
+    except OSError:
+        # PermissionError on a parent, or any other inspection failure:
+        # treat as occupied rather than silently orphaning legacy data.
+        return True
+    if not stat.S_ISDIR(st.st_mode):
         return True
     try:
         next(path.iterdir())

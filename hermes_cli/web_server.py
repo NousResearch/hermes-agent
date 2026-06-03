@@ -2044,6 +2044,7 @@ async def update_config(body: ConfigUpdate):
 @app.get("/api/env")
 async def get_env_vars():
     env_on_disk = load_env()
+    channel_keys = _channel_managed_env_keys()
     result = {}
     for var_name, info in OPTIONAL_ENV_VARS.items():
         value = env_on_disk.get(var_name)
@@ -2056,6 +2057,10 @@ async def get_env_vars():
             "is_password": info.get("password", False),
             "tools": info.get("tools", []),
             "advanced": info.get("advanced", False),
+            # True when this var is a messaging-platform credential owned by a
+            # Channels page card. The Keys/Env page uses this to hide it and
+            # avoid duplicating the (richer) Channels configuration UI.
+            "channel_managed": var_name in channel_keys,
         }
     return result
 
@@ -2582,6 +2587,25 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         key=lambda e: (order.get(e["id"], len(_PLATFORM_ORDER)), e["name"].lower())
     )
     return tuple(entries)
+
+
+def _channel_managed_env_keys() -> frozenset[str]:
+    """Env-var keys owned by a Channels page platform card.
+
+    The Channels page is the canonical surface for configuring messaging
+    platform credentials (with connection status, test, enable toggle and
+    gateway restart). The Keys/Env page consults this set to hide those vars
+    so the same fields aren't duplicated in a plainer UI. Best-effort: if the
+    gateway catalog can't be built, nothing is flagged and Keys shows it all.
+    """
+    try:
+        keys: set[str] = set()
+        for entry in _messaging_platform_catalog():
+            keys.update(entry.get("env_vars", ()))
+        return frozenset(keys)
+    except Exception:
+        _log.debug("could not build channel-managed env key set", exc_info=True)
+        return frozenset()
 
 
 def _build_catalog_entry(
@@ -5935,7 +5959,11 @@ async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
 class ProfileCreate(BaseModel):
     name: str
     clone_from_default: bool = False
+    clone_all: bool = False
     no_skills: bool = False
+    description: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 class ProfileRename(BaseModel):
@@ -5944,6 +5972,23 @@ class ProfileRename(BaseModel):
 
 class ProfileSoulUpdate(BaseModel):
     content: str
+
+
+class ProfileActiveUpdate(BaseModel):
+    name: str
+
+
+class ProfileDescriptionUpdate(BaseModel):
+    description: str = ""
+
+
+class ProfileModelUpdate(BaseModel):
+    provider: str
+    model: str
+
+
+class ProfileDescribeAuto(BaseModel):
+    overwrite: bool = False
 
 
 def _profile_attr(info, name: str, default: Any = None) -> Any:
@@ -5962,6 +6007,13 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "provider": _profile_attr(info, "provider"),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+        "gateway_running": bool(_profile_attr(info, "gateway_running", False)),
+        "description": _profile_attr(info, "description", "") or "",
+        "description_auto": bool(_profile_attr(info, "description_auto", False)),
+        "distribution_name": _profile_attr(info, "distribution_name"),
+        "distribution_version": _profile_attr(info, "distribution_version"),
+        "distribution_source": _profile_attr(info, "distribution_source"),
+        "has_alias": _profile_attr(info, "alias_path") is not None,
     }
 
 
@@ -5984,6 +6036,13 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "provider": provider,
             "has_env": (default_home / ".env").exists(),
             "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
+            "gateway_running": _safe(lambda: profiles_mod._check_gateway_running(default_home), False),
+            "description": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description", ""), ""),
+            "description_auto": _safe(lambda: profiles_mod.read_profile_meta(default_home).get("description_auto", False), False),
+            "distribution_name": None,
+            "distribution_version": None,
+            "distribution_source": None,
+            "has_alias": False,
         })
 
     profiles_root = profiles_mod._get_profiles_root()
@@ -6000,6 +6059,13 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "provider": provider,
                 "has_env": (entry / ".env").exists(),
                 "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
+                "gateway_running": _safe(lambda entry=entry: profiles_mod._check_gateway_running(entry), False),
+                "description": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
+                "description_auto": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
+                "distribution_name": None,
+                "distribution_version": None,
+                "distribution_source": None,
+                "has_alias": False,
             })
 
     return profiles
@@ -6023,6 +6089,34 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
+def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
+    """Write the main model assignment into a specific profile's config.yaml.
+
+    Scopes ``load_config``/``save_config`` to ``profile_dir`` via the
+    context-local HERMES_HOME override so the write lands in the target
+    profile's config rather than the dashboard process's active profile.
+    Clears any stale ``base_url`` / ``context_length`` the same way
+    ``POST /api/model/set`` does, since the new model may differ.
+    """
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+        model_cfg["provider"] = provider
+        model_cfg["default"] = model
+        if model_cfg.get("base_url"):
+            model_cfg["base_url"] = ""
+        model_cfg.pop("context_length", None)
+        cfg["model"] = model_cfg
+        save_config(cfg)
+    finally:
+        reset_hermes_home_override(token)
+
+
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
@@ -6036,19 +6130,22 @@ async def list_profiles_endpoint():
 @app.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
+    clone = body.clone_from_default or body.clone_all
     try:
         path = profiles_mod.create_profile(
             name=body.name,
-            clone_from="default" if body.clone_from_default else None,
-            clone_config=body.clone_from_default,
+            clone_from="default" if clone else None,
+            clone_all=body.clone_all,
+            clone_config=body.clone_from_default and not body.clone_all,
             no_skills=body.no_skills,
+            description=body.description,
         )
         # Match the CLI's profile-create flow: fresh named profiles get the
         # bundled skills installed. When cloning from default, create_profile()
         # has already copied the source profile's skills, including any
         # user-installed skills. When no_skills=True, create_profile() wrote
         # the opt-out marker and seed_profile_skills() will no-op.
-        if not body.clone_from_default:
+        if not clone:
             profiles_mod.seed_profile_skills(path, quiet=True)
 
         # Match the CLI's profile-create flow: named profiles should get a
@@ -6061,7 +6158,63 @@ async def create_profile_endpoint(body: ProfileCreate):
     except Exception as e:
         _log.exception("POST /api/profiles failed")
         raise HTTPException(status_code=500, detail=str(e))
-    return {"ok": True, "name": body.name, "path": str(path)}
+
+    # Optional explicit model assignment for the new profile. Best-effort:
+    # the profile already exists, so a model-write hiccup must not 500 the
+    # whole create — the user can set the model later from the Models page
+    # or `<profile> setup`.
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    model_set = False
+    if provider and model:
+        try:
+            _write_profile_model(path, provider, model)
+            model_set = True
+        except Exception:
+            _log.exception("Setting model for new profile %s failed", body.name)
+
+    return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set}
+
+
+@app.get("/api/profiles/active")
+async def get_active_profile_endpoint():
+    """Return the sticky active profile and the profile this dashboard
+    process is currently running as.
+
+    ``active`` is the sticky default written by ``hermes profile use`` —
+    the profile new CLI invocations pick up. ``current`` is the profile
+    the running dashboard/gateway is scoped to (derived from HERMES_HOME).
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        active = profiles_mod.get_active_profile() or "default"
+    except Exception:
+        active = "default"
+    try:
+        current = profiles_mod.get_active_profile_name() or "default"
+    except Exception:
+        current = "default"
+    return {"active": active, "current": current}
+
+
+@app.post("/api/profiles/active")
+async def set_active_profile_endpoint(body: ProfileActiveUpdate):
+    """Set the sticky active profile (mirrors ``hermes profile use``).
+
+    Note: this does not retarget the already-running dashboard process —
+    it changes which profile subsequent CLI commands and gateways use.
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        profiles_mod.set_active_profile(body.name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles/active failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "active": profiles_mod.normalize_profile_name(body.name)}
 
 
 @app.get("/api/profiles/{name}/setup-command")
@@ -6176,6 +6329,77 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
     return {"ok": True}
+
+
+@app.put("/api/profiles/{name}/description")
+async def update_profile_description_endpoint(name: str, body: ProfileDescriptionUpdate):
+    """Set or clear a profile's role description (kanban routing signal).
+
+    Empty string clears the description. Non-empty stores it as a
+    user-authored description (``description_auto: false``) so the
+    auto-describer won't overwrite it on a sweep.
+    """
+    from hermes_cli import profiles as profiles_mod
+    profile_dir = _resolve_profile_dir(name)
+    text = (body.description or "").strip()
+    try:
+        profiles_mod.write_profile_meta(
+            profile_dir,
+            description=text,
+            description_auto=False,
+        )
+    except Exception as e:
+        _log.exception("PUT /api/profiles/%s/description failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "description": text, "description_auto": False}
+
+
+@app.put("/api/profiles/{name}/model")
+async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
+    """Set the main model (``model.default`` + ``model.provider``) for a
+    specific profile's config.yaml, without touching the dashboard's own
+    active profile. Mirrors ``POST /api/model/set`` (main scope) but scoped
+    to the named profile via the HERMES_HOME override.
+    """
+    profile_dir = _resolve_profile_dir(name)
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    if not provider or not model:
+        raise HTTPException(status_code=400, detail="provider and model are required")
+    try:
+        _write_profile_model(profile_dir, provider, model)
+    except Exception as e:
+        _log.exception("PUT /api/profiles/%s/model failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "provider": provider, "model": model}
+
+
+@app.post("/api/profiles/{name}/describe-auto")
+async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
+    """Auto-generate a profile's description via the auxiliary LLM
+    (``auxiliary.profile_describer``). Mirrors ``hermes profile describe
+    <name> --auto``.
+
+    A failed generation (no aux client, LLM error, …) is returned as
+    ``ok: false`` with a reason rather than an HTTP error so the UI can
+    surface it inline and let the operator fix config and retry.
+    """
+    _resolve_profile_dir(name)
+    try:
+        from hermes_cli import profile_describer
+        outcome = profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/describe-auto failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "ok": bool(outcome.ok),
+        "reason": outcome.reason,
+        "description": outcome.description,
+        # Only a successful generation is an auto-authored description. A failed
+        # sweep leaves any existing description untouched, so don't claim it's
+        # auto-generated.
+        "description_auto": bool(outcome.ok),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -45,11 +45,16 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "prostoandrei9@gmail.com": "vladkvlchk",
+    "liliangjya@gmail.com": "truenorth-lj",
+    "16943149+nepenth@users.noreply.github.com": "nepenth",
     "ben.bartholomew@vectorize.io": "benfrank241",
     "74339271+SaguaroDev@users.noreply.github.com": "SaguaroDev",
     "subw3@mail2.sysu.edu.cn": "Subway2023",
+    "trevin@trevinchow.com": "tmchow",
     "zhipengli@thebrainly.ai": "a1245582339",
     "mathijs.vd.hurk@gmail.com": "mathijsvandenhurk",
+    "david.gutowsky@gmail.com": "davidgut1982",
     "drpelagik@gmail.com": "SeaXen",
     "lengr@users.noreply.github.com": "LengR",
     "17255546+CharZhou@users.noreply.github.com": "CharZhou",
@@ -63,6 +68,7 @@ AUTHOR_MAP = {
     "524706+Twanislas@users.noreply.github.com": "Twanislas",
     "9592417+adam91holt@users.noreply.github.com": "adam91holt",
     "kchuang1015@users.noreply.github.com": "kchuang1015",
+    "kyssta-exe@users.noreply.github.com": "kyssta-exe",
     "45688690+fujinice@users.noreply.github.com": "fujinice",
     "276689385+carltonawong@users.noreply.github.com": "carltonawong",
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",
@@ -85,6 +91,7 @@ AUTHOR_MAP = {
     "33978413+Interstellar-code@users.noreply.github.com": "Interstellar-code",
     "tillfalko@gmail.com": "tillfalko",
     "hi@fesalfayed.com": "fesalfayed",
+    "marek.les@seznam.cz": "maxcz79",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",
@@ -369,6 +376,7 @@ AUTHOR_MAP = {
     "harish.kukreja@gmail.com": "counterposition",
     "nidhi2894@gmail.com": "nidhi-singh02",
     "35294173+Fearvox@users.noreply.github.com": "Fearvox",
+    "fearvox1015@gmail.com": "Fearvox",
     "hypnus.yuan@gmail.com": "Hypnus-Yuan",
     "15558128926@qq.com": "xsfX20",
     "binhnt.ht.92@gmail.com": "binhnt92",
@@ -911,6 +919,7 @@ AUTHOR_MAP = {
     "54813621+xxxigm@users.noreply.github.com": "xxxigm",
     "asurla@nvidia.com": "anniesurla",
     "kchantharuan@nvidia.com": "nv-kasikritc",
+    "bbednarski@nvidia.com": "bbednarski9",
     "limkuan24@gmail.com": "WideLee",
     "aviralarora002@gmail.com": "AviArora02-commits",
     "draixagent@gmail.com": "draix",
@@ -1200,6 +1209,7 @@ AUTHOR_MAP = {
     "zhicheng.han@mathematik.uni-goettingen.de": "hanzckernel",  # PR #20311 (api-server approval events)
     "agentsmithlaor@gmail.com": "oferlaor",  # PR #22356 salvage (cron origin sender identity)
     "jhin.lee@unity3d.com": "leehack",  # PR #22053 salvage (telegram DM topic reply fallback)
+    "caojiguang@gmail.com": "caojiguang",  # PR #35117 carries #31853 (weixin _api_post/_api_get wait_for)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
     "ayman.a.kamal@hotmail.com": "A-kamal",  # PR #18678 (xAI image resolution fix)
     # Kanban bug-fix batch salvage (May 2026)
@@ -1418,6 +1428,8 @@ AUTHOR_MAP = {
     "me@simontaggart.com": "SiTaggart",  # PR #35583 (docker_forward_env empty-secret .env fallback)
     "2663402852@qq.com": "x1am1",  # PR #35098 (chown root-owned top-level HERMES_HOME state files)
     "nicsequenzy@gmail.com": "polnikale",  # PR #35717 (discover Playwright headless_shell browser)
+    "wasdhkzk@gmail.com": "whyhkzk",  # PR #32407 (sandbox-mirror inner-container guard; commits authored as whyhkzk + zhukun)
+    "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
 }
 
 

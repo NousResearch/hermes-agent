@@ -238,6 +238,36 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
+  getEmptySessionsCount: () =>
+    fetchJSON<{ count: number }>("/api/sessions/empty/count"),
+  deleteEmptySessions: () =>
+    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/empty", {
+      method: "DELETE",
+    }),
+  bulkDeleteSessions: (ids: string[]) =>
+    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
+  renameSession: (id: string, title: string) =>
+    fetchJSON<{ ok: boolean; title: string }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+    ),
+  getSessionStats: () => fetchJSON<SessionStoreStats>("/api/sessions/stats"),
+  exportSessionUrl: (id: string) =>
+    `/api/sessions/${encodeURIComponent(id)}/export`,
+  pruneSessions: (older_than_days: number, source?: string) =>
+    fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ older_than_days, source }),
+    }),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
@@ -311,6 +341,19 @@ export const api = {
     }),
   pauseCronJob: (id: string, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  updateCronJob: (
+    id: string,
+    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string },
+    profile = "default",
+  ) =>
+    fetchJSON<CronJob>(
+      `/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      },
+    ),
   resumeCronJob: (id: string, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   triggerCronJob: (id: string, profile = "default") =>
@@ -318,15 +361,58 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
-  // Profiles (minimal)
+  // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
-  createProfile: (body: { name: string; clone_from_default: boolean }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
+  getActiveProfile: () =>
+    fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
+  setActiveProfile: (name: string) =>
+    fetchJSON<{ ok: boolean; active: string }>("/api/profiles/active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+  createProfile: (body: {
+    name: string;
+    clone_from_default: boolean;
+    clone_all?: boolean;
+    no_skills?: boolean;
+    description?: string;
+    provider?: string;
+    model?: string;
+  }) =>
+    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  updateProfileDescription: (name: string, description: string) =>
+    fetchJSON<{ ok: boolean; description: string; description_auto: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/description`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      },
+    ),
+  describeProfileAuto: (name: string, overwrite = true) =>
+    fetchJSON<ProfileDescribeAutoResult>(
+      `/api/profiles/${encodeURIComponent(name)}/describe-auto`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overwrite }),
+      },
+    ),
+  setProfileModel: (name: string, provider: string, model: string) =>
+    fetchJSON<{ ok: boolean; provider: string; model: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, model }),
+      },
+    ),
   renameProfile: (name: string, newName: string) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>(
       `/api/profiles/${encodeURIComponent(name)}`,
@@ -429,11 +515,33 @@ export const api = {
     );
   },
 
+  // Messaging platforms (gateway channels)
+  getMessagingPlatforms: () =>
+    fetchJSON<{ platforms: MessagingPlatform[] }>("/api/messaging/platforms"),
+  updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
+    fetchJSON<{ ok: boolean; platform: string }>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  testMessagingPlatform: (id: string) =>
+    fetchJSON<MessagingPlatformTestResult>(
+      `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
+
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
+  checkHermesUpdate: (force = false) =>
+    fetchJSON<UpdateCheckResponse>(
+      `/api/hermes/update/check${force ? "?force=true" : ""}`,
+    ),
   getActionStatus: (name: string, lines = 200) =>
     fetchJSON<ActionStatusResponse>(
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
@@ -522,6 +630,32 @@ export const api = {
       `/api/mcp/servers/${encodeURIComponent(name)}/test`,
       { method: "POST" },
     ),
+  setMcpServerEnabled: (name: string, enabled: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
+  getMcpCatalog: () =>
+    fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>(
+      "/api/mcp/catalog",
+    ),
+  installMcpCatalogEntry: (
+    name: string,
+    env: Record<string, string> = {},
+    enable = true,
+  ) =>
+    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
+      "/api/mcp/catalog/install",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, env, enable }),
+      },
+    ),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
@@ -554,6 +688,15 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/webhooks/${encodeURIComponent(name)}`, {
       method: "DELETE",
     }),
+  setWebhookEnabled: (name: string, enabled: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/webhooks/${encodeURIComponent(name)}/enabled`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      },
+    ),
 
   // ── Admin: Credential pool ──────────────────────────────────────────
   getCredentialPool: () =>
@@ -616,6 +759,45 @@ export const api = {
       body: JSON.stringify({ archive }),
     }),
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
+  createHook: (body: HookCreate) =>
+    fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
+      "/api/ops/hooks",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteHook: (event: string, command: string) =>
+    fetchJSON<{ ok: boolean }>("/api/ops/hooks", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, command }),
+    }),
+  getSystemStats: () => fetchJSON<SystemStats>("/api/system/stats"),
+
+  // ── Admin: Curator ──────────────────────────────────────────────────
+  getCurator: () => fetchJSON<CuratorStatus>("/api/curator"),
+  setCuratorPaused: (paused: boolean) =>
+    fetchJSON<{ ok: boolean; paused: boolean }>("/api/curator/paused", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
+    }),
+  runCurator: () =>
+    fetchJSON<ActionResponse>("/api/curator/run", { method: "POST" }),
+
+  // ── Admin: Portal ───────────────────────────────────────────────────
+  getPortal: () => fetchJSON<PortalStatus>("/api/portal"),
+
+  // ── Admin: Diagnostics (backgrounded) ───────────────────────────────
+  runPromptSize: () =>
+    fetchJSON<ActionResponse>("/api/ops/prompt-size", { method: "POST" }),
+  runDump: () => fetchJSON<ActionResponse>("/api/ops/dump", { method: "POST" }),
+  runConfigMigrate: () =>
+    fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
+
+
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
   pruneCheckpoints: () =>
     fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
@@ -635,6 +817,10 @@ export const api = {
     }),
   updateSkillsFromHub: () =>
     fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
+  searchSkillsHub: (q: string, source = "all", limit = 20) =>
+    fetchJSON<{ results: SkillHubResult[] }>(
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+    ),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -663,6 +849,24 @@ export interface ActionResponse {
   update_command?: string;
 }
 
+export interface SessionStoreStats {
+  total: number;
+  active_store: number;
+  archived: number;
+  messages: number;
+  by_source: Record<string, number>;
+}
+
+export interface SkillHubResult {
+  name: string;
+  description: string;
+  source: string;
+  identifier: string;
+  trust_level: string;
+  repo: string | null;
+  tags: string[];
+}
+
 // ── Admin types ───────────────────────────────────────────────────────
 
 export interface McpServer {
@@ -677,6 +881,25 @@ export interface McpServer {
   tools: string[] | null;
 }
 
+export interface McpCatalogEntry {
+  name: string;
+  description: string;
+  source: string;
+  transport: "http" | "stdio";
+  auth_type: "api_key" | "oauth" | "none";
+  required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  needs_install: boolean;
+  installed: boolean;
+  enabled: boolean;
+}
+
+export interface McpCatalogDiagnostic {
+  name: string;
+  kind: string;
+  message: string;
+}
+
+
 export interface McpServerCreate {
   name: string;
   url?: string;
@@ -690,6 +913,50 @@ export interface McpTestResult {
   ok: boolean;
   error?: string;
   tools: Array<{ name: string; description: string }>;
+}
+
+export interface MessagingPlatformEnvVar {
+  key: string;
+  required: boolean;
+  is_set: boolean;
+  redacted_value: string | null;
+  description: string;
+  prompt: string;
+  url: string | null;
+  is_password: boolean;
+  advanced: boolean;
+}
+
+export interface MessagingPlatform {
+  id: string;
+  name: string;
+  description: string;
+  docs_url: string;
+  enabled: boolean;
+  configured: boolean;
+  gateway_running: boolean;
+  /**
+   * "connected" | "disabled" | "not_configured" | "pending_restart" |
+   * "gateway_stopped" | "disconnected" | "fatal" | string
+   */
+  state: string;
+  error_code: string | null;
+  error_message: string | null;
+  updated_at: string | null;
+  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  env_vars: MessagingPlatformEnvVar[];
+}
+
+export interface MessagingPlatformUpdate {
+  enabled?: boolean;
+  env?: Record<string, string>;
+  clear_env?: string[];
+}
+
+export interface MessagingPlatformTestResult {
+  ok: boolean;
+  state: string;
+  message: string;
 }
 
 export interface PairingUser {
@@ -716,6 +983,7 @@ export interface WebhookRoute {
   created_at: string | null;
   url: string;
   secret_set: boolean;
+  enabled: boolean;
 }
 
 export interface WebhooksResponse {
@@ -771,11 +1039,77 @@ export interface HookEntry {
   command: string | null;
   timeout: number | null;
   allowed: boolean;
+  approved_at?: string | null;
+  executable?: boolean;
 }
 
 export interface HooksResponse {
   hooks: HookEntry[];
-  allowlist: string[];
+  valid_events: string[];
+}
+
+export interface HookCreate {
+  event: string;
+  command: string;
+  matcher?: string;
+  timeout?: number;
+  approve?: boolean;
+}
+
+export interface UpdateCheckResponse {
+  install_method: string;
+  current_version: string;
+  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
+  // count (nix/pypi), or null when the check could not run.
+  behind: number | null;
+  update_available: boolean;
+  can_apply: boolean;
+  update_command: string;
+  message: string | null;
+}
+
+export interface SystemStats {
+  os: string;
+  os_release: string;
+  os_version: string;
+  platform: string;
+  arch: string;
+  hostname: string;
+  python_version: string;
+  python_impl: string;
+  hermes_version: string;
+  cpu_count: number | null;
+  psutil: boolean;
+  cpu_percent?: number;
+  load_avg?: number[];
+  uptime_seconds?: number;
+  memory?: { total: number; available: number; used: number; percent: number };
+  disk?: { total: number; used: number; free: number; percent: number };
+  process?: { pid: number; rss: number; create_time: number; num_threads: number };
+}
+
+export interface CuratorStatus {
+  enabled: boolean;
+  paused: boolean;
+  interval_hours: number | null;
+  last_run_at: string | null;
+  min_idle_hours: number | null;
+  stale_after_days: number | null;
+  archive_after_days: number | null;
+}
+
+export interface PortalFeature {
+  label: string;
+  state: string;
+}
+
+export interface PortalStatus {
+  logged_in: boolean;
+  portal_url: string | null;
+  inference_url: string | null;
+  provider: string;
+  subscription_url: string;
+  features: PortalFeature[];
 }
 
 export interface CheckpointSession {
@@ -879,6 +1213,8 @@ export interface EnvVarInfo {
   is_password: boolean;
   tools: string[];
   advanced: boolean;
+  /** True when this var is a messaging-platform credential owned by the Channels page. */
+  channel_managed?: boolean;
 }
 
 export interface SessionMessage {
@@ -959,6 +1295,18 @@ export interface AnalyticsResponse {
   };
 }
 
+export interface ActiveProfileInfo {
+  active: string;
+  current: string;
+}
+
+export interface ProfileDescribeAutoResult {
+  ok: boolean;
+  reason: string;
+  description: string | null;
+  description_auto: boolean;
+}
+
 export interface ProfileInfo {
   name: string;
   path: string;
@@ -967,6 +1315,13 @@ export interface ProfileInfo {
   provider: string | null;
   has_env: boolean;
   skill_count: number;
+  gateway_running: boolean;
+  description: string;
+  description_auto: boolean;
+  distribution_name: string | null;
+  distribution_version: string | null;
+  distribution_source: string | null;
+  has_alias: boolean;
 }
 
 export interface ModelsAnalyticsModelEntry {

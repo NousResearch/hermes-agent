@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
@@ -10,7 +10,8 @@ import {
   $updateChecking,
   $updateStatus,
   checkUpdates,
-  openUpdatesWindow
+  openUpdatesWindow,
+  refreshDesktopVersion
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
@@ -45,6 +46,14 @@ export function AboutSettings() {
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
   const [justChecked, setJustChecked] = useState(false)
+
+  // The version atom is loaded once at app boot, which makes About show a
+  // stale number after a self-update (the running binary is current, the
+  // displayed string is not). Re-read on mount so opening About always
+  // reflects the running build.
+  useEffect(() => {
+    void refreshDesktopVersion()
+  }, [])
 
   const behind = status?.behind ?? 0
   const supported = status?.supported !== false

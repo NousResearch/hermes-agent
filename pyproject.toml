@@ -64,6 +64,8 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # .gitignore-aware file matching for desktop build stamp.
+  "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
@@ -122,6 +124,7 @@ honcho = ["honcho-ai==2.0.1"]
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.3"]
 sms = ["aiohttp==3.13.3"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
@@ -242,6 +245,7 @@ plugins = [
   # <platform>" (#34034), web-search providers go missing (#28149), etc.
   "**/plugin.yaml",
   "**/plugin.yml",
+  "**/README.md",
 ]
 
 [tool.setuptools.packages.find]

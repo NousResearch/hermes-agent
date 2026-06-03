@@ -115,9 +115,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
                   key={idx}
                   className={clsx(
                     'whitespace-pre-wrap',
-                    entry.line.startsWith('stderr:')
-                      ? 'text-destructive'
-                      : 'text-foreground/70'
+                    entry.stream === 'stderr' ? 'text-foreground/45' : 'text-foreground/70'
                   )}
                 >
                   {entry.line}

@@ -2,6 +2,7 @@
 
 import os
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -12,6 +13,97 @@ from hermes_cli.config import (
     redact_key,
     OPTIONAL_ENV_VARS,
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
+
+
+# Path to the test-only example-dashboard plugin. Lives under
+# tests/fixtures/ so the bundled-plugins directory stays clean — stock
+# installs no longer ship a dummy "Example" sidebar tab. Tests that
+# depend on its routes opt in via the `_install_example_plugin` fixture
+# below.
+_EXAMPLE_PLUGIN_FIXTURE = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "plugins" / "example-dashboard"
+)
+
+
+@pytest.fixture
+def _install_example_plugin(_isolate_hermes_home):
+    """Drop the example-dashboard fixture into the per-test HERMES_HOME
+    user-plugins directory and force the web_server's dashboard plugin
+    cache + API mount to rediscover it.
+
+    The plugin used to live under ``<repo>/plugins/example-dashboard/``
+    and was loaded for every install, putting an "Example" tab in every
+    user's sidebar. It is now a tests-only fixture: any test that needs
+    ``/api/plugins/example/hello`` or ``/dashboard-plugins/example/...``
+    requests this fixture so the plugin appears only for that test's
+    isolated ``HERMES_HOME``.
+
+    The user-plugin source is preferred over a transient
+    ``HERMES_BUNDLED_PLUGINS`` override because the bundled dir is
+    resolved per-call (other tests in the suite implicitly rely on the
+    real bundled plugins — kanban, hermes-achievements, model providers
+    — being available, and globally swapping that root would yank them
+    all). User plugins are first in the discovery search order, so
+    laying down the fixture here is enough.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli import web_server
+
+    user_plugins_dir = get_hermes_home() / "plugins"
+    user_plugins_dir.mkdir(parents=True, exist_ok=True)
+    dst = user_plugins_dir / "example-dashboard"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
+
+    # Snapshot the existing routes BEFORE mounting so we can:
+    #   1. Identify the routes the mount call appends.
+    #   2. Restore the original list on teardown — otherwise leftover
+    #      ``/api/plugins/example/*`` routes leak into subsequent tests
+    #      and start serving requests against a torn-down HERMES_HOME.
+    app = web_server.app
+    original_routes = list(app.router.routes)
+
+    # Bust the module-level cache and re-discover so the example plugin
+    # shows up in `_get_dashboard_plugins()`. `_mount_plugin_api_routes`
+    # imports the plugin's `plugin_api.py` and ``include_router``s its
+    # FastAPI router under ``/api/plugins/example/*``. The static-asset
+    # route at ``/dashboard-plugins/<name>/<path>`` reads the plugins
+    # list dynamically per request, so the rescan alone is enough for
+    # the static-asset tests; the API auth tests additionally need the
+    # route reorder below.
+    web_server._dashboard_plugins_cache = None
+    web_server._get_dashboard_plugins(force_rescan=True)
+    web_server._mount_plugin_api_routes()
+
+    # ``include_router`` appends the new routes to the END of
+    # ``app.router.routes``. That works fine at import time — the SPA
+    # catch-all ``mount_spa(app)`` registers AFTER the initial mount
+    # call — but when we mount mid-flight the catch-all is already in
+    # place, so the new ``/api/plugins/example/*`` route loses the
+    # match-order race and we get a 404. Move the newly-appended routes
+    # to the front of the list so FastAPI matches them first. They're
+    # path-prefixed to ``/api/plugins/example/`` and can't shadow
+    # anything else.
+    new_routes = [r for r in app.router.routes if r not in original_routes]
+    for route in new_routes:
+        app.router.routes.remove(route)
+    for offset, route in enumerate(new_routes):
+        app.router.routes.insert(offset, route)
+
+    try:
+        yield
+    finally:
+        # Restore the original route list — drops the example plugin's
+        # routes so the next test sees a clean app — and clear the
+        # cache for the same reason.
+        app.router.routes[:] = original_routes
+        web_server._dashboard_plugins_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -187,11 +279,11 @@ class TestWebServerEndpoints:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def list_sessions_rich(self, limit, offset, min_message_count=0):
+            def list_sessions_rich(self, limit, offset, min_message_count=0, **kwargs):
                 captured["list"] = min_message_count
                 return []
 
-            def session_count(self, min_message_count=0):
+            def session_count(self, min_message_count=0, **kwargs):
                 captured["count"] = min_message_count
                 return 0
 
@@ -249,6 +341,191 @@ class TestWebServerEndpoints:
     def test_rename_session_not_found(self):
         resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
         assert resp.status_code == 404
+
+    def test_archive_session_via_patch(self):
+        """PATCH archived=true soft-hides a session; archived=false restores it."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="arch-me", source="cli")
+            db.append_message(session_id="arch-me", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/arch-me", json={"archived": True})
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is True
+
+        # Hidden from the default list, surfaced by archived=only.
+        listed = self.client.get("/api/sessions").json()
+        assert all(s["id"] != "arch-me" for s in listed["sessions"])
+        only = self.client.get("/api/sessions?archived=only").json()
+        assert any(s["id"] == "arch-me" for s in only["sessions"])
+
+        resp = self.client.patch("/api/sessions/arch-me", json={"archived": False})
+        assert resp.status_code == 200
+        restored = self.client.get("/api/sessions").json()
+        assert any(s["id"] == "arch-me" for s in restored["sessions"])
+
+    def test_patch_session_without_fields_is_400(self):
+        """An existing session + empty body is a bad request, not a 404."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="no-fields", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/no-fields", json={})
+        assert resp.status_code == 400
+
+    def test_get_sessions_rejects_unknown_archived_value(self):
+        resp = self.client.get("/api/sessions?archived=bogus")
+        assert resp.status_code == 400
+
+    def test_get_sessions_rejects_unknown_order_value(self):
+        resp = self.client.get("/api/sessions?order=sideways")
+        assert resp.status_code == 400
+
+    def test_get_sessions_order_recent_surfaces_compression_tip(self):
+        """A long-running conversation that auto-compresses must stay on the
+        first page by recency, listed under its live continuation id."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            old = _time.time() - 86_400
+            # Old conversation that later compresses into a fresh continuation.
+            # The continuation must start at/after the parent's ended_at to be
+            # recognised as a compression tip (not a sub-agent/branch).
+            db.create_session(session_id="root-old", source="cli")
+            db.append_message(session_id="root-old", role="user", content="kickoff")
+            db.end_session("root-old", "compression")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (old, old + 10, "root-old"),
+            )
+            db.create_session(session_id="tip-new", source="cli", parent_session_id="root-old")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (old + 10, "tip-new"))
+            db.append_message(session_id="tip-new", role="user", content="continued just now")
+            # A brand-new unrelated session started after the root but before now.
+            db.create_session(session_id="mid", source="cli")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (_time.time() - 3600, "mid"))
+            db.append_message(session_id="mid", role="user", content="hello")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        rows = self.client.get("/api/sessions?order=recent&limit=5").json()["sessions"]
+        ids = [r["id"] for r in rows]
+        # The compressed conversation surfaces under its live tip id...
+        assert "tip-new" in ids
+        # ...carrying the durable lineage root so the desktop can match pins.
+        tip = next(r for r in rows if r["id"] == "tip-new")
+        assert tip.get("_lineage_root_id") == "root-old"
+
+    def test_search_dedupes_compression_lineage_to_tip(self):
+        """A conversation that auto-compresses leaves the matched term in both
+        the root segment and the continuation. Search must collapse them to a
+        single result keyed by the lineage root and pointing at the live tip,
+        so the sidebar stops showing the same chat several times."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="search-root", source="cli")
+            db.append_message(session_id="search-root", role="user", content="distinctneedle in the root")
+            db.end_session("search-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "search-root"),
+            )
+            db.create_session(session_id="search-tip", source="cli", parent_session_id="search-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 90, "search-tip"))
+            db.append_message(session_id="search-tip", role="user", content="distinctneedle again in the tip")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=distinctneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        lineage_hits = [r for r in results if r.get("lineage_root") == "search-root"]
+        # One conversation -> exactly one result despite two FTS hits.
+        assert len(lineage_hits) == 1
+        hit = lineage_hits[0]
+        # Surfaced under the live tip so clicking resumes the current session.
+        assert hit["session_id"] == "search-tip"
+        assert hit["lineage_root"] == "search-root"
+
+    def test_search_keeps_branch_specific_hits_on_branch(self):
+        """Branch sessions share parent_session_id, but they are not compression
+        continuations. A query that only exists in the branch must open the
+        branch instead of being collapsed back to the parent/root."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = _time.time()
+            db.create_session(session_id="branch-parent", source="cli")
+            db.append_message(session_id="branch-parent", role="user", content="ancestor context")
+            db.end_session("branch-parent", "branched")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "branch-parent"),
+            )
+            db.create_session(session_id="branch-child", source="cli", parent_session_id="branch-parent")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 80, "branch-child"))
+            db.append_message(session_id="branch-child", role="user", content="branchspecificneedle only here")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=branchspecificneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        assert any(
+            r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
+            for r in results
+        )
+
+    def test_get_sessions_archived_is_boolean(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="bool-arch", source="cli")
+            db.append_message(session_id="bool-arch", role="user", content="hi")
+        finally:
+            db.close()
+
+        row = next(s for s in self.client.get("/api/sessions").json()["sessions"] if s["id"] == "bool-arch")
+        assert row["archived"] is False
+
+    def test_rename_response_omits_archived_when_not_set(self):
+        """Title-only PATCH keeps its legacy {ok, title} response shape."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="title-only", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/title-only", json={"title": "Hi"})
+        assert resp.status_code == 200
+        assert "archived" not in resp.json()
 
     def test_audio_transcription_endpoint(self, monkeypatch):
         import tools.transcription_tools as transcription_tools
@@ -500,6 +777,19 @@ class TestWebServerEndpoints:
         data = resp.json()
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
+
+    def test_get_env_vars_marks_channel_managed_keys(self):
+        from hermes_cli.web_server import _channel_managed_env_keys
+
+        data = self.client.get("/api/env").json()
+        # Every entry carries the classification the Keys page relies on.
+        assert all("channel_managed" in info for info in data.values())
+
+        channel_keys = _channel_managed_env_keys()
+        # Messaging-platform credentials owned by the Channels page are flagged;
+        # everything else stays visible on the Keys page.
+        for key, info in data.items():
+            assert info["channel_managed"] is (key in channel_keys)
 
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
@@ -1293,6 +1583,132 @@ class TestNewEndpoints:
         resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
 
+    # --- New profiles endpoints: active / description / model / describe-auto ---
+
+    def test_profiles_active_defaults(self):
+        from hermes_constants import get_hermes_home
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] == "default"
+        assert data["current"] == "default"
+
+    def test_profiles_set_active_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "router"})
+
+        resp = self.client.post("/api/profiles/active", json={"name": "router"})
+        assert resp.status_code == 200
+        assert resp.json()["active"] == "router"
+        assert self.client.get("/api/profiles/active").json()["active"] == "router"
+
+    def test_profiles_set_active_unknown_404(self):
+        resp = self.client.post("/api/profiles/active", json={"name": "ghost"})
+        assert resp.status_code == 404
+
+    def test_profile_description_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "desc-prof"})
+
+        put = self.client.put(
+            "/api/profiles/desc-prof/description",
+            json={"description": "Handles code review"},
+        )
+        assert put.status_code == 200
+        body = put.json()
+        assert body["description"] == "Handles code review"
+        assert body["description_auto"] is False
+
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["desc-prof"]["description"] == "Handles code review"
+        assert profiles["desc-prof"]["description_auto"] is False
+
+    def test_profile_description_unknown_404(self):
+        resp = self.client.put(
+            "/api/profiles/nope/description", json={"description": "x"}
+        )
+        assert resp.status_code == 404
+
+    def test_profile_model_round_trip(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof"})
+
+        resp = self.client.put(
+            "/api/profiles/model-prof/model",
+            json={"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "openrouter"
+
+        import yaml
+        cfg_path = get_hermes_home() / "profiles" / "model-prof" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert cfg["model"]["provider"] == "openrouter"
+        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+
+    def test_profile_model_requires_provider_and_model(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof2"})
+        resp = self.client.put(
+            "/api/profiles/model-prof2/model",
+            json={"provider": "", "model": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_profile_describe_auto_success(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-prof"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, True, "described", description="Generated blurb"
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-prof/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["description"] == "Generated blurb"
+        assert body["description_auto"] is True
+
+    def test_profile_describe_auto_failure_is_not_auto(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-fail"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, False, "no aux client", description=None
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-fail/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["description_auto"] is False
+
     def test_skills_list(self):
         resp = self.client.get("/api/skills")
         assert resp.status_code == 200
@@ -1453,13 +1869,52 @@ class TestNewEndpoints:
         assert data["has_category"] is True
         assert isinstance(data["providers"], list)
         assert data["providers"], "tts always has at least the built-in providers"
+        # active_provider is part of the contract so the GUI can highlight the
+        # provider actually written to config (else it falls back to the first
+        # keyless one). It's either None or the name of one listed provider.
+        assert "active_provider" in data
+        names = {p["name"] for p in data["providers"]}
+        assert data["active_provider"] is None or data["active_provider"] in names
         for prov in data["providers"]:
             assert "name" in prov
+            assert "is_active" in prov
             assert "env_vars" in prov
             assert isinstance(prov["env_vars"], list)
             for ev in prov["env_vars"]:
                 assert "key" in ev
                 assert "is_set" in ev
+        # active_provider summarizes the first provider flagged is_active
+        # (some catalogs list two rows backed by the same config value, e.g.
+        # Firecrawl cloud + self-hosted both map to web.backend=firecrawl).
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        if active:
+            assert data["active_provider"] == active[0]
+        else:
+            assert data["active_provider"] is None
+
+    def test_get_toolset_config_reflects_selected_provider(self):
+        """Selecting a provider is reflected in the next /config read.
+
+        Regression: the GUI's provider panel highlighted the first keyless
+        provider on relaunch because /config never reported which provider was
+        actually active. After selecting one, is_active / active_provider must
+        point at it.
+        """
+        sel = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert sel.status_code == 200
+
+        resp = self.client.get("/api/tools/toolsets/web/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active_provider"] == "Firecrawl Self-Hosted"
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        # The first active row is what the GUI highlights; it must be the
+        # selected provider.
+        assert active, "expected at least one provider flagged active"
+        assert active[0] == "Firecrawl Self-Hosted"
 
     def test_get_toolset_config_no_category_toolset(self):
         """A toolset without a TOOL_CATEGORIES entry returns has_category False."""
@@ -2399,12 +2854,284 @@ class TestNormaliseThemeExtensions:
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
 
 
+class TestBulkDeleteSessionsEndpoint:
+    """Tests for ``POST /api/sessions/bulk-delete`` — backs the
+    dashboard's "Delete N selected" flow on the sessions page.
+
+    Locks in four things:
+
+    1. Route-ordering: ``/api/sessions/bulk-delete`` must shadow the
+       templated ``/api/sessions/{session_id}`` route below it (see
+       the block comment in ``hermes_cli/web_server.py``).
+    2. Behaviour parity with :meth:`SessionDB.delete_sessions` — real
+       deleted count, archive/active sessions deleted on explicit
+       selection.
+    3. The 500-ID payload cap is enforced.
+    4. Auth gating (issue #19533 contract).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self, ids):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid in ids:
+                db.create_session(session_id=sid, source="cli")
+        finally:
+            db.close()
+
+    def test_requires_auth(self):
+        resp = self.client.post("/api/sessions/bulk-delete", json={"ids": ["x"]})
+        assert resp.status_code == 401
+
+    def test_deletes_listed_sessions_only(self):
+        from hermes_state import SessionDB
+
+        self._seed(["a", "b", "c"])
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": ["a", "b"]}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 2}
+
+        db = SessionDB()
+        try:
+            assert db.get_session("a") is None
+            assert db.get_session("b") is None
+            assert db.get_session("c") is not None
+        finally:
+            db.close()
+
+    def test_unknown_ids_silently_skipped(self):
+        """The endpoint never 404s on a missing ID — it returns the
+        real deleted count so a UI selection that raced against
+        another tab still resolves cleanly."""
+        self._seed(["real"])
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": ["real", "ghost1", "ghost2"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 1}
+
+    def test_empty_list_is_noop(self):
+        """``ids: []`` returns ``deleted: 0`` (200, not 400) — the UI
+        treats an empty selection as a no-op rather than an error."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": []}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 0}
+
+    def test_payload_cap_enforced(self):
+        """501 IDs returns 400 — a hard cap stops a runaway selection
+        from holding the SQLite writer for an extended window."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": [f"s{i}" for i in range(501)]},
+        )
+        assert resp.status_code == 400
+        # 500 exactly still succeeds (no rows actually present, so
+        # deleted=0 — but it's not the cap path).
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": [f"s{i}" for i in range(500)]},
+        )
+        assert resp.status_code == 200
+
+    def test_route_order_not_shadowed_by_session_id(self):
+        """Pin the route-ordering contract: ``POST /api/sessions/bulk-delete``
+        must hit the bulk handler, not be re-interpreted via the
+        templated ``/api/sessions/{session_id}`` family. Concretely the
+        response carries our ``ok`` + ``deleted`` keys."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": []}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "deleted" in body, (
+            "If this assertion fails, /api/sessions/bulk-delete is "
+            "being shadowed by /api/sessions/{session_id} — check "
+            "registration order in hermes_cli/web_server.py."
+        )
+
+
+class TestDeleteEmptySessionsEndpoint:
+    """Tests for ``GET /api/sessions/empty/count`` and
+    ``DELETE /api/sessions/empty`` — the bulk-delete endpoints backing
+    the dashboard's "Delete empty" button.
+
+    Locks in three things the implementation has to get right:
+
+    1. Route-ordering: the literal ``/api/sessions/empty[/count]`` paths
+       must shadow the templated ``/api/sessions/{session_id}`` route
+       above them. A regression here would route ``DELETE /api/sessions/
+       empty`` to the single-session handler with ``session_id="empty"``
+       (which 404s instead of bulk-deleting).
+    2. Behaviour parity with :meth:`SessionDB.delete_empty_sessions`:
+       active sessions and archived sessions are both preserved.
+    3. Auth gating: both routes require the session token like every
+       other ``/api/*`` endpoint (issue #19533 contract).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        # Pin the SessionDB to the isolated HERMES_HOME so each test
+        # starts with a clean state.db.
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self):
+        """Build the standard test corpus:
+
+        * ``empty1`` / ``empty2`` — ended, no messages → should delete
+        * ``hasmsg``  — ended, has one message → must survive
+        * ``live``    — un-ended, empty → must survive (active)
+        * ``archived``— ended, empty, archived → must survive
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="empty1", source="cli")
+            db.end_session("empty1", end_reason="done")
+            db.create_session(session_id="empty2", source="cli")
+            db.end_session("empty2", end_reason="done")
+
+            db.create_session(session_id="hasmsg", source="cli")
+            db.append_message("hasmsg", role="user", content="hello")
+            db.end_session("hasmsg", end_reason="done")
+
+            db.create_session(session_id="live", source="cli")
+
+            db.create_session(session_id="archived", source="cli")
+            db.end_session("archived", end_reason="done")
+            db.set_session_archived("archived", True)
+        finally:
+            db.close()
+
+    def test_count_endpoint_requires_auth(self):
+        """GET /api/sessions/empty/count must 401 without the session token."""
+        resp = self.client.get("/api/sessions/empty/count")
+        assert resp.status_code == 401
+
+    def test_delete_endpoint_requires_auth(self):
+        """DELETE /api/sessions/empty must 401 without the session token.
+
+        Regression guard for issue #19533 — the bulk-delete is a strictly
+        destructive primitive, the middleware must gate it even if a
+        future refactor introduces a non-auth path."""
+        resp = self.client.delete("/api/sessions/empty")
+        assert resp.status_code == 401
+
+    def test_count_returns_only_empty_ended_unarchived(self):
+        """With the standard corpus, the count is exactly 2 — only
+        ``empty1`` and ``empty2`` qualify (``hasmsg`` has a message,
+        ``live`` is active, ``archived`` is archived)."""
+        self._seed()
+        resp = self.auth_client.get("/api/sessions/empty/count")
+        assert resp.status_code == 200
+        assert resp.json() == {"count": 2}
+
+    def test_delete_returns_count_and_removes_only_empties(self):
+        """DELETE returns the deleted count and removes only the
+        empty-ended-unarchived rows — same shape contract as the
+        DB-level method's unit tests."""
+        from hermes_state import SessionDB
+
+        self._seed()
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 2}
+
+        db = SessionDB()
+        try:
+            assert db.get_session("empty1") is None
+            assert db.get_session("empty2") is None
+            # Survivors: hasmsg has a message, live is active, archived
+            # is archived. All three must still be there.
+            assert db.get_session("hasmsg") is not None
+            assert db.get_session("live") is not None
+            assert db.get_session("archived") is not None
+            # And the count endpoint now reports 0.
+            assert db.count_empty_sessions() == 0
+        finally:
+            db.close()
+
+    def test_delete_with_no_empties_returns_zero(self):
+        """No empty sessions → endpoint returns ``deleted: 0`` (200,
+        not 404). The dashboard relies on this no-op path to surface
+        a "Nothing to clean up" toast instead of an error."""
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 0}
+
+    def test_route_order_empty_not_shadowed_by_session_id(self):
+        """Pin the route-ordering contract: ``DELETE /api/sessions/empty``
+        must hit the bulk handler, not the templated single-session
+        handler (which would 404 because no session has id 'empty').
+
+        Concretely: a request against the bulk path on an EMPTY corpus
+        returns ``{ok: True, deleted: 0}``. If the templated route were
+        winning, we'd see 404 ("Session not found") instead.
+        """
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "deleted" in body, (
+            "If this assertion fails, the literal /api/sessions/empty "
+            "route is being shadowed by the templated /api/sessions/"
+            "{session_id} route — check registration order in "
+            "hermes_cli/web_server.py."
+        )
+
+
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
-        """Create a TestClient without the session token header."""
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        """Create a TestClient without the session token header.
+
+        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
+        has the ``/api/plugins/example/hello`` endpoint available — the
+        example plugin is no longer a bundled plugin, so the fixture
+        installs it into the per-test ``HERMES_HOME``.
+        """
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -2429,10 +3156,12 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Use ``/api/plugins/example/hello`` from the example-dashboard plugin —
-        a stable, side-effect-free GET that's always loaded in tests. With a
-        valid token the handler should run (200); without one the middleware
-        should 401 before the handler is reached.
+        Uses ``/api/plugins/example/hello`` from the example-dashboard
+        test fixture (installed into HERMES_HOME by the class-level
+        ``_install_example_plugin`` fixture) — a stable, side-effect-free
+        GET that's only loaded for tests. With a valid token the handler
+        should run (200); without one the middleware should 401 before
+        the handler is reached.
         """
         # Without auth: middleware blocks before reaching the handler.
         resp = self.client.get("/api/plugins/example/hello")
@@ -2878,66 +3607,62 @@ class TestPtyWebSocket:
         assert "channel=abc-123" in url
         assert "token=" in url
 
-    def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
-        """Frame written to /api/pub is rebroadcast verbatim to every
-        /api/events subscriber on the same channel."""
-        import time
-        from urllib.parse import urlencode
+    def test_pub_broadcasts_to_events_subscribers(self):
+        """A frame handed to _broadcast_event is sent verbatim to every
+        subscriber registered on that channel — and not to subscribers on
+        other channels.
+
+        This drives the broadcast unit directly under asyncio rather than
+        round-tripping through Starlette's TestClient WebSocket portal. The
+        portal version was flaky under heavy parallel CI load: the broadcast
+        had to traverse two nested threaded portals within a 10s wall-clock
+        budget, and a starved ASGI thread occasionally blew that budget even
+        though the server logic was correct. Testing _broadcast_event with
+        fake subscribers removes the scheduling surface entirely while
+        asserting the exact fan-out contract.
+        """
+        import asyncio
         from hermes_cli import web_server as ws_mod
 
-        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
-        pub_path = f"/api/pub?{qs}"
-        sub_path = f"/api/events?{qs}"
+        class _FakeSub:
+            def __init__(self):
+                self.sent: list[str] = []
 
-        with self.client.websocket_connect(sub_path) as sub:
-            # Wait for the subscriber to be registered on the server side.
-            # websocket_connect returns when ws.accept() completes, but the
-            # server adds us to ``_event_channels`` in a follow-up await,
-            # so a publish immediately after connect can race ahead of the
-            # subscriber registration and the message is dropped.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if ws_mod._event_channels.get("broadcast-test"):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError(
-                    "subscriber did not register on channel within 5s"
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        app = ws_mod.app
+
+        async def _run():
+            sub_a1 = _FakeSub()
+            sub_a2 = _FakeSub()
+            sub_other = _FakeSub()
+            frame = '{"type":"tool.start","payload":{"tool_id":"t1"}}'
+
+            event_channels, event_lock = ws_mod._get_event_state(app)
+            # Register two subscribers on the target channel and one on a
+            # different channel, exactly as the /api/events handler does.
+            async with event_lock:
+                event_channels.setdefault("broadcast-test", set()).update(
+                    {sub_a1, sub_a2}
                 )
+                event_channels.setdefault("other-channel", set()).add(sub_other)
+            try:
+                await ws_mod._broadcast_event(app, "broadcast-test", frame)
+            finally:
+                async with event_lock:
+                    event_channels.pop("broadcast-test", None)
+                    event_channels.pop("other-channel", None)
 
-            with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                # Yield control so the server-side broadcast handler can
-                # process the frame.  TestClient runs the ASGI app in a
-                # background thread; a small sleep gives that thread time
-                # to call _broadcast_event before we start blocking on
-                # receive_text().  Without this, under heavy CI load the
-                # receive can race the broadcast and hang until
-                # pytest-timeout kills us.
-                import queue, threading
-                recv_q: queue.Queue = queue.Queue()
+            return sub_a1, sub_a2, sub_other, frame
 
-                def _recv():
-                    try:
-                        recv_q.put(sub.receive_text())
-                    except Exception as exc:
-                        recv_q.put(exc)
+        sub_a1, sub_a2, sub_other, frame = asyncio.run(_run())
 
-                t = threading.Thread(target=_recv, daemon=True)
-                t.start()
-                try:
-                    received = recv_q.get(timeout=10.0)
-                except queue.Empty:
-                    raise AssertionError(
-                        "broadcast not received within 10s — server likely "
-                        "dropped the frame silently (see _broadcast_event "
-                        "except Exception: pass)"
-                    )
-                if isinstance(received, Exception):
-                    raise received
-
-        assert "tool.start" in received
-        assert '"tool_id":"t1"' in received
+        # Every subscriber on the channel got the frame verbatim, exactly once.
+        assert sub_a1.sent == [frame]
+        assert sub_a2.sent == [frame]
+        # A subscriber on a different channel got nothing.
+        assert sub_other.sent == []
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
@@ -2984,7 +3709,16 @@ class TestDashboardPluginStaticAssetAllowlist:
     """
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        """Create a TestClient and install the example-dashboard fixture.
+
+        The static-asset allowlist tests need a plugin to point at —
+        they verify that ``/dashboard-plugins/example/manifest.json``
+        is served while ``plugin_api.py`` and ``__pycache__/*.pyc``
+        from the same directory are not. Since the example plugin is
+        no longer bundled, ``_install_example_plugin`` lays it down in
+        the per-test ``HERMES_HOME`` user-plugins dir.
+        """
         try:
             from starlette.testclient import TestClient
         except ImportError:

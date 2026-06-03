@@ -27,6 +27,11 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      settings: {
+        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
+        setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
+      }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
@@ -44,10 +49,12 @@ declare global {
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
+      onPowerResume?: (callback: () => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
+      cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
       updates: {
@@ -194,12 +201,7 @@ export interface DesktopBootstrapStageDescriptor {
   needs_user_input?: boolean
 }
 
-export type DesktopBootstrapStageState =
-  | 'pending'
-  | 'running'
-  | 'succeeded'
-  | 'skipped'
-  | 'failed'
+export type DesktopBootstrapStageState = 'pending' | 'running' | 'succeeded' | 'skipped' | 'failed'
 
 export interface DesktopBootstrapStageResult {
   state: DesktopBootstrapStageState
@@ -221,7 +223,7 @@ export interface DesktopBootstrapState {
   manifest: { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null } | null
   stages: Record<string, DesktopBootstrapStageResult>
   error: string | null
-  log: Array<{ ts: number; stage: string | null; line: string }>
+  log: Array<{ ts: number; stage: string | null; line: string; stream?: 'stdout' | 'stderr' }>
   startedAt: number | null
   completedAt: number | null
   unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
@@ -237,7 +239,7 @@ export type DesktopBootstrapEvent =
       json?: DesktopBootstrapStageResult['json']
       error?: string | null
     }
-  | { type: 'log'; stage?: string | null; line: string }
+  | { type: 'log'; stage?: string | null; line: string; stream?: 'stdout' | 'stderr' }
   | { type: 'complete'; marker: Record<string, unknown> }
   | { type: 'failed'; stage?: string | null; error: string }
   | {
@@ -247,7 +249,6 @@ export type DesktopBootstrapEvent =
       installCommand: string
       docsUrl: string
     }
-
 
 export interface HermesApiRequest {
   path: string

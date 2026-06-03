@@ -4,6 +4,14 @@ import sqlite3
 from scripts import hermes_reliability_doctor as doctor
 
 
+def test_default_parser_checkout_points_to_active_os_worktree():
+    checkout = doctor.build_parser().parse_args([]).expected_runtime_checkout
+
+    assert checkout == "/home/jenny/.hermes/hermes-context-routing-e1d-integration"
+    assert "QUARANTINED_DO_NOT_USE" not in checkout
+    assert "hermes-context-routing-deploy-a34226d6" not in checkout
+
+
 def test_parse_rclone_config_reports_remote_names_only(tmp_path):
     config_path = tmp_path / "rclone.conf"
     config_path.write_text(

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_EXPECTED_CHECKOUT = "/home/jenny/.hermes/hermes-context-routing-deploy-a34226d6"
+DEFAULT_EXPECTED_CHECKOUT = "/home/jenny/.hermes/hermes-context-routing-e1d-integration"
 DEFAULT_HERMES_HOME = "/home/jenny/.hermes"
 DEFAULT_AI_OPS_BRAIN = "/home/jenny/ai-ops-brain"
 DEFAULT_GATEWAY_VENV_PYTHON = "/home/jenny/.hermes/hermes-agent-backup/venv/bin/python"

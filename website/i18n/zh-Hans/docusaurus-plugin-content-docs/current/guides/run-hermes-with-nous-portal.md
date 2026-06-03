@@ -95,7 +95,7 @@ Hey, search the web for "Hermes Agent release notes" and summarize the top 3 hit
 
 ## 5. 选择你实际需要的模型
 
-`hermes setup --portal` 后的默认模型是一个合理的通用模型，但订阅的意义在于可以访问完整的模型目录。在会话中使用 `/model` 切换：
+`hermes setup --portal` 会在设置过程中让你选择模型，但订阅的意义在于可以访问完整的模型目录——随时可在会话中使用 `/model` 切换：
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # 最佳通用 agentic 模型

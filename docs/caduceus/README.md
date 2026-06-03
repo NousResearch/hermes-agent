@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/caduceus-hero.png" alt="Caduceus — deep-planning mode + dynamic multi-agent workflows for Hermes" width="100%">
+</p>
+
 # Caduceus
 
 **A native deep-planning mode for Hermes.** One switch turns Hermes into a
@@ -7,6 +11,16 @@ effort, delegates where it helps, and escalates to a deterministic multi-agent
 each delegated worker to the cheapest model that can do that subtask.
 
 > Off by default · session-scoped · additive · fully tested.
+
+<p align="center">
+  <img src="assets/caduceus-architecture.png" alt="How Caduceus works: the deep-planning loop, the Loom, and the Auto Router" width="100%">
+</p>
+
+When a workflow runs, the desktop opens a live **Orchestration Theater**:
+
+<p align="center">
+  <img src="assets/caduceus-theater.png" alt="The Orchestration Theater — live phase lanes, agent cards, concurrency and budget gauges" width="100%">
+</p>
 
 ## Install (1 command)
 

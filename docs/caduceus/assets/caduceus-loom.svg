@@ -1,0 +1,42 @@
+<svg width="1280" height="470" viewBox="0 0 1280 470" xmlns="http://www.w3.org/2000/svg" font-family="Inter, 'Liberation Sans', sans-serif">
+<defs><linearGradient id="lbg" x1="0" y1="0" x2="0" y2="470" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FBFCFE"/><stop offset="1" stop-color="#F3F6FC"/></linearGradient><marker id="arr" markerWidth="9" markerHeight="9" refX="6" refY="4.5" orient="auto"><path d="M1 1 L7 4.5 L1 8" fill="none" stroke="#B7C3DC" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="1280" height="470" fill="url(#lbg)"/>
+<text x="40" y="54" font-size="28" font-weight="800" fill="#0F172A">The Loom — three primitives</text>
+<text x="40" y="84" font-size="15" fill="#6B7689">The agent authors a small Python script; the engine runs it deterministically with budgets, caching &amp; resume.</text>
+<rect x="40" y="120" width="340" height="316" rx="16" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/><rect x="40" y="120" width="340" height="316" rx="16" fill="#F7F9FE" opacity="0.5"/><rect x="40" y="120" width="6" height="316" rx="3" fill="#3B6BFF"/><text x="66" y="156" font-size="20" font-weight="800" fill="#0F172A">agent()</text><text x="66" y="180" font-size="13" fill="#7787A3">run one subagent → validated JSON</text>
+<rect x="66" y="196" width="288" height="34" rx="9" fill="#0E1730"/><text x="82" y="218" font-family="JetBrains Mono, monospace" font-size="13.5" fill="#CFE0FF">agent(prompt, schema=Bug)</text>
+<line x1="210" y1="270" x2="210" y2="300" stroke="#B7C3DC" stroke-width="2" marker-end="url(#arr)"/>
+<circle cx="210" cy="256" r="22" fill="#FFFFFF" stroke="#3B6BFF" stroke-width="2"/><text x="210" y="260" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#1F2A44">task</text>
+<rect x="164" y="312" width="92" height="92" rx="10" fill="#FFFFFF" stroke="#3B6BFF" stroke-width="2"/>
+<text x="176" y="332" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#3D4860">{</text>
+<text x="176" y="352" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#3D4860">  real:true</text>
+<text x="176" y="372" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#3D4860">  sev:"hi"</text>
+<text x="176" y="392" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#3D4860">}</text>
+<rect x="470" y="120" width="340" height="316" rx="16" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/><rect x="470" y="120" width="340" height="316" rx="16" fill="#F7F9FE" opacity="0.5"/><rect x="470" y="120" width="6" height="316" rx="3" fill="#3B6BFF"/><text x="496" y="156" font-size="20" font-weight="800" fill="#0F172A">parallel()</text><text x="496" y="180" font-size="13" fill="#7787A3">fan out N · join at a barrier</text>
+<rect x="496" y="196" width="288" height="34" rx="9" fill="#0E1730"/><text x="512" y="218" font-family="JetBrains Mono, monospace" font-size="13.5" fill="#CFE0FF">parallel([a, b, c, d])</text>
+<circle cx="640" cy="256" r="22" fill="#FFF7E6" stroke="#E8A92E" stroke-width="2"/><text x="640" y="260" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#9A6B12">orch</text>
+<line x1="640" y1="278" x2="520" y2="318" stroke="#C3CEE2" stroke-width="2"/>
+<circle cx="520" cy="336" r="18" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="2"/><text x="520" y="340" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#1F2A44">w</text>
+<line x1="640" y1="278" x2="598" y2="318" stroke="#C3CEE2" stroke-width="2"/>
+<circle cx="598" cy="336" r="18" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="2"/><text x="598" y="340" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#1F2A44">w</text>
+<line x1="640" y1="278" x2="676" y2="318" stroke="#C3CEE2" stroke-width="2"/>
+<circle cx="676" cy="336" r="18" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="2"/><text x="676" y="340" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#1F2A44">w</text>
+<line x1="640" y1="278" x2="754" y2="318" stroke="#C3CEE2" stroke-width="2"/>
+<circle cx="754" cy="336" r="18" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="2"/><text x="754" y="340" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#1F2A44">w</text>
+<line x1="510" y1="378" x2="770" y2="378" stroke="#3B6BFF" stroke-width="3" stroke-dasharray="2 5" stroke-linecap="round"/>
+<text x="640" y="404" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7787A3">barrier — all must finish</text>
+<rect x="900" y="120" width="340" height="316" rx="16" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/><rect x="900" y="120" width="340" height="316" rx="16" fill="#F7F9FE" opacity="0.5"/><rect x="900" y="120" width="6" height="316" rx="3" fill="#3B6BFF"/><text x="926" y="156" font-size="20" font-weight="800" fill="#0F172A">pipeline()</text><text x="926" y="180" font-size="13" fill="#7787A3">flow items through stages — no barrier</text>
+<rect x="926" y="196" width="288" height="34" rx="9" fill="#0E1730"/><text x="942" y="218" font-family="JetBrains Mono, monospace" font-size="13.5" fill="#CFE0FF">pipeline(items, scout, verify)</text>
+<rect x="940" y="278" width="78" height="48" rx="11" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="1.6"/>
+<text x="979" y="306" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="600" fill="#23407E">scout</text>
+<line x1="1018" y1="302" x2="1038" y2="302" stroke="#B7C3DC" stroke-width="2" marker-end="url(#arr)"/>
+<rect x="1038" y="278" width="78" height="48" rx="11" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="1.6"/>
+<text x="1077" y="306" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="600" fill="#23407E">verify</text>
+<line x1="1116" y1="302" x2="1136" y2="302" stroke="#B7C3DC" stroke-width="2" marker-end="url(#arr)"/>
+<rect x="1136" y="278" width="78" height="48" rx="11" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="1.6"/>
+<text x="1175" y="306" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="600" fill="#23407E">write</text>
+<circle cx="930" cy="270" r="5" fill="#3B6BFF" opacity="0.9"/>
+<circle cx="930" cy="286" r="5" fill="#3B6BFF" opacity="0.65"/>
+<circle cx="930" cy="302" r="5" fill="#3B6BFF" opacity="0.4"/>
+<text x="1070" y="362" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7787A3">each item streams — no waiting</text>
+</svg>

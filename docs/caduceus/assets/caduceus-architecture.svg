@@ -1,0 +1,82 @@
+<svg width="1280" height="506" viewBox="0 0 1280 506" xmlns="http://www.w3.org/2000/svg" font-family="Inter, 'Liberation Sans', sans-serif">
+<defs>
+  <linearGradient id="abg" x1="0" y1="0" x2="0" y2="506" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#FBFCFE"/><stop offset="1" stop-color="#F3F6FC"/>
+  </linearGradient>
+</defs>
+<rect width="1280" height="506" fill="url(#abg)"/>
+<text x="44" y="58" font-size="30" font-weight="800" fill="#0F172A">How Caduceus works</text>
+<text x="44" y="90" font-size="16" fill="#6B7689">One switch, three composable layers. Each turns on only when you need it — the mode is a no-op when off.</text>
+<g transform="translate(44,116)" font-size="13" font-weight="600">
+<text x="0" y="14" fill="#94A3B8">flow</text>
+<g transform="translate(60,0)"><rect width="150" height="26" rx="13" fill="#0E1730"/><text x="75" y="17" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#CFE0FF">/caduceus on</text></g>
+<text x="222" y="17" fill="#AEB8D2">→</text>
+<text x="244" y="17" fill="#7C5CFF">plan &amp; drive</text>
+<text x="372" y="17" fill="#AEB8D2">— say “workflow” →</text>
+<text x="556" y="17" fill="#3B6BFF">fan out on the Loom</text>
+<text x="730" y="17" fill="#AEB8D2">— each worker →</text>
+<text x="888" y="17" fill="#C68A14">routed to the right model</text>
+</g>
+<g transform="translate(44,168)">
+<rect x="0" y="4" width="372" height="296" rx="18" fill="#10204A" opacity="0.06"/>
+<rect x="0" y="0" width="372" height="296" rx="18" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<rect x="0" y="0" width="372" height="6" rx="3" fill="#7C5CFF"/>
+<rect x="0" y="0" width="372" height="120" rx="18" fill="#F3F0FF" opacity="0.55"/>
+<rect x="0" y="60" width="372" height="60" fill="#F3F0FF" opacity="0.55"/>
+<circle cx="46" cy="58" r="30" fill="#FFFFFF" stroke="#7C5CFF" stroke-width="1.6"/>
+<g transform="translate(46,58)"><g stroke="#7C5CFF" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="-15" y="-16" width="30" height="32" rx="6" stroke-width="2.6"/><path d="M -9 -7 l 3 3 l 6 -7" /><path d="M -9 5 l 3 3 l 6 -7"/><line x1="6" y1="-6" x2="11" y2="-6" stroke-width="2.4"/><line x1="6" y1="6" x2="11" y2="6" stroke-width="2.4"/></g></g>
+<text x="92" y="50" font-size="22" font-weight="800" fill="#0F172A">Deep-Planning Loop</text>
+<text x="92" y="74" font-size="13.5" font-weight="600" fill="#7787A3">always-on behaviour when the mode is on</text>
+<g transform="translate(20,98)"><rect width="110" height="28" rx="14" fill="#FFFFFF" stroke="#7C5CFF" stroke-width="1.2"/><circle cx="18" cy="14" r="4" fill="#7C5CFF"/><text x="30" y="19" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="600" fill="#7C5CFF">always on</text></g>
+<circle cx="30" cy="158" r="3" fill="#7C5CFF"/>
+<text x="44" y="162" font-size="14.5" fill="#3D4860">Writes a live to-do plan first</text>
+<circle cx="30" cy="194" r="3" fill="#7C5CFF"/>
+<text x="44" y="198" font-size="14.5" fill="#3D4860">One step in-progress, done as you go</text>
+<circle cx="30" cy="230" r="3" fill="#7C5CFF"/>
+<text x="44" y="234" font-size="14.5" fill="#3D4860">Verifies before claiming done</text>
+<circle cx="30" cy="266" r="3" fill="#7C5CFF"/>
+<text x="44" y="270" font-size="14.5" fill="#3D4860">Right-sizes — trivial asks just run</text>
+</g>
+<g transform="translate(454,168)">
+<rect x="0" y="4" width="372" height="296" rx="18" fill="#10204A" opacity="0.06"/>
+<rect x="0" y="0" width="372" height="296" rx="18" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<rect x="0" y="0" width="372" height="6" rx="3" fill="#3B6BFF"/>
+<rect x="0" y="0" width="372" height="120" rx="18" fill="#EAF0FF" opacity="0.55"/>
+<rect x="0" y="60" width="372" height="60" fill="#EAF0FF" opacity="0.55"/>
+<circle cx="46" cy="58" r="30" fill="#FFFFFF" stroke="#3B6BFF" stroke-width="1.6"/>
+<g transform="translate(46,58)"><g stroke="#3B6BFF" stroke-width="2.4" opacity="0.55"><line x1="-14" y1="-12" x2="14" y2="-12"/><line x1="-14" y1="2" x2="14" y2="2"/><line x1="-14" y1="-12" x2="-7" y2="15"/><line x1="14" y1="-12" x2="7" y2="15"/><line x1="0" y1="-12" x2="0" y2="2"/></g><circle cx="-14" cy="-12" r="4" fill="#3B6BFF"/><circle cx="0" cy="-12" r="4" fill="#3B6BFF"/><circle cx="14" cy="-12" r="4" fill="#3B6BFF"/><circle cx="-14" cy="2" r="4" fill="#3B6BFF"/><circle cx="0" cy="2" r="4" fill="#3B6BFF"/><circle cx="14" cy="2" r="4" fill="#3B6BFF"/><circle cx="-7" cy="15" r="4" fill="#3B6BFF"/><circle cx="7" cy="15" r="4" fill="#3B6BFF"/></g>
+<text x="92" y="50" font-size="22" font-weight="800" fill="#0F172A">The Loom</text>
+<text x="92" y="74" font-size="13.5" font-weight="600" fill="#7787A3">deterministic async workflow engine</text>
+<g transform="translate(20,98)"><rect width="152" height="28" rx="14" fill="#FFFFFF" stroke="#3B6BFF" stroke-width="1.2"/><circle cx="18" cy="14" r="4" fill="#3B6BFF"/><text x="30" y="19" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="600" fill="#3B6BFF">say "workflow"</text></g>
+<circle cx="30" cy="158" r="3" fill="#3B6BFF"/>
+<text x="44" y="162" font-size="14.5" fill="#3D4860">agent() · parallel() · pipeline()</text>
+<circle cx="30" cy="194" r="3" fill="#3B6BFF"/>
+<text x="44" y="198" font-size="14.5" fill="#3D4860">Schema-validated structured output</text>
+<circle cx="30" cy="230" r="3" fill="#3B6BFF"/>
+<text x="44" y="234" font-size="14.5" fill="#3D4860">Shared token budget per run</text>
+<circle cx="30" cy="266" r="3" fill="#3B6BFF"/>
+<text x="44" y="270" font-size="14.5" fill="#3D4860">Per-run caching + instant resume</text>
+</g>
+<g transform="translate(864,168)">
+<rect x="0" y="4" width="372" height="296" rx="18" fill="#10204A" opacity="0.06"/>
+<rect x="0" y="0" width="372" height="296" rx="18" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<rect x="0" y="0" width="372" height="6" rx="3" fill="#E8A92E"/>
+<rect x="0" y="0" width="372" height="120" rx="18" fill="#FFF6E3" opacity="0.55"/>
+<rect x="0" y="60" width="372" height="60" fill="#FFF6E3" opacity="0.55"/>
+<circle cx="46" cy="58" r="30" fill="#FFFFFF" stroke="#E8A92E" stroke-width="1.6"/>
+<g transform="translate(46,58)"><g stroke="#E8A92E" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="-13" cy="0" r="4.5" fill="#E8A92E" stroke="none"/><path d="M -9 0 H 0 M 0 0 C 8 0 8 -13 16 -13 M 0 0 C 8 0 8 13 16 13"/><circle cx="16" cy="-13" r="4.5" fill="#E8A92E" stroke="none"/><circle cx="16" cy="13" r="4.5" fill="none"/></g></g>
+<text x="92" y="50" font-size="22" font-weight="800" fill="#0F172A">Auto Router</text>
+<text x="92" y="74" font-size="13.5" font-weight="600" fill="#7787A3">per-task worker model selection</text>
+<g transform="translate(20,98)"><rect width="177" height="28" rx="14" fill="#FFFFFF" stroke="#E8A92E" stroke-width="1.2"/><circle cx="18" cy="14" r="4" fill="#E8A92E"/><text x="30" y="19" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="600" fill="#E8A92E">/caduceus auto on</text></g>
+<circle cx="30" cy="158" r="3" fill="#E8A92E"/>
+<text x="44" y="162" font-size="14.5" fill="#3D4860">Scores each worker on capability</text>
+<circle cx="30" cy="194" r="3" fill="#E8A92E"/>
+<text x="44" y="198" font-size="14.5" fill="#3D4860">Routes to the cheapest model that clears</text>
+<circle cx="30" cy="230" r="3" fill="#E8A92E"/>
+<text x="44" y="234" font-size="14.5" fill="#3D4860">Orchestrator keeps your session model</text>
+<circle cx="30" cy="266" r="3" fill="#E8A92E"/>
+<text x="44" y="270" font-size="14.5" fill="#3D4860">Safe fallback — never breaks a request</text>
+</g>
+<g transform="translate(422,316.0)"><path d="M 0 0 H 22" stroke="#C3CEE2" stroke-width="2.4" stroke-linecap="round"/><path d="M 16 -6 L 26 0 L 16 6" fill="none" stroke="#C3CEE2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g transform="translate(832,316.0)"><path d="M 0 0 H 22" stroke="#C3CEE2" stroke-width="2.4" stroke-linecap="round"/><path d="M 16 -6 L 26 0 L 16 6" fill="none" stroke="#C3CEE2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g>
+</svg>

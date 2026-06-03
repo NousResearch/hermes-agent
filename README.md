@@ -1,14 +1,27 @@
 <!-- CADUCEUS:BEGIN -->
-# Caduceus ⚕ — deep-planning mode + multi-agent workflows for Hermes
+<p align="center">
+  <img src="docs/caduceus/assets/caduceus-hero.png" alt="Caduceus — deep-planning mode + dynamic multi-agent workflows for Hermes" width="100%">
+</p>
 
-> **A fork of [Hermes Agent](https://github.com/NousResearch/hermes-agent) that adds Caduceus.**
-> One switch turns Hermes into a senior-engineer planner: it drives a visible
-> to-do plan, raises reasoning effort, delegates where it helps, and escalates
-> to a deterministic multi-agent **workflow engine** (the *Loom*) when you ask.
-> An optional **Auto Router** sends each delegated worker to the cheapest model
-> that can do that subtask.
->
-> *Off by default · session-scoped · additive · fully reversible · fully tested.*
+<p align="center">
+  <a href="docs/caduceus/RELEASE_NOTES.md"><img src="https://img.shields.io/badge/Caduceus-v1.0-E8A92E?style=for-the-badge&labelColor=0E1730" alt="Caduceus v1.0"></a>
+  <img src="https://img.shields.io/badge/mode-off_by_default-6E7C99?style=for-the-badge&labelColor=0E1730" alt="Off by default">
+  <img src="https://img.shields.io/badge/tests-357_passing-22C55E?style=for-the-badge&labelColor=0E1730" alt="357 tests passing">
+  <img src="https://img.shields.io/badge/python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=0E1730" alt="Python 3.11+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3B6BFF?style=for-the-badge&labelColor=0E1730" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <b>A reversible fork of <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>.</b><br>
+  One switch turns Hermes into a senior-engineer planner — it drives a visible to-do plan, raises reasoning
+  effort, delegates where it helps, and escalates to a deterministic multi-agent <b>workflow engine</b>
+  (the <i>Loom</i>) when you ask. An optional <b>Auto&nbsp;Router</b> sends each delegated worker to the
+  cheapest model that can do that subtask.
+</p>
+
+<p align="center">
+  <code>/caduceus on</code> &nbsp;·&nbsp; off by default &nbsp;·&nbsp; session-scoped &nbsp;·&nbsp; additive &nbsp;·&nbsp; fully reversible &nbsp;·&nbsp; fully tested
+</p>
 
 ### Install in one command
 
@@ -22,7 +35,13 @@ Hermes install, backs up every file it touches, and can be fully undone with
 `--uninstall`. Pure-Python stdlib — nothing to `pip`, and the desktop repack
 needs no `node`/`npx`.
 
-### What you get
+### How it works
+
+One switch, three composable layers. Each turns on only when you need it — and the whole mode is a no-op when it's off.
+
+<p align="center">
+  <img src="docs/caduceus/assets/caduceus-architecture.png" alt="How Caduceus works: the deep-planning loop, the Loom, and the Auto Router" width="100%">
+</p>
 
 | Layer | What it does | How to use |
 |---|---|---|
@@ -30,13 +49,37 @@ needs no `node`/`npx`.
 | **The Loom** | Deterministic async workflow engine — `agent()` / `parallel()` / `pipeline()`, structured output, shared budgets, per-run caching + resume | say **"workflow"** |
 | **Auto Router** | Routes each delegated worker to the cheapest configured model that can do *that* subtask; the orchestrator always keeps your session model | `/caduceus auto on` |
 
-Workflow progress streams live to the desktop **Orchestration Theater**.
+### Watch it think — the Orchestration Theater
+
+Say **"workflow"** and Caduceus fans out across subagents on the Loom. The desktop opens a live **Orchestration Theater** — phase lanes, per-agent model badges (orchestrator gold, workers blue), token burn, live concurrency, and a shared budget gauge — so the fan-out *feels alive*.
+
+<p align="center">
+  <img src="docs/caduceus/assets/caduceus-theater.png" alt="The Orchestration Theater — live phase lanes, agent cards, concurrency and budget gauges" width="100%">
+</p>
+
+### The Loom — deterministic workflows
+
+You don't write scripts yourself; the agent authors a small Python workflow and runs it on the Loom — with structured output, a shared token budget, and per-run caching + resume (edit the script, re-run, unchanged calls return instantly).
+
+<p align="center">
+  <img src="docs/caduceus/assets/caduceus-loom.png" alt="The Loom primitives: agent(), parallel(), and pipeline()" width="100%">
+</p>
+
+### Auto Router — the right model per task
+
+With many models configured, you don't want to pay frontier prices on trivial subtasks. The Auto Router scores each **worker** on capability (never price) and sends it to the cheapest model that clears the bar. The **orchestrator always keeps your session model**.
+
+<p align="center">
+  <img src="docs/caduceus/assets/caduceus-router.png" alt="Auto Router — scoring each worker on capability and routing to the cheapest capable model" width="100%">
+</p>
 
 **Docs:** [`docs/caduceus/`](docs/caduceus/) — [install](docs/caduceus/INSTALL.md) ·
 [user guide](docs/caduceus/USER_GUIDE.md) · [design](docs/caduceus/DESIGN.md) ·
 [parity](docs/caduceus/PARITY.md) · [contribution summary](docs/caduceus/PR_DESCRIPTION.md)
 
-<sub>Caduceus ships <b>off</b>. With it off, this fork behaves exactly like upstream Hermes — the full upstream README follows below.</sub>
+<p align="center">
+  <sub>Caduceus ships <b>off</b>. With it off, this fork behaves exactly like upstream Hermes — the full upstream README follows below.</sub>
+</p>
 
 ---
 <!-- CADUCEUS:END -->

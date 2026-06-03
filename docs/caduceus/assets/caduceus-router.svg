@@ -1,0 +1,44 @@
+<svg width="1280" height="470" viewBox="0 0 1280 470" xmlns="http://www.w3.org/2000/svg" font-family="Inter, 'Liberation Sans', sans-serif">
+<defs><linearGradient id="rbg" x1="0" y1="0" x2="0" y2="470" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FBFCFE"/><stop offset="1" stop-color="#F3F6FC"/></linearGradient><marker id="a2" markerWidth="9" markerHeight="9" refX="6" refY="4.5" orient="auto"><path d="M1 1 L7 4.5 L1 8" fill="none" stroke="#B7C3DC" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker><marker id="ag" markerWidth="9" markerHeight="9" refX="6" refY="4.5" orient="auto"><path d="M1 1 L7 4.5 L1 8" fill="none" stroke="#9DBBF5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="1280" height="470" fill="url(#rbg)"/>
+<text x="40" y="54" font-size="28" font-weight="800" fill="#0F172A">Auto Router — the right model per task</text>
+<text x="40" y="84" font-size="15" fill="#6B7689">Each delegated worker is scored on capability and routed to the cheapest model that clears the bar. Scored on capability — never price.</text>
+<rect x="40" y="112" width="1200" height="58" rx="14" fill="#FFF7E6" stroke="#F3E2B8" stroke-width="1.5"/>
+<rect x="40" y="112" width="6" height="58" rx="3" fill="#E8A92E"/>
+<circle cx="78" cy="141" r="16" fill="#FFFFFF" stroke="#E8A92E" stroke-width="2"/>
+<text x="78" y="146" text-anchor="middle" font-size="15" fill="#E8A92E">★</text>
+<text x="104" y="136" font-size="17" font-weight="800" fill="#0F172A">Orchestrator</text>
+<text x="104" y="158" font-size="13.5" fill="#9A6B12">always your session model — never routed</text>
+<text x="1216" y="146" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="13" fill="#9A6B12">gpt-5.5 (session)</text>
+<rect x="40" y="232" width="300" height="50" rx="12" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="64" cy="257" r="5" fill="#94A3B8"/>
+<text x="80" y="254" font-size="14.5" font-weight="600" fill="#1F2A44">rename vars across repo</text>
+<text x="80" y="272" font-size="12" fill="#94A3B8">worker · difficulty: trivial</text>
+<line x1="340" y1="257" x2="498" y2="295" stroke="#B7C3DC" stroke-width="2" marker-end="url(#a2)"/>
+<rect x="40" y="296" width="300" height="50" rx="12" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="64" cy="321" r="5" fill="#3B82F6"/>
+<text x="80" y="318" font-size="14.5" font-weight="600" fill="#1F2A44">summarize a changelog</text>
+<text x="80" y="336" font-size="12" fill="#94A3B8">worker · difficulty: easy</text>
+<line x1="340" y1="321" x2="498" y2="295" stroke="#B7C3DC" stroke-width="2" marker-end="url(#a2)"/>
+<rect x="40" y="360" width="300" height="50" rx="12" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="64" cy="385" r="5" fill="#7C5CFF"/>
+<text x="80" y="382" font-size="14.5" font-weight="600" fill="#1F2A44">design a public API</text>
+<text x="80" y="400" font-size="12" fill="#94A3B8">worker · difficulty: hard</text>
+<line x1="340" y1="385" x2="498" y2="295" stroke="#B7C3DC" stroke-width="2" marker-end="url(#a2)"/>
+<g transform="translate(560,295)"><rect x="-62" y="-58" width="124" height="116" rx="16" fill="#0E1730"/><text x="0" y="-30" text-anchor="middle" font-size="14" font-weight="800" fill="#CFE0FF">Router</text><text x="0" y="-8" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#8FB4FF">classifier</text><line x1="-44" y1="6" x2="44" y2="6" stroke="#2A3A63" stroke-width="1.2"/><text x="0" y="26" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#9FB3D9">threshold</text><text x="0" y="46" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="14" font-weight="700" fill="#FFD36E">0.70</text></g>
+<rect x="760" y="232" width="440" height="78" rx="14" fill="#EAF0FF" stroke="#3B6BFF" stroke-width="1.6"/>
+<text x="784" y="264" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#1F2A44">google/gemini-3-flash</text>
+<text x="784" y="288" font-size="13" fill="#6B7689">cheap tier</text>
+<rect x="1060" y="254" width="116" height="34" rx="17" fill="#FFFFFF" stroke="#3B6BFF" stroke-width="1.3"/>
+<text x="1118" y="276" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#3B6BFF">$0.3 / Mtok</text>
+<rect x="760" y="328" width="440" height="78" rx="14" fill="#FFF7E6" stroke="#E8A92E" stroke-width="1.6"/>
+<text x="784" y="360" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#1F2A44">gpt-5.5</text>
+<text x="784" y="384" font-size="13" fill="#6B7689">frontier tier</text>
+<rect x="1060" y="350" width="116" height="34" rx="17" fill="#FFFFFF" stroke="#E8A92E" stroke-width="1.3"/>
+<text x="1118" y="372" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#E8A92E">$5.0 / Mtok</text>
+<path d="M 622 278 C 700 262 700 262 760 262" fill="none" stroke="#9DBBF5" stroke-width="2.4" marker-end="url(#ag)"/>
+<text x="668" y="242" text-anchor="middle" font-size="12" font-weight="600" fill="#3B6BFF">clears bar → cheapest</text>
+<path d="M 622 312 C 700 360 700 360 760 362" fill="none" stroke="#E8A92E" stroke-width="2.4" marker-end="url(#ag)"/>
+<text x="662" y="396" text-anchor="middle" font-size="12" font-weight="600" fill="#C68A14">needs more → escalate</text>
+<text x="40" y="446" font-size="13.5" fill="#7787A3">If the router can’t run for any reason it falls back safely to the cheapest candidate — and never breaks a request.</text>
+</svg>

@@ -1,0 +1,116 @@
+<svg width="1280" height="440" viewBox="0 0 1280 440" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Inter, 'Liberation Sans', sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0A0E1A"/>
+      <stop offset="0.55" stop-color="#0D1426"/>
+      <stop offset="1" stop-color="#0A1020"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#3B6BFF" stop-opacity="0.55"/>
+      <stop offset="0.45" stop-color="#3B6BFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#3B6BFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="goldglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFD36E" stop-opacity="0.9"/>
+      <stop offset="0.4" stop-color="#F5B83D" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#F5B83D" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="80" y1="100" x2="320" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EA8FF"/>
+      <stop offset="0.5" stop-color="#3B6BFF"/>
+      <stop offset="1" stop-color="#7C5CFF"/>
+    </linearGradient>
+    <linearGradient id="word" x1="380" y1="150" x2="980" y2="250" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.6" stop-color="#CFE0FF"/>
+      <stop offset="1" stop-color="#8FB4FF"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE39A"/>
+      <stop offset="0.5" stop-color="#F5B83D"/>
+      <stop offset="1" stop-color="#D9942A"/>
+    </linearGradient>
+    <linearGradient id="snake" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7FB0FF"/>
+      <stop offset="1" stop-color="#3B6BFF"/>
+    </linearGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="1.4" cy="1.4" r="1.4" fill="#9DB6FF" fill-opacity="0.06"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="440" rx="0" fill="url(#bg)"/>
+  <rect width="1280" height="440" fill="url(#dots)"/>
+  <rect x="0" y="0" width="1280" height="440" fill="url(#glow)" opacity="0.9" transform="translate(-380,-80)"/>
+  <ellipse cx="205" cy="220" rx="220" ry="220" fill="url(#goldglow)" opacity="0.25"/>
+
+  <!-- thin top hairline -->
+  <rect x="0" y="0" width="1280" height="3" fill="url(#ring)" opacity="0.85"/>
+
+  <!-- ===== Emblem ===== -->
+  <g transform="translate(205,220)">
+    <circle r="128" fill="#0E1730" stroke="url(#ring)" stroke-width="3"/>
+    <circle r="128" fill="none" stroke="#3B6BFF" stroke-width="14" opacity="0.10"/>
+    <circle r="112" fill="none" stroke="#1B2747" stroke-width="1.5"/>
+
+    <!-- wings -->
+    <g stroke="url(#ring)" stroke-width="5" stroke-linecap="round" fill="none" opacity="0.95">
+      <path d="M -6 -52 C -34 -64 -64 -60 -86 -44"/>
+      <path d="M -6 -40 C -30 -50 -56 -46 -76 -32"/>
+      <path d="M -6 -28 C -26 -36 -48 -33 -66 -22"/>
+      <path d="M 6 -52 C 34 -64 64 -60 86 -44"/>
+      <path d="M 6 -40 C 30 -50 56 -46 76 -32"/>
+      <path d="M 6 -28 C 26 -36 48 -33 66 -22"/>
+    </g>
+
+    <!-- staff -->
+    <rect x="-4" y="-58" width="8" height="150" rx="4" fill="url(#gold)"/>
+    <circle cx="0" cy="-66" r="11" fill="url(#gold)"/>
+    <circle cx="0" cy="-66" r="11" fill="url(#goldglow)" opacity="0.7"/>
+
+    <!-- serpents -->
+    <path d="M 0 -36 C 40 -22 -40 6 0 22 C 40 38 -36 64 -2 86"
+          fill="none" stroke="url(#snake)" stroke-width="6.5" stroke-linecap="round"/>
+    <path d="M 0 -36 C -40 -22 40 6 0 22 C -40 38 36 64 2 86"
+          fill="none" stroke="url(#snake)" stroke-width="6.5" stroke-linecap="round" opacity="0.85"/>
+    <!-- serpent heads -->
+    <circle cx="-2" cy="86" r="5.5" fill="#7FB0FF"/>
+    <circle cx="2" cy="86" r="5.5" fill="#5B8DEF"/>
+  </g>
+
+  <!-- ===== Wordmark ===== -->
+  <text x="392" y="196" font-size="92" font-weight="800" letter-spacing="2" fill="url(#word)">CADUCEUS</text>
+  <text x="396" y="244" font-size="23" font-weight="600" letter-spacing="0.4" fill="#9FB3D9">Deep-planning mode + dynamic multi-agent workflows for Hermes</text>
+
+  <!-- feature pills -->
+  <g font-size="17" font-weight="600">
+    <g transform="translate(396,288)">
+      <rect width="232" height="44" rx="22" fill="#101A33" stroke="#2A3A63" stroke-width="1.2"/>
+      <circle cx="26" cy="22" r="5" fill="#7C5CFF"/>
+      <text x="44" y="28" fill="#CBD7F0">Deep-Planning Loop</text>
+    </g>
+    <g transform="translate(644,288)">
+      <rect width="232" height="44" rx="22" fill="#101A33" stroke="#2A3A63" stroke-width="1.2"/>
+      <circle cx="26" cy="22" r="5" fill="#3B6BFF"/>
+      <text x="44" y="28" fill="#CBD7F0">The Loom · Workflows</text>
+    </g>
+    <g transform="translate(892,288)">
+      <rect width="200" height="44" rx="22" fill="#101A33" stroke="#2A3A63" stroke-width="1.2"/>
+      <circle cx="26" cy="22" r="5" fill="#F5B83D"/>
+      <text x="44" y="28" fill="#CBD7F0">Auto Router</text>
+    </g>
+  </g>
+
+  <!-- footer line -->
+  <text x="396" y="372" font-size="16" font-weight="500" fill="#5E7099">Off by default · session-scoped · additive · fully reversible · fully tested</text>
+
+  <!-- top-right meta chip -->
+  <g transform="translate(1042,40)">
+    <rect width="202" height="34" rx="17" fill="#0E1730" stroke="#2A3A63" stroke-width="1.2"/>
+    <circle cx="20" cy="17" r="4.5" fill="#22C55E"/>
+    <text x="36" y="22" font-size="14" font-weight="600" fill="#9FB3D9">fork of Hermes Agent</text>
+  </g>
+</svg>

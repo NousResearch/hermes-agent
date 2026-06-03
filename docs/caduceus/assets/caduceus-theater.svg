@@ -1,0 +1,138 @@
+<svg width="1280" height="690" viewBox="0 0 1280 690" xmlns="http://www.w3.org/2000/svg" font-family="Inter, 'Liberation Sans', sans-serif">
+<defs>
+  <linearGradient id="theaterbg" x1="0" y1="0" x2="0" y2="690" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#EEF2FA"/><stop offset="1" stop-color="#E7ECF6"/>
+  </linearGradient>
+  <linearGradient id="budget" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#3B6BFF"/><stop offset="1" stop-color="#7C5CFF"/>
+  </linearGradient>
+  <linearGradient id="conc" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#22C55E"/><stop offset="1" stop-color="#3B82F6"/>
+  </linearGradient>
+  <linearGradient id="titlebar" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#FBFCFE"/>
+  </linearGradient>
+</defs>
+<rect width="1280" height="690" fill="url(#theaterbg)"/>
+<rect x="22" y="22" width="1236" height="646" rx="20" fill="#1B2746" opacity="0.10"/>
+<rect x="20" y="18" width="1240" height="648" rx="20" fill="#FFFFFF" stroke="#E2E8F4" stroke-width="1.5"/>
+<rect x="20" y="18" width="1240" height="62" rx="20" fill="url(#titlebar)"/>
+<rect x="20" y="60" width="1240" height="20" fill="#FFFFFF"/>
+<line x1="20" y1="80" x2="1260" y2="80" stroke="#EDF0F7" stroke-width="1.4"/>
+<circle cx="48" cy="49" r="6.5" fill="#FF5F57"/>
+<circle cx="70" cy="49" r="6.5" fill="#FEBC2E"/>
+<circle cx="92" cy="49" r="6.5" fill="#28C840"/>
+<text x="128" y="54" font-size="18" font-weight="700" fill="#0F172A">Orchestration Theater</text>
+<text x="350" y="54" font-family="JetBrains Mono, monospace" font-size="14" fill="#94A3B8">hermes-vs-openclaw-website</text>
+<g transform="translate(632,33)"><rect width="158" height="30" rx="15" fill="#EEF2FF" stroke="#D6DFFB" stroke-width="1"/><text x="16" y="20" font-size="13.5" font-weight="700" fill="#3B5BFF">⚕ Caduceus</text><text x="112" y="20" font-size="12.5" fill="#AEB8D2">·</text><text x="122" y="20" font-size="12.5" font-weight="600" fill="#7C89B8">high</text></g>
+<g transform="translate(1052,34)"><rect width="96" height="28" rx="14" fill="#E9FBEF" stroke="#BBE8CB" stroke-width="1"/><circle cx="20" cy="14" r="4.5" fill="#22C55E"/><text x="32" y="18" font-size="12.5" font-weight="700" letter-spacing="0.6" fill="#15924A">RUNNING</text></g>
+<text x="1228" y="53" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="14" font-weight="600" fill="#5B6678">⏱ 12:36</text>
+<g transform="translate(40,98)"><rect width="1200" height="40" rx="11" fill="#F7F9FE" stroke="#EAEFF8" stroke-width="1"/><text x="18" y="25" font-size="13" font-weight="700" fill="#3B5BFF">Narrator</text><text x="100" y="25" font-size="13.5" fill="#5B6678">design locked in — Variant 2 (Editorial Newspaper). Assembling <tspan font-family="JetBrains Mono, monospace" fill="#3B5BFF">index.html</tspan> … 1 worker streaming</text></g>
+<text x="40" y="174" font-size="13" font-weight="800" letter-spacing="1.5" fill="#8492AC">RECON</text>
+<rect x="281" y="159" width="44" height="20" rx="10" fill="#EEF2FA"/>
+<text x="303.0" y="173" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" font-weight="600" fill="#6B7689">2 / 2</text>
+<line x1="40" y1="184" x2="325" y2="184" stroke="#3B6BFF" stroke-width="2" opacity="0.5"/>
+<text x="345" y="174" font-size="13" font-weight="800" letter-spacing="1.5" fill="#8492AC">SYNTH</text>
+<rect x="586" y="159" width="44" height="20" rx="10" fill="#EEF2FA"/>
+<text x="608.0" y="173" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" font-weight="600" fill="#6B7689">1 / 1</text>
+<line x1="345" y1="184" x2="630" y2="184" stroke="#3B6BFF" stroke-width="2" opacity="0.5"/>
+<text x="650" y="174" font-size="13" font-weight="800" letter-spacing="1.5" fill="#8492AC">DESIGN</text>
+<rect x="891" y="159" width="44" height="20" rx="10" fill="#EEF2FA"/>
+<text x="913.0" y="173" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" font-weight="600" fill="#6B7689">2 / 2</text>
+<line x1="650" y1="184" x2="935" y2="184" stroke="#3B6BFF" stroke-width="2" opacity="0.5"/>
+<text x="955" y="174" font-size="13" font-weight="800" letter-spacing="1.5" fill="#8492AC">BUILD</text>
+<rect x="1196" y="159" width="44" height="20" rx="10" fill="#EEF2FA"/>
+<text x="1218.0" y="173" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11.5" font-weight="600" fill="#6B7689">0 / 1</text>
+<line x1="955" y1="184" x2="1240" y2="184" stroke="#3B6BFF" stroke-width="2" opacity="0.5"/>
+<g transform="translate(40,196)">
+<rect x="0" y="3" width="285" height="112" rx="13" fill="#0F1B33" opacity="0.06"/>
+<rect x="0" y="0" width="285" height="112" rx="13" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="24" cy="27" r="9" fill="#22C55E"/><path d="M 20 27 l 3 3 l 5.5 -6" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="42" y="32" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#0F172A">recon:hermes</text>
+<rect x="193" y="14" width="78" height="26" rx="13" fill="#EEF1F8" stroke="#E1E7F2" stroke-width="1"/>
+<circle cx="209" cy="27" r="3.4" fill="#3B82F6"/>
+<text x="220" y="31" font-size="12.5" font-weight="600" fill="#5B6678">worker</text>
+<line x1="16" y1="48" x2="269" y2="48" stroke="#EEF1F8" stroke-width="1.2"/>
+<text x="16" y="71" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">4.7k tok</text>
+<text x="269" y="71" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#9AA6BC">3:15</text>
+<text x="16" y="94" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#A6B1C6">{"product":"Hermes Agent", "tagline":…</text>
+</g>
+<g transform="translate(40,324)">
+<rect x="0" y="3" width="285" height="112" rx="13" fill="#0F1B33" opacity="0.06"/>
+<rect x="0" y="0" width="285" height="112" rx="13" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="24" cy="27" r="9" fill="#22C55E"/><path d="M 20 27 l 3 3 l 5.5 -6" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="42" y="32" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#0F172A">recon:openclaw</text>
+<rect x="193" y="14" width="78" height="26" rx="13" fill="#EEF1F8" stroke="#E1E7F2" stroke-width="1"/>
+<circle cx="209" cy="27" r="3.4" fill="#3B82F6"/>
+<text x="220" y="31" font-size="12.5" font-weight="600" fill="#5B6678">worker</text>
+<line x1="16" y1="48" x2="269" y2="48" stroke="#EEF1F8" stroke-width="1.2"/>
+<text x="16" y="71" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">2.2k tok</text>
+<text x="269" y="71" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#9AA6BC">0:53</text>
+<text x="16" y="94" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#A6B1C6">{"product":"OpenClaw", "tagline":…</text>
+</g>
+<g transform="translate(345,196)">
+<rect x="0" y="3" width="285" height="112" rx="13" fill="#0F1B33" opacity="0.06"/>
+<rect x="0" y="0" width="285" height="112" rx="13" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="24" cy="27" r="9" fill="#22C55E"/><path d="M 20 27 l 3 3 l 5.5 -6" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="42" y="32" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#0F172A">synth:matrix</text>
+<rect x="193" y="14" width="78" height="26" rx="13" fill="#EEF1F8" stroke="#E1E7F2" stroke-width="1"/>
+<circle cx="209" cy="27" r="3.4" fill="#3B82F6"/>
+<text x="220" y="31" font-size="12.5" font-weight="600" fill="#5B6678">worker</text>
+<line x1="16" y1="48" x2="269" y2="48" stroke="#EEF1F8" stroke-width="1.2"/>
+<text x="16" y="71" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">15k tok</text>
+<text x="269" y="71" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#9AA6BC">4:55</text>
+<text x="16" y="94" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#A6B1C6">{"rows":[{"category":"Runtime"…</text>
+</g>
+<g transform="translate(650,196)">
+<rect x="0" y="3" width="285" height="112" rx="13" fill="#0F1B33" opacity="0.06"/>
+<rect x="0" y="0" width="285" height="112" rx="13" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="24" cy="27" r="9" fill="#22C55E"/><path d="M 20 27 l 3 3 l 5.5 -6" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="42" y="32" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#0F172A">design:variants</text>
+<rect x="193" y="14" width="78" height="26" rx="13" fill="#EEF1F8" stroke="#E1E7F2" stroke-width="1"/>
+<circle cx="209" cy="27" r="3.4" fill="#3B82F6"/>
+<text x="220" y="31" font-size="12.5" font-weight="600" fill="#5B6678">worker</text>
+<line x1="16" y1="48" x2="269" y2="48" stroke="#EEF1F8" stroke-width="1.2"/>
+<text x="16" y="71" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">3.4k tok</text>
+<text x="269" y="71" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#9AA6BC">1:57</text>
+<text x="16" y="94" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#A6B1C6">{"name":"Variant 1: The Manifest…</text>
+</g>
+<g transform="translate(650,324)">
+<rect x="0" y="3" width="285" height="112" rx="13" fill="#0F1B33" opacity="0.06"/>
+<rect x="0" y="0" width="285" height="112" rx="13" fill="#FFFFFF" stroke="#E7ECF6" stroke-width="1.4"/>
+<circle cx="24" cy="27" r="9" fill="#22C55E"/><path d="M 20 27 l 3 3 l 5.5 -6" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="42" y="32" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#0F172A">design:decision</text>
+<rect x="193" y="14" width="78" height="26" rx="13" fill="#EEF1F8" stroke="#E1E7F2" stroke-width="1"/>
+<circle cx="209" cy="27" r="3.4" fill="#3B82F6"/>
+<text x="220" y="31" font-size="12.5" font-weight="600" fill="#5B6678">worker</text>
+<line x1="16" y1="48" x2="269" y2="48" stroke="#EEF1F8" stroke-width="1.2"/>
+<text x="16" y="71" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">6.3k tok</text>
+<text x="269" y="71" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#9AA6BC">1:53</text>
+<text x="16" y="94" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#A6B1C6">{"chosen":"Variant 2: Editorial…</text>
+</g>
+<g transform="translate(955,196)">
+<rect x="0" y="3" width="285" height="112" rx="13" fill="#0F1B33" opacity="0.06"/>
+<rect x="0" y="0" width="285" height="112" rx="13" fill="#FFFFFF" stroke="#C7D7FF" stroke-width="1.4"/>
+<rect x="0" y="0" width="4" height="112" rx="2" fill="#3B6BFF"/>
+<circle cx="24" cy="27" r="8.5" fill="none" stroke="#DCE4F2" stroke-width="3"/><path d="M 24 18.5 a 8.5 8.5 0 0 1 7.4 12.7" stroke="#3B6BFF" stroke-width="3" fill="none" stroke-linecap="round"/>
+<text x="42" y="32" font-family="JetBrains Mono, monospace" font-size="15" font-weight="700" fill="#0F172A">build:html</text>
+<rect x="193" y="14" width="78" height="26" rx="13" fill="#FFF7E6" stroke="#F3E2B8" stroke-width="1"/>
+<circle cx="209" cy="27" r="3.4" fill="#F5B83D"/>
+<text x="220" y="31" font-size="12.5" font-weight="600" fill="#9A6B12">orch</text>
+<line x1="16" y1="48" x2="269" y2="48" stroke="#EEF1F8" stroke-width="1.2"/>
+<text x="16" y="71" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">8.1k tok</text>
+<text x="269" y="71" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#9AA6BC">0:41</text>
+<text x="16" y="94" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#A6B1C6">writing index.html — hero + matrix…</text>
+</g>
+<text x="40" y="466" font-size="12.5" fill="#9AA6BC">⤴ fanned out 2 scouts · barrier met</text>
+<line x1="20" y1="574" x2="1260" y2="574" stroke="#EDF0F7" stroke-width="1.4"/>
+<g transform="translate(44,584)"><circle cx="6" cy="0" r="5" fill="#3B6BFF"/><text x="20" y="5" font-size="14" font-weight="700" fill="#0F172A">7 agents</text></g>
+<text x="196" y="586" font-size="13" font-weight="600" fill="#5B6678">Concurrency</text>
+<rect x="196" y="596" width="150" height="9" rx="4.5" fill="#E7ECF6"/>
+<rect x="196" y="596" width="42" height="9" rx="4.5" fill="url(#conc)"/>
+<text x="360" y="604" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">4 / 14 active</text>
+<text x="560" y="586" font-size="13" font-weight="600" fill="#5B6678">Budget</text>
+<rect x="560" y="596" width="400" height="9" rx="4.5" fill="#E7ECF6"/>
+<rect x="560" y="596" width="64" height="9" rx="4.5" fill="url(#budget)"/>
+<text x="974" y="604" font-family="JetBrains Mono, monospace" font-size="12.5" fill="#5B6678">69k / ∞</text>
+<g transform="translate(1086,584)"><rect width="150" height="26" rx="13" fill="#FFF7E6" stroke="#F3E2B8" stroke-width="1"/><circle cx="18" cy="13" r="4" fill="#F5B83D"/><text x="30" y="17" font-size="12.5" font-weight="600" fill="#9A6B12">Auto Router · on</text></g>
+</svg>

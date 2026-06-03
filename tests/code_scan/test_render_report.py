@@ -629,7 +629,6 @@ class TestSourcesRendering:
 
 # ── UA-P5-003: V2 Taxonomy rendering tests ────────────────────────────────
 
-
 class TestV2TaxonomyRendering:
     """UA-P5-003: render_report must consume V2 triage shape or degrade cleanly."""
 
@@ -687,3 +686,64 @@ class TestV2TaxonomyRendering:
         )
         md = render_report.render_report_data(report)
         assert "Orphan Triage" in md
+
+
+# ── UA-P5-006: Confidence Labels and Report Boundary Rendering ─────────────
+
+class TestUA_P5_006_BoundaryRendering:
+    """UA-P5-006: Rendered REPORT.md must contain boundary section and exact language.
+
+    MUST NOT claim UA proves security/deployment/RLS/runtime correctness.
+    Top-level “What UA proves / What UA does not prove” heading (or close variant) near start.
+    """
+
+    REQUIRED_BOUNDARY_SENTENCE = (
+        "UA validation means the analysis artifact is structurally usable; "
+        "it does not prove security, deployment readiness, RLS correctness, or runtime correctness."
+    )
+
+    def test_boundary_section_heading_present(self):
+        """Rendered output must contain the exact 'What UA proves / What UA does not prove' section near start."""
+        report = _make_full_report_data()
+        md = render_report.render_report_data(report)
+        # look near beginning for the boundary heading
+        head = md[:2000].lower()
+        assert "what ua proves" in head or "what ua does not prove" in head or "ua proves" in head
+
+    def test_exact_boundary_sentence_present(self):
+        """Must contain the precise UA validation disclaimer sentence."""
+        report = _make_full_report_data()
+        md = render_report.render_report_data(report)
+        assert self.REQUIRED_BOUNDARY_SENTENCE in md
+
+    def test_section_labels_association(self):
+        """Report should associate sections with labels; deterministic sections marked as such in text."""
+        report = _make_full_report_data()
+        md = render_report.render_report_data(report)
+        lower = md.lower()
+        # We expect explicit mention of labels or claim types in text for major sections
+        # (without breaking compat: e.g. "deterministic" for scan/inventory)
+        assert "deterministic" in lower  # from inventory etc
+        # New: presence of label like language
+        assert any(lbl in lower for lbl in ["deterministic_fact", "heuristic_signal", "outside_ua_scope"])
+
+    def test_no_overclaim_in_validation_gate(self):
+        """Rendered report MUST NOT use language implying UA proves the app is secure/ready/correct."""
+        report = _make_full_report_data()
+        md = render_report.render_report_data(report).lower()
+        assert self.REQUIRED_BOUNDARY_SENTENCE.lower() in md
+        forbidden = [
+            "ua proves security",
+            "ua proves deployment readiness",
+            "ua proves rls correctness",
+            "ua proves runtime correctness",
+            "validation proves security",
+            "validation proves deployment readiness",
+            "validation proves rls correctness",
+            "validation proves runtime correctness",
+            "certifies production readiness",
+            "validates that the app is secure",
+            "ready for production",
+        ]
+        for phrase in forbidden:
+            assert phrase not in md, f"Report overclaims with forbidden phrase: {phrase}"

@@ -729,3 +729,55 @@ class TestV2TaxonomyBackwardCompat:
         triage = result["sections"]["orphan_triage"]
         assert triage["categories"]["expected"] == 1
         assert triage["categories"]["suspicious"] == 1
+class TestUA_P5_006_ConfidenceLabelModel:
+    """UA-P5-006: report-data must expose deterministic boundary/confidence label model with the six required labels."""
+
+    def test_confidence_label_model_present(self):
+        """build_report_data or report_data module must expose a deterministic label model."""
+        assert hasattr(report_data, "CONFIDENCE_LABELS") or hasattr(report_data, "get_confidence_labels")
+        if hasattr(report_data, "CONFIDENCE_LABELS"):
+            labels = report_data.CONFIDENCE_LABELS
+        else:
+            labels = report_data.get_confidence_labels()
+        required = {
+            "deterministic_fact",
+            "heuristic_signal",
+            "inferred_summary",
+            "suggested_verification_not_run",
+            "executed_external_gate",
+            "outside_ua_scope",
+        }
+        assert required.issubset(set(labels)), f"Missing required labels in {labels}"
+        assert len(labels) == 6 or (isinstance(labels, dict) and len(labels) >= 6)
+
+    def test_label_model_is_deterministic(self):
+        """Label model must be a fixed set in declaration order or deterministic dict."""
+        model = getattr(report_data, "CONFIDENCE_LABELS", None)
+        if model is None:
+            model = report_data.get_confidence_labels()
+        # Should be stable iterable of the 6 labels
+        if isinstance(model, (list, tuple)):
+            assert len(model) == 6
+        else:
+            assert isinstance(model, (dict, set))
+
+    def test_sections_carry_claim_boundaries(self):
+        """Major sections in report data should be associated with label/source/claim boundaries (non-breaking)."""
+        result = report_data.build_report_data(
+            scan=_load_fixture("scan.json"),
+            # provide some sections
+            entrypoints=_load_fixture("entrypoints.json"),
+            orphan_triage=_load_fixture("orphan_triage.json"),
+        )
+        sections = result.get("sections", {})
+        # scan should be deterministic_fact
+        assert "scan" in sections
+        # Allow association via label on section dict or top-level labels
+        # either report_data marks them or we accept top-level "claim_boundaries" or per-section metadata
+        # new field ok as long as backward compat (existing keys present)
+        boundaries = result.get("claim_boundaries", {}) or result.get("confidence_labels", {})
+        assert isinstance(boundaries, dict)
+        # Robust central map semantics per UA-P5-006
+        cb = result.get("claim_boundaries", {})
+        assert cb.get("scan") == "deterministic_fact"
+        assert "deterministic_fact" in cb.values()

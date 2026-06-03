@@ -354,3 +354,32 @@ Committed: `24356edcd` | Tests: 80 passed
 - Handoff: `.hermes/handoffs/2026-06-03-0220-ua-p5-005-domain-surface-inventories.md`.
 - Wave status: `UA-P5-004` and `UA-P5-005` accepted; `UA-P5-006` now unblocked but not yet executed.
 - Approval gate: JC approved a local Wave 1.5 checkpoint commit for accepted P5-004/P5-005 only. Approval quote: "I approve a local Wave 1.5 checkpoint commit for accepted UA-P5-004 and UA-P5-005 on feat/ua-phase5-development-hardening. Scope includes only the accepted P5-004/P5-005 implementation, tests, fixtures, handoffs, swarm ledger, and .hermes/PROJECT_STATE.md. No push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls are approved."
+
+## UA Phase 5 Development Hardening — UA-P5-006 Execution Start
+- Timestamp: 2026-06-03T02:56:14Z.
+- Active bead: `UA-P5-006 - Confidence Labels and Report Boundary Rendering`.
+- Branch: `feat/ua-phase5-development-hardening`; clean post-Wave-1.5 checkpoint base `ae473490b`.
+- Execution mode: tightened coder prompt per JC request — narrow TDD contract, file ownership limited to `report_data.py`, `render_report.py`, `test_report_data.py`, `test_render_report.py`, and only if necessary `test_e2e_ua_workflow.py`.
+- Required labels: `deterministic_fact`, `heuristic_signal`, `inferred_summary`, `suggested_verification_not_run`, `executed_external_gate`, `outside_ua_scope`.
+- Required boundary language: "UA validation means the analysis artifact is structurally usable; it does not prove security, deployment readiness, RLS correctness, or runtime correctness."
+- Guardrails: no commit, push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls.
+
+## UA Phase 5 Development Hardening — UA-P5-006 Completion Checkpoint
+- Timestamp: 2026-06-03T03:27:40Z.
+- Bead: `UA-P5-006 - Confidence Labels and Report Boundary Rendering`.
+- Status: accepted, reviewer PASS, uncommitted.
+- Base before bead: `ae473490b` (`feat(code-scan): checkpoint UA phase 5 wave 1.5`).
+- Diff artifact: `/tmp/ua-p5-006-diff.patch` (283 lines / 13430 bytes).
+- Handoff: `.hermes/handoffs/2026-06-03-0327-ua-p5-006-confidence-labels-report-boundaries.md`.
+- Implemented additive report-data contract fields: `confidence_labels` and `claim_boundaries`.
+- Canonical labels: `deterministic_fact`, `heuristic_signal`, `inferred_summary`, `suggested_verification_not_run`, `executed_external_gate`, `outside_ua_scope`.
+- Rendered report now includes top-level `## What UA proves / What UA does not prove` near the start.
+- Rendered report includes exact boundary sentence: `UA validation means the analysis artifact is structurally usable; it does not prove security, deployment readiness, RLS correctness, or runtime correctness.`
+- Focused verification: `python -m pytest tests/code_scan/test_report_data.py tests/code_scan/test_render_report.py -q` -> `101 passed in 2.91s`.
+- Render smoke: `P5_006_RENDER_SMOKE_PASS`.
+- Secret scan: `P5_006_SECRET_SCAN_PASS`.
+- Final full verification: `python -m pytest tests/code_scan -q` -> `995 passed in 139.12s (0:02:19)`.
+- Final hygiene: `python -m py_compile scripts/code-scan/report_data.py scripts/code-scan/render_report.py && git diff --check` -> exit 0, no output.
+- Reviewer verdict: PASS.
+- Guardrails: no commit, push, merge, deploy, production mutation, new dependency, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner call performed.
+- Next recommended bead: `UA-P5-007 - Runtime Gate Status Contract`.

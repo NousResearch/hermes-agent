@@ -35,6 +35,25 @@ MAX_HUB_RANKINGS = 20
 
 SCHEMA_VERSION = "1.0.0"
 
+# ── UA-P5-006: Deterministic confidence / boundary label model ─────────────
+# These six labels classify the claim strength / provenance of every major
+# section in the generated report.  They are the contract surface between
+# report_data and render_report (and any downstream consumers).
+
+CONFIDENCE_LABELS = [
+    "deterministic_fact",          # Pure structural / mechanical facts (scan counts, graph topology, congruence)
+    "heuristic_signal",            # Scores / rankings / candidate lists that are derived but guidance only
+    "inferred_summary",            # Aggregates / patterns that are interpretations of deterministic facts
+    "suggested_verification_not_run",  # Recommendations or gates that were planned but not executed in this UA run
+    "executed_external_gate",      # Results of external tools / CI / gate checks that UA merely recorded
+    "outside_ua_scope",            # Material that UA deliberately did not analyze (security, RLS, runtime behavior, deployment readiness)
+]
+
+
+def get_confidence_labels() -> list[str]:
+    """Return the canonical list of six confidence / boundary labels (immutable ordering)."""
+    return list(CONFIDENCE_LABELS)
+
 # ── Artifact source key mapping ────────────────────────────────────────
 
 _ARTIFACT_KEYS = [
@@ -659,6 +678,20 @@ def build_report_data(
         "reading_plan": reading_plan,
         "warnings": warnings,
         "totals": totals,
+        "confidence_labels": get_confidence_labels(),
+        "claim_boundaries": {
+            "scan": "deterministic_fact",
+            "classification": "deterministic_fact",
+            "graph_analysis": "deterministic_fact",
+            "delta": "deterministic_fact",
+            "domain_surfaces": "deterministic_fact",
+            "entrypoints": "heuristic_signal",
+            "hub_rankings": "heuristic_signal",
+            "orphan_triage": "heuristic_signal",
+            "semantic_signals": "heuristic_signal",
+            "readiness": "suggested_verification_not_run",
+            "reading_plan": "suggested_verification_not_run",
+        },
     }
 
 

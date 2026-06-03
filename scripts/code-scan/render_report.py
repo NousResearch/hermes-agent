@@ -627,12 +627,76 @@ def _render_graph_analysis(graph: Any) -> str:
 
 # ── Deterministic hints disclaimer ─────────────────────────────────────────
 
+# ── UA-P5-006 Boundary / Confidence labels section ──────────────────────────
+
+def _render_boundary_section(report_data: dict) -> str:
+    """Render the UA proves / does not prove boundary section early in the report.
+
+    Uses top-level confidence_labels and claim_boundaries from report-data if present;
+    falls back to documented defaults for robustness.
+    """
+    lines = ["## What UA proves / What UA does not prove", ""]
+
+    required_sentence = (
+        "UA validation means the analysis artifact is structurally usable; "
+        "it does not prove security, deployment readiness, RLS correctness, or runtime correctness."
+    )
+    lines.append(required_sentence)
+    lines.append("")
+
+    # Labels: prefer top-level, else fallback list
+    labels = report_data.get("confidence_labels")
+    if not isinstance(labels, (list, tuple)) or not labels:
+        # fallback to the canonical six
+        try:
+            # local import to keep module load light and avoid hard cycle at top
+            from report_data import get_confidence_labels as _get_labels
+            labels = _get_labels()
+        except Exception:
+            labels = [
+                "deterministic_fact",
+                "heuristic_signal",
+                "inferred_summary",
+                "suggested_verification_not_run",
+                "executed_external_gate",
+                "outside_ua_scope",
+            ]
+    lines.append("**Confidence / Claim Boundary Labels:**")
+    for lbl in labels:
+        lines.append(f"- `{lbl}`")
+    lines.append("")
+
+    # Claim boundaries associations (section -> label)
+    cb = report_data.get("claim_boundaries", {}) or {}
+    if isinstance(cb, dict) and cb:
+        lines.append("**Section Claim Boundaries (representative):**")
+        # Show deterministic + heuristic + outside etc in stable order for visibility
+        preferred = (
+            "scan", "classification", "graph_analysis", "delta", "domain_surfaces",
+            "entrypoints", "hub_rankings", "orphan_triage",
+            "semantic_signals", "readiness", "reading_plan",
+        )
+        shown = []
+        for sec in preferred:
+            if sec in cb:
+                shown.append(f"- `{sec}` → `{cb[sec]}`")
+        if not shown:
+            for k, v in list(cb.items())[:6]:  # limit output
+                shown.append(f"- `{k}` → `{v}`")
+        lines.extend(shown)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── Deterministic hints disclaimer ─────────────────────────────────────────
+
 _DISCLAIMER = (
     "> **Note:** All results in this report are *deterministic hints "
     "derived from static analysis*, not proof or conclusive evidence. "
     "Hub scores, entrypoint confidence, and triage categories are "
     "heuristic indicators intended to guide further manual inspection. "
-    "Caveats and missing artifacts are noted where applicable.\n"
+    "Caveats and missing artifacts are noted where applicable.\\n"
 )
 
 
@@ -670,6 +734,9 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
     # 1. Project Overview (always present, needs scan)
     if isinstance(scan, dict):
         parts.append(_render_project_overview(scan))
+
+    # UA-P5-006: insert boundary section immediately after Project Overview (per contract: near top)
+    parts.append(_render_boundary_section(report_data))
 
     # 2. Deterministic Inventory
     if isinstance(scan, dict):

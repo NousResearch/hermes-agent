@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
@@ -31,6 +32,7 @@ function workspaceLabel(cwd: null | string | undefined): string {
 }
 
 export function SessionsSettings({ query }: SearchProps) {
+  const t = useTranslation()
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -42,11 +44,11 @@ export function SessionsSettings({ query }: SearchProps) {
       const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
-      notifyError(err, 'Could not load archived sessions')
+      notifyError(err, t('settings.sessions.loadError'))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     void load()
@@ -61,16 +63,16 @@ export function SessionsSettings({ query }: SearchProps) {
       // Surface it again in the sidebar without waiting for a full refresh.
       setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
       triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: 'Restored' })
+      notify({ durationMs: 2_000, kind: 'success', message: t('settings.sessions.restored') })
     } catch (err) {
-      notifyError(err, 'Unarchive failed')
+      notifyError(err, t('settings.sessions.unarchiveFailed'))
     } finally {
       setBusyId(null)
     }
-  }, [])
+  }, [t])
 
   const remove = useCallback(async (session: SessionInfo) => {
-    if (!window.confirm(`Permanently delete "${sessionTitle(session)}"? This cannot be undone.`)) {
+    if (!window.confirm(t('settings.sessions.confirmDelete', { title: sessionTitle(session) }))) {
       return
     }
 
@@ -81,11 +83,11 @@ export function SessionsSettings({ query }: SearchProps) {
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       triggerHaptic('warning')
     } catch (err) {
-      notifyError(err, 'Delete failed')
+      notifyError(err, t('settings.sessions.deleteFailed'))
     } finally {
       setBusyId(null)
     }
-  }, [])
+  }, [t])
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -100,7 +102,7 @@ export function SessionsSettings({ query }: SearchProps) {
   }, [query, sessions])
 
   if (loading) {
-    return <LoadingState label="Loading archived sessions…" />
+    return <LoadingState label={t('settings.sessions.loading')} />
   }
 
   return (
@@ -110,17 +112,16 @@ export function SessionsSettings({ query }: SearchProps) {
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
-        title="Archived sessions"
+        title={t('settings.sessions.title')}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to
-        archive it.
+        {t('settings.sessions.description')}
       </p>
 
       {filtered.length === 0 ? (
         <EmptyState
-          description={query.trim() ? 'No archived chats match your search.' : 'Archive a chat to hide it here.'}
-          title="Nothing archived"
+          description={query.trim() ? t('settings.sessions.empty.search') : t('settings.sessions.empty.description')}
+          title={t('settings.sessions.empty.title')}
         />
       ) : (
         <div className="divide-y divide-border/30">
@@ -140,15 +141,15 @@ export function SessionsSettings({ query }: SearchProps) {
                       variant="outline"
                     >
                       {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                      <span>Unarchive</span>
+                      <span>{t('settings.sessions.unarchive')}</span>
                     </Button>
                     <Button
-                      aria-label="Delete permanently"
+                      aria-label={t('settings.sessions.deletePermanently')}
                       className="text-muted-foreground hover:text-destructive"
                       disabled={busy}
                       onClick={() => void remove(session)}
                       size="icon"
-                      title="Delete permanently"
+                      title={t('settings.sessions.deletePermanently')}
                       type="button"
                       variant="ghost"
                     >
@@ -157,7 +158,11 @@ export function SessionsSettings({ query }: SearchProps) {
                   </div>
                 }
                 description={session.preview || undefined}
-                hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
+                hint={
+                  label
+                    ? t('settings.sessions.rowHintWithWorkspace', { workspace: label, count: session.message_count })
+                    : t('settings.sessions.rowHint', { count: session.message_count })
+                }
                 key={session.id}
                 title={sessionTitle(session)}
               />
@@ -173,6 +178,7 @@ export function SessionsSettings({ query }: SearchProps) {
 // builds on Windows used to spawn sessions in the install dir (`win-unpacked`
 // / Program Files), which buried any files Hermes wrote there.
 function DefaultProjectDirSetting() {
+  const t = useTranslation()
   const [dir, setDir] = useState<null | string>(null)
   const [fallback, setFallback] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -192,7 +198,10 @@ function DefaultProjectDirSetting() {
     let alive = true
 
     void settings.getDefaultProjectDir().then(result => {
-      if (!alive) return
+      if (!alive) {
+        return
+      }
+
       setDir(result.dir)
       setFallback(result.defaultLabel)
     })
@@ -205,7 +214,9 @@ function DefaultProjectDirSetting() {
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 
@@ -218,18 +229,20 @@ function DefaultProjectDirSetting() {
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
-      notify({ durationMs: 2_000, kind: 'success', message: 'Default project directory updated' })
+      notify({ durationMs: 2_000, kind: 'success', message: t('settings.sessions.defaultProject.updated') })
     } catch (err) {
-      notifyError(err, 'Could not update default directory')
+      notifyError(err, t('settings.sessions.defaultProject.updateFailed'))
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [t])
 
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 
@@ -237,34 +250,34 @@ function DefaultProjectDirSetting() {
       await settings.setDefaultProjectDir(null)
       setDir(null)
     } catch (err) {
-      notifyError(err, 'Could not clear default directory')
+      notifyError(err, t('settings.sessions.defaultProject.clearFailed'))
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [t])
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title="Default project directory" />
+      <SectionHeading icon={FolderOpen} title={t('settings.sessions.defaultProject.title')} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        New sessions start in this folder unless you pick another. Leave it unset to use your home directory.
+        {t('settings.sessions.defaultProject.description')}
       </p>
       <ListRow
         action={
           <div className="flex items-center gap-1.5">
             <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="outline">
               <FolderOpen className="size-3.5" />
-              <span>{dir ? 'Change' : 'Choose'}</span>
+              <span>{dir ? t('settings.sessions.defaultProject.change') : t('settings.sessions.defaultProject.choose')}</span>
             </Button>
             {dir && (
               <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="ghost">
-                Clear
+                {t('settings.sessions.defaultProject.clear')}
               </Button>
             )}
           </div>
         }
-        description={dir || `Defaults to ${fallback || '~/hermes-projects'}.`}
-        title={dir ? dir : 'Not set'}
+        description={dir || t('settings.sessions.defaultProject.defaultsTo', { path: fallback || '~/hermes-projects' })}
+        title={dir ? dir : t('settings.sessions.defaultProject.notSet')}
       />
     </div>
   )

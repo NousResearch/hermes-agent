@@ -79,9 +79,9 @@ export function displayModelName(model: string): string {
 /** Status bar trigger label — model name plus the live session state (effort/fast). */
 export function formatModelStatusLabel(
   model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
+  options?: { fastMode?: boolean; noModelLabel?: string; reasoningEffort?: string }
 ): string {
-  const name = displayModelName(model)
+  const name = model.trim() ? displayModelName(model) : (options?.noModelLabel ?? displayModelName(model))
 
   if (!model.trim()) {
     return name

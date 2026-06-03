@@ -12,6 +12,7 @@ import {
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
@@ -75,7 +76,6 @@ export interface OnboardingContext {
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
-const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
 
 function readCachedConfigured(): boolean | null {
   if (typeof window === 'undefined') {
@@ -138,13 +138,17 @@ function clearPoll() {
 
 async function checkRuntime(ctx: OnboardingContext): Promise<RuntimeReadinessResult> {
   return evaluateRuntimeReadiness(ctx.requestGateway, {
-    defaultReason: DEFAULT_ONBOARDING_REASON,
+    defaultReason: translateNow('notifications.onboarding.noProviderConfigured'),
     unknownReady: false
   })
 }
 
 function notifyReady(provider: string) {
-  notify({ kind: 'success', title: 'Hermes is ready', message: `${provider} connected.` })
+  notify({
+    kind: 'success',
+    title: translateNow('notifications.onboarding.readyTitle'),
+    message: translateNow('notifications.onboarding.providerConnected', { provider })
+  })
 }
 
 // Human-friendly labels for tools auto-routed through the Nous Tool Gateway,
@@ -172,8 +176,8 @@ function notifyGatewayTools(tools: string[] | undefined) {
   notify({
     durationMs: 8000,
     kind: 'info',
-    message: `${list} now run through your Nous subscription — no separate API keys needed.`,
-    title: 'Tool Gateway enabled'
+    message: translateNow('notifications.onboarding.toolGatewayMessage', { tools: list }),
+    title: translateNow('notifications.onboarding.toolGatewayTitle')
   })
 }
 
@@ -222,8 +226,10 @@ async function fetchProviderDefaultModel(
   // free user gets a free model rather than a paid default like opus). Fall
   // back to the first curated model if the endpoint can't resolve one.
   let defaultModel = String(models[0])
+
   try {
     const recommended = await getRecommendedDefaultModel(String(matched.slug))
+
     if (recommended.model && models.map(String).includes(recommended.model)) {
       defaultModel = recommended.model
     } else if (recommended.model) {
@@ -288,6 +294,7 @@ async function completeWithModelConfirm(
       provider: defaults.providerSlug,
       model: defaults.defaultModel
     })
+
     notifyGatewayTools(res.gateway_tools)
   } catch {
     // Persistence failed — still show the confirm card so the user can
@@ -308,8 +315,8 @@ function providerResolutionFailure(reason: null | string) {
   const detail = reason?.trim()
 
   return detail
-    ? `Connected, but Hermes still cannot resolve a usable provider. ${detail}`
-    : 'Connected, but Hermes still cannot resolve a usable provider.'
+    ? translateNow('notifications.onboarding.providerResolutionFailureWithDetail', { detail })
+    : translateNow('notifications.onboarding.providerResolutionFailure')
 }
 
 async function refreshProviders() {
@@ -333,8 +340,8 @@ async function refreshProviders() {
   await providersRefreshPromise
 }
 
-export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
-  patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+export function requestDesktopOnboarding(reason = translateNow('notifications.onboarding.noProviderConfigured')) {
+  patch({ reason: reason.trim() || translateNow('notifications.onboarding.noProviderConfigured'), requested: true })
 }
 
 // Open the onboarding provider selector on demand from an already-configured
@@ -342,11 +349,11 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason = 'Add or switch inference provider.') {
+export function startManualOnboarding(reason = translateNow('notifications.onboarding.addOrSwitchProvider')) {
   patch({
     manual: true,
     requested: true,
-    reason: reason.trim() || DEFAULT_ONBOARDING_REASON,
+    reason: reason.trim() || translateNow('notifications.onboarding.noProviderConfigured'),
     flow: { status: 'idle' }
   })
   void refreshProviders()
@@ -384,6 +391,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   // list is loaded and show the picker.
   if ($desktopOnboarding.get().manual) {
     await refreshProviders()
+
     return false
   }
 
@@ -397,7 +405,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const state = $desktopOnboarding.get()
-  const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+  const reason = runtime.reason || state.reason || translateNow('notifications.onboarding.noProviderConfigured')
 
   writeCachedConfigured(false)
   patch({ configured: false, reason })
@@ -604,7 +612,10 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
       provider,
       message:
         reason?.trim() ||
-        `Hermes still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`
+        translateNow('notifications.onboarding.externalStillCannotReach', {
+          command: provider.cli_command,
+          provider: provider.name
+        })
     })
   )
 }
@@ -613,7 +624,7 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
   const trimmed = value.trim()
 
   if (!trimmed) {
-    return { ok: false, message: 'Enter a value first.' }
+    return { ok: false, message: translateNow('notifications.onboarding.enterValueFirst') }
   }
 
   // Live-probe the credential BEFORE persisting so a mistyped key never lands
@@ -622,8 +633,12 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
   // runtime check, so we don't strand offline users.
   try {
     const probe = await validateProviderCredential(envKey, trimmed)
+
     if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || `That ${label} key was rejected.` }
+      return {
+        ok: false,
+        message: probe.message || translateNow('notifications.onboarding.keyRejected', { provider: label })
+      }
     }
   } catch {
     // Validation endpoint unavailable — don't block; fall through to save.
@@ -650,13 +665,17 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
 
       return {
         ok: false,
-        message: failureDetail || `Saved, but Hermes still cannot reach ${label}. Double-check the value.`
+        message:
+          failureDetail ||
+          translateNow('notifications.onboarding.savedButCannotReach', {
+            provider: label
+          })
       }
     }
 
     return { ok: true }
   } catch (error) {
-    notifyError(error, `Could not save ${label}`)
+    notifyError(error, translateNow('notifications.onboarding.couldNotSave', { provider: label }))
 
     return { ok: false, message: errMessage(error) }
   }
@@ -687,7 +706,7 @@ export async function setOnboardingModel(model: string) {
       setFlow({ ...current, currentModel: model, saving: false })
     }
   } catch (error) {
-    notifyError(error, 'Could not change model')
+    notifyError(error, translateNow('notifications.onboarding.couldNotChangeModel'))
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {

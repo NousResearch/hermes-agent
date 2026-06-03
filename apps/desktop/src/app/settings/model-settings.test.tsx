@@ -1,15 +1,19 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
+
 const getGlobalModelInfo = vi.fn()
 const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
 const setModelAssignment = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  getHermesConfigRecord: vi.fn(),
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
+  saveHermesConfig: vi.fn(),
   setModelAssignment: (body: unknown) => setModelAssignment(body)
 }))
 
@@ -33,7 +37,11 @@ afterEach(() => {
 async function renderModelSettings() {
   const { ModelSettings } = await import('./model-settings')
 
-  return render(<ModelSettings />)
+  return render(
+    <I18nProvider configClient={null}>
+      <ModelSettings />
+    </I18nProvider>
+  )
 }
 
 describe('ModelSettings', () => {

@@ -1,9 +1,9 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { OAuthProvider } from '@/types/hermes'
-
+import { I18nProvider } from '@/i18n'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
+import type { OAuthProvider } from '@/types/hermes'
 
 import { Picker } from './desktop-onboarding-overlay'
 
@@ -32,6 +32,14 @@ function setProviders(providers: OAuthProvider[]) {
 
 const ctx: OnboardingContext = { requestGateway: async () => undefined as never }
 
+function renderPicker() {
+  render(
+    <I18nProvider configClient={null}>
+      <Picker ctx={ctx} />
+    </I18nProvider>
+  )
+}
+
 afterEach(() => {
   cleanup()
   $desktopOnboarding.set({
@@ -48,7 +56,7 @@ afterEach(() => {
 describe('onboarding Picker', () => {
   it('features Nous Portal and hides other providers behind a disclosure', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('nous', 'Nous Portal')])
-    render(<Picker ctx={ctx} />)
+    renderPicker()
 
     expect(screen.getByText('Nous Portal')).toBeTruthy()
     expect(screen.getByText('Recommended')).toBeTruthy()
@@ -62,7 +70,7 @@ describe('onboarding Picker', () => {
 
   it('shows every provider directly when Nous Portal is absent', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('openai-codex', 'OpenAI Codex / ChatGPT')])
-    render(<Picker ctx={ctx} />)
+    renderPicker()
 
     expect(screen.getByText('Anthropic Claude')).toBeTruthy()
     expect(screen.getByText('OpenAI Codex / ChatGPT')).toBeTruthy()

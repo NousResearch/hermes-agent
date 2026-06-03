@@ -11,6 +11,7 @@ import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { type Translate, useTranslation } from '@/i18n'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -140,9 +141,9 @@ function filePathForTarget(target: PreviewTarget) {
   }
 }
 
-function formatBytes(bytes: number | undefined) {
+function formatBytes(bytes: number | undefined, t: Translate) {
   if (!bytes) {
-    return 'unknown size'
+    return t('preview.file.unknownSize')
   }
 
   const units = ['B', 'KB', 'MB', 'GB']
@@ -294,7 +295,7 @@ function MarkdownPreview({ text }: { text: string }) {
   )
 }
 
-function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: () => void }) {
+function PreviewToggle({ asSource, onToggle, t }: { asSource: boolean; onToggle: () => void; t: Translate }) {
   return (
     <div className="sticky top-0 z-10 flex justify-end border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
       <button
@@ -302,7 +303,7 @@ function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: ()
         onClick={onToggle}
         type="button"
       >
-        {asSource ? 'PREVIEW' : 'SOURCE'}
+        {asSource ? t('preview.file.preview') : t('preview.file.source')}
       </button>
     </div>
   )
@@ -328,7 +329,7 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
+function SourceView({ filePath, language, t, text }: { filePath: string; language: string; t: Translate; text: string }) {
   const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text])
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
@@ -372,7 +373,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
               key={line}
               onClick={event => handleLineClick(event, line)}
               onDragStart={event => handleDragStart(event, line)}
-              title="Click to select · shift-click to extend · drag to composer"
+              title={t('preview.file.lineHint')}
             >
               {line}
             </div>
@@ -407,6 +408,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
 }
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
+  const t = useTranslation()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
@@ -481,11 +483,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.language])
 
   if (state.loading) {
-    return <div className="grid h-full place-items-center text-xs text-muted-foreground">Loading preview…</div>
+    return <div className="grid h-full place-items-center text-xs text-muted-foreground">{t('preview.file.loading')}</div>
   }
 
   if (state.error) {
-    return <PreviewEmptyState body={state.error} title="Preview unavailable" />
+    return <PreviewEmptyState body={state.error} title={t('preview.unavailable')} />
   }
 
   if (
@@ -500,11 +502,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       <PreviewEmptyState
         body={
           binary
-            ? `Previewing ${target.label} may show unreadable text.`
-            : `${target.label} is ${formatBytes(size)}. Hermes will only show the first 512 KB.`
+            ? t('preview.file.binaryBody', { label: target.label })
+            : t('preview.file.largeBody', { label: target.label, size: formatBytes(size, t) })
         }
-        primaryAction={{ label: 'Preview anyway', onClick: () => setForcePreview(true) }}
-        title={binary ? 'This looks like a binary file' : 'This file is large'}
+        primaryAction={{ label: t('preview.file.previewAnyway'), onClick: () => setForcePreview(true) }}
+        title={binary ? t('preview.file.binaryTitle') : t('preview.file.largeTitle')}
         tone="warning"
       />
     )
@@ -531,14 +533,14 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       <div className="h-full overflow-auto bg-transparent">
         {state.truncated && (
           <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
-            Showing first 512 KB.
+            {t('preview.file.showingFirst512')}
           </div>
         )}
-        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
+        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} t={t} />}
         {showRendered ? (
           <MarkdownPreview text={state.text} />
         ) : (
-          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
+          <SourceView filePath={filePath} language={state.language || 'text'} t={t} text={state.text} />
         )}
       </div>
     )
@@ -546,8 +548,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
   return (
     <PreviewEmptyState
-      body={`${target.mimeType || 'This file type'} can still be attached as context.`}
-      title="No inline preview"
+      body={t('preview.file.noInlineBody', { type: target.mimeType || t('preview.file.thisFileType') })}
+      title={t('preview.file.noInlineTitle')}
     />
   )
 }

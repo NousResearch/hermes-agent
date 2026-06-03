@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { useTranslation } from '@/i18n'
 import { FileText, FolderOpen, ImageIcon, Link, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import type { ComposerAttachment } from '@/store/composer'
@@ -25,6 +26,7 @@ export function AttachmentList({
 }
 
 function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
+  const t = useTranslation()
   const Icon = { folder: FolderOpen, url: Link, image: ImageIcon, file: FileText, terminal: Terminal }[attachment.kind]
   const cwd = useStore($currentCwd)
   const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal'
@@ -57,7 +59,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
 
       setCurrentSessionPreviewTarget(preview, 'manual', target)
     } catch (error) {
-      notifyError(error, 'Preview unavailable')
+      notifyError(error, t('notifications.composer.previewUnavailable'))
     }
   }
 
@@ -67,11 +69,15 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
       title={attachment.path || attachment.detail || attachment.label}
     >
       <button
-        aria-label={canPreview ? `Preview ${attachment.label}` : attachment.label}
+        aria-label={
+          canPreview ? t('notifications.composer.previewAttachment', { label: attachment.label }) : attachment.label
+        }
         className="flex max-w-56 items-center gap-2 border border-border/60 bg-background/50 px-2 py-1.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.25)] transition-colors hover:border-primary/35 hover:bg-accent/45 disabled:cursor-default"
         disabled={!canPreview}
         onClick={() => void openPreview()}
-        title={canPreview ? `Preview ${attachment.label}` : attachment.label}
+        title={
+          canPreview ? t('notifications.composer.previewAttachment', { label: attachment.label }) : attachment.label
+        }
         type="button"
       >
         {attachment.previewUrl && attachment.kind === 'image' ? (
@@ -97,7 +103,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
       </button>
       {onRemove && (
         <button
-          aria-label={`Remove ${attachment.label}`}
+          aria-label={t('notifications.composer.removeAttachment', { label: attachment.label })}
           className="absolute -right-1 -top-1 grid size-3.5 place-items-center rounded-full border border-border/70 bg-background text-muted-foreground opacity-0 shadow-xs transition hover:bg-accent hover:text-foreground group-hover/attachment:opacity-100 focus-visible:opacity-100"
           onClick={() => onRemove(attachment.id)}
           type="button"

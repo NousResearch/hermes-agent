@@ -175,25 +175,25 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = {
 export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
-    label: 'Model',
+    labelKey: 'settings.sections.model',
     icon: Sparkles,
     keys: ['model_context_length', 'fallback_providers']
   },
   {
     id: 'chat',
-    label: 'Chat',
+    labelKey: 'settings.sections.chat',
     icon: MessageCircle,
     keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
   },
   {
     id: 'appearance',
-    label: 'Appearance',
+    labelKey: 'settings.sections.appearance',
     icon: Palette,
     keys: []
   },
   {
     id: 'workspace',
-    label: 'Workspace',
+    labelKey: 'settings.sections.workspace',
     icon: Monitor,
     keys: [
       'terminal.cwd',
@@ -205,7 +205,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'safety',
-    label: 'Safety',
+    labelKey: 'settings.sections.safety',
     icon: Lock,
     keys: [
       'approvals.mode',
@@ -221,7 +221,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'memory',
-    label: 'Memory & Context',
+    labelKey: 'settings.sections.memory',
     icon: Brain,
     keys: [
       'memory.memory_enabled',
@@ -238,7 +238,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'voice',
-    label: 'Voice',
+    labelKey: 'settings.sections.voice',
     icon: Mic,
     keys: [
       'tts.provider',
@@ -262,7 +262,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   },
   {
     id: 'advanced',
-    label: 'Advanced',
+    labelKey: 'settings.sections.advanced',
     icon: Wrench,
     keys: [
       'toolsets',
@@ -288,22 +288,37 @@ export const SECTIONS: DesktopConfigSection[] = [
 
 export interface ModeOption {
   id: ThemeMode
-  label: string
-  description: string
+  labelKey: string
+  descriptionKey: string
   icon: IconComponent
 }
 
 export const MODE_OPTIONS: ModeOption[] = [
-  { id: 'light', label: 'Light', description: 'Bright desktop surfaces', icon: Sun },
-  { id: 'dark', label: 'Dark', description: 'Low-glare workspace', icon: Moon },
-  { id: 'system', label: 'System', description: 'Follow OS appearance', icon: Monitor }
+  {
+    id: 'light',
+    labelKey: 'settings.appearance.mode.light',
+    descriptionKey: 'settings.appearance.mode.lightDescription',
+    icon: Sun
+  },
+  {
+    id: 'dark',
+    labelKey: 'settings.appearance.mode.dark',
+    descriptionKey: 'settings.appearance.mode.darkDescription',
+    icon: Moon
+  },
+  {
+    id: 'system',
+    labelKey: 'settings.appearance.mode.system',
+    descriptionKey: 'settings.appearance.mode.systemDescription',
+    icon: Monitor
+  }
 ]
 
-export const SEARCH_PLACEHOLDER: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string> = {
-  about: 'About Hermes Desktop',
-  config: 'Search settings...',
-  gateway: 'Gateway connection...',
-  keys: 'Search API keys...',
-  mcp: 'Search MCP servers...',
-  sessions: 'Search archived sessions...'
+export const SEARCH_PLACEHOLDER_KEYS: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string> = {
+  about: 'settings.search.about',
+  config: 'settings.search.config',
+  gateway: 'settings.search.gateway',
+  keys: 'settings.search.keys',
+  mcp: 'settings.search.mcp',
+  sessions: 'settings.search.sessions'
 }

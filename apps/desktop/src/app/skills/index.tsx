@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -66,6 +67,7 @@ interface SkillsViewProps extends React.ComponentProps<'section'> {
 }
 
 export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
+  const t = useTranslation()
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
   const [query, setQuery] = useState('')
@@ -85,17 +87,17 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       setSkills(nextSkills)
       setToolsets(nextToolsets)
     } catch (err) {
-      notifyError(err, 'Skills failed to load')
+      notifyError(err, t('skills.loadError'))
     } finally {
       setRefreshing(false)
     }
-  }, [])
+  }, [t])
 
   const refreshToolsets = useCallback(() => {
     getToolsets()
       .then(setToolsets)
-      .catch(err => notifyError(err, 'Toolsets failed to refresh'))
-  }, [])
+      .catch(err => notifyError(err, t('skills.toolsetsRefreshError')))
+  }, [t])
 
   useEffect(() => {
     void refreshCapabilities()
@@ -147,11 +149,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       setSkills(current => current?.map(row => (row.name === skill.name ? { ...row, enabled } : row)) ?? current)
       notify({
         kind: 'success',
-        title: enabled ? 'Skill enabled' : 'Skill disabled',
-        message: `${skill.name} applies to new sessions.`
+        title: enabled ? t('skills.skillEnabled') : t('skills.skillDisabled'),
+        message: t('skills.appliesToNewSessions', { name: skill.name })
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${skill.name}`)
+      notifyError(err, t('skills.updateFailed', { name: skill.name }))
     } finally {
       setSavingSkill(null)
     }
@@ -167,11 +169,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       )
       notify({
         kind: 'success',
-        title: enabled ? 'Toolset enabled' : 'Toolset disabled',
-        message: `${asText(toolset.label || toolset.name)} applies to new sessions.`
+        title: enabled ? t('skills.toolsetEnabled') : t('skills.toolsetDisabled'),
+        message: t('skills.appliesToNewSessions', { name: asText(toolset.label || toolset.name) })
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${asText(toolset.label || toolset.name)}`)
+      notifyError(err, t('skills.updateFailed', { name: asText(toolset.label || toolset.name) }))
     } finally {
       setSavingToolset(null)
     }
@@ -184,16 +186,16 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         <>
           <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
             <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
-              Skills
+              {t('skills.tabs.skills')}
             </TextTab>
             <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
-              Toolsets
+              {t('skills.tabs.toolsets')}
             </TextTab>
           </div>
           {mode === 'skills' && categories.length > 0 && (
             <div className="flex flex-wrap justify-center gap-x-2 gap-y-1">
               <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
-                All <TextTabMeta>{totalSkills}</TextTabMeta>
+                {t('common.all')} <TextTabMeta>{totalSkills}</TextTabMeta>
               </TextTab>
               {categories.map(category => (
                 <TextTab
@@ -209,15 +211,15 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </>
       }
       onSearchChange={setQuery}
-      searchPlaceholder={mode === 'skills' ? 'Search skills...' : 'Search toolsets...'}
+      searchPlaceholder={mode === 'skills' ? t('skills.searchSkills') : t('skills.searchToolsets')}
       searchTrailingAction={
         <Button
-          aria-label={refreshing ? 'Refreshing skills' : 'Refresh skills'}
+          aria-label={refreshing ? t('skills.refreshing') : t('skills.refresh')}
           className="text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground"
           disabled={refreshing}
           onClick={() => void refreshCapabilities()}
           size="icon-xs"
-          title={refreshing ? 'Refreshing skills' : 'Refresh skills'}
+          title={refreshing ? t('skills.refreshing') : t('skills.refresh')}
           type="button"
           variant="ghost"
         >
@@ -227,11 +229,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       searchValue={query}
     >
       {!skills || !toolsets ? (
-        <PageLoader label="Loading capabilities..." />
+        <PageLoader label={t('skills.loading')} />
       ) : mode === 'skills' ? (
         <div className="h-full overflow-y-auto px-4 py-3">
           {visibleSkills.length === 0 ? (
-            <EmptyState description="Try a broader search or different category." title="No skills found" />
+            <EmptyState description={t('skills.empty.skillsDescription')} title={t('skills.empty.skillsTitle')} />
           ) : (
             <div className="space-y-4">
               {skillGroups.map(([category, list]) => (
@@ -248,7 +250,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                         <div className="min-w-0">
                           <div className="truncate text-sm font-medium">{skill.name}</div>
                           <p className="mt-0.5 text-xs text-muted-foreground">
-                            {asText(skill.description) || 'No description.'}
+                            {asText(skill.description) || t('common.noDescription')}
                           </p>
                         </div>
                         <Switch
@@ -267,11 +269,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       ) : (
         <div className="h-full overflow-y-auto px-4 py-3">
           {visibleToolsets.length === 0 ? (
-            <EmptyState description="Try a broader search query." title="No toolsets found" />
+            <EmptyState description={t('skills.empty.toolsetsDescription')} title={t('skills.empty.toolsetsTitle')} />
           ) : (
             <div className="space-y-2">
               <div className="text-xs text-muted-foreground">
-                {enabledToolsets}/{toolsets.length} toolsets enabled
+                {t('skills.enabledToolsetsCount', { count: enabledToolsets, total: toolsets.length })}
               </div>
               <div className="divide-y divide-(--ui-stroke-quaternary)">
                 {visibleToolsets.map(toolset => {
@@ -286,17 +288,17 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                         <div className="flex shrink-0 items-center gap-1.5">
                           <button
                             aria-expanded={expanded}
-                            aria-label={`Configure ${label}`}
+                            aria-label={t('skills.configureToolset', { name: label })}
                             className="cursor-pointer rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                             onClick={() => setExpandedToolset(current => (current === toolset.name ? null : toolset.name))}
                             type="button"
                           >
                             <StatusPill active={toolset.configured}>
-                              {toolset.configured ? 'Configured' : 'Needs keys'}
+                              {toolset.configured ? t('skills.configured') : t('skills.needsKeys')}
                             </StatusPill>
                           </button>
                           <Switch
-                            aria-label={`Toggle ${label} toolset`}
+                            aria-label={t('skills.toggleToolset', { name: label })}
                             checked={toolset.enabled}
                             disabled={savingToolset === toolset.name}
                             onCheckedChange={checked => void handleToggleToolset(toolset, checked)}
@@ -304,7 +306,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                         </div>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {asText(toolset.description) || 'No description.'}
+                        {asText(toolset.description) || t('common.noDescription')}
                       </p>
                       {tools.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">

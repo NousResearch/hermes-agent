@@ -3,6 +3,7 @@ import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -33,8 +34,8 @@ import {
   setMessages,
   setSelectedStoredSessionId,
   setSessions,
-  setSessionsTotal,
   setSessionStartedAt,
+  setSessionsTotal,
   setTurnStartedAt
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
@@ -270,6 +271,7 @@ export function useSessionActions({
   syncSessionStateToView,
   updateSessionState
 }: SessionActionsOptions) {
+  const t = useTranslation()
   const resumeRequestRef = useRef(0)
 
   const startFreshSessionDraft = useCallback(
@@ -541,7 +543,7 @@ export function useSessionActions({
         }
 
         setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
-        notifyError(err, 'Resume failed')
+        notifyError(err, t('chat.notifications.resumeFailed'))
       } finally {
         if (isCurrentResume()) {
           busyRef.current = false
@@ -558,6 +560,7 @@ export function useSessionActions({
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,
       syncSessionStateToView,
+      t,
       updateSessionState
     ]
   )
@@ -569,8 +572,8 @@ export function useSessionActions({
       if (!sourceSessionId) {
         notify({
           kind: 'warning',
-          title: 'Nothing to branch',
-          message: 'Start or resume a chat before branching.'
+          title: t('chat.notifications.nothingToBranch'),
+          message: t('chat.notifications.startOrResumeBeforeBranch')
         })
 
         return false
@@ -579,8 +582,8 @@ export function useSessionActions({
       if (busyRef.current) {
         notify({
           kind: 'warning',
-          title: 'Session busy',
-          message: 'Stop the current turn before branching this chat.'
+          title: t('chat.notifications.sessionBusy'),
+          message: t('chat.notifications.stopBeforeBranch')
         })
 
         return false
@@ -610,8 +613,8 @@ export function useSessionActions({
         if (!branchMessages.length) {
           notify({
             kind: 'warning',
-            title: 'Nothing to branch',
-            message: 'This message has no text to branch from.'
+            title: t('chat.notifications.nothingToBranch'),
+            message: t('chat.notifications.noTextToBranch')
           })
 
           return false
@@ -662,7 +665,7 @@ export function useSessionActions({
 
         return true
       } catch (err) {
-        notifyError(err, 'Branch failed')
+        notifyError(err, t('chat.notifications.branchFailed'))
 
         return false
       } finally {
@@ -679,6 +682,7 @@ export function useSessionActions({
       navigate,
       requestGateway,
       selectedStoredSessionIdRef,
+      t,
       updateSessionState
     ]
   )
@@ -748,7 +752,7 @@ export function useSessionActions({
           }
         }
 
-        notifyError(err, 'Delete failed')
+        notifyError(err, t('chat.notifications.deleteFailed'))
       }
     },
     [
@@ -758,7 +762,8 @@ export function useSessionActions({
       requestGateway,
       selectedStoredSessionId,
       selectedStoredSessionIdRef,
-      startFreshSessionDraft
+      startFreshSessionDraft,
+      t
     ]
   )
 
@@ -784,7 +789,7 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true)
-        notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
+        notify({ durationMs: 2_000, kind: 'success', message: t('chat.notifications.archived') })
       } catch (err) {
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
@@ -792,10 +797,10 @@ export function useSessionActions({
         }
 
         $pinnedSessionIds.set(previousPinned)
-        notifyError(err, 'Archive failed')
+        notifyError(err, t('chat.notifications.archiveFailed'))
       }
     },
-    [selectedStoredSessionId, startFreshSessionDraft]
+    [selectedStoredSessionId, startFreshSessionDraft, t]
   )
 
   return {

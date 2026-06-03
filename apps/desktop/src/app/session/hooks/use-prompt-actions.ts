@@ -2,6 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { transcribeAudio } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
@@ -137,6 +138,8 @@ export function usePromptActions({
   sttEnabled,
   updateSessionState
 }: PromptActionsOptions) {
+  const t = useTranslation()
+
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
       const body = text.trim()
@@ -300,7 +303,7 @@ export function usePromptActions({
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
-          notifyError(err, 'Session unavailable')
+          notifyError(err, t('chat.notifications.sessionUnavailable'))
 
           return false
         }
@@ -308,7 +311,11 @@ export function usePromptActions({
         if (!sessionId) {
           dropOptimistic(null)
           releaseBusy()
-          notify({ kind: 'error', title: 'Session unavailable', message: 'Could not create a new session' })
+          notify({
+            kind: 'error',
+            title: t('chat.notifications.sessionUnavailable'),
+            message: t('chat.notifications.createSessionFailed')
+          })
 
           return false
         }
@@ -328,7 +335,7 @@ export function usePromptActions({
 
         return true
       } catch (err) {
-        const message = inlineErrorMessage(err, 'Prompt failed')
+        const message = inlineErrorMessage(err, t('chat.notifications.promptFailed'))
 
         releaseBusy()
         updateSessionState(sessionId, state => ({
@@ -339,7 +346,7 @@ export function usePromptActions({
               id: `assistant-error-${Date.now()}`,
               role: 'assistant',
               parts: [],
-              error: message || 'Prompt failed',
+              error: message || t('chat.notifications.promptFailed'),
               branchGroupId: state.pendingBranchGroup ?? undefined
             }
           ],
@@ -350,12 +357,12 @@ export function usePromptActions({
         }))
 
         if (isProviderSetupError(err)) {
-          requestDesktopOnboarding('Add a provider credential before sending your first message.')
+          requestDesktopOnboarding(t('onboarding.providerCredentialRequired'))
 
           return false
         }
 
-        notifyError(err, 'Prompt failed')
+        notifyError(err, t('chat.notifications.promptFailed'))
 
         return false
       }
@@ -367,6 +374,7 @@ export function usePromptActions({
       requestGateway,
       selectedStoredSessionIdRef,
       syncImageAttachmentsForSubmit,
+      t,
       updateSessionState
     ]
   )
@@ -411,8 +419,8 @@ export function usePromptActions({
         if (!sessionId) {
           notify({
             kind: 'error',
-            title: 'Session unavailable',
-            message: 'Could not create a new session'
+            title: t('chat.notifications.sessionUnavailable'),
+            message: t('chat.notifications.createSessionFailed')
           })
 
           return
@@ -523,7 +531,8 @@ export function usePromptActions({
       handleSkinCommand,
       requestGateway,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      t
     ]
   )
 
@@ -547,7 +556,7 @@ export function usePromptActions({
   const transcribeVoiceAudio = useCallback(
     async (audio: Blob) => {
       if (!sttEnabled) {
-        throw new Error('Speech-to-text is disabled in settings.')
+        throw new Error(t('chat.notifications.speechToTextDisabled'))
       }
 
       const dataUrl = await blobToDataUrl(audio)
@@ -555,7 +564,7 @@ export function usePromptActions({
 
       return result.transcript
     },
-    [sttEnabled]
+    [sttEnabled, t]
   )
 
   const cancelRun = useCallback(async () => {
@@ -615,9 +624,9 @@ export function usePromptActions({
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
     } catch (err) {
-      notifyError(err, 'Stop failed')
+      notifyError(err, t('chat.notifications.stopFailed'))
     }
-  }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState])
+  }, [activeSessionId, activeSessionIdRef, busyRef, requestGateway, t, updateSessionState])
 
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
@@ -689,10 +698,10 @@ export function usePromptActions({
           busy: false,
           awaitingResponse: false
         }))
-        notifyError(err, 'Regenerate failed')
+        notifyError(err, t('chat.notifications.regenerateFailed'))
       }
     },
-    [activeSessionId, requestGateway, updateSessionState]
+    [activeSessionId, requestGateway, t, updateSessionState]
   )
 
   const editMessage = useCallback(
@@ -762,10 +771,10 @@ export function usePromptActions({
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
-        notifyError(surfaced, 'Edit failed')
+        notifyError(surfaced, t('chat.notifications.editFailed'))
       }
     },
-    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState]
+    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, t, updateSessionState]
   )
 
   const handleThreadMessagesChange = useCallback(

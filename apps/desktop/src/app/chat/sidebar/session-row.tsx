@@ -3,6 +3,7 @@ import type * as React from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -58,9 +59,10 @@ export function SidebarSessionRow({
   ref,
   ...rest
 }: SidebarSessionRowProps) {
+  const t = useTranslation()
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at)
-  const handleLabel = `Reorder ${title}`
+  const handleLabel = t('chat.sessionRow.reorder', { title })
 
   return (
     <SessionContextMenu
@@ -154,10 +156,10 @@ export function SidebarSessionRow({
             title={title}
           >
             <Button
-              aria-label={`Actions for ${title}`}
+              aria-label={t('chat.sessionActions.actionsFor', { title })}
               className="size-5 rounded-md bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
               size="icon"
-              title="Session actions"
+              title={t('chat.sessionActions.title')}
               variant="ghost"
             >
               <Codicon name="ellipsis" size="0.875rem" />
@@ -170,9 +172,11 @@ export function SidebarSessionRow({
 }
 
 function SidebarRowDot({ isWorking, className }: { isWorking: boolean; className?: string }) {
+  const t = useTranslation()
+
   return (
     <span
-      aria-label={isWorking ? 'Session running' : undefined}
+      aria-label={isWorking ? t('chat.sessionRow.running') : undefined}
       className={cn(
         'rounded-full',
         isWorking

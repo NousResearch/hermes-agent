@@ -1,44 +1,48 @@
 import type { ReactNode } from 'react'
 
+import { useTranslation } from '@/i18n'
+
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMANDS: [string, string][] = [
-  ['/help', 'full list of commands + hotkeys'],
-  ['/clear', 'start a new session'],
-  ['/resume', 'resume a prior session'],
-  ['/details', 'control transcript detail level'],
-  ['/copy', 'copy selection or last assistant message'],
-  ['/quit', 'exit hermes']
+  ['/help', 'chat.help.commands.help'],
+  ['/clear', 'chat.help.commands.clear'],
+  ['/resume', 'chat.help.commands.resume'],
+  ['/details', 'chat.help.commands.details'],
+  ['/copy', 'chat.help.commands.copy'],
+  ['/quit', 'chat.help.commands.quit']
 ]
 
 const HOTKEYS: [string, string][] = [
-  ['@', 'reference files, folders, urls, git'],
-  ['/', 'slash command palette'],
-  ['?', 'this quick help (delete to dismiss)'],
-  ['Enter', 'send · Shift+Enter for newline'],
-  ['Cmd/Ctrl+K', 'send next queued turn'],
-  ['Cmd/Ctrl+L', 'redraw'],
-  ['Esc', 'close popover · cancel run'],
-  ['↑ / ↓', 'cycle popover / history']
+  ['@', 'chat.help.hotkeys.reference'],
+  ['/', 'chat.help.hotkeys.slash'],
+  ['?', 'chat.help.hotkeys.help'],
+  ['Enter', 'chat.help.hotkeys.enter'],
+  ['Cmd/Ctrl+K', 'chat.help.hotkeys.queue'],
+  ['Cmd/Ctrl+L', 'chat.help.hotkeys.redraw'],
+  ['Esc', 'chat.help.hotkeys.escape'],
+  ['↑ / ↓', 'chat.help.hotkeys.cycle']
 ]
 
 export function HelpHint() {
+  const t = useTranslation()
+
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
-      <Section title="Common commands">
+      <Section title={t('chat.help.commonCommands')}>
         {COMMON_COMMANDS.map(([key, desc]) => (
-          <Row description={desc} key={key} keyLabel={key} mono />
+          <Row description={t(desc)} key={key} keyLabel={key} mono />
         ))}
       </Section>
 
-      <Section title="Hotkeys">
+      <Section title={t('chat.help.hotkeys')}>
         {HOTKEYS.map(([key, desc]) => (
-          <Row description={desc} key={key} keyLabel={key} />
+          <Row description={t(desc)} key={key} keyLabel={key} />
         ))}
       </Section>
 
       <p className="px-2.5 py-1 text-xs text-muted-foreground/80">
-        <span className="font-mono text-foreground/80">/help</span> opens the full panel · backspace dismisses
+        <span className="font-mono text-foreground/80">/help</span> {t('chat.help.footer')}
       </p>
     </div>
   )

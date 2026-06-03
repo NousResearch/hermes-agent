@@ -5,6 +5,7 @@ import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/
 
 import type { HermesGateway } from '../hermes'
 import { getGlobalModelOptions } from '../hermes'
+import { useTranslation } from '../i18n'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
@@ -42,6 +43,7 @@ export function ModelPickerDialog({
   onSelect,
   contentClassName
 }: ModelPickerDialogProps) {
+  const t = useTranslation()
   const [persistGlobal, setPersistGlobal] = useState(!sessionId)
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
@@ -97,9 +99,9 @@ export function ModelPickerDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
         <DialogHeader className="border-b border-border px-4 py-3">
-          <DialogTitle>Switch model</DialogTitle>
+          <DialogTitle>{t('models.picker.title')}</DialogTitle>
           <DialogDescription className="font-mono text-xs leading-relaxed">
-            current: {optionsModel || currentModel || '(unknown)'}
+            {t('models.picker.current')}: {optionsModel || currentModel || t('models.picker.unknown')}
             {optionsProvider || currentProvider ? ` · ${optionsProvider || currentProvider}` : ''}
           </DialogDescription>
         </DialogHeader>
@@ -108,11 +110,11 @@ export function ModelPickerDialog({
           <CommandInput
             autoFocus
             onValueChange={setSearch}
-            placeholder="Filter providers and models..."
+            placeholder={t('models.picker.filter')}
             value={search}
           />
           <CommandList className="max-h-96">
-            {!loading && !error && <CommandEmpty>No models found.</CommandEmpty>}
+            {!loading && !error && <CommandEmpty>{t('models.picker.noModelsFound')}</CommandEmpty>}
             <ModelResults
               currentModel={optionsModel || currentModel}
               currentProvider={optionsProvider || currentProvider}
@@ -132,15 +134,15 @@ export function ModelPickerDialog({
               disabled={!sessionId}
               onCheckedChange={checked => setPersistGlobal(checked === true)}
             />
-            {sessionId ? 'Persist globally (otherwise this session only)' : 'Persist globally'}
+            {sessionId ? t('models.picker.persistGloballySession') : t('models.picker.persistGlobally')}
           </label>
 
           <div className="flex items-center gap-2">
             <Button onClick={addProvider} variant="ghost">
-              Add provider
+              {t('models.picker.addProvider')}
             </Button>
             <Button onClick={() => onOpenChange(false)} variant="outline">
-              Cancel
+              {t('common.cancel')}
             </Button>
           </div>
         </DialogFooter>
@@ -166,6 +168,8 @@ function ModelResults({
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   search: string
 }) {
+  const t = useTranslation()
+
   if (loading) {
     return <LoadingResults />
   }
@@ -173,7 +177,7 @@ function ModelResults({
   if (error) {
     return (
       <div className="px-3 py-3">
-        <InlineNotice kind="error" title="Could not load models">
+        <InlineNotice kind="error" title={t('models.picker.loadError')}>
           {error}
         </InlineNotice>
       </div>
@@ -181,10 +185,11 @@ function ModelResults({
   }
 
   if (providers.length === 0) {
-    return <div className="px-4 py-6 text-sm text-muted-foreground">No authenticated providers.</div>
+    return <div className="px-4 py-6 text-sm text-muted-foreground">{t('models.picker.noProviders')}</div>
   }
 
   const q = search.trim().toLowerCase()
+
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
     model.toLowerCase().includes(q) ||
@@ -247,7 +252,7 @@ function ModelResults({
             })}
             {unavailable.size > 0 && (
               <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
-                Pro models need a paid Nous subscription.
+                {t('models.picker.proModelsNeedSubscription')}
               </div>
             )}
           </CommandGroup>
@@ -260,6 +265,8 @@ function ModelResults({
 // Compact In/Out $/Mtok price tag, mirroring the CLI picker's price columns.
 // Renders nothing when pricing is unavailable for the model.
 function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
+  const t = useTranslation()
+
   if (!price || (!price.input && !price.output)) {
     return null
   }
@@ -272,7 +279,7 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
           isCurrent ? 'bg-primary-foreground/20' : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
         )}
       >
-        Free
+        {t('models.picker.free')}
       </span>
     )
   }
@@ -283,7 +290,7 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
         'shrink-0 text-[0.66rem] tabular-nums',
         isCurrent ? 'text-primary-foreground/80' : 'text-muted-foreground'
       )}
-      title="Input / Output price per million tokens"
+      title={t('models.picker.priceTitle')}
     >
       {price.input || '?'} / {price.output || '?'}
     </span>
@@ -303,11 +310,13 @@ function LoadingResults() {
 }
 
 function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
+  const t = useTranslation()
+
   // free_tier is only set for Nous. true → "Free tier", false → "Pro".
   const tierBadge =
     provider.free_tier === true ? (
       <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
-        Free tier
+        {t('models.picker.freeTier')}
       </span>
     ) : provider.free_tier === false ? (
       <span className="rounded-sm bg-primary/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-primary">

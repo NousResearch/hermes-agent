@@ -17,6 +17,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
@@ -51,6 +52,7 @@ interface ProviderGroup {
 
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
   const [search, setSearch] = useState('')
+  const t = useTranslation()
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
   // the parent to rebuild the menu content (which would close the dropdown).
@@ -95,9 +97,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   return (
     <>
       <DropdownMenuSearch
-        aria-label="Search models"
+        aria-label={t('models.menu.searchModels')}
         onValueChange={setSearch}
-        placeholder="Search models"
+        placeholder={t('models.menu.searchModels')}
         value={search}
       />
 
@@ -122,7 +124,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         </DropdownMenuItem>
       ) : groups.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
-          No models found
+          {t('models.menu.noModelsFound')}
         </DropdownMenuItem>
       ) : (
         <div className="max-h-80 overflow-y-auto py-0.5">

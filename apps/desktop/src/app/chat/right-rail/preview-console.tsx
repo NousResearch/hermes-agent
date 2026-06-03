@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { CopyButton } from '@/components/ui/copy-button'
+import { type Translate, useTranslation } from '@/i18n'
 import { PanelBottom, Send, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
@@ -70,9 +71,10 @@ interface ConsoleRowProps {
   onSend: () => void
   onToggleSelect: () => void
   selected: boolean
+  t: Translate
 }
 
-function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: ConsoleRowProps) {
+function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected, t }: ConsoleRowProps) {
   return (
     <div
       className={cn(
@@ -86,7 +88,7 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
           consoleLevelClass[log.level] ?? consoleLevelClass[0]
         )}
         onClick={onToggleSelect}
-        title={selected ? 'Deselect entry' : 'Select entry'}
+        title={selected ? t('preview.console.deselectEntry') : t('preview.console.selectEntry')}
         type="button"
       >
         {consoleLevelLabel[log.level] || 'log'}
@@ -106,16 +108,16 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
         <CopyButton
           appearance="inline"
           className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          errorMessage="Could not copy console output"
+          errorMessage={t('preview.console.copyFailed')}
           iconClassName="size-3"
-          label="Copy this entry"
+          label={t('preview.console.copyEntry')}
           showLabel={false}
           text={copyText}
         />
         <button
           className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           onClick={onSend}
-          title="Send this entry to chat"
+          title={t('preview.console.sendEntry')}
           type="button"
         >
           <Send className="size-3" />
@@ -126,12 +128,13 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
 }
 
 export function PreviewConsoleTitlebarIcon({ consoleState }: { consoleState: PreviewConsoleState }) {
+  const t = useTranslation()
   const logCount = useStore(consoleState.$logCount)
 
   return (
     <>
       <PanelBottom />
-      {logCount > 0 && <span className="sr-only">{logCount} console messages</span>}
+      {logCount > 0 && <span className="sr-only">{t('preview.console.messageCount', { count: logCount })}</span>}
     </>
   )
 }
@@ -149,6 +152,7 @@ export function PreviewConsolePanel({
   consoleState,
   startConsoleResize
 }: PreviewConsolePanelProps) {
+  const t = useTranslation()
   const consoleHeight = useStore(consoleState.$height)
   const logs = useStore(consoleState.$logs)
   const selectedLogIds = useStore(consoleState.$selectedLogIds)
@@ -191,8 +195,8 @@ export function PreviewConsolePanel({
     consoleState.clearSelection()
     notify({
       kind: 'success',
-      title: 'Sent to chat',
-      message: `${entries.length} log entr${entries.length === 1 ? 'y' : 'ies'} added to composer`
+      title: t('preview.console.sentToChat'),
+      message: t('preview.console.addedToComposer', { count: entries.length })
     })
   }
 
@@ -202,7 +206,7 @@ export function PreviewConsolePanel({
       style={{ '--preview-console-height': `${consoleHeight}px` } as CSSProperties}
     >
       <div
-        aria-label="Resize preview console"
+        aria-label={t('preview.console.resize')}
         className="group absolute inset-x-0 -top-1 z-1 h-2 cursor-row-resize"
         onDoubleClick={() => consoleState.setHeight(CONSOLE_HEADER_HEIGHT)}
         onPointerDown={startConsoleResize}
@@ -213,10 +217,10 @@ export function PreviewConsolePanel({
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-border/50 px-2">
         <div className="flex items-center gap-2 text-[0.6875rem] font-medium text-muted-foreground">
           <PanelBottom className="size-3.5" />
-          Preview Console
+          {t('preview.console.title')}
           {selectedLogIds.size > 0 && (
             <span className="rounded-full bg-muted px-1.5 py-px text-[0.5625rem] text-muted-foreground">
-              {selectedLogIds.size} selected
+              {t('preview.console.selectedCount', { count: selectedLogIds.size })}
             </span>
           )}
         </div>
@@ -227,34 +231,34 @@ export function PreviewConsolePanel({
             onClick={() => sendLogsToComposer(sendableLogs)}
             title={
               visibleSelection.length > 0
-                ? `Send ${visibleSelection.length} selected to chat`
-                : 'Send all log entries to chat'
+                ? t('preview.console.sendSelected', { count: visibleSelection.length })
+                : t('preview.console.sendAll')
             }
             type="button"
           >
             <Send className="size-3" />
-            Send to chat
+            {t('preview.console.sendToChat')}
           </button>
           <CopyButton
             appearance="inline"
             className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
             disabled={sendableLogs.length === 0}
-            errorMessage="Could not copy console output"
+            errorMessage={t('preview.console.copyFailed')}
             iconClassName="size-3"
-            label={visibleSelection.length > 0 ? 'Copy selected to clipboard' : 'Copy all to clipboard'}
+            label={visibleSelection.length > 0 ? t('preview.console.copySelected') : t('preview.console.copyAll')}
             text={() => formatConsoleEntries(sendableLogs)}
           >
-            Copy
+            {t('common.copy')}
           </CopyButton>
           <button
             className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
             disabled={logs.length === 0}
             onClick={consoleState.clear}
-            title="Clear console"
+            title={t('preview.console.clear')}
             type="button"
           >
             <Trash2 className="size-3" />
-            Clear
+            {t('preview.console.clear')}
           </button>
         </div>
       </div>
@@ -274,11 +278,12 @@ export function PreviewConsolePanel({
                 onSend={() => sendLogsToComposer([log])}
                 onToggleSelect={() => consoleState.toggleSelection(log.id)}
                 selected={selected}
+                t={t}
               />
             )
           })
         ) : (
-          <div className="py-2 text-muted-foreground/70">No console messages yet.</div>
+          <div className="py-2 text-muted-foreground/70">{t('preview.console.empty')}</div>
         )}
       </div>
     </div>

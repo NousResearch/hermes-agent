@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const toggleSkill = vi.fn()
@@ -10,6 +12,7 @@ const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  getHermesConfigRecord: vi.fn(),
   getSkills: () => getSkills(),
   getToolsets: () => getToolsets(),
   toggleSkill: (name: string, enabled: boolean) => toggleSkill(name, enabled),
@@ -18,7 +21,8 @@ vi.mock('@/hermes', () => ({
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   deleteEnvVar: vi.fn(),
   revealEnvVar: vi.fn(),
-  setEnvVar: vi.fn()
+  setEnvVar: vi.fn(),
+  saveHermesConfig: vi.fn()
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -43,9 +47,11 @@ function toolset(overrides: Record<string, unknown> = {}) {
 function renderSkills() {
   return import('./index').then(({ SkillsView }) =>
     render(
-      <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
-        <SkillsView />
-      </MemoryRouter>
+      <I18nProvider configClient={null}>
+        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+          <SkillsView />
+        </MemoryRouter>
+      </I18nProvider>
     )
   )
 }

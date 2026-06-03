@@ -166,6 +166,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    language?: string
     personality?: string
     skin?: string
   }

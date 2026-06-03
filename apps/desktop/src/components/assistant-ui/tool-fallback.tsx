@@ -17,6 +17,7 @@ import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { FadeText } from '@/components/ui/fade-text'
+import { type Translate, useTranslation } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -99,11 +100,11 @@ function rawTechnicalTrace(args: unknown, result: unknown): string {
   return parts.join('\n')
 }
 
-function statusGlyph(status: ToolStatus): ReactNode {
+function statusGlyph(status: ToolStatus, t: Translate): ReactNode {
   if (status === 'running') {
     return (
       <BrailleSpinner
-        ariaLabel="Running"
+        ariaLabel={t('agents.status.running')}
         className="size-3.5 shrink-0 text-[0.95rem] text-(--ui-text-tertiary)"
         spinner="breathe"
       />
@@ -111,22 +112,22 @@ function statusGlyph(status: ToolStatus): ReactNode {
   }
 
   if (status === 'error') {
-    return <AlertCircle aria-label="Error" className="size-3.5 shrink-0 text-destructive" />
+    return <AlertCircle aria-label={t('common.error')} className="size-3.5 shrink-0 text-destructive" />
   }
 
   if (status === 'warning') {
-    return <AlertCircle aria-label="Recovered" className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+    return <AlertCircle aria-label={t('assistant.tools.recovered')} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
   }
 
-  return <CheckCircle2 aria-label="Done" className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
+  return <CheckCircle2 aria-label={t('agents.status.done')} className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
 }
 
 // Leading glyph for any tool-row header. Status (running/error/warning)
 // takes precedence; otherwise falls back to the tool's codicon. Returns
 // null when neither applies so callers can render unconditionally.
-function ToolGlyph({ icon, status }: { icon?: string; status?: ToolStatus }) {
+function ToolGlyph({ icon, status, t }: { icon?: string; status?: ToolStatus; t: Translate }) {
   const node = status ? (
-    statusGlyph(status)
+    statusGlyph(status, t)
   ) : icon ? (
     <Codicon className="text-(--ui-text-tertiary)" name={icon} size="0.875rem" />
   ) : null
@@ -186,6 +187,7 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
 }
 
 function ToolEntry({ part }: ToolEntryProps) {
+  const t = useTranslation()
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
@@ -208,8 +210,8 @@ function ToolEntry({ part }: ToolEntryProps) {
   const view = useMemo(() => {
     const p = !isPending && part.result === undefined ? { ...part, result: {} } : part
 
-    return buildToolView(p, inlineDiff)
-  }, [inlineDiff, isPending, part])
+    return buildToolView(p, inlineDiff, t)
+  }, [inlineDiff, isPending, part, t])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {
@@ -250,7 +252,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     (part.toolName === 'terminal' || part.toolName === 'execute_code' || part.toolName === 'read_file')
 
   const hasSearchHits = Boolean(view.searchHits?.length)
-  const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
+  const searchResultsLabel = part.toolName === 'web_search' ? t('assistant.tools.searchResults') : view.detailLabel
 
   const showRawSearchDrilldown =
     part.toolName === 'web_search' &&
@@ -266,7 +268,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     toolViewMode === 'technical'
   )
 
-  const copyAction = useMemo(() => toolCopyPayload(part, view), [part, view])
+  const copyAction = useMemo(() => toolCopyPayload(part, view, t), [part, t, view])
 
   const trailing =
     isPending && !embedded ? (
@@ -291,7 +293,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           trailing={trailing}
         >
           <span className="flex min-w-0 items-center gap-1.5">
-            <ToolGlyph icon={view.icon} status={leadingStatus(isPending, view.status)} />
+            <ToolGlyph icon={view.icon} status={leadingStatus(isPending, view.status)} t={t} />
             <FadeText
               className={cn(
                 TOOL_HEADER_TITLE_CLASS,
@@ -316,7 +318,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt="Tool output" className="h-auto w-full object-cover" src={view.imageUrl} />
+              <ZoomableImage alt={t('assistant.tools.outputImage')} className="h-auto w-full object-cover" src={view.imageUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (
@@ -387,7 +389,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {showRawSearchDrilldown && (
             <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'cursor-pointer mb-0')}>Raw response</summary>
+              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'cursor-pointer mb-0')}>{t('assistant.tools.rawResponse')}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
                 {view.rawResult}
               </pre>
@@ -429,6 +431,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   endIndex,
   startIndex
 }) => {
+  const t = useTranslation()
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
 
@@ -469,11 +472,11 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       ? ''
       : displayStatus === 'warning'
         ? failedStepCount === 1
-          ? 'Recovered after 1 failed step'
-          : `Recovered after ${failedStepCount} failed steps`
+          ? t('assistant.tools.recoveredAfterOneFailedStep')
+          : t('assistant.tools.recoveredAfterFailedSteps', { count: failedStepCount })
         : failedStepCount === 1
-          ? '1 step failed'
-          : `${failedStepCount} steps failed`
+          ? t('assistant.tools.oneStepFailed')
+          : t('assistant.tools.stepsFailed', { count: failedStepCount })
 
   const groupCopyText = useMemo(() => buildGroupCopyText(visibleParts), [visibleParts])
   const previewTargets = useMemo(() => groupPreviewTargets(visibleParts), [visibleParts])
@@ -488,12 +491,12 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
             open={open}
             trailing={
               !isRunning && groupCopyText ? (
-                <CopyButton appearance="tool-row" label="Copy activity" stopPropagation text={groupCopyText} />
+                <CopyButton appearance="tool-row" label={t('assistant.tools.copyActivity')} stopPropagation text={groupCopyText} />
               ) : undefined
             }
           >
             <span className="flex min-w-0 items-center gap-1.5">
-              <ToolGlyph status={displayStatus === 'success' ? undefined : displayStatus} />
+              <ToolGlyph status={displayStatus === 'success' ? undefined : displayStatus} t={t} />
               <FadeText
                 className={cn(
                   TOOL_HEADER_TITLE_CLASS,
@@ -501,7 +504,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
                   displayStatus === 'warning' && 'text-amber-700 dark:text-amber-300'
                 )}
               >
-                {groupTitle(visibleParts)}
+                {groupTitle(visibleParts, t)}
               </FadeText>
               {totalDurationLabel && <span className={TOOL_HEADER_DURATION_CLASS}>{totalDurationLabel}</span>}
             </span>

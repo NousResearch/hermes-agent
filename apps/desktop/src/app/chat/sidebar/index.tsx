@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $pinnedSessionIds,
@@ -73,21 +74,31 @@ const VIRTUALIZE_THRESHOLD = 25
 const NEW_SESSION_KBD: readonly string[] =
   typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac') ? ['⌘', 'N'] : ['Ctrl', 'N']
 
-const SIDEBAR_NAV: SidebarNavItem[] = [
+const SIDEBAR_NAV: Array<Omit<SidebarNavItem, 'label'> & { labelKey: string }> = [
   {
     id: 'new-session',
-    label: 'New session',
+    labelKey: 'chat.sidebar.newSession',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
   },
   {
     id: 'skills',
-    label: 'Skills & Tools',
+    labelKey: 'chat.sidebar.skills',
     icon: props => <Codicon name="symbol-misc" {...props} />,
     route: SKILLS_ROUTE
   },
-  { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  {
+    id: 'messaging',
+    labelKey: 'chat.sidebar.messaging',
+    icon: props => <Codicon name="comment" {...props} />,
+    route: MESSAGING_ROUTE
+  },
+  {
+    id: 'artifacts',
+    labelKey: 'chat.sidebar.artifacts',
+    icon: props => <Codicon name="files" {...props} />,
+    route: ARTIFACTS_ROUTE
+  }
 ]
 
 const WORKSPACE_PAGE = 5
@@ -163,7 +174,7 @@ function workspaceGroupsFor(sessions: SessionInfo[]): SidebarSessionGroup[] {
   for (const session of sessions) {
     const path = session.cwd?.trim() || ''
     const id = path || '__no_workspace__'
-    const label = baseName(path) || path || 'No workspace'
+    const label = baseName(path) || path || ''
 
     const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
     group.sessions.push(session)
@@ -212,6 +223,7 @@ export function ChatSidebar({
   onArchiveSession,
   onNewSessionInWorkspace
 }: ChatSidebarProps) {
+  const t = useTranslation()
   const sidebarOpen = useStore($sidebarOpen)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
@@ -348,6 +360,11 @@ export function ChatSidebar({
   const hasMoreSessions = knownSessionTotal > sortedSessions.length
   const remainingSessionCount = Math.max(0, knownSessionTotal - sortedSessions.length)
 
+  const sidebarNav = useMemo<SidebarNavItem[]>(
+    () => SIDEBAR_NAV.map(item => ({ ...item, label: t(item.labelKey) })),
+    [t]
+  )
+
   const handlePinnedDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) {
       return
@@ -416,7 +433,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {SIDEBAR_NAV.map(item => {
+              {sidebarNav.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
@@ -461,16 +478,16 @@ export function ChatSidebar({
             <div className="flex items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 transition-colors focus-within:border-(--ui-stroke-tertiary)">
               <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="search" size="0.75rem" />
               <input
-                aria-label="Search sessions"
+                aria-label={t('chat.sidebar.searchSessions')}
                 className="h-6 min-w-0 flex-1 bg-transparent text-[0.8125rem] text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
                 onChange={event => setSearchQuery(event.target.value)}
-                placeholder="Search sessions…"
+                placeholder={t('chat.sidebar.searchSessionsPlaceholder')}
                 type="text"
                 value={searchQuery}
               />
               {searchQuery && (
                 <button
-                  aria-label="Clear search"
+                  aria-label={t('chat.sidebar.clearSearch')}
                   className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
                   onClick={() => setSearchQuery('')}
                   type="button"
@@ -488,10 +505,10 @@ export function ChatSidebar({
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
             emptyState={
               <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                No sessions match “{trimmedQuery}”.
+                {t('chat.sidebar.noSearchResults', { query: trimmedQuery })}
               </div>
             }
-            label="Results"
+            label={t('chat.sidebar.results')}
             labelMeta={String(searchResults.length)}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
@@ -512,7 +529,7 @@ export function ChatSidebar({
             contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
             dndSensors={dndSensors}
             emptyState={<SidebarPinnedEmptyState />}
-            label="Pinned"
+            label={t('chat.sidebar.pinned')}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onReorder={handlePinnedDragEnd}
@@ -551,7 +568,9 @@ export function ChatSidebar({
               // a phantom click target.
               agentSessions.length > 0 ? (
                 <Button
-                  aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+                  aria-label={
+                    agentsGrouped ? t('chat.sidebar.showSingleList') : t('chat.sidebar.groupByWorkspace')
+                  }
                   className={cn(
                     'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
                     agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
@@ -562,14 +581,14 @@ export function ChatSidebar({
                     setSidebarAgentsGrouped(!agentsGrouped)
                   }}
                   size="icon-xs"
-                  title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
+                  title={agentsGrouped ? t('chat.sidebar.ungroupSessions') : t('chat.sidebar.groupByWorkspace')}
                   variant="ghost"
                 >
                   <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
                 </Button>
               ) : null
             }
-            label="Sessions"
+            label={t('chat.sidebar.sessions')}
             labelMeta={countLabel(agentSessions.length, knownSessionTotal)}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
@@ -633,18 +652,28 @@ function SidebarSessionSkeletons() {
 }
 
 const SidebarAllPinnedState = () => (
-  <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
-    Everything here is pinned. Unpin a chat to show it in recents.
-  </div>
+  <SidebarTranslatedEmptyState translationKey="chat.sidebar.allPinned" />
 )
 
 function SidebarPinnedEmptyState() {
+  const t = useTranslation()
+
   return (
     <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
-      <span>Shift-click a chat to pin · drag to reorder</span>
+      <span>{t('chat.sidebar.pinnedHint')}</span>
+    </div>
+  )
+}
+
+function SidebarTranslatedEmptyState({ translationKey }: { translationKey: string }) {
+  const t = useTranslation()
+
+  return (
+    <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
+      {t(translationKey)}
     </div>
   )
 }
@@ -837,6 +866,7 @@ function SidebarWorkspaceGroup({
   ref,
   ...rest
 }: SidebarWorkspaceGroupProps) {
+  const t = useTranslation()
   const [open, setOpen] = useState(true)
   const [visibleCount, setVisibleCount] = useState(WORKSPACE_PAGE)
   const visibleSessions = group.sessions.slice(0, visibleCount)
@@ -852,7 +882,7 @@ function SidebarWorkspaceGroup({
           title={group.path ?? undefined}
           type="button"
         >
-          <span className="truncate">{group.label}</span>
+          <span className="truncate">{group.label || t('chat.sidebar.noWorkspace')}</span>
           <SidebarCount>{group.sessions.length}</SidebarCount>
           <DisclosureCaret
             className="text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
@@ -861,10 +891,10 @@ function SidebarWorkspaceGroup({
         </button>
         {onNewSession && (
           <button
-            aria-label={`New session in ${group.label}`}
+            aria-label={t('chat.sidebar.newSessionInWorkspace', { workspace: group.label || t('chat.sidebar.noWorkspace') })}
             className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
             onClick={() => onNewSession(group.path)}
-            title={`New session in ${group.label}`}
+            title={t('chat.sidebar.newSessionInWorkspace', { workspace: group.label || t('chat.sidebar.noWorkspace') })}
             type="button"
           >
             <Codicon name="add" size="0.75rem" />
@@ -873,7 +903,7 @@ function SidebarWorkspaceGroup({
         {reorderable && (
           <span
             {...dragHandleProps}
-            aria-label={`Reorder workspace ${group.label}`}
+            aria-label={t('chat.sidebar.reorderWorkspace', { workspace: group.label || t('chat.sidebar.noWorkspace') })}
             className="ml-auto -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
             onClick={event => event.stopPropagation()}
           >
@@ -893,10 +923,16 @@ function SidebarWorkspaceGroup({
           {renderRows(visibleSessions)}
           {hiddenCount > 0 && (
             <button
-              aria-label={`Show ${nextCount} more in ${group.label}`}
+              aria-label={t('chat.sidebar.showMoreInWorkspace', {
+                count: nextCount,
+                workspace: group.label || t('chat.sidebar.noWorkspace')
+              })}
               className="ml-auto grid size-5 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
               onClick={() => setVisibleCount(count => count + WORKSPACE_PAGE)}
-              title={`Show ${nextCount} more in ${group.label}`}
+              title={t('chat.sidebar.showMoreInWorkspace', {
+                count: nextCount,
+                workspace: group.label || t('chat.sidebar.noWorkspace')
+              })}
               type="button"
             >
               <Codicon name="ellipsis" size="0.75rem" />
@@ -944,7 +980,8 @@ interface SidebarLoadMoreRowProps {
 }
 
 function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps) {
-  const label = loading ? 'Loading…' : step > 0 ? `Load ${step} more` : 'Load more'
+  const t = useTranslation()
+  const label = loading ? t('common.loading') : step > 0 ? t('chat.sidebar.loadMoreCount', { count: step }) : t('chat.sidebar.loadMore')
 
   return (
     <button

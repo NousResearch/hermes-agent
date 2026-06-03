@@ -10,6 +10,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { useTranslation } from '@/i18n'
 import { Globe } from '@/lib/icons'
 
 const URL_HINT = /^https?:\/\//i
@@ -29,6 +30,7 @@ export function UrlDialog({
   open: boolean
   value: string
 }) {
+  const t = useTranslation()
   const trimmed = value.trim()
   const looksLikeUrl = trimmed.length > 0 && URL_HINT.test(trimmed)
 
@@ -43,8 +45,8 @@ export function UrlDialog({
             <Globe className="size-4" />
           </span>
           <div className="grid gap-0.5 text-left">
-            <DialogTitle>Attach a URL</DialogTitle>
-            <DialogDescription>Hermes will fetch the page and include it as context for this turn.</DialogDescription>
+            <DialogTitle>{t('chat.composer.url.title')}</DialogTitle>
+            <DialogDescription>{t('chat.composer.url.description')}</DialogDescription>
           </div>
         </DialogHeader>
         <form
@@ -67,16 +69,17 @@ export function UrlDialog({
             />
             {trimmed.length > 0 && !looksLikeUrl && (
               <p className="text-xs text-muted-foreground/85">
-                Include the full URL, e.g. <span className="font-mono">https://…</span>
+                {t('chat.composer.url.hint')}{' '}
+                <span className="font-mono">https://...</span>
               </p>
             )}
           </div>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button disabled={!looksLikeUrl} type="submit">
-              Attach
+              {t('chat.composer.url.attach')}
             </Button>
           </DialogFooter>
         </form>

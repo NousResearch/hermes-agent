@@ -5,6 +5,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { useTranslation } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
@@ -27,12 +28,12 @@ interface RightSidebarPaneProps {
 interface RightSidebarTab {
   icon: string
   id: RightSidebarTabId
-  label: string
+  labelKey: string
 }
 
 const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
-  { id: 'files', label: 'File system', icon: 'files' },
-  { id: 'terminal', label: 'Terminal', icon: 'terminal' }
+  { id: 'files', labelKey: 'rightSidebar.tabs.files', icon: 'files' },
+  { id: 'terminal', labelKey: 'rightSidebar.tabs.terminal', icon: 'terminal' }
 ]
 
 export function RightSidebarPane({
@@ -40,6 +41,7 @@ export function RightSidebarPane({
   onActivateFolder,
   onChangeCwd
 }: RightSidebarPaneProps) {
+  const t = useTranslation()
   const activeTab = useStore($rightSidebarTab)
   const terminalTakeover = useStore($terminalTakeover)
   const currentBranch = useStore($currentBranch).trim()
@@ -51,7 +53,7 @@ export function RightSidebarPane({
         .split(/[\\/]+/)
         .filter(Boolean)
         .pop() ?? currentCwd)
-    : 'No folder selected'
+    : t('rightSidebar.noFolderSelected')
 
   const { collapseAll, collapseNonce, data, loadChildren, openState, refreshRoot, rootError, rootLoading, setNodeOpen } =
     useProjectTree(currentCwd)
@@ -64,7 +66,7 @@ export function RightSidebarPane({
       defaultPath: hasCwd ? currentCwd : undefined,
       directories: true,
       multiple: false,
-      title: 'Change working directory'
+      title: t('rightSidebar.changeWorkingDirectory')
     })
 
     if (selected?.[0]) {
@@ -77,12 +79,12 @@ export function RightSidebarPane({
       const preview = await normalizeOrLocalPreviewTarget(path, currentCwd || undefined)
 
       if (!preview) {
-        throw new Error(`Could not preview ${path}`)
+        throw new Error(t('rightSidebar.previewCouldNotOpen', { path }))
       }
 
       setCurrentSessionPreviewTarget(preview, 'file-browser', path)
     } catch (error) {
-      notifyError(error, 'Preview unavailable')
+      notifyError(error, t('rightSidebar.previewUnavailable'))
     }
   }
 
@@ -92,7 +94,7 @@ export function RightSidebarPane({
 
   return (
     <aside
-      aria-label="Right sidebar"
+      aria-label={t('rightSidebar.ariaLabel')}
       className="before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary) shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)] before:absolute before:inset-x-0 before:top-(--titlebar-height) before:z-1 before:h-px before:bg-(--ui-stroke-tertiary)"
     >
       <RightSidebarChrome activeTab={effectiveTab} branch={currentBranch} tabs={tabs} />
@@ -118,6 +120,7 @@ export function RightSidebarPane({
           onPreviewFile={previewFile}
           onRefresh={() => void refreshRoot()}
           openState={openState}
+          t={t}
         />
       )}
     </aside>
@@ -133,13 +136,15 @@ function RightSidebarChrome({
   branch: string
   tabs: readonly RightSidebarTab[]
 }) {
+  const t = useTranslation()
+
   return (
     <header className="shrink-0 bg-transparent text-[0.75rem]">
       <div className="flex items-center gap-2 border-b border-(--ui-stroke-tertiary) px-2.5 py-1">
-        <nav aria-label="Right sidebar panels" className="flex min-w-0 items-center gap-1">
+        <nav aria-label={t('rightSidebar.panels')} className="flex min-w-0 items-center gap-1">
           {tabs.map(tab => (
             <button
-              aria-label={tab.label}
+              aria-label={t(tab.labelKey)}
               aria-pressed={tab.id === activeTab}
               className={cn(
                 'grid size-6 shrink-0 place-items-center rounded-lg text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring active:bg-(--ui-control-active-background) active:text-foreground',
@@ -148,7 +153,7 @@ function RightSidebarChrome({
               data-active={tab.id === activeTab}
               key={tab.id}
               onClick={() => setRightSidebarTab(tab.id)}
-              title={tab.label}
+              title={t(tab.labelKey)}
               type="button"
             >
               <Codicon name={tab.icon} size="0.875rem" />
@@ -173,6 +178,7 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   onChangeFolder: () => Promise<void> | void
   onCollapseAll: () => void
   onRefresh: () => void
+  t: ReturnType<typeof useTranslation>
 }
 
 const HEADER_ACTION_CLASS =
@@ -197,7 +203,8 @@ function FilesystemTab({
   onNodeOpenChange,
   onPreviewFile,
   onRefresh,
-  openState
+  openState,
+  t
 }: FilesystemTabProps) {
   return (
     <div className="group/project-header flex min-h-0 flex-1 flex-col">
@@ -205,39 +212,39 @@ function FilesystemTab({
         <button
           className="flex min-w-0 flex-1 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
           onClick={() => void onChangeFolder()}
-          title={hasCwd ? `${cwd} — click to change folder` : 'Open a folder'}
+          title={hasCwd ? t('rightSidebar.clickToChangeFolder', { cwd }) : t('rightSidebar.openFolder')}
           type="button"
         >
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </button>
         <Button
-          aria-label="Open folder"
+          aria-label={t('rightSidebar.openFolder')}
           className={HEADER_ACTION_CLASS}
           onClick={() => void onChangeFolder()}
           size="icon"
-          title={hasCwd ? 'Open a different folder' : 'Open a folder'}
+          title={hasCwd ? t('rightSidebar.openDifferentFolder') : t('rightSidebar.openFolder')}
           variant="ghost"
         >
           <Codicon name="folder-opened" size="0.8125rem" />
         </Button>
         <Button
-          aria-label="Collapse all folders"
+          aria-label={t('rightSidebar.collapseAllFolders')}
           className={HEADER_ACTION_REVEAL_CLASS}
           disabled={!hasCwd || !canCollapse}
           onClick={onCollapseAll}
           size="icon"
-          title="Collapse all folders"
+          title={t('rightSidebar.collapseAllFolders')}
           variant="ghost"
         >
           <Codicon name="collapse-all" size="0.8125rem" />
         </Button>
         <Button
-          aria-label="Refresh tree"
+          aria-label={t('rightSidebar.refreshTree')}
           className={HEADER_ACTION_REVEAL_CLASS}
           disabled={!hasCwd || loading}
           onClick={onRefresh}
           size="icon"
-          title="Refresh tree"
+          title={t('rightSidebar.refreshTree')}
           variant="ghost"
         >
           <Codicon name="refresh" size="0.8125rem" spinning={loading} />
@@ -255,6 +262,7 @@ function FilesystemTab({
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}
         openState={openState}
+        t={t}
       />
     </div>
   )
@@ -276,6 +284,7 @@ interface FileTreeBodyProps {
   onNodeOpenChange: (id: string, open: boolean) => void
   onPreviewFile?: (path: string) => void
   openState: ReturnType<typeof useProjectTree>['openState']
+  t: ReturnType<typeof useTranslation>
 }
 
 function FileTreeBody({
@@ -289,14 +298,15 @@ function FileTreeBody({
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
-  openState
+  openState,
+  t
 }: FileTreeBodyProps) {
   if (!cwd) {
-    return <EmptyState body="Set a working directory from the status bar to browse files." title="No project" />
+    return <EmptyState body={t('rightSidebar.empty.noProjectBody')} title={t('rightSidebar.empty.noProjectTitle')} />
   }
 
   if (error) {
-    return <EmptyState body={`Could not read this folder (${error}).`} title="Unreadable" />
+    return <EmptyState body={t('rightSidebar.empty.unreadableBody', { error })} title={t('rightSidebar.empty.unreadableTitle')} />
   }
 
   if (loading && data.length === 0) {
@@ -304,20 +314,20 @@ function FileTreeBody({
   }
 
   if (data.length === 0) {
-    return <EmptyState body="This folder is empty." title="Empty" />
+    return <EmptyState body={t('rightSidebar.empty.emptyBody')} title={t('rightSidebar.empty.emptyTitle')} />
   }
 
   return (
     <ErrorBoundary
       fallback={({ reset }) => (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-          <EmptyState body="The file tree hit an error rendering this folder." title="Tree error" />
+          <EmptyState body={t('rightSidebar.empty.treeErrorBody')} title={t('rightSidebar.empty.treeErrorTitle')} />
           <button
             className="text-[0.68rem] font-medium text-muted-foreground transition hover:text-foreground"
             onClick={reset}
             type="button"
           >
-            Try again
+            {t('common.retry')}
           </button>
         </div>
       )}
@@ -340,8 +350,10 @@ function FileTreeBody({
 }
 
 function FileTreeLoadingState() {
+  const t = useTranslation()
+
   return (
-    <div aria-label="Loading file tree" className="grid min-h-0 flex-1 place-items-center px-3" role="status">
+    <div aria-label={t('rightSidebar.loadingFileTree')} className="grid min-h-0 flex-1 place-items-center px-3" role="status">
       <Loader
         aria-hidden="true"
         className="size-8 text-(--ui-text-tertiary)"

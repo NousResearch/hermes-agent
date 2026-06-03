@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -17,6 +17,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useTranslation } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -25,18 +26,18 @@ import type { ChatBarState } from './types'
 
 const PROMPT_SNIPPETS: readonly PromptSnippet[] = [
   {
-    description: 'Audit the current change for regressions, dropped edge cases, and missing tests.',
-    label: 'Code review',
+    descriptionKey: 'chat.snippets.codeReview.description',
+    labelKey: 'chat.snippets.codeReview.label',
     text: 'Please review this for bugs, regressions, and missing tests.'
   },
   {
-    description: 'Outline an approach before touching code so the diff stays focused.',
-    label: 'Implementation plan',
+    descriptionKey: 'chat.snippets.plan.description',
+    labelKey: 'chat.snippets.plan.label',
     text: 'Please make a concise implementation plan before changing code.'
   },
   {
-    description: 'Walk through how the selected code works and link to the key files.',
-    label: 'Explain this',
+    descriptionKey: 'chat.snippets.explain.description',
+    labelKey: 'chat.snippets.explain.label',
     text: 'Please explain how this works and point me to the key files.'
   }
 ]
@@ -50,6 +51,7 @@ export function ContextMenu({
   onPickFolders,
   onPickImages
 }: ContextMenuProps) {
+  const t = useTranslation()
   // Prompt snippets used to be a Radix submenu. That submenu didn't open
   // reliably when the parent menu was positioned at the bottom of the
   // window (composer "+" anchor), so we promoted it to a real Dialog —
@@ -77,35 +79,36 @@ export function ContextMenu({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-60" side="top" sideOffset={10}>
           <DropdownMenuLabel className="text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/85">
-            Attach
+            {t('chat.contextMenu.attach')}
           </DropdownMenuLabel>
           <ContextMenuItem disabled={!onPickFiles} icon={FileText} onSelect={onPickFiles}>
-            Files…
+            {t('chat.contextMenu.files')}
           </ContextMenuItem>
           <ContextMenuItem disabled={!onPickFolders} icon={FolderOpen} onSelect={onPickFolders}>
-            Folder…
+            {t('chat.contextMenu.folder')}
           </ContextMenuItem>
           <ContextMenuItem disabled={!onPickImages} icon={ImageIcon} onSelect={onPickImages}>
-            Images…
+            {t('chat.contextMenu.images')}
           </ContextMenuItem>
           <ContextMenuItem disabled={!onPasteClipboardImage} icon={Clipboard} onSelect={onPasteClipboardImage}>
-            Paste image
+            {t('chat.contextMenu.pasteImage')}
           </ContextMenuItem>
           <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
-            URL…
+            {t('chat.contextMenu.url')}
           </ContextMenuItem>
 
           <DropdownMenuSeparator />
 
           <ContextMenuItem icon={MessageSquareText} onSelect={() => setSnippetsOpen(true)}>
-            Prompt snippets…
+            {t('chat.contextMenu.promptSnippets')}
           </ContextMenuItem>
 
           <DropdownMenuSeparator />
 
           <div className="px-2 py-1 text-[0.7rem] text-muted-foreground/80">
-            Tip: type <kbd className="rounded bg-muted/70 px-1 py-px font-mono text-[0.65rem]">@</kbd> to reference files
-            inline.
+            {t('chat.contextMenu.tipPrefix')}{' '}
+            <kbd className="rounded bg-muted/70 px-1 py-px font-mono text-[0.65rem]">@</kbd>{' '}
+            {t('chat.contextMenu.tipSuffix')}
           </div>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -126,16 +129,18 @@ function PromptSnippetsDialog({
   open,
   snippets
 }: PromptSnippetsDialogProps) {
+  const t = useTranslation()
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md gap-3">
         <DialogHeader>
-          <DialogTitle>Prompt snippets</DialogTitle>
-          <DialogDescription>Pick a starter prompt to drop into the composer.</DialogDescription>
+          <DialogTitle>{t('chat.snippets.title')}</DialogTitle>
+          <DialogDescription>{t('chat.snippets.description')}</DialogDescription>
         </DialogHeader>
         <ul className="grid gap-1">
           {snippets.map(snippet => (
-            <li key={snippet.label}>
+            <li key={snippet.labelKey}>
               <button
                 className="group/snippet flex w-full cursor-pointer items-start gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) focus-visible:border-(--ui-stroke-tertiary) focus-visible:bg-(--ui-control-hover-background) focus-visible:outline-none"
                 onClick={() => {
@@ -146,9 +151,9 @@ function PromptSnippetsDialog({
               >
                 <MessageSquareText className="mt-0.5 size-3.5 shrink-0 text-(--ui-text-tertiary) group-hover/snippet:text-foreground" />
                 <span className="grid min-w-0 gap-0.5">
-                  <span className="text-sm font-medium text-foreground">{snippet.label}</span>
+                  <span className="text-sm font-medium text-foreground">{t(snippet.labelKey)}</span>
                   <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    {snippet.description}
+                    {t(snippet.descriptionKey)}
                   </span>
                 </span>
               </button>
@@ -175,7 +180,7 @@ export function ContextMenuItem({
 }
 
 interface ContextMenuItemProps {
-  children: string
+  children: ReactNode
   disabled?: boolean
   icon: IconComponent
   onSelect?: () => void
@@ -192,8 +197,8 @@ interface ContextMenuProps {
 }
 
 interface PromptSnippet {
-  description: string
-  label: string
+  descriptionKey: string
+  labelKey: string
   text: string
 }
 

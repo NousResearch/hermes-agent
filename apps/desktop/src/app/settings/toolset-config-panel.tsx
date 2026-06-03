@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import { Check, ExternalLink, Eye, EyeOff, Loader2, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -33,6 +34,7 @@ interface EnvVarFieldProps {
 }
 
 function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
+  const t = useTranslation()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -50,16 +52,16 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       setEditing(false)
       setValue('')
       onSaved(envVar.key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${envVar.key} updated.` })
+      notify({ kind: 'success', title: t('settings.keys.notifications.saved'), message: t('settings.keys.notifications.updated', { key: envVar.key }) })
     } catch (err) {
-      notifyError(err, `Failed to save ${envVar.key}`)
+      notifyError(err, t('settings.keys.notifications.saveFailed', { key: envVar.key }))
     } finally {
       setBusy(false)
     }
   }
 
   async function handleClear() {
-    if (!window.confirm(`Remove ${envVar.key} from .env?`)) {
+    if (!window.confirm(t('settings.keys.confirmRemove', { key: envVar.key }))) {
       return
     }
 
@@ -69,9 +71,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       await deleteEnvVar(envVar.key)
       setRevealed(null)
       onCleared(envVar.key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${envVar.key} removed.` })
+      notify({ kind: 'success', title: t('settings.keys.notifications.removed'), message: t('settings.keys.notifications.removedMessage', { key: envVar.key }) })
     } catch (err) {
-      notifyError(err, `Failed to remove ${envVar.key}`)
+      notifyError(err, t('settings.keys.notifications.removeFailed', { key: envVar.key }))
     } finally {
       setBusy(false)
     }
@@ -88,7 +90,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       const result = await revealEnvVar(envVar.key)
       setRevealed(result.value)
     } catch (err) {
-      notifyError(err, `Failed to reveal ${envVar.key}`)
+      notifyError(err, t('settings.keys.notifications.revealFailed', { key: envVar.key }))
     }
   }
 
@@ -100,7 +102,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             <span className="font-mono text-xs font-medium">{envVar.key}</span>
             <Pill tone={isSet ? 'primary' : 'muted'}>
               {isSet && <Check className="size-3" />}
-              {isSet ? 'Set' : 'Not set'}
+              {isSet ? t('settings.keys.status.set') : t('settings.keys.status.notSet')}
             </Pill>
           </div>
           {envVar.prompt && envVar.prompt !== envVar.key && (
@@ -109,23 +111,23 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {envVar.url && (
-            <Button asChild size="xs" title="Open provider docs" variant="ghost">
+            <Button asChild size="xs" title={t('settings.keys.actions.openDocs')} variant="ghost">
               <a href={envVar.url} rel="noreferrer" target="_blank">
-                Docs
+                {t('settings.keys.actions.docs')}
                 <ExternalLink className="size-3" />
               </a>
             </Button>
           )}
           {isSet && (
-            <Button onClick={() => void handleReveal()} size="icon-xs" title="Reveal value" variant="ghost">
+            <Button onClick={() => void handleReveal()} size="icon-xs" title={t('settings.keys.actions.revealValue')} variant="ghost">
               {revealed !== null ? <EyeOff /> : <Eye />}
             </Button>
           )}
           <Button onClick={() => setEditing(e => !e)} size="xs" variant="outline">
-            {isSet ? 'Replace' : 'Set'}
+            {isSet ? t('settings.keys.actions.replace') : t('settings.keys.actions.set')}
           </Button>
           {isSet && (
-            <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" title="Clear value" variant="ghost">
+            <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" title={t('settings.keys.actions.clearValue')} variant="ghost">
               <Trash2 />
             </Button>
           )}
@@ -148,10 +150,10 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
           />
           <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-            Save
+            {t('common.save')}
           </Button>
           <Button onClick={() => setEditing(false)} size="sm" variant="outline">
-            Cancel
+            {t('common.cancel')}
           </Button>
         </div>
       )}
@@ -160,6 +162,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
 }
 
 export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfigPanelProps) {
+  const t = useTranslation()
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
@@ -183,11 +186,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
       setEnvState(seeded)
     } catch (err) {
-      notifyError(err, 'Tool configuration failed to load')
+      notifyError(err, t('settings.toolsets.loadError'))
     } finally {
       setLoading(false)
     }
-  }, [toolset])
+  }, [toolset, t])
 
   useEffect(() => {
     void refresh()
@@ -210,6 +213,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
       providers.find(p => providerConfigured(p, envState)) ??
       providers[0]
+
     setActiveProvider(selected.name)
   }, [activeProvider, providers, envState, cfg])
 
@@ -219,10 +223,10 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
     try {
       await selectToolsetProvider(toolset, provider.name)
-      notify({ kind: 'success', title: 'Provider selected', message: `${provider.name} is now active.` })
+      notify({ kind: 'success', title: t('settings.toolsets.providerSelected'), message: t('settings.toolsets.providerActive', { provider: provider.name }) })
       onConfiguredChange?.()
     } catch (err) {
-      notifyError(err, `Failed to select ${provider.name}`)
+      notifyError(err, t('settings.toolsets.selectFailed', { provider: provider.name }))
     } finally {
       setSelecting(null)
     }
@@ -239,21 +243,21 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     }
 
     if (!cfg.has_category) {
-      return 'This toolset has no provider options — enable it and it works with your current setup.'
+      return t('settings.toolsets.noProviderOptions')
     }
 
     if (providers.length === 0) {
-      return 'No providers are available for this toolset right now.'
+      return t('settings.toolsets.noProviders')
     }
 
     return null
-  }, [cfg, loading, providers.length])
+  }, [cfg, loading, providers.length, t])
 
   if (loading) {
     return (
       <div className="flex items-center gap-2 px-1 py-3 text-xs text-muted-foreground">
         <Loader2 className="size-3.5 animate-spin" />
-        Loading configuration...
+        {t('settings.toolsets.loading')}
       </div>
     )
   }
@@ -285,7 +289,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 {configured && (
                   <Pill tone="primary">
                     <Check className="size-3" />
-                    Ready
+                    {t('settings.toolsets.ready')}
                   </Pill>
                 )}
               </span>
@@ -297,11 +301,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
                 {provider.requires_nous_auth && (
                   <p className="text-[0.72rem] text-muted-foreground">
-                    Included with a Nous subscription — sign in to Nous Portal to activate.
+                    {t('settings.toolsets.nousSubscriptionRequired')}
                   </p>
                 )}
                 {provider.env_vars.length === 0 ? (
-                  <p className="text-[0.72rem] text-muted-foreground">No API key required.</p>
+                  <p className="text-[0.72rem] text-muted-foreground">{t('settings.toolsets.noApiKeyRequired')}</p>
                 ) : (
                   provider.env_vars.map(ev => (
                     <EnvVarField
@@ -315,8 +319,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 )}
                 {provider.post_setup && (
                   <p className="text-[0.72rem] text-muted-foreground">
-                    This provider needs an extra setup step ({provider.post_setup}). Run it from the CLI with{' '}
-                    <code className="font-mono">hermes tools</code> for now.
+                    {t('settings.toolsets.extraSetupBefore', { step: provider.post_setup })}{' '}
+                    <code className="font-mono">hermes tools</code> {t('settings.toolsets.extraSetupAfter')}
                   </p>
                 )}
               </div>

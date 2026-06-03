@@ -1,4 +1,5 @@
 import { Codicon } from '@/components/ui/codicon'
+import { useTranslation } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 /**
@@ -8,6 +9,8 @@ import { cn } from '@/lib/utils'
  * composer surface so the two read as one family.
  */
 export function ChatDropOverlay({ active }: { active: boolean }) {
+  const t = useTranslation()
+
   return (
     <div
       aria-hidden
@@ -20,7 +23,7 @@ export function ChatDropOverlay({ active }: { active: boolean }) {
       <div className="absolute inset-2 rounded-2xl border-2 border-dashed border-[color-mix(in_srgb,var(--dt-composer-ring)_55%,transparent)] bg-[color-mix(in_srgb,var(--dt-card)_55%,transparent)] backdrop-blur-[2px] [-webkit-backdrop-filter:blur(2px)]" />
       <div className="relative flex items-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--dt-composer-ring)_45%,transparent)] bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 text-[0.8125rem] font-medium text-foreground shadow-composer">
         <Codicon className="text-(--ui-accent)" name="cloud-upload" size="1rem" />
-        Drop files to attach
+        {t('chat.dropOverlay.attachFiles')}
       </div>
     </div>
   )

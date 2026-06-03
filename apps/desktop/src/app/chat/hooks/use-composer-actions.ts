@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 
 import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import { useTranslation } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import {
   addComposerAttachment,
@@ -193,6 +194,8 @@ const attachToMain = (attachment: ComposerAttachment) => {
 }
 
 export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
+  const t = useTranslation()
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
   }, [])
@@ -229,7 +232,10 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
       const paths = await window.hermesDesktop?.selectPaths({
-        title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
+        title:
+          kind === 'file'
+            ? t('notifications.composer.addFilesAsContext')
+            : t('notifications.composer.addFoldersAsContext'),
         defaultPath: currentCwd || undefined,
         directories: kind === 'folder'
       })
@@ -251,7 +257,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         })
       }
     },
-    [currentCwd]
+    [currentCwd, t]
   )
 
   const attachContextFilePath = useCallback(
@@ -300,11 +306,11 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     } catch (err) {
-      notifyError(err, 'Image preview failed')
+      notifyError(err, t('notifications.composer.imagePreviewFailed'))
 
       return true
     }
-  }, [])
+  }, [t])
 
   const attachImageBlob = useCallback(
     async (blob: Blob) => {
@@ -322,28 +328,32 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
 
         if (!savedPath) {
-          notify({ kind: 'error', title: 'Image attach', message: 'Failed to write image to disk.' })
+          notify({
+            kind: 'error',
+            title: t('notifications.composer.imageAttachTitle'),
+            message: t('notifications.composer.imageWriteFailed')
+          })
 
           return false
         }
 
         return attachImagePath(savedPath)
       } catch (err) {
-        notifyError(err, 'Image attach failed')
+        notifyError(err, t('notifications.composer.imageAttachFailed'))
 
         return false
       }
     },
-    [attachImagePath]
+    [attachImagePath, t]
   )
 
   const pickImages = useCallback(async () => {
     const paths = await window.hermesDesktop?.selectPaths({
-      title: 'Attach images',
+      title: t('notifications.composer.attachImages'),
       defaultPath: currentCwd || undefined,
       filters: [
         {
-          name: 'Images',
+          name: t('notifications.composer.imagesFilterName'),
           extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff']
         }
       ]
@@ -356,7 +366,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     for (const path of paths) {
       await attachImagePath(path)
     }
-  }, [attachImagePath, currentCwd])
+  }, [attachImagePath, currentCwd, t])
 
   const pasteClipboardImage = useCallback(async () => {
     try {
@@ -365,8 +375,8 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       if (!path) {
         notify({
           kind: 'warning',
-          title: 'Clipboard',
-          message: 'No image found in clipboard'
+          title: t('notifications.composer.clipboardTitle'),
+          message: t('notifications.composer.noImageInClipboard')
         })
 
         return
@@ -374,9 +384,9 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       await attachImagePath(path)
     } catch (err) {
-      notifyError(err, 'Clipboard paste failed')
+      notifyError(err, t('notifications.composer.clipboardPasteFailed'))
     }
-  }, [attachImagePath])
+  }, [attachImagePath, t])
 
   const attachContextFolderPath = useCallback(
     (folderPath: string) => {
@@ -421,7 +431,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
               continue
             }
 
-            lastFailure = `Could not attach folder ${knownPath || ''}`
+            lastFailure = t('notifications.composer.couldNotAttachFolder', { path: knownPath || '' })
 
             continue
           }
@@ -433,7 +443,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
               continue
             }
 
-            lastFailure = `Could not attach ${knownPath}`
+            lastFailure = t('notifications.composer.couldNotAttachPath', { path: knownPath })
 
             continue
           }
@@ -444,7 +454,9 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
             continue
           }
 
-          lastFailure = `Could not attach ${knownPath || 'file'}`
+          lastFailure = t('notifications.composer.couldNotAttachPath', {
+            path: knownPath || t('notifications.composer.file')
+          })
 
           continue
         }
@@ -462,7 +474,9 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
             continue
           }
 
-          lastFailure = `Could not attach ${file.name || 'image'}`
+          lastFailure = t('notifications.composer.couldNotAttachPath', {
+            path: file.name || t('notifications.composer.image')
+          })
 
           continue
         }
@@ -473,16 +487,18 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           continue
         }
 
-        lastFailure = `Could not attach ${file.name || 'file'}`
+        lastFailure = t('notifications.composer.couldNotAttachPath', {
+          path: file.name || t('notifications.composer.file')
+        })
       }
 
       if (!attached && lastFailure) {
-        notify({ kind: 'warning', title: 'Drop files', message: lastFailure })
+        notify({ kind: 'warning', title: t('notifications.composer.dropFilesTitle'), message: lastFailure })
       }
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath]
+    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, t]
   )
 
   const removeAttachment = useCallback(

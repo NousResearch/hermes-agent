@@ -1,3 +1,4 @@
+import type { Translate } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
@@ -131,9 +132,13 @@ const PREFIX_META: { icon?: string; prefix: string; tone: ToolTone; verb: string
   { prefix: 'web_', verb: 'Web', icon: 'globe', tone: 'web' }
 ]
 
-function toolMeta(name: string): ToolMeta {
+function toolMeta(name: string, t?: Translate): ToolMeta {
+  const knownKey = `assistant.tools.meta.${name}` as const
+
   if (TOOL_META[name]) {
-    return TOOL_META[name]
+    const meta = TOOL_META[name]
+
+    return t ? { ...meta, done: t(`${knownKey}.done`), pending: t(`${knownKey}.pending`) } : meta
   }
 
   const action = titleForTool(name)
@@ -141,12 +146,18 @@ function toolMeta(name: string): ToolMeta {
 
   return prefix
     ? {
-        done: `${prefix.verb} ${action}`,
-        pending: `Running ${prefix.verb.toLowerCase()} ${action.toLowerCase()}`,
+        done: t ? t('assistant.tools.meta.genericPrefixed.done', { action, prefix: prefix.verb }) : `${prefix.verb} ${action}`,
+        pending: t
+          ? t('assistant.tools.meta.genericPrefixed.pending', { action: action.toLowerCase(), prefix: prefix.verb.toLowerCase() })
+          : `Running ${prefix.verb.toLowerCase()} ${action.toLowerCase()}`,
         icon: prefix.icon,
         tone: prefix.tone
       }
-    : { done: action, pending: `Running ${action.toLowerCase()}`, tone: 'default' }
+    : {
+        done: action,
+        pending: t ? t('assistant.tools.meta.generic.pending', { action: action.toLowerCase() }) : `Running ${action.toLowerCase()}`,
+        tone: 'default'
+      }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -985,17 +996,17 @@ function toolSubtitle(
   )
 }
 
-function toolDetailLabel(toolName: string): string {
+function toolDetailLabel(toolName: string, t?: Translate): string {
   if (toolName === 'web_search') {
-    return 'Details'
+    return t ? t('assistant.tools.details') : 'Details'
   }
 
   if (toolName === 'browser_snapshot') {
-    return 'Snapshot summary'
+    return t ? t('assistant.tools.snapshotSummary') : 'Snapshot summary'
   }
 
   if (toolName === 'terminal' || toolName === 'execute_code') {
-    return 'Command output'
+    return t ? t('assistant.tools.commandOutput') : 'Command output'
   }
 
   return ''
@@ -1080,7 +1091,7 @@ function toolDetailText(
   return fallbackDetailText(argsRecord, resultRecord)
 }
 
-export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string; text: string } {
+export function toolCopyPayload(part: ToolPart, view: ToolView, t?: Translate): { label: string; text: string } {
   const args = parseMaybeObject(part.args)
   const result = parseMaybeObject(part.result)
   const detail = view.detail.trim()
@@ -1088,25 +1099,25 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy output', text: detail }
+      return { label: t ? t('assistant.tools.copyOutput') : 'Copy output', text: detail }
     }
 
     const command = firstStringField(args, ['command', 'code']) || contextValue(args)
 
     if (command) {
-      return { label: 'Copy command', text: command }
+      return { label: t ? t('assistant.tools.copyCommand') : 'Copy command', text: command }
     }
   }
 
   if (part.toolName === 'web_extract') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy content', text: detail }
+      return { label: t ? t('assistant.tools.copyContent') : 'Copy content', text: detail }
     }
 
     const url = firstStringField(args, ['url', 'target']) || findFirstUrl(args, result)
 
     if (url) {
-      return { label: 'Copy URL', text: url }
+      return { label: t ? t('assistant.tools.copyUrl') : 'Copy URL', text: url }
     }
   }
 
@@ -1114,7 +1125,7 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     const url = firstStringField(args, ['url', 'target']) || findFirstUrl(args, result)
 
     if (url) {
-      return { label: 'Copy URL', text: url }
+      return { label: t ? t('assistant.tools.copyUrl') : 'Copy URL', text: url }
     }
   }
 
@@ -1122,25 +1133,25 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     if (view.searchHits?.length) {
       const text = view.searchHits.map(hit => [hit.title, hit.url, hit.snippet].filter(Boolean).join('\n')).join('\n\n')
 
-      return { label: 'Copy results', text }
+      return { label: t ? t('assistant.tools.copyResults') : 'Copy results', text }
     }
 
     const query = firstStringField(args, ['search_term', 'query']) || contextValue(args)
 
     if (query) {
-      return { label: 'Copy query', text: query }
+      return { label: t ? t('assistant.tools.copyQuery') : 'Copy query', text: query }
     }
   }
 
   if (part.toolName === 'read_file') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy file', text: detail }
+      return { label: t ? t('assistant.tools.copyFile') : 'Copy file', text: detail }
     }
 
     const path = firstStringField(args, ['path', 'file', 'filepath'])
 
     if (path) {
-      return { label: 'Copy path', text: path }
+      return { label: t ? t('assistant.tools.copyPath') : 'Copy path', text: path }
     }
   }
 
@@ -1148,48 +1159,62 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     const path = firstStringField(args, ['path', 'file', 'filepath'])
 
     if (path) {
-      return { label: 'Copy path', text: path }
+      return { label: t ? t('assistant.tools.copyPath') : 'Copy path', text: path }
     }
   }
 
   if (detail) {
-    return { label: 'Copy output', text: detail }
+    return { label: t ? t('assistant.tools.copyOutput') : 'Copy output', text: detail }
   }
 
-  return { label: 'Copy', text: view.title }
+  return { label: t ? t('common.copy') : 'Copy', text: view.title }
 }
 
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
   result: Record<string, unknown>,
-  fallback: string
+  fallback: string,
+  t?: Translate
 ): string {
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
 
   if (part.toolName === 'web_extract') {
     const url = findFirstUrl(args, result)
 
-    return url ? `${verb('Reading', 'Read')} ${hostnameOf(url)}` : fallback
+    return url
+      ? `${t ? t(part.result === undefined ? 'assistant.tools.dynamic.reading' : 'assistant.tools.dynamic.read') : verb('Reading', 'Read')} ${hostnameOf(url)}`
+      : fallback
   }
 
   if (part.toolName === 'browser_navigate') {
     const url = findFirstUrl(args, result)
 
-    return url ? `${verb('Opening', 'Opened')} ${hostnameOf(url)}` : fallback
+    return url
+      ? `${t ? t(part.result === undefined ? 'assistant.tools.dynamic.opening' : 'assistant.tools.dynamic.opened') : verb('Opening', 'Opened')} ${hostnameOf(url)}`
+      : fallback
   }
 
   if (part.toolName === 'web_search') {
     const query = firstStringField(args, ['search_term', 'query']) || contextValue(args)
 
-    return query ? `${verb('Searching', 'Searched')} “${compactPreview(query, 48)}”` : fallback
+    return query
+      ? `${t ? t(part.result === undefined ? 'assistant.tools.dynamic.searching' : 'assistant.tools.dynamic.searched') : verb('Searching', 'Searched')} “${compactPreview(query, 48)}”`
+      : fallback
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
     const command = firstStringField(args, ['command', 'code']) || contextValue(args)
 
     if (command) {
-      const verbText = part.toolName === 'execute_code' ? verb('Running code', 'Ran code') : verb('Running', 'Ran')
+      const verbText =
+        part.toolName === 'execute_code'
+          ? t
+            ? t(part.result === undefined ? 'assistant.tools.dynamic.runningCode' : 'assistant.tools.dynamic.ranCode')
+            : verb('Running code', 'Ran code')
+          : t
+            ? t(part.result === undefined ? 'assistant.tools.dynamic.running' : 'assistant.tools.dynamic.ran')
+            : verb('Running', 'Ran')
 
       return `${verbText} · ${compactPreview(command, 160)}`
     }
@@ -1198,14 +1223,14 @@ function dynamicTitle(
   return fallback
 }
 
-export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
+export function buildToolView(part: ToolPart, inlineDiff: string, t?: Translate): ToolView {
   const argsRecord = parseMaybeObject(part.args)
   const resultRecord = parseMaybeObject(part.result)
-  const meta = toolMeta(part.toolName)
+  const meta = toolMeta(part.toolName, t)
   const status = toolStatus(part, resultRecord)
   const error = toolErrorText(part, resultRecord)
   const baseTitle = part.result === undefined ? meta.pending : meta.done
-  const title = dynamicTitle(part, argsRecord, resultRecord, baseTitle)
+  const title = dynamicTitle(part, argsRecord, resultRecord, baseTitle, t)
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
   const keepSubtitleWithTitle = part.toolName === 'terminal' || part.toolName === 'execute_code'
@@ -1239,7 +1264,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   return {
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
     detail,
-    detailLabel: error ? 'Error details' : toolDetailLabel(part.toolName),
+    detailLabel: error ? (t ? t('assistant.tools.errorDetails') : 'Error details') : toolDetailLabel(part.toolName, t),
     durationLabel: durationLabel(resultRecord),
     icon: meta.icon,
     imageUrl: toolImageUrl(argsRecord, resultRecord),
@@ -1312,11 +1337,11 @@ export function groupStatus(parts: ToolPart[]): ToolStatus {
   return statuses.at(-1) === 'success' ? 'warning' : 'error'
 }
 
-export function groupTitle(parts: ToolPart[]): string {
+export function groupTitle(parts: ToolPart[], t?: Translate): string {
   const prefix = PREFIX_META.find(p => parts.every(part => part.toolName.startsWith(p.prefix)))
   const verb = prefix?.verb || 'Tool'
 
-  return `${verb} actions · ${parts.length} steps`
+  return t ? t('assistant.tools.groupTitle', { count: parts.length, verb }) : `${verb} actions · ${parts.length} steps`
 }
 
 export function groupPreviewTargets(parts: ToolPart[]): string[] {

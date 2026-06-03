@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useTranslation } from '@/i18n'
 import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Sparkles } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
@@ -74,6 +75,7 @@ export function useStatusbarItems({
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const desktopVersion = useStore($desktopVersion)
+  const t = useTranslation()
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
@@ -117,13 +119,13 @@ export function useStatusbarItems({
 
   const gatewayDetail = gatewayOpen
     ? inferenceStatus?.ready
-      ? 'ready'
+      ? t('shell.statusbar.gatewayReady')
       : inferenceStatus
-        ? 'needs setup'
-        : 'checking'
+        ? t('shell.statusbar.gatewayNeedsSetup')
+        : t('shell.statusbar.gatewayChecking')
     : gatewayConnecting
-      ? 'connecting'
-      : 'offline'
+      ? t('shell.statusbar.gatewayConnecting')
+      : t('shell.statusbar.gatewayOffline')
 
   const gatewayClassName = inferenceReady
     ? undefined
@@ -183,7 +185,7 @@ export function useStatusbarItems({
         icon: <Command className="size-3.5" />,
         id: 'command-center',
         onSelect: toggleCommandCenter,
-        title: commandCenterOpen ? 'Close Command Center' : 'Open Command Center',
+        title: commandCenterOpen ? t('shell.statusbar.closeCommandCenter') : t('shell.statusbar.openCommandCenter'),
         variant: 'action'
       },
       {
@@ -191,10 +193,10 @@ export function useStatusbarItems({
         detail: gatewayDetail,
         icon: inferenceReady ? <Activity className="size-3" /> : <AlertCircle className="size-3" />,
         id: 'gateway-health',
-        label: 'Gateway',
+        label: t('shell.statusbar.gateway'),
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
-        title: inferenceStatus?.reason || 'Hermes inference gateway status',
+        title: inferenceStatus?.reason || t('shell.statusbar.gatewayStatusTitle'),
         variant: 'menu'
       },
       {
@@ -217,18 +219,18 @@ export function useStatusbarItems({
             <Loader2 className="size-3 animate-spin" />
           ) : (
             <Sparkles className="size-3" />
-          ),
+        ),
         id: 'agents',
-        label: 'Agents',
+        label: t('shell.statusbar.agents'),
         onSelect: openAgents,
-        title: agentsOpen ? 'Close agents' : 'Open agents',
+        title: agentsOpen ? t('shell.statusbar.closeAgents') : t('shell.statusbar.openAgents'),
         variant: 'action'
       },
       {
         icon: <Clock className="size-3" />,
         id: 'cron',
-        label: 'Cron',
-        title: 'Open cron jobs',
+        label: t('shell.statusbar.cron'),
+        title: t('shell.statusbar.openCron'),
         to: CRON_ROUTE,
         variant: 'action'
       }
@@ -245,6 +247,7 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       subagentsRunning,
+      t,
       toggleCommandCenter
     ]
   )
@@ -256,8 +259,8 @@ export function useStatusbarItems({
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
-        label: 'Running',
-        title: 'Current turn elapsed',
+        label: t('shell.statusbar.running'),
+        title: t('shell.statusbar.currentTurnElapsed'),
         variant: 'text'
       },
       {
@@ -265,15 +268,15 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: 'Context usage',
+        title: t('shell.statusbar.contextUsage'),
         variant: 'text'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
-        label: 'Session',
-        title: 'Runtime session elapsed',
+        label: t('shell.statusbar.session'),
+        title: t('shell.statusbar.runtimeSessionElapsed'),
         variant: 'text'
       },
       {
@@ -283,6 +286,7 @@ export function useStatusbarItems({
             <span className="truncate">
               {formatModelStatusLabel(currentModel, {
                 fastMode: currentFastMode,
+                noModelLabel: t('shell.statusbar.noModel'),
                 reasoningEffort: currentReasoningEffort
               })}
             </span>
@@ -296,14 +300,14 @@ export function useStatusbarItems({
               menuContent: modelMenuContent,
               title: currentProvider
                 ? `Model · ${currentProvider}: ${currentModel || 'none'}`
-                : 'Switch model',
+                : t('shell.statusbar.switchModel'),
               variant: 'menu' as const
             }
           : {
               onSelect: () => setModelPickerOpen(true),
               title: currentProvider
                 ? `${currentProvider} · ${currentModel || 'no model'}`
-                : 'Open model picker',
+                : t('shell.statusbar.openModelPicker'),
               variant: 'action' as const
             })
       },
@@ -319,6 +323,7 @@ export function useStatusbarItems({
       currentReasoningEffort,
       modelMenuContent,
       sessionStartedAt,
+      t,
       turnStartedAt,
       versionItem
     ]

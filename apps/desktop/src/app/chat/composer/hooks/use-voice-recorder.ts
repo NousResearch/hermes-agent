@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { useTranslation } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { VoiceActivityState, VoiceStatus } from '../types'
@@ -19,6 +20,7 @@ export function useVoiceRecorder({
   focusInput,
   onTranscript
 }: VoiceRecorderOptions) {
+  const t = useTranslation()
   const { handle, level, recording } = useMicRecorder()
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle')
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
@@ -62,12 +64,16 @@ export function useVoiceRecorder({
       const transcript = (await onTranscribeAudio(result.audio)).trim()
 
       if (!transcript) {
-        notify({ kind: 'warning', title: 'No speech detected', message: 'Try recording again.' })
+        notify({
+          kind: 'warning',
+          title: t('notifications.voice.noSpeechDetected'),
+          message: t('notifications.voice.tryRecordingAgain')
+        })
       } else {
         onTranscript(transcript)
       }
     } catch (error) {
-      notifyError(error, 'Voice transcription failed')
+      notifyError(error, t('notifications.voice.transcriptionFailed'))
     } finally {
       setVoiceStatus('idle')
       focusInput()
@@ -76,13 +82,17 @@ export function useVoiceRecorder({
 
   const start = async () => {
     if (!onTranscribeAudio) {
-      notify({ kind: 'warning', title: 'Voice unavailable', message: 'Voice transcription is not available yet.' })
+      notify({
+        kind: 'warning',
+        title: t('notifications.voice.unavailable'),
+        message: t('notifications.voice.transcriptionUnavailable')
+      })
 
       return
     }
 
     try {
-      await handle.start({ onError: error => notifyError(error, 'Voice recording failed') })
+      await handle.start({ onError: error => notifyError(error, t('notifications.voice.recordingFailed')) })
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')
@@ -91,7 +101,7 @@ export function useVoiceRecorder({
       timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
     } catch (error) {
       setVoiceStatus('idle')
-      notifyError(error, 'Voice recording failed')
+      notifyError(error, t('notifications.voice.recordingFailed'))
     }
   }
 

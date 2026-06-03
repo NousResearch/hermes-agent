@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { useTranslation } from '@/i18n'
 import { ArrowUp, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
@@ -15,10 +16,11 @@ interface QueuePanelProps {
   onSendNow: (id: string) => void
 }
 
-const entryPreview = (entry: QueuedPromptEntry) =>
-  entry.text.trim() || (entry.attachments.length > 0 ? 'Attachment-only turn' : 'Empty turn')
+const entryPreview = (entry: QueuedPromptEntry, t: ReturnType<typeof useTranslation>) =>
+  entry.text.trim() || (entry.attachments.length > 0 ? t('chat.queue.attachmentOnly') : t('chat.queue.empty'))
 
 export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
+  const t = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
 
   if (entries.length === 0) {
@@ -33,7 +35,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
         type="button"
       >
         <DisclosureCaret className="shrink-0" open={!collapsed} size="0.875rem" />
-        <span className="truncate">{entries.length} Queued</span>
+        <span className="truncate">{t('chat.queue.queuedCount', { count: entries.length })}</span>
       </button>
 
       {!collapsed && (
@@ -56,17 +58,17 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                   className="h-3.5 w-3.5 shrink-0 rounded-full border border-foreground/35 bg-transparent"
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry)}</p>
+                  <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, t)}</p>
                   {(attachmentsCount > 0 || isEditing) && (
                     <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
                       {attachmentsCount > 0 && (
                         <span>
-                          {attachmentsCount} attachment{attachmentsCount === 1 ? '' : 's'}
+                          {t('chat.queue.attachmentsCount', { count: attachmentsCount })}
                         </span>
                       )}
                       {isEditing && (
                         <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
-                          Editing in composer
+                          {t('chat.queue.editing')}
                         </span>
                       )}
                     </div>
@@ -81,35 +83,35 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                   )}
                 >
                   <Button
-                    aria-label="Edit queued turn"
+                    aria-label={t('chat.queue.edit')}
                     className="h-5 w-5 rounded-md"
                     disabled={Boolean(editingId) && !isEditing}
                     onClick={() => onEdit(entry)}
                     size="icon-xs"
-                    title="Edit queued turn"
+                    title={t('chat.queue.edit')}
                     type="button"
                     variant="ghost"
                   >
                     <Pencil size={11} />
                   </Button>
                   <Button
-                    aria-label="Send queued turn now"
+                    aria-label={t('chat.queue.sendNow')}
                     className="h-5 w-5 rounded-md"
                     disabled={busy || isEditing}
                     onClick={() => onSendNow(entry.id)}
                     size="icon-xs"
-                    title="Send queued turn now"
+                    title={t('chat.queue.sendNow')}
                     type="button"
                     variant="ghost"
                   >
                     <ArrowUp size={11} />
                   </Button>
                   <Button
-                    aria-label="Delete queued turn"
+                    aria-label={t('chat.queue.delete')}
                     className="h-5 w-5 rounded-md"
                     onClick={() => onDelete(entry.id)}
                     size="icon-xs"
-                    title="Delete queued turn"
+                    title={t('chat.queue.delete')}
                     type="button"
                     variant="ghost"
                   >

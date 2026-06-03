@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
+
 import { Thread } from './thread'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -257,9 +259,11 @@ function StreamingHarness() {
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread loading={isRunning && messages.at(-1)?.role !== 'assistant' ? 'response' : undefined} />
-    </AssistantRuntimeProvider>
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread loading={isRunning && messages.at(-1)?.role !== 'assistant' ? 'response' : undefined} />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
   )
 }
 
@@ -271,9 +275,11 @@ function TodoHarness({ message }: { message: ThreadMessage }) {
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
   )
 }
 
@@ -285,9 +291,11 @@ function MessageHarness({ message }: { message: ThreadMessage }) {
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
   )
 }
 
@@ -299,9 +307,11 @@ function ReasoningHarness() {
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
   )
 }
 
@@ -313,9 +323,11 @@ function GroupedReasoningHarness() {
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
   )
 }
 
@@ -327,9 +339,11 @@ function IntroHarness() {
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread intro={{ personality: 'default', seed: 1 }} />
-    </AssistantRuntimeProvider>
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread intro={{ personality: 'default', seed: 1 }} />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
   )
 }
 

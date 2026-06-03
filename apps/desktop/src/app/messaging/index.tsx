@@ -13,6 +13,7 @@ import {
   type MessagingPlatformInfo,
   updateMessagingPlatform
 } from '@/hermes'
+import { type Translate, useTranslation } from '@/i18n'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -29,16 +30,16 @@ interface MessagingViewProps extends React.ComponentProps<'section'> {
 
 type EditMap = Record<string, Record<string, string>>
 
-const STATE_LABELS: Record<string, string> = {
-  connected: 'Connected',
-  connecting: 'Connecting',
-  disabled: 'Disabled',
-  fatal: 'Error',
-  gateway_stopped: 'Messaging gateway stopped',
-  not_configured: 'Needs setup',
-  pending_restart: 'Restart needed',
-  retrying: 'Retrying',
-  startup_failed: 'Startup failed'
+const STATE_LABEL_KEYS: Record<string, string> = {
+  connected: 'messaging.state.connected',
+  connecting: 'messaging.state.connecting',
+  disabled: 'messaging.state.disabled',
+  fatal: 'messaging.state.fatal',
+  gateway_stopped: 'messaging.state.gatewayStopped',
+  not_configured: 'messaging.state.notConfigured',
+  pending_restart: 'messaging.state.pendingRestart',
+  retrying: 'messaging.state.retrying',
+  startup_failed: 'messaging.state.startupFailed'
 }
 
 const PILL_TONE: Record<StatusTone, string> = {
@@ -48,12 +49,13 @@ const PILL_TONE: Record<StatusTone, string> = {
   bad: 'bg-destructive/10 text-destructive'
 }
 
-const HINT_BY_STATE: Record<string, string> = {
-  pending_restart: 'Restart the gateway from the status bar to apply this change.',
-  gateway_stopped: 'Start the gateway from the status bar to connect.'
+const HINT_BY_STATE_KEYS: Record<string, string> = {
+  pending_restart: 'messaging.hints.pendingRestart',
+  gateway_stopped: 'messaging.hints.gatewayStopped'
 }
 
-const stateLabel = (state?: null | string) => (state ? STATE_LABELS[state] || state.replace(/_/g, ' ') : 'Unknown')
+const stateLabel = (t: Translate, state?: null | string) =>
+  state ? (STATE_LABEL_KEYS[state] ? t(STATE_LABEL_KEYS[state]) : state.replace(/_/g, ' ')) : t('messaging.state.unknown')
 
 function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
   if (!enabled) {
@@ -78,114 +80,115 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .filter(([, v]) => v)
   )
 
-const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: string; placeholder?: string }> = {
+const FIELD_COPY: Record<string, { advanced?: boolean; helpKey?: string; labelKey: string; placeholder?: string }> = {
   TELEGRAM_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create a bot with @BotFather, then paste the token it gives you.',
+    labelKey: 'messaging.fields.telegramBotToken.label',
+    helpKey: 'messaging.fields.telegramBotToken.help',
     placeholder: '123456:ABC...'
   },
   TELEGRAM_ALLOWED_USERS: {
-    label: 'Allowed Telegram user IDs',
-    help: 'Recommended. Comma-separated numeric IDs from @userinfobot. Without this, anyone can DM your bot.'
+    labelKey: 'messaging.fields.telegramAllowedUsers.label',
+    helpKey: 'messaging.fields.telegramAllowedUsers.help'
   },
   TELEGRAM_PROXY: {
-    label: 'Proxy URL',
-    help: 'Only needed on networks where Telegram is blocked.',
+    labelKey: 'messaging.fields.telegramProxy.label',
+    helpKey: 'messaging.fields.telegramProxy.help',
     advanced: true
   },
   DISCORD_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create an application in the Discord Developer Portal, add a bot, then paste its token.'
+    labelKey: 'messaging.fields.discordBotToken.label',
+    helpKey: 'messaging.fields.discordBotToken.help'
   },
   DISCORD_ALLOWED_USERS: {
-    label: 'Allowed Discord user IDs',
-    help: 'Recommended. Comma-separated Discord user IDs.'
+    labelKey: 'messaging.fields.discordAllowedUsers.label',
+    helpKey: 'messaging.fields.discordAllowedUsers.help'
   },
   DISCORD_REPLY_TO_MODE: {
-    label: 'Reply style',
-    help: 'first, all, or off.',
+    labelKey: 'messaging.fields.discordReplyToMode.label',
+    helpKey: 'messaging.fields.discordReplyToMode.help',
     advanced: true
   },
   SLACK_BOT_TOKEN: {
-    label: 'Slack bot token',
-    help: 'Starts with xoxb-. Found under OAuth & Permissions after installing your Slack app.',
+    labelKey: 'messaging.fields.slackBotToken.label',
+    helpKey: 'messaging.fields.slackBotToken.help',
     placeholder: 'xoxb-...'
   },
   SLACK_APP_TOKEN: {
-    label: 'Slack app token',
-    help: 'Starts with xapp-. Required for Socket Mode.',
+    labelKey: 'messaging.fields.slackAppToken.label',
+    helpKey: 'messaging.fields.slackAppToken.help',
     placeholder: 'xapp-...'
   },
   SLACK_ALLOWED_USERS: {
-    label: 'Allowed Slack user IDs',
-    help: 'Recommended. Comma-separated Slack user IDs.'
+    labelKey: 'messaging.fields.slackAllowedUsers.label',
+    helpKey: 'messaging.fields.slackAllowedUsers.help'
   },
   MATTERMOST_URL: {
-    label: 'Server URL',
+    labelKey: 'messaging.fields.mattermostUrl.label',
     placeholder: 'https://mattermost.example.com'
   },
   MATTERMOST_TOKEN: {
-    label: 'Bot token'
+    labelKey: 'messaging.fields.mattermostToken.label'
   },
   MATTERMOST_ALLOWED_USERS: {
-    label: 'Allowed user IDs',
-    help: 'Recommended. Comma-separated Mattermost user IDs.'
+    labelKey: 'messaging.fields.mattermostAllowedUsers.label',
+    helpKey: 'messaging.fields.mattermostAllowedUsers.help'
   },
   MATRIX_HOMESERVER: {
-    label: 'Homeserver URL',
+    labelKey: 'messaging.fields.matrixHomeserver.label',
     placeholder: 'https://matrix.org'
   },
   MATRIX_ACCESS_TOKEN: {
-    label: 'Access token'
+    labelKey: 'messaging.fields.matrixAccessToken.label'
   },
   MATRIX_USER_ID: {
-    label: 'Bot user ID',
+    labelKey: 'messaging.fields.matrixUserId.label',
     placeholder: '@hermes:example.org'
   },
   MATRIX_ALLOWED_USERS: {
-    label: 'Allowed Matrix user IDs',
-    help: 'Recommended. Comma-separated user IDs in @user:server format.'
+    labelKey: 'messaging.fields.matrixAllowedUsers.label',
+    helpKey: 'messaging.fields.matrixAllowedUsers.help'
   },
   SIGNAL_HTTP_URL: {
-    label: 'Signal bridge URL',
+    labelKey: 'messaging.fields.signalHttpUrl.label',
     placeholder: 'http://127.0.0.1:8080',
-    help: 'URL of a running signal-cli REST bridge.'
+    helpKey: 'messaging.fields.signalHttpUrl.help'
   },
   SIGNAL_ACCOUNT: {
-    label: 'Phone number',
-    help: 'The number registered with your signal-cli bridge.'
+    labelKey: 'messaging.fields.signalAccount.label',
+    helpKey: 'messaging.fields.signalAccount.help'
   },
   SIGNAL_ALLOWED_USERS: {
-    label: 'Allowed Signal users',
-    help: 'Recommended. Comma-separated Signal identifiers.'
+    labelKey: 'messaging.fields.signalAllowedUsers.label',
+    helpKey: 'messaging.fields.signalAllowedUsers.help'
   },
   WHATSAPP_ENABLED: {
-    label: 'Enable WhatsApp bridge',
-    help: 'Set automatically by the toggle below. Leave alone unless you know you need it.',
+    labelKey: 'messaging.fields.whatsappEnabled.label',
+    helpKey: 'messaging.fields.whatsappEnabled.help',
     advanced: true
   },
   WHATSAPP_MODE: {
-    label: 'Bridge mode',
+    labelKey: 'messaging.fields.whatsappMode.label',
     advanced: true
   },
   WHATSAPP_ALLOWED_USERS: {
-    label: 'Allowed WhatsApp users',
-    help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
+    labelKey: 'messaging.fields.whatsappAllowedUsers.label',
+    helpKey: 'messaging.fields.whatsappAllowedUsers.help'
   }
 }
 
-function fieldCopy(field: MessagingEnvVarInfo) {
+function fieldCopy(field: MessagingEnvVarInfo, t: Translate) {
   const copy = FIELD_COPY[field.key] || {}
 
   return {
-    label: copy.label || field.prompt || field.key,
-    help: copy.help || field.description,
+    label: copy.labelKey ? t(copy.labelKey) : field.prompt || field.key,
+    help: copy.helpKey ? t(copy.helpKey) : field.description,
     placeholder: copy.placeholder || field.prompt,
     advanced: Boolean(copy.advanced || field.advanced)
   }
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+  const t = useTranslation()
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -204,14 +207,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       setPlatforms(result.platforms)
     } catch (err) {
       if (!silent) {
-        notifyError(err, 'Messaging platforms failed to load')
+        notifyError(err, t('messaging.loadError'))
       }
     } finally {
       if (!silent) {
         setRefreshing(false)
       }
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     void refreshPlatforms()
@@ -283,11 +286,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       )
       notify({
         kind: 'success',
-        title: enabled ? `${platform.name} enabled` : `${platform.name} disabled`,
-        message: 'Restart the gateway for this change to take effect.'
+        title: enabled ? t('messaging.notifications.enabled', { platform: platform.name }) : t('messaging.notifications.disabled', { platform: platform.name }),
+        message: t('messaging.notifications.restartGateway')
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${platform.name}`)
+      notifyError(err, t('messaging.notifications.updateFailed', { platform: platform.name }))
     } finally {
       setSaving(null)
     }
@@ -308,11 +311,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await refreshPlatforms()
       notify({
         kind: 'success',
-        title: `${platform.name} setup saved`,
-        message: 'Restart the gateway to reconnect with the new credentials.'
+        title: t('messaging.notifications.saved', { platform: platform.name }),
+        message: t('messaging.notifications.reconnectGateway')
       })
     } catch (err) {
-      notifyError(err, `Failed to save ${platform.name}`)
+      notifyError(err, t('messaging.notifications.saveFailed', { platform: platform.name }))
     } finally {
       setSaving(null)
     }
@@ -331,9 +334,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: `${key} cleared`, message: `${platform.name} setup was updated.` })
+      notify({ kind: 'success', title: t('messaging.notifications.cleared', { key }), message: t('messaging.notifications.setupUpdated', { platform: platform.name }) })
     } catch (err) {
-      notifyError(err, `Failed to clear ${key}`)
+      notifyError(err, t('messaging.notifications.clearFailed', { key }))
     } finally {
       setSaving(null)
     }
@@ -343,12 +346,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
-      searchPlaceholder="Search messaging..."
+      searchPlaceholder={t('messaging.search')}
       searchTrailingAction={null}
       searchValue={query}
     >
       {!platforms ? (
-        <PageLoader label="Loading messaging platforms..." />
+        <PageLoader label={t('messaging.loading')} />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-y-auto border-b border-(--ui-stroke-tertiary) p-2 lg:border-b-0 lg:border-r">
@@ -383,6 +386,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 onToggle={enabled => void handleToggle(selected, enabled)}
                 platform={selected}
                 saving={saving}
+                t={t}
               />
             )}
           </main>
@@ -428,7 +432,8 @@ function PlatformDetail({
   onSave,
   onToggle,
   platform,
-  saving
+  saving,
+  t
 }: {
   edits: Record<string, string>
   onClear: (key: string) => void
@@ -437,13 +442,14 @@ function PlatformDetail({
   onToggle: (enabled: boolean) => void
   platform: MessagingPlatformInfo
   saving: string | null
+  t: Translate
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const hasEdits = Object.keys(trimEdits(edits)).length > 0
   const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field).advanced)
+  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, t).advanced)
+  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, t).advanced)
   const hiddenCount = advancedFields.length
   const isSavingEnv = saving === `env:${platform.id}`
 
@@ -459,13 +465,13 @@ function PlatformDetail({
                 {platform.description}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state)}</StatePill>
+                <StatePill tone={stateTone(platform)}>{stateLabel(t, platform.state)}</StatePill>
                 <SetupPill active={platform.configured}>
-                  {platform.configured ? 'Credentials set' : 'Needs setup'}
+                  {platform.configured ? t('messaging.credentialsSet') : t('messaging.state.notConfigured')}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>Messaging gateway stopped</SetupPill>}
+                {!platform.gateway_running && <SetupPill active={false}>{t('messaging.state.gatewayStopped')}</SetupPill>}
               </div>
-              <PlatformHint platform={platform} />
+              <PlatformHint platform={platform} t={t} />
             </div>
           </header>
 
@@ -477,14 +483,14 @@ function PlatformDetail({
           )}
 
           <section>
-            <SectionTitle>Get your credentials</SectionTitle>
+            <SectionTitle>{t('messaging.getCredentials')}</SectionTitle>
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {introCopy(platform)}
+              {introCopy(platform, t)}
             </p>
             <div className="mt-3">
               <Button asChild size="sm" variant="outline">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  Open setup guide
+                  {t('messaging.openSetupGuide')}
                   <ExternalLink className="size-3.5" />
                 </a>
               </Button>
@@ -492,7 +498,7 @@ function PlatformDetail({
           </section>
 
           <section>
-            <SectionTitle>Required</SectionTitle>
+            <SectionTitle>{t('messaging.required')}</SectionTitle>
             <div className="mt-3 space-y-4">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
@@ -503,11 +509,12 @@ function PlatformDetail({
                     onClear={onClear}
                     onEdit={onEdit}
                     saving={saving}
+                    t={t}
                   />
                 ))
               ) : (
                 <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                  This platform does not need a token here. Use the setup guide above, then enable it below.
+                  {t('messaging.noTokenNeeded')}
                 </p>
               )}
             </div>
@@ -515,7 +522,7 @@ function PlatformDetail({
 
           {optionalFields.length > 0 && (
             <section>
-              <SectionTitle>Recommended</SectionTitle>
+              <SectionTitle>{t('messaging.recommended')}</SectionTitle>
               <div className="mt-3 space-y-4">
                 {optionalFields.map(field => (
                   <MessagingField
@@ -525,6 +532,7 @@ function PlatformDetail({
                     onClear={onClear}
                     onEdit={onEdit}
                     saving={saving}
+                    t={t}
                   />
                 ))}
               </div>
@@ -538,7 +546,7 @@ function PlatformDetail({
                 onClick={() => setShowAdvanced(value => !value)}
                 type="button"
               >
-                <span>Advanced ({hiddenCount})</span>
+                <span>{t('messaging.advancedCount', { count: hiddenCount })}</span>
                 <DisclosureCaret open={showAdvanced} size="0.875rem" />
               </button>
               {showAdvanced && (
@@ -551,6 +559,7 @@ function PlatformDetail({
                       onClear={onClear}
                       onEdit={onEdit}
                       saving={saving}
+                      t={t}
                     />
                   ))}
                 </div>
@@ -564,21 +573,25 @@ function PlatformDetail({
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
           <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
             <Switch
-              aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
+              aria-label={
+                platform.enabled
+                  ? t('messaging.disablePlatform', { platform: platform.name })
+                  : t('messaging.enablePlatform', { platform: platform.name })
+              }
               checked={platform.enabled}
               disabled={saving === `enabled:${platform.id}`}
               onCheckedChange={onToggle}
             />
             <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? 'Enabled' : 'Disabled'}
+              {platform.enabled ? t('messaging.enabled') : t('messaging.disabled')}
             </span>
           </label>
 
           <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+            {hasEdits && <span className="text-xs text-muted-foreground">{t('messaging.unsavedChanges')}</span>}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
               <Save />
-              {isSavingEnv ? 'Saving...' : 'Save changes'}
+              {isSavingEnv ? t('common.saving') : t('messaging.saveChanges')}
             </Button>
           </div>
         </div>
@@ -587,59 +600,47 @@ function PlatformDetail({
   )
 }
 
-const PLATFORM_INTRO: Record<string, string> = {
-  telegram:
-    'In Telegram, talk to @BotFather, run /newbot, and copy the token it gives you. Then grab your numeric user ID from @userinfobot.',
-  discord:
-    'Open the Discord Developer Portal, create an application, add a Bot, then copy its token. Invite the bot to your server with the right scopes.',
-  slack:
-    'Create a Slack app, enable Socket Mode, install it to your workspace, then copy the Bot token (xoxb-) and App-level token (xapp-).',
-  mattermost:
-    'On your Mattermost server, create a bot account or personal access token, then paste the server URL and token here.',
-  matrix: 'Sign in to your homeserver with the bot account, then copy the access token, user ID, and homeserver URL.',
-  signal:
-    'Run a signal-cli REST bridge somewhere reachable, then point Hermes at the URL and the registered phone number.',
-  whatsapp:
-    'Start the WhatsApp bridge that ships with Hermes, scan the QR code on first run, then enable the platform.',
-  bluebubbles:
-    'Run BlueBubbles Server on a Mac with iMessage, expose its API, then point Hermes at the URL with the server password.',
-  homeassistant:
-    'In Home Assistant, open your profile and create a long-lived access token. Paste it here along with your HA URL.',
-  email:
-    'Use a dedicated mailbox. For Gmail/Workspace, create an app password and use imap.gmail.com / smtp.gmail.com.',
-  sms: 'Get your Twilio Account SID and Auth Token from the Twilio console, plus a phone number that can send SMS.',
-  dingtalk: 'Create a DingTalk app in the developer console, then copy the Client ID (App key) and Client Secret here.',
-  feishu:
-    'Create a Feishu / Lark app, configure the bot capability, and copy the App ID, App secret, and event encryption keys.',
-  wecom:
-    'Add a group robot in WeCom and copy its webhook key as WECOM_BOT_ID. Send-only — use the WeCom (app) option for two-way.',
-  wecom_callback:
-    'Set up a WeCom self-built app, expose its callback URL, and provide the corp ID, secret, agent ID, and AES key.',
-  weixin:
-    'Sign in to the WeChat Official Account platform, copy the AppID and Token, and point the message callback URL at Hermes.',
-  qqbot: 'Register an app on the QQ Open Platform (q.qq.com) and copy the App ID and Client Secret.',
-  api_server:
-    'Expose Hermes as an OpenAI-compatible API. Set an auth key, then point Open WebUI / LobeChat / etc. at the host:port.',
-  webhook:
-    'Run an HTTP server that other tools (GitHub, GitLab, custom apps) can POST to. Use the secret to verify signatures.'
+const PLATFORM_INTRO_KEYS: Record<string, string> = {
+  telegram: 'messaging.intro.telegram',
+  discord: 'messaging.intro.discord',
+  slack: 'messaging.intro.slack',
+  mattermost: 'messaging.intro.mattermost',
+  matrix: 'messaging.intro.matrix',
+  signal: 'messaging.intro.signal',
+  whatsapp: 'messaging.intro.whatsapp',
+  bluebubbles: 'messaging.intro.bluebubbles',
+  homeassistant: 'messaging.intro.homeassistant',
+  email: 'messaging.intro.email',
+  sms: 'messaging.intro.sms',
+  dingtalk: 'messaging.intro.dingtalk',
+  feishu: 'messaging.intro.feishu',
+  wecom: 'messaging.intro.wecom',
+  wecom_callback: 'messaging.intro.wecomCallback',
+  weixin: 'messaging.intro.weixin',
+  qqbot: 'messaging.intro.qqbot',
+  api_server: 'messaging.intro.apiServer',
+  webhook: 'messaging.intro.webhook'
 }
 
-const introCopy = (platform: MessagingPlatformInfo) => PLATFORM_INTRO[platform.id] || platform.description
+const introCopy = (platform: MessagingPlatformInfo, t: Translate) =>
+  PLATFORM_INTRO_KEYS[platform.id] ? t(PLATFORM_INTRO_KEYS[platform.id]) : platform.description
 
 function MessagingField({
   edits,
   field,
   onClear,
   onEdit,
-  saving
+  saving,
+  t
 }: {
   edits: Record<string, string>
   field: MessagingEnvVarInfo
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   saving: string | null
+  t: Translate
 }) {
-  const copy = fieldCopy(field)
+  const copy = fieldCopy(field, t)
 
   return (
     <div className="space-y-1.5">
@@ -647,19 +648,19 @@ function MessagingField({
         <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
           {copy.label}
         </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{t('messaging.saved')}</span>}
       </div>
       <div className="flex items-center gap-2">
         <Input
           className="h-9 rounded-lg font-mono text-sm"
           id={`messaging-field-${field.key}`}
           onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
+          placeholder={field.is_set ? field.redacted_value || t('messaging.replaceCurrentValue') : copy.placeholder}
           type={field.is_password ? 'password' : 'text'}
           value={edits[field.key] || ''}
         />
         {field.url && (
-          <Button asChild size="icon-sm" title="Open docs" variant="ghost">
+          <Button asChild size="icon-sm" title={t('messaging.openDocs')} variant="ghost">
             <a href={field.url} rel="noreferrer" target="_blank">
               <ExternalLink className="size-3.5" />
             </a>
@@ -670,7 +671,7 @@ function MessagingField({
             disabled={saving === `clear:${field.key}`}
             onClick={() => onClear(field.key)}
             size="icon-sm"
-            title={`Clear ${field.key}`}
+            title={t('messaging.clearKey', { key: field.key })}
             variant="ghost"
           >
             <Trash2 className="size-3.5" />
@@ -686,14 +687,15 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</h4>
 }
 
-function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+function PlatformHint({ platform, t }: { platform: MessagingPlatformInfo; t: Translate }) {
   if (!platform.enabled || platform.state === 'connected') {
     return null
   }
 
-  const hint = HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
+  const hintKey =
+    HINT_BY_STATE_KEYS[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE_KEYS.gateway_stopped)
 
-  return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
+  return hintKey ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{t(hintKey)}</p> : null
 }
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {

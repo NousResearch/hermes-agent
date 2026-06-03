@@ -6,6 +6,7 @@ import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { getGlobalModelOptions } from '@/hermes'
+import { useTranslation } from '@/i18n'
 import {
   Check,
   ChevronDown,
@@ -47,13 +48,14 @@ interface DesktopOnboardingOverlayProps {
 }
 
 interface ApiKeyOption {
-  description: string
+  descriptionKey: string
   docsUrl: string
   envKey: string
   id: string
   name: string
   placeholder?: string
-  short?: string
+  placeholderKey?: string
+  shortKey?: string
 }
 
 const MIN_KEY_LENGTH = 8
@@ -62,41 +64,41 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
     id: 'openrouter',
     name: 'OpenRouter',
-    short: 'one key, many models',
+    shortKey: 'onboarding.apiKey.openrouter.short',
     envKey: 'OPENROUTER_API_KEY',
-    description: 'Hosts hundreds of models behind a single key. Good default for new installs.',
+    descriptionKey: 'onboarding.apiKey.openrouter.description',
     docsUrl: 'https://openrouter.ai/keys'
   },
   {
     id: 'openai',
     name: 'OpenAI',
-    short: 'GPT-class models',
+    shortKey: 'onboarding.apiKey.openai.short',
     envKey: 'OPENAI_API_KEY',
-    description: 'Direct access to OpenAI models.',
+    descriptionKey: 'onboarding.apiKey.openai.description',
     docsUrl: 'https://platform.openai.com/api-keys'
   },
   {
     id: 'gemini',
     name: 'Google Gemini',
-    short: 'Gemini models',
+    shortKey: 'onboarding.apiKey.gemini.short',
     envKey: 'GEMINI_API_KEY',
-    description: 'Direct access to Google Gemini models.',
+    descriptionKey: 'onboarding.apiKey.gemini.description',
     docsUrl: 'https://aistudio.google.com/app/apikey'
   },
   {
     id: 'xai',
     name: 'xAI Grok',
-    short: 'Grok models',
+    shortKey: 'onboarding.apiKey.xai.short',
     envKey: 'XAI_API_KEY',
-    description: 'Direct access to xAI Grok models.',
+    descriptionKey: 'onboarding.apiKey.xai.description',
     docsUrl: 'https://console.x.ai/'
   },
   {
     id: 'local',
     name: 'Local / custom endpoint',
-    short: 'self-hosted',
+    shortKey: 'onboarding.apiKey.local.short',
     envKey: 'OPENAI_BASE_URL',
-    description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).',
+    descriptionKey: 'onboarding.apiKey.local.description',
     docsUrl: 'https://github.com/NousResearch/hermes-agent#bring-your-own-endpoint',
     placeholder: 'http://127.0.0.1:8000/v1'
   }
@@ -114,11 +116,11 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-const FLOW_SUBTITLES: Record<OAuthProvider['flow'], string> = {
-  pkce: 'Opens your browser to sign in, then continues here',
-  device_code: 'Opens a verification page in your browser — Hermes connects automatically',
-  loopback: 'Opens your browser to sign in — Hermes connects automatically',
-  external: 'Sign in once in your terminal, then come back to chat'
+const FLOW_SUBTITLE_KEYS: Record<OAuthProvider['flow'], string> = {
+  pkce: 'onboarding.flow.pkce',
+  device_code: 'onboarding.flow.deviceCode',
+  loopback: 'onboarding.flow.loopback',
+  external: 'onboarding.flow.external'
 }
 
 const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
@@ -128,6 +130,7 @@ const sortProviders = (providers: OAuthProvider[]) =>
   [...providers].sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))
 
 export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway }: DesktopOnboardingOverlayProps) {
+  const t = useTranslation()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
   const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })
@@ -177,7 +180,7 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
                 onClick={() => closeManualOnboarding()}
                 type="button"
               >
-                Close
+                {t('common.close')}
               </button>
             </div>
           ) : null}
@@ -198,6 +201,7 @@ function ReasonNotice({ reason }: { reason: string }) {
 }
 
 function Preparing({ boot }: { boot: DesktopBootState }) {
+  const t = useTranslation()
   const progress = Math.max(2, Math.min(100, Math.round(boot.progress)))
   const hasError = Boolean(boot.error)
   const installing = boot.phase.startsWith('runtime.')
@@ -206,8 +210,8 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
     <div className="grid gap-3" role="status">
       <p className="text-sm text-muted-foreground">
         {installing
-          ? 'Hermes is finishing install. This usually takes under a minute on first run.'
-          : 'Starting Hermes…'}
+          ? t('onboarding.preparing.installing')
+          : t('onboarding.preparing.starting')}
       </p>
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
@@ -228,6 +232,8 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
 }
 
 function Header() {
+  const t = useTranslation()
+
   return (
     <div className="border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) px-5 py-4">
       <div className="flex items-start gap-3">
@@ -235,9 +241,9 @@ function Header() {
           <Sparkles className="size-5" />
         </div>
         <div>
-          <h2 className="text-[0.9375rem] font-semibold tracking-tight">Let's get you setup with Hermes Agent</h2>
+          <h2 className="text-[0.9375rem] font-semibold tracking-tight">{t('onboarding.header.title')}</h2>
           <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-            Connect a model provider to start chatting. Most options take one click.
+            {t('onboarding.header.description')}
           </p>
         </div>
       </div>
@@ -246,7 +252,7 @@ function Header() {
 }
 
 const FEATURED_ID = 'nous'
-const FEATURED_PITCH = 'One subscription, 300+ frontier models — the recommended way to run Hermes'
+const FEATURED_PITCH_KEY = 'onboarding.featured.pitch'
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {
@@ -268,6 +274,7 @@ const persistShowAll = (value: boolean) => {
 }
 
 export function Picker({ ctx }: { ctx: OnboardingContext }) {
+  const t = useTranslation()
   const { mode, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
@@ -278,7 +285,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   }
 
   if (providers === null) {
-    return <Status>Looking up providers...</Status>
+    return <Status>{t('onboarding.picker.lookingUpProviders')}</Status>
   }
 
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
@@ -306,7 +313,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           onClick={() => setShowAll(persistShowAll(!showAll))}
           type="button"
         >
-          {showAll ? 'Collapse' : 'Other providers'}
+          {showAll ? t('onboarding.picker.collapse') : t('onboarding.picker.otherProviders')}
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
         </button>
       ) : null}
@@ -316,7 +323,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           onClick={() => setOnboardingMode('apikey')}
           type="button"
         >
-          I have an API key
+          {t('onboarding.picker.haveApiKey')}
         </button>
       </div>
     </div>
@@ -330,6 +337,7 @@ function FeaturedProviderRow({
   onSelect: (provider: OAuthProvider) => void
   provider: OAuthProvider
 }) {
+  const t = useTranslation()
   const loggedIn = provider.status?.logged_in
 
   return (
@@ -350,11 +358,11 @@ function FeaturedProviderRow({
           ) : (
             <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
               <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
-              Recommended
+              {t('onboarding.featured.recommended')}
             </span>
           )}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{FEATURED_PITCH}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t(FEATURED_PITCH_KEY)}</p>
       </div>
       <ChevronRight className="size-5 shrink-0 text-primary transition group-hover:translate-x-0.5" />
     </button>
@@ -362,15 +370,19 @@ function FeaturedProviderRow({
 }
 
 function ConnectedTag() {
+  const t = useTranslation()
+
   return (
     <span className="inline-flex items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
       <Check className="size-3" />
-      Connected
+      {t('onboarding.connected')}
     </span>
   )
 }
 
 function KeyProviderRow({ onClick }: { onClick: () => void }) {
+  const t = useTranslation()
+
   return (
     <button
       className="group flex w-full items-center justify-between gap-3 rounded-2xl border border-border bg-background/60 p-3 text-left transition hover:border-primary/40 hover:bg-accent/40"
@@ -379,7 +391,7 @@ function KeyProviderRow({ onClick }: { onClick: () => void }) {
     >
       <div className="min-w-0">
         <span className="text-sm font-semibold">OpenRouter</span>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">One key, hundreds of models — a solid default</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t('onboarding.apiKey.openrouter.shortDefault')}</p>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </button>
@@ -387,6 +399,7 @@ function KeyProviderRow({ onClick }: { onClick: () => void }) {
 }
 
 function ProviderRow({ onSelect, provider }: { onSelect: (provider: OAuthProvider) => void; provider: OAuthProvider }) {
+  const t = useTranslation()
   const loggedIn = provider.status?.logged_in
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
@@ -404,7 +417,7 @@ function ProviderRow({ onSelect, provider }: { onSelect: (provider: OAuthProvide
           <span className="text-sm font-semibold">{providerTitle(provider)}</span>
           {loggedIn ? <ConnectedTag /> : null}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{FLOW_SUBTITLES[provider.flow]}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t(FLOW_SUBTITLE_KEYS[provider.flow])}</p>
       </div>
       <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </button>
@@ -412,6 +425,7 @@ function ProviderRow({ onSelect, provider }: { onSelect: (provider: OAuthProvide
 }
 
 function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingContext }) {
+  const t = useTranslation()
   const [option, setOption] = useState<ApiKeyOption>(API_KEY_OPTIONS[0])
   const [value, setValue] = useState('')
   const [saving, setSaving] = useState(false)
@@ -432,7 +446,7 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
     if (result.ok) {
       setValue('')
     } else {
-      setError(result.message ?? 'Could not save credential.')
+      setError(result.message ?? t('onboarding.apiKey.saveError'))
     }
 
     setSaving(false)
@@ -447,7 +461,7 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
           type="button"
         >
           <ChevronLeft className="size-3" />
-          Back to sign in
+          {t('onboarding.apiKey.backToSignIn')}
         </button>
       ) : null}
 
@@ -470,15 +484,15 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
               <span className="text-sm font-medium">{o.name}</span>
               {option.id === o.id ? <Check className="size-4 text-primary" /> : null}
             </div>
-            {o.short ? <p className="mt-1 text-xs text-muted-foreground">{o.short}</p> : null}
+            {o.shortKey ? <p className="mt-1 text-xs text-muted-foreground">{t(o.shortKey)}</p> : null}
           </button>
         ))}
       </div>
 
       <div className="grid gap-2">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm leading-6 text-muted-foreground">{option.description}</p>
-          {option.docsUrl ? <DocsLink href={option.docsUrl}>Get a key</DocsLink> : null}
+          <p className="text-sm leading-6 text-muted-foreground">{t(option.descriptionKey)}</p>
+          {option.docsUrl ? <DocsLink href={option.docsUrl}>{t('onboarding.apiKey.getKey')}</DocsLink> : null}
         </div>
         <Input
           autoComplete="off"
@@ -486,7 +500,7 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
           className="font-mono"
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && void submit()}
-          placeholder={option.placeholder || 'Paste API key'}
+          placeholder={option.placeholder || t('onboarding.apiKey.pasteKey')}
           type={isLocal ? 'text' : 'password'}
           value={value}
         />
@@ -496,7 +510,7 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
       <div className="flex justify-end">
         <Button disabled={!canSave || saving} onClick={() => void submit()}>
           {saving ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-          {saving ? 'Connecting' : 'Connect'}
+          {saving ? t('onboarding.apiKey.connecting') : t('onboarding.apiKey.connect')}
         </Button>
       </div>
     </div>
@@ -504,21 +518,22 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
 }
 
 function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow }) {
+  const t = useTranslation()
   const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider) : ''
 
   if (flow.status === 'starting') {
-    return <Status>Starting sign-in for {title}...</Status>
+    return <Status>{t('onboarding.flow.starting', { provider: title })}</Status>
   }
 
   if (flow.status === 'submitting') {
-    return <Status>Verifying your code with {title}...</Status>
+    return <Status>{t('onboarding.flow.verifying', { provider: title })}</Status>
   }
 
   if (flow.status === 'success') {
     return (
       <div className="flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
         <Check className="size-4" />
-        {title} connected. Picking a default model...
+        {t('onboarding.flow.connectedPickingModel', { provider: title })}
       </div>
     )
   }
@@ -531,11 +546,11 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
     return (
       <div className="grid gap-3">
         <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {flow.message || 'Sign-in failed. Try again.'}
+          {flow.message || t('onboarding.flow.signInFailed')}
         </div>
         <div className="flex justify-end">
           <Button onClick={cancelOnboardingFlow} variant="outline">
-            Pick a different provider
+            {t('onboarding.flow.pickDifferentProvider')}
           </Button>
         </div>
       </div>
@@ -544,23 +559,23 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
 
   if (flow.status === 'awaiting_user') {
     return (
-      <Step title={`Sign in with ${title}`}>
+      <Step title={t('onboarding.flow.signInWith', { provider: title })}>
         <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-          <li>We opened {title} in your browser.</li>
-          <li>Authorize Hermes there.</li>
-          <li>Copy the authorization code and paste it below.</li>
+          <li>{t('onboarding.flow.openedInBrowser', { provider: title })}</li>
+          <li>{t('onboarding.flow.authorizeHermes')}</li>
+          <li>{t('onboarding.flow.copyCode')}</li>
         </ol>
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && void submitOnboardingCode(ctx)}
-          placeholder="Paste authorization code"
+          placeholder={t('onboarding.flow.pasteCode')}
           value={flow.code}
         />
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open authorization page</DocsLink>}>
+        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t('onboarding.flow.reopenAuthorization')}</DocsLink>}>
           <CancelBtn />
           <Button disabled={!flow.code.trim()} onClick={() => void submitOnboardingCode(ctx)}>
-            Continue
+            {t('common.continue')}
           </Button>
         </FlowFooter>
       </Step>
@@ -569,15 +584,14 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
 
   if (flow.status === 'awaiting_browser') {
     return (
-      <Step title={`Sign in with ${title}`}>
+      <Step title={t('onboarding.flow.signInWith', { provider: title })}>
         <p className="text-sm text-muted-foreground">
-          We opened {title} in your browser. Authorize Hermes there and you'll be connected
-          automatically — nothing to copy or paste.
+          {t('onboarding.flow.browserAutoConnect', { provider: title })}
         </p>
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open sign-in page</DocsLink>}>
+        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t('onboarding.flow.reopenSignIn')}</DocsLink>}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
-            Waiting for you to authorize...
+            {t('onboarding.flow.waitingAuthorization')}
           </span>
           <CancelBtn size="sm" />
         </FlowFooter>
@@ -587,10 +601,9 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
 
   if (flow.status === 'external_pending') {
     return (
-      <Step title={`Sign in with ${title}`}>
+      <Step title={t('onboarding.flow.signInWith', { provider: title })}>
         <p className="text-sm text-muted-foreground">
-          {title} signs in through its own CLI. Run this command in a terminal, then come back and pick "I've signed
-          in":
+          {t('onboarding.flow.externalInstruction', { provider: title })}
         </p>
         <CodeBlock copied={flow.copied} onCopy={() => void copyExternalCommand()} text={flow.provider.cli_command} />
         <FlowFooter
@@ -599,7 +612,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
           <CancelBtn />
           <Button onClick={() => void recheckExternalSignin(ctx)}>
             <Check className="size-4" />
-            I've signed in
+            {t('onboarding.flow.signedIn')}
           </Button>
         </FlowFooter>
       </Step>
@@ -611,13 +624,13 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
   }
 
   return (
-    <Step title={`Sign in with ${title}`}>
-      <p className="text-sm text-muted-foreground">We opened {title} in your browser. Enter this code there:</p>
+    <Step title={t('onboarding.flow.signInWith', { provider: title })}>
+      <p className="text-sm text-muted-foreground">{t('onboarding.flow.enterCode', { provider: title })}</p>
       <CodeBlock copied={flow.copied} large onCopy={() => void copyDeviceCode()} text={flow.start.user_code} />
-      <FlowFooter left={<DocsLink href={flow.start.verification_url}>Re-open verification page</DocsLink>}>
+      <FlowFooter left={<DocsLink href={flow.start.verification_url}>{t('onboarding.flow.reopenVerification')}</DocsLink>}>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />
-          Waiting for you to authorize...
+          {t('onboarding.flow.waitingAuthorization')}
         </span>
         <CancelBtn size="sm" />
       </FlowFooter>
@@ -645,11 +658,13 @@ function CodeBlock({
   onCopy: () => void
   text: string
 }) {
+  const t = useTranslation()
+
   return (
     <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-secondary/30 px-4 py-3">
       <code className={cn('font-mono', large ? 'text-2xl tracking-[0.4em]' : 'text-sm')}>{text}</code>
       <Button onClick={onCopy} size="sm" variant="outline">
-        {copied ? <Check className="size-4" /> : 'Copy'}
+        {copied ? <Check className="size-4" /> : t('common.copy')}
       </Button>
     </div>
   )
@@ -665,9 +680,11 @@ function FlowFooter({ children, left }: { children: React.ReactNode; left?: Reac
 }
 
 function CancelBtn({ size = 'default' }: { size?: 'default' | 'sm' }) {
+  const t = useTranslation()
+
   return (
     <Button onClick={cancelOnboardingFlow} size={size} variant="ghost">
-      Cancel
+      {t('common.cancel')}
     </Button>
   )
 }
@@ -679,6 +696,7 @@ function ConfirmingModelPanel({
   ctx: OnboardingContext
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
 }) {
+  const t = useTranslation()
   // Local state controls whether the model picker dialog is open.
   // We reuse the existing ModelPickerDialog component (the same picker
   // available from the chat shell) rather than building an inline
@@ -692,9 +710,11 @@ function ConfirmingModelPanel({
     queryKey: ['onboarding-model-options', flow.providerSlug],
     queryFn: () => getGlobalModelOptions()
   })
+
   const providerRow = options.data?.providers?.find(
     p => String(p.slug).toLowerCase() === flow.providerSlug.toLowerCase()
   )
+
   const price = providerRow?.pricing?.[flow.currentModel]
   const freeTier = providerRow?.free_tier
 
@@ -702,17 +722,17 @@ function ConfirmingModelPanel({
     <div className="grid gap-4">
       <div className="flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
         <Check className="size-4 shrink-0" />
-        <span>{flow.label} connected.</span>
+        <span>{t('onboarding.flow.connected', { provider: flow.label })}</span>
       </div>
 
       <div className="grid gap-3 rounded-2xl border border-border bg-background/60 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Default model</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('onboarding.model.default')}</p>
               {freeTier === true && (
                 <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
-                  Free tier
+                  {t('models.picker.freeTier')}
                 </span>
               )}
               {freeTier === false && (
@@ -724,12 +744,14 @@ function ConfirmingModelPanel({
             <p className="mt-1 truncate font-mono text-sm">{flow.currentModel}</p>
             {price && (price.input || price.output) && (
               <p className="mt-1 font-mono text-xs text-muted-foreground">
-                {price.free ? 'Free' : `${price.input || '?'} in / ${price.output || '?'} out per Mtok`}
+                {price.free
+                  ? t('models.picker.free')
+                  : t('onboarding.model.price', { input: price.input || '?', output: price.output || '?' })}
               </p>
             )}
           </div>
           <Button disabled={flow.saving} onClick={() => setPickerOpen(true)} size="sm" variant="outline">
-            Change
+            {t('onboarding.model.change')}
           </Button>
         </div>
       </div>
@@ -737,7 +759,7 @@ function ConfirmingModelPanel({
       <div className="flex justify-end">
         <Button disabled={flow.saving} onClick={() => confirmOnboardingModel(ctx)}>
           {flow.saving ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-          Start chatting
+          {t('onboarding.model.startChatting')}
         </Button>
       </div>
 

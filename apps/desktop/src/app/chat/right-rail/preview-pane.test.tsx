@@ -1,6 +1,8 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
+
 import { PreviewPane } from './preview-pane'
 
 describe('PreviewPane console state', () => {
@@ -12,15 +14,17 @@ describe('PreviewPane console state', () => {
     const setTitlebarToolGroup = vi.fn()
 
     const rendered = render(
-      <PreviewPane
-        setTitlebarToolGroup={setTitlebarToolGroup}
-        target={{
-          kind: 'url',
-          label: 'Preview',
-          source: 'http://localhost:5174',
-          url: 'http://localhost:5174'
-        }}
-      />
+      <I18nProvider configClient={null}>
+        <PreviewPane
+          setTitlebarToolGroup={setTitlebarToolGroup}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174',
+            url: 'http://localhost:5174'
+          }}
+        />
+      </I18nProvider>
     )
 
     const initialCalls = setTitlebarToolGroup.mock.calls.length

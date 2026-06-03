@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import type { PreviewServerRestart } from '@/store/preview'
 import type { ActionStatusResponse, SessionInfo } from '@/types/hermes'
@@ -41,8 +42,8 @@ export function buildRailTasks(
 
     return {
       id: `session:${id}`,
-      label: session ? sessionTitle(session) : 'Session task',
-      detail: 'Agent task running',
+      label: session ? sessionTitle(session) : translateNow('activity.sessionTask'),
+      detail: translateNow('activity.agentTaskRunning'),
       status: 'running',
       updatedAt: session?.last_active || Date.now() - index
     }
@@ -52,7 +53,7 @@ export function buildRailTasks(
     ? [
         {
           id: `preview:${previewRestart.taskId}`,
-          label: 'Preview restart',
+          label: translateNow('activity.previewRestart'),
           detail: previewRestart.message || previewRestart.url,
           status:
             previewRestart.status === 'error' ? 'error' : previewRestart.status === 'running' ? 'running' : 'success',
@@ -82,10 +83,12 @@ function actionStatus(status: ActionStatusResponse): RailTaskStatus {
 
 function actionDetail(status: ActionStatusResponse): string {
   if (status.running) {
-    return 'Running'
+    return translateNow('activity.running')
   }
 
-  return status.exit_code === 0 ? 'Completed' : `Failed (${status.exit_code ?? 'unknown'})`
+  return status.exit_code === 0
+    ? translateNow('activity.completed')
+    : translateNow('activity.failedWithCode', { code: status.exit_code ?? 'unknown' })
 }
 
 function prune(tasks: Record<string, DesktopActionTask>): Record<string, DesktopActionTask> {

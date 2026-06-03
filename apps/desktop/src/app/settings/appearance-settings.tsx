@@ -1,15 +1,18 @@
 import { useStore } from '@nanostores/react'
 
+import { DESKTOP_LANGUAGES, useI18n, useTranslation } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
 import { MODE_OPTIONS } from './constants'
-import { prettyName } from './helpers'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
+
+const themeDescriptionKey = (name: string) => `settings.appearance.theme.${name}.description`
 
 function ThemePreview({ name }: { name: string }) {
   const t = BUILTIN_THEMES[name]
@@ -53,32 +56,101 @@ function ThemePreview({ name }: { name: string }) {
 
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
+  const { isSavingLanguage, language, setLanguage } = useI18n()
+  const t = useTranslation()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(t => t.name === themeName)
+  const activeLanguage = DESKTOP_LANGUAGES.find(item => item.id === language)
+  const activeMode = MODE_OPTIONS.find(option => option.id === mode)
+
+  const selectLanguage = async (nextLanguage: typeof language) => {
+    if (nextLanguage === language || isSavingLanguage) {
+      return
+    }
+
+    triggerHaptic('selection')
+
+    try {
+      await setLanguage(nextLanguage)
+      triggerHaptic('success')
+    } catch (error) {
+      notifyError(error, t('settings.appearance.language.saveError'))
+    }
+  }
 
   return (
     <SettingsContent>
       <div className="space-y-5">
         <div>
-          <SectionHeading icon={Palette} title="Appearance" />
+          <SectionHeading icon={Palette} title={t('settings.appearance.title')} />
           <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
-            chat surface styling.
+            {t('settings.appearance.description')}
           </p>
         </div>
 
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Color Mode</div>
+              <div className="text-sm font-medium">{t('settings.appearance.language.title')}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Pick a fixed mode or let Hermes follow your system setting.
+                {t('settings.appearance.language.description')}
               </div>
             </div>
-            <Pill>{prettyName(mode)}</Pill>
+            {activeLanguage && <Pill>{t(activeLanguage.translationKey)}</Pill>}
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {DESKTOP_LANGUAGES.map(option => {
+              const active = language === option.id
+
+              return (
+                <button
+                  className={cn(
+                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover) disabled:cursor-not-allowed disabled:opacity-60',
+                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
+                  )}
+                  disabled={isSavingLanguage}
+                  key={option.id}
+                  onClick={() => void selectLanguage(option.id)}
+                  type="button"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[length:var(--conversation-text-font-size)] font-medium">
+                        {t(option.translationKey)}
+                      </div>
+                      <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                        {option.nativeLabel}
+                      </div>
+                    </div>
+                    {active && (
+                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
+                        <Check className="size-3.5" />
+                      </span>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          {isSavingLanguage && (
+            <div className="mt-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+              {t('settings.appearance.language.saving')}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">{t('settings.appearance.mode.title')}</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {t('settings.appearance.mode.description')}
+              </div>
+            </div>
+            {activeMode && <Pill>{t(activeMode.labelKey)}</Pill>}
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            {MODE_OPTIONS.map(({ id, label, description, icon: Icon }) => {
+            {MODE_OPTIONS.map(({ id, labelKey, descriptionKey, icon: Icon }) => {
               const active = mode === id
 
               return (
@@ -104,9 +176,11 @@ export function AppearanceSettings() {
                       </span>
                     )}
                   </div>
-                  <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">{label}</div>
+                  <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">
+                    {t(labelKey)}
+                  </div>
                   <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {description}
+                    {t(descriptionKey)}
                   </div>
                 </button>
               )
@@ -117,25 +191,29 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Tool Call Display</div>
+              <div className="text-sm font-medium">{t('settings.appearance.toolDisplay.title')}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Product hides raw tool payloads; Technical shows full input/output.
+                {t('settings.appearance.toolDisplay.description')}
               </div>
             </div>
-            <Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>
+            <Pill>
+              {toolViewMode === 'technical'
+                ? t('settings.appearance.toolDisplay.technical')
+                : t('settings.appearance.toolDisplay.product')}
+            </Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {(
               [
                 {
                   id: 'product',
-                  label: 'Product',
-                  description: 'Human-friendly tool activity with concise summaries.'
+                  labelKey: 'settings.appearance.toolDisplay.product',
+                  descriptionKey: 'settings.appearance.toolDisplay.productDescription'
                 },
                 {
                   id: 'technical',
-                  label: 'Technical',
-                  description: 'Include raw tool args/results and low-level details.'
+                  labelKey: 'settings.appearance.toolDisplay.technical',
+                  descriptionKey: 'settings.appearance.toolDisplay.technicalDescription'
                 }
               ] as const
             ).map(option => {
@@ -155,7 +233,9 @@ export function AppearanceSettings() {
                   type="button"
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">{option.label}</div>
+                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">
+                      {t(option.labelKey)}
+                    </div>
                     {active && (
                       <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
                         <Check className="size-3.5" />
@@ -163,7 +243,7 @@ export function AppearanceSettings() {
                     )}
                   </div>
                   <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {option.description}
+                    {t(option.descriptionKey)}
                   </div>
                 </button>
               )
@@ -174,9 +254,9 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Theme</div>
+              <div className="text-sm font-medium">{t('settings.appearance.theme.title')}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Desktop palettes only. The selected mode is applied on top.
+                {t('settings.appearance.theme.description')}
               </div>
             </div>
             {activeTheme && <Pill>{activeTheme.label}</Pill>}
@@ -205,7 +285,7 @@ export function AppearanceSettings() {
                         {theme.label}
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                        {theme.description}
+                        {t(themeDescriptionKey(theme.name))}
                       </div>
                     </div>
                     {active && (

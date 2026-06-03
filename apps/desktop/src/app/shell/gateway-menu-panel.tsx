@@ -2,6 +2,7 @@ import { IconLayoutDashboard } from '@tabler/icons-react'
 
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import { useTranslation } from '@/i18n'
 import { Activity, AlertCircle } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
@@ -39,23 +40,24 @@ export function GatewayMenuPanel({
   onOpenSystem,
   statusSnapshot
 }: GatewayMenuPanelProps) {
+  const t = useTranslation()
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'
   const inferenceReady = gatewayOpen && inferenceStatus?.ready === true
 
   const connectionLabel = gatewayOpen
-    ? 'Connected'
+    ? t('shell.gateway.connected')
     : gatewayConnecting
-      ? 'Connecting'
+      ? t('shell.gateway.connecting')
       : prettyState(gatewayState || 'offline')
 
   const inferenceLabel = gatewayOpen
     ? inferenceStatus?.ready
-      ? 'Inference ready'
+      ? t('shell.gateway.inferenceReady')
       : inferenceStatus
-        ? 'Inference not ready'
-        : 'Checking inference'
-    : 'Disconnected'
+        ? t('shell.gateway.inferenceNotReady')
+        : t('shell.gateway.checkingInference')
+    : t('shell.gateway.disconnected')
 
   const platforms = Object.entries(statusSnapshot?.gateway_platforms || {}).sort(([l], [r]) => l.localeCompare(r))
   const recentLogs = logLines.slice(-5)
@@ -69,7 +71,7 @@ export function GatewayMenuPanel({
           ) : (
             <AlertCircle className={cn('size-3.5', gatewayOpen ? 'text-amber-600' : 'text-destructive')} />
           )}
-          <span className="font-medium">Gateway</span>
+          <span className="font-medium">{t('shell.statusbar.gateway')}</span>
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <StatusDot tone={inferenceReady ? 'good' : gatewayOpen ? 'warn' : 'bad'} />
             {inferenceLabel}
@@ -77,11 +79,11 @@ export function GatewayMenuPanel({
         </div>
         <div className="flex items-center">
           <Button
-            aria-label="Open system panel"
+            aria-label={t('shell.gateway.openSystemPanel')}
             className="size-7 text-muted-foreground hover:text-foreground"
             onClick={onOpenSystem}
             size="icon-sm"
-            title="Open system panel"
+            title={t('shell.gateway.openSystemPanel')}
             variant="ghost"
           >
             <IconLayoutDashboard />
@@ -90,13 +92,13 @@ export function GatewayMenuPanel({
       </div>
 
       <div className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
-        <div>Connection: {connectionLabel}</div>
+        <div>{t('shell.gateway.connection', { state: connectionLabel })}</div>
         {inferenceStatus?.reason && <div className="mt-1 line-clamp-3">{inferenceStatus.reason}</div>}
       </div>
 
       {recentLogs.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>Recent activity</SectionLabel>
+          <SectionLabel>{t('shell.gateway.recentActivity')}</SectionLabel>
           <ul className="mt-1.5 space-y-0.5">
             {recentLogs.map((line, index) => (
               <li
@@ -113,14 +115,14 @@ export function GatewayMenuPanel({
             onClick={onOpenSystem}
             type="button"
           >
-            View all logs →
+            {t('shell.gateway.viewAllLogs')}
           </button>
         </div>
       )}
 
       {platforms.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>Messaging platforms</SectionLabel>
+          <SectionLabel>{t('shell.gateway.messagingPlatforms')}</SectionLabel>
           <ul className="mt-1.5 space-y-1">
             {platforms.map(([name, platform]) => (
               <li className="flex items-center justify-between gap-2 text-xs" key={name}>

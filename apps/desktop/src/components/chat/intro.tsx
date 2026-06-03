@@ -1,5 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
+import { useI18n, useTranslation } from '@/i18n'
+
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -153,8 +155,17 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { language } = useI18n()
+  const t = useTranslation()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+
+  const copy =
+    language === 'zh'
+      ? {
+          headline: 'HERMES AGENT',
+          body: t('chat.intro.body')
+        }
+      : resolveCopy(personality, mountSeed + (seed ?? 0))
 
   return (
     <div

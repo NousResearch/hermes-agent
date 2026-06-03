@@ -105,7 +105,10 @@ _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 
 # DingTalk message type → runtime content type
 DINGTALK_TYPE_MAPPING = {
+    "audio": "audio",
+    "file": "file",
     "picture": "image",
+    "video": "video",
     "voice": "audio",
 }
 
@@ -764,50 +767,44 @@ class DingTalkAdapter(BasePlatformAdapter):
                 media_types.append("image")
                 msg_type = MessageType.PHOTO
 
-        # Check for rich text with mixed content
-        rich_text = getattr(message, "rich_text_content", None) or getattr(
-            message, "rich_text", None
-        )
-        if rich_text:
-            rich_list = getattr(rich_text, "rich_text_list", None) or rich_text
-            if isinstance(rich_list, list):
-                for item in rich_list:
-                    if isinstance(item, dict):
-                        dl_code = (
-                            item.get("downloadCode") or item.get("download_code") or ""
-                        )
-                        item_type = item.get("type", "")
-                        if dl_code:
-                            mapped = DINGTALK_TYPE_MAPPING.get(item_type, "file")
-                            media_urls.append(dl_code)
-                            if mapped == "image":
-                                media_types.append("image")
-                                if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.PHOTO
-                            elif mapped == "audio":
-                                media_types.append("audio")
-                                if msg_type == MessageType.TEXT:
-                                    # DingTalk's "voice" rich-text item is a
-                                    # native voice note — route through STT.
-                                    # "audio" comes from file uploads only;
-                                    # keep those as AUDIO (no auto-STT).
-                                    if item_type == "voice":
-                                        msg_type = MessageType.VOICE
-                                    else:
-                                        msg_type = MessageType.AUDIO
-                            elif mapped == "video":
-                                media_types.append("video")
-                                if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.VIDEO
-                            else:
-                                media_types.append("application/octet-stream")
-                                if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.DOCUMENT
+        for item in self._iter_media_items(message):
+            dl_code = (
+                item.get("downloadCode")
+                or item.get("download_code")
+                or item.get("pictureDownloadCode")
+                or ""
+            )
+            item_type = item.get("type", "")
+            if dl_code:
+                mapped = DINGTALK_TYPE_MAPPING.get(item_type, "file")
+                media_urls.append(dl_code)
+                if mapped == "image":
+                    media_types.append("image")
+                    if msg_type == MessageType.TEXT:
+                        msg_type = MessageType.PHOTO
+                elif mapped == "audio":
+                    media_types.append("audio")
+                    if msg_type == MessageType.TEXT:
+                        # DingTalk's "voice" item is a native voice note —
+                        # route through STT. Generic "audio" file uploads
+                        # remain AUDIO and skip auto-STT.
+                        if item_type == "voice":
+                            msg_type = MessageType.VOICE
+                        else:
+                            msg_type = MessageType.AUDIO
+                elif mapped == "video":
+                    media_types.append("video")
+                    if msg_type == MessageType.TEXT:
+                        msg_type = MessageType.VIDEO
+                else:
+                    media_types.append("application/octet-stream")
+                    if msg_type == MessageType.TEXT:
+                        msg_type = MessageType.DOCUMENT
 
         msg_type_str = getattr(message, "message_type", "") or ""
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
-        elif msg_type_str == "richText":
+        elif msg_type_str == "richText" and msg_type == MessageType.TEXT:
             msg_type = (
                 MessageType.PHOTO
                 if any("image" in t for t in media_types)
@@ -815,6 +812,35 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
 
         return msg_type, media_urls, media_types
+
+    @staticmethod
+    def _iter_media_items(message: "ChatbotMessage") -> List[Dict[str, Any]]:
+        """Return DingTalk media item dicts from rich text and extensions."""
+        items: List[Dict[str, Any]] = []
+
+        rich_text = getattr(message, "rich_text_content", None) or getattr(
+            message, "rich_text", None
+        )
+        if rich_text:
+            rich_list = getattr(rich_text, "rich_text_list", None) or rich_text
+            if isinstance(rich_list, list):
+                items.extend(item for item in rich_list if isinstance(item, dict))
+
+        extensions = getattr(message, "extensions", None)
+        if isinstance(extensions, dict):
+            content = extensions.get("content")
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                    extensions["content"] = content
+                except (TypeError, ValueError):
+                    content = None
+            if isinstance(content, dict):
+                items.append(content)
+            elif isinstance(content, list):
+                items.extend(item for item in content if isinstance(item, dict))
+
+        return items
 
     # -- Outbound messaging -------------------------------------------------
 
@@ -1306,15 +1332,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         if img_content and getattr(img_content, "download_code", None):
             codes_to_resolve.append((img_content, "download_code"))
 
-        # 2. Rich text list
-        rich_text = getattr(message, "rich_text_content", None)
-        if rich_text:
-            rich_list = getattr(rich_text, "rich_text_list", []) or []
-            for item in rich_list:
-                if isinstance(item, dict):
-                    for key in ("downloadCode", "pictureDownloadCode", "download_code"):
-                        if item.get(key):
-                            codes_to_resolve.append((item, key))
+        # 2. Rich text and extensions media items
+        for item in self._iter_media_items(message):
+            for key in ("downloadCode", "pictureDownloadCode", "download_code"):
+                if item.get(key):
+                    codes_to_resolve.append((item, key))
 
         if not codes_to_resolve:
             return
@@ -1467,6 +1489,11 @@ class _IncomingHandler(
                 )
                 if raw_flag:
                     chatbot_msg.is_in_at_list = True
+
+            if not getattr(chatbot_msg, "extensions", None) and isinstance(data, dict):
+                extensions = data.get("extensions")
+                if isinstance(extensions, dict):
+                    chatbot_msg.extensions = extensions
 
             msg_id = getattr(chatbot_msg, "message_id", None) or ""
             conversation_id = getattr(chatbot_msg, "conversation_id", None) or ""

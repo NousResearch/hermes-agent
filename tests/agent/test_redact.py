@@ -489,3 +489,38 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestGitIdentityAllowlist:
+    """Git author/committer identity vars must NOT be redacted.
+
+    GIT_AUTHOR_EMAIL / GIT_AUTHOR_NAME falsely matched the ENV-assignment
+    secret regex because "AUTHOR" contains the secret-name token "AUTH".
+    These are never secrets (they're public commit metadata), and redacting
+    them corrupts `git filter-branch --env-filter` and any inline author setup.
+    """
+
+    def test_git_author_email_not_redacted(self):
+        text = "GIT_AUTHOR_EMAIL=9063726+Kyzcreig@users.noreply.github.com"
+        assert redact_sensitive_text(text) == text
+
+    def test_git_author_name_not_redacted(self):
+        text = "GIT_AUTHOR_NAME=Kyzcreig"
+        assert redact_sensitive_text(text) == text
+
+    def test_git_committer_vars_not_redacted(self):
+        for text in (
+            "GIT_COMMITTER_EMAIL=9063726+Kyzcreig@users.noreply.github.com",
+            "GIT_COMMITTER_NAME=Kyzcreig",
+        ):
+            assert redact_sensitive_text(text) == text
+
+    def test_git_author_with_export_prefix_not_redacted(self):
+        text = "export GIT_AUTHOR_EMAIL=9063726+Kyzcreig@users.noreply.github.com"
+        assert redact_sensitive_text(text) == text
+
+    def test_real_secrets_still_redacted_alongside_git_vars(self):
+        # Allowlisting git vars must NOT weaken redaction of real secrets.
+        assert "supersecretvalue123" not in redact_sensitive_text("MY_AUTH_TOKEN=supersecretvalue123")
+        assert "AKIAsecretkey0000" not in redact_sensitive_text("AWS_SECRET_ACCESS_KEY=AKIAsecretkey0000")
+        assert "skprojkeyvalue999" not in redact_sensitive_text("OPENAI_API_KEY=skprojkeyvalue999")

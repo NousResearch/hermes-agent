@@ -18,6 +18,7 @@ import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/t
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
+type LoopbackStart = Extract<OAuthStartResponse, { flow: 'loopback' }>
 
 export type OnboardingMode = 'apikey' | 'oauth'
 
@@ -26,6 +27,10 @@ export type OnboardingFlow =
   | { provider: OAuthProvider; status: 'starting' }
   | { code: string; provider: OAuthProvider; start: PkceStart; status: 'awaiting_user' }
   | { copied: boolean; provider: OAuthProvider; start: DeviceStart; status: 'polling' }
+  // Loopback PKCE (xAI Grok): browser opens, the local backend's 127.0.0.1
+  // listener catches the redirect, and we poll until the worker finishes.
+  // No code to paste and no user_code to show — just a waiting state.
+  | { provider: OAuthProvider; start: LoopbackStart; status: 'awaiting_browser' }
   | { provider: OAuthProvider; start: OAuthStartResponse; status: 'submitting' }
   | { copied: boolean; provider: OAuthProvider; status: 'external_pending' }
   | { provider: OAuthProvider; status: 'success' }
@@ -406,6 +411,26 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   return false
 }
 
+// Open a sign-in URL via the desktop bridge, falling back to window.open
+// when the bridge isn't present (e.g. the web dashboard / dev preview) so
+// the flow never silently stalls in a waiting state. Mirrors the pattern in
+// apps/desktop/src/app/artifacts/index.tsx.
+async function openSignInUrl(url: string) {
+  if (window.hermesDesktop?.openExternal) {
+    try {
+      await window.hermesDesktop.openExternal(url)
+
+      return
+    } catch {
+      // Bridge present but failed (no OS handler, user denied, etc.). Fall
+      // through to window.open so the sign-in URL still opens and the flow
+      // doesn't strand a pending OAuth session in a waiting state.
+    }
+  }
+
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
   clearPoll()
 
@@ -419,7 +444,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
 
   try {
     const start = await startOAuthLogin(provider.id)
-    await window.hermesDesktop?.openExternal(start.flow === 'pkce' ? start.auth_url : start.verification_url)
+    const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
+    await openSignInUrl(browserUrl)
 
     if (start.flow === 'pkce') {
       setFlow({ status: 'awaiting_user', provider, start, code: '' })
@@ -427,14 +453,26 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       return
     }
 
+    if (start.flow === 'loopback') {
+      // No code to paste: the redirect lands on the backend's loopback
+      // listener. Just wait and poll the session until the worker finishes.
+      setFlow({ status: 'awaiting_browser', provider, start })
+      pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
+
+      return
+    }
+
     setFlow({ status: 'polling', provider, start, copied: false })
-    pollTimer = window.setInterval(() => void pollDevice(provider, start, ctx), POLL_MS)
+    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
     setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
   }
 }
 
-async function pollDevice(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext) {
+// Poll a session-backed flow (device_code or loopback) until it resolves.
+// Both shapes only need the session_id to poll; the start is threaded
+// through to the error flow so the user can retry from the same context.
+async function pollSession(provider: OAuthProvider, start: DeviceStart | LoopbackStart, ctx: OnboardingContext) {
   try {
     const { error_message, status } = await pollOAuthSession(provider.id, start.session_id)
 

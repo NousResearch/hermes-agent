@@ -41,6 +41,7 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "cron").mkdir()
     (hermes_home / "cron" / "output").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_BUNDLES_DIR", str(hermes_home / "skill-bundles"))
 
     # Patch the module-level SKILLS_DIR snapshots that `skill_view()`
     # uses. Without this, the tool resolves against the real
@@ -48,6 +49,11 @@ def cron_env(tmp_path, monkeypatch):
     import tools.skills_tool as _skills_tool
     monkeypatch.setattr(_skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(_skills_tool, "HERMES_HOME", hermes_home)
+
+    # Reset bundle cache and make bundle discovery hit this test home.
+    import agent.skill_bundles as _skill_bundles
+    _skill_bundles._bundles_cache = {}
+    _skill_bundles._bundles_cache_mtime = None
 
     # Return both the home dir and the scheduler module so tests use the
     # CURRENT module object (post any reload that happened in fixtures of
@@ -64,6 +70,20 @@ def _plant_skill(hermes_home: Path, name: str, body: str) -> None:
         f"---\nname: {name}\ndescription: test\n---\n\n{body}\n",
         encoding="utf-8",
     )
+
+
+def _plant_bundle(hermes_home: Path, name: str, skills: list[str], instruction: str = "") -> None:
+    """Drop a bundle YAML into ~/.hermes/skill-bundles/ and refresh cache."""
+    bundles_dir = hermes_home / "skill-bundles"
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    lines = [f"name: {name}", "skills:"]
+    lines.extend(f"  - {skill}" for skill in skills)
+    if instruction:
+        lines.append("instruction: |")
+        lines.extend(f"  {line}" for line in instruction.splitlines())
+    (bundles_dir / f"{name}.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    import agent.skill_bundles as _skill_bundles
+    _skill_bundles.scan_bundles()
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +226,11 @@ class TestBuildJobPromptScansSkillContent:
         assert prompt is not None
         assert "cat ~/.hermes/.env" in prompt
 
-    def test_skill_with_invisible_unicode_raises(self, cron_env):
+    def test_skill_with_invisible_unicode_sanitized_not_blocked(self, cron_env):
+        """A stray zero-width space in a vetted skill body is stripped, not
+        blocked. The job builds normally with the invisible char removed.
+        Regression: the free-surgeon-gpt55 cron was permanently dead because
+        a single U+200B in loaded skill content tripped a hard block."""
         hermes_home, scheduler = cron_env
         # Zero-width space smuggled into the skill body.
         _plant_skill(hermes_home, "zwsp-skill", "clean looking\u200bskill content")
@@ -218,8 +242,11 @@ class TestBuildJobPromptScansSkillContent:
             "skills": ["zwsp-skill"],
         }
 
-        with pytest.raises(scheduler.CronPromptInjectionBlocked):
-            scheduler._build_job_prompt(job)
+        # Must NOT raise — the invisible char is sanitized out and the job runs.
+        prompt = scheduler._build_job_prompt(job)
+        assert prompt is not None
+        assert "\u200b" not in prompt
+        assert "clean lookingskill content" in prompt
 
     def test_no_skills_still_scans_user_prompt(self, cron_env):
         """Defense-in-depth: even without skills, assembled-prompt scanning
@@ -248,3 +275,47 @@ class TestBuildJobPromptScansSkillContent:
         prompt = scheduler._build_job_prompt(job)
         assert prompt is not None
         assert "could not be found" in prompt
+
+    def test_skill_bundle_in_job_skills_loads_referenced_skills(self, cron_env):
+        hermes_home, scheduler = cron_env
+        _plant_skill(hermes_home, "alpha-skill", "Alpha guidance for the cron task.")
+        _plant_skill(hermes_home, "beta-skill", "Beta guidance for the cron task.")
+        _plant_bundle(
+            hermes_home,
+            "article-pipeline",
+            ["alpha-skill", "beta-skill"],
+            instruction="Use the skills in order.",
+        )
+
+        job = {
+            "id": "job-bundle",
+            "name": "bundle cron",
+            "prompt": "write the report",
+            "skills": ["article-pipeline"],
+        }
+
+        prompt = scheduler._build_job_prompt(job)
+        assert prompt is not None
+        assert '"article-pipeline" skill bundle' in prompt
+        assert "Alpha guidance for the cron task." in prompt
+        assert "Beta guidance for the cron task." in prompt
+        assert "Bundle instruction: Use the skills in order." in prompt
+        assert "skill(s) were listed for this job but could not be found" not in prompt
+
+    def test_bundle_name_shadows_skill_name_for_cron_jobs(self, cron_env):
+        hermes_home, scheduler = cron_env
+        _plant_skill(hermes_home, "article-pipeline", "Standalone skill should not win.")
+        _plant_skill(hermes_home, "bundle-member", "Bundle member should win.")
+        _plant_bundle(hermes_home, "article-pipeline", ["bundle-member"])
+
+        job = {
+            "id": "job-bundle-shadow",
+            "name": "bundle shadows skill",
+            "prompt": "run",
+            "skills": ["article-pipeline"],
+        }
+
+        prompt = scheduler._build_job_prompt(job)
+        assert prompt is not None
+        assert "Bundle member should win." in prompt
+        assert "Standalone skill should not win." not in prompt

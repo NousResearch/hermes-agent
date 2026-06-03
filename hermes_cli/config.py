@@ -1283,6 +1283,12 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # Which interface bare `hermes` (and `hermes chat`) launches by default:
+        #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
+        #   "tui" — the modern Ink TUI (same as passing `--tui`)
+        # Explicit flags always win over this setting: `--cli` forces the classic
+        # REPL and `--tui` (or HERMES_TUI=1) forces the TUI regardless of config.
+        "interface": "cli",
         # When true, `hermes --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
         # Mirrors `hermes -c` muscle memory.  Default off so existing
@@ -1345,7 +1351,27 @@ DEFAULT_CONFIG = {
         # responses and content messages are never touched.  Default 0
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
-        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
+        # Per-platform display/streaming overrides. Each key is a gateway
+        # platform ("telegram", "discord", "slack", …) mapping to a dict of
+        # display settings that override the global value for that platform
+        # only. A setting left unset here falls through to the global default.
+        #
+        # Shipped defaults encode the streaming experience that works best
+        # per platform:
+        #   - Telegram has native animated draft streaming (sendMessageDraft),
+        #     which is smooth, so streaming is on by default there.
+        #   - Discord/Slack/etc. only have edit-based streaming (repeated
+        #     editMessage), which flickers and is noticeably jankier, so
+        #     streaming is off by default there.
+        # These are gap-fillers: a user who explicitly sets, e.g.,
+        # display.platforms.discord.streaming: true keeps their value
+        # (config deep-merge has user values win over defaults). The global
+        # streaming.enabled master switch still gates everything — these
+        # per-platform flags only take effect once streaming is enabled.
+        "platforms": {
+            "telegram": {"streaming": True},
+            "discord": {"streaming": False},
+        },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
         # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
@@ -2037,6 +2063,45 @@ DEFAULT_CONFIG = {
         "trust_recent_files_seconds": 600,
     },
 
+    # Real-time token streaming to messaging platforms (Telegram, Discord,
+    # Slack, etc.). Read at the top level by the gateway; absent this block the
+    # gateway falls back to these same defaults, so adding it here only makes
+    # the feature discoverable in config.yaml — it does not change behavior.
+    #
+    # Disabled by default: streaming costs extra edit/draft API calls per
+    # response. Set ``enabled: true`` and restart the gateway to turn it on.
+    "streaming": {
+        # Master switch. When false, each response is delivered as a single
+        # final message (no progressive updates).
+        "enabled": False,
+        # Transport selection:
+        #   "auto"  — prefer native draft streaming where the platform
+        #             supports it (Telegram DMs via sendMessageDraft,
+        #             Bot API 9.5+) and fall back to edit-based elsewhere.
+        #             Safe global default: platforms without draft support
+        #             (Discord, Slack, Matrix, Telegram groups) transparently
+        #             use the edit path, so "auto" only upgrades chats that
+        #             can render the smoother native preview.
+        #   "draft" — explicitly request native drafts; falls back to edit
+        #             when the platform/chat doesn't support them.
+        #   "edit"  — progressive editMessageText only (legacy behavior).
+        #   "off"   — disable streaming entirely (same as enabled: false).
+        "transport": "auto",
+        # Minimum seconds between progressive edits — tuned for Telegram's
+        # ~1 edit/s flood envelope.
+        "edit_interval": 0.8,
+        # Flush the buffer to the platform once this many characters have
+        # accumulated, so short replies feel near-instant.
+        "buffer_threshold": 24,
+        # Cursor glyph appended to the in-progress message while streaming.
+        "cursor": " \u2589",
+        # When >0, the final edit for a long-running streamed response is
+        # delivered as a fresh message if the preview has been visible at
+        # least this many seconds, so the platform timestamp reflects
+        # completion time. Telegram only; other platforms ignore it.
+        "fresh_final_after_seconds": 60.0,
+    },
+
     # Session storage — controls automatic cleanup of ~/.hermes/state.db.
     # state.db accumulates every session, message, tool call, and FTS5 index
     # entry forever.  Without auto-pruning, a heavy user (gateway + cron)
@@ -2225,7 +2290,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 25,
+    "_config_version": 26,
 }
 
 # =============================================================================
@@ -3756,7 +3821,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "streaming",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -5983,78 +6048,270 @@ _inject_profile_env_vars()
 # An optional ``optional_env`` block surfaces non-required vars the same way
 # (e.g. allowlist, home channel).
 
-_platform_plugin_env_vars_injected = False
+_plugin_env_vars_injected = False
+
+# Maps a plugin manifest's ``kind:`` to the UI category bucket the dashboard
+# renders. Without this, user-installed plugins land in a category the
+# frontend doesn't render (EnvPage.tsx only iterates messaging/tool/setting/
+# provider), and their env vars are silently dropped from KEYS / CONFIG.
+_KIND_TO_UI_CATEGORY = {
+    "platform": "messaging",
+    "tool": "tool",
+    "mcp": "tool",
+    "provider": "provider",
+    "model-provider": "provider",
+}
 
 
-def _inject_platform_plugin_env_vars() -> None:
-    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
+def _merge_plugin_env_entry(name: str, meta: dict, label: str, default_category: str) -> None:
+    """Merge one ``requires_env`` / ``optional_env`` entry into OPTIONAL_ENV_VARS.
 
-    Called once at module load time. Idempotent — repeated calls are no-ops.
-    Failures are swallowed so a malformed plugin.yaml can't break CLI import.
+    Skips if a hardcoded entry already exists for the same name (preserves
+    back-compat for well-known service keys). Applies the standard
+    secret-detection heuristic (*_TOKEN, *_SECRET, *_KEY, *_PASSWORD, *_JSON
+    are treated as secrets unless the manifest says otherwise).
     """
-    global _platform_plugin_env_vars_injected
-    if _platform_plugin_env_vars_injected:
-        return
-    _platform_plugin_env_vars_injected = True
+    if name in OPTIONAL_ENV_VARS:
+        return  # hardcoded entry wins
+    name_upper = name.upper()
+    is_secret = bool(meta.get("password") or meta.get("secret"))
+    if not is_secret and not meta.get("password") is False:
+        is_secret = any(
+            name_upper.endswith(suf)
+            for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
+        )
+    OPTIONAL_ENV_VARS[name] = {
+        "description": meta.get("description") or f"{label} configuration",
+        "prompt": meta.get("prompt") or name,
+        "url": meta.get("url") or None,
+        "password": is_secret,
+        "category": meta.get("category") or default_category,
+    }
+
+
+def _inject_env_vars_from_manifest(manifest_path: Path, plugin_dir: Path, default_category: str) -> None:
+    """Read one plugin.yaml and merge its env-var declarations into OPTIONAL_ENV_VARS.
+
+    Any failure (missing file, unreadable, malformed YAML, non-dict
+    top-level node) is swallowed so one broken manifest can't take down
+    CLI import.
+    """
     try:
         import yaml  # type: ignore
 
-        # Resolve the bundled plugins dir from this file's location so the
-        # injector works regardless of CWD.
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = yaml.safe_load(f)
+    except Exception:
+        return
+    if not isinstance(manifest, dict):
+        return
+    effective_category = _KIND_TO_UI_CATEGORY.get(manifest.get("kind"), default_category)
+    label = manifest.get("label") or manifest.get("name") or plugin_dir.name
+    entries = list(manifest.get("requires_env") or [])
+    entries.extend(manifest.get("optional_env") or [])
+    for entry in entries:
+        if isinstance(entry, str):
+            _merge_plugin_env_entry(entry, {}, label, effective_category)
+        elif isinstance(entry, dict) and entry.get("name"):
+            _merge_plugin_env_entry(entry["name"], entry, label, effective_category)
+
+
+def _inject_env_vars_from_plugins_dir(
+    plugins_root: Path,
+    *,
+    default_category: str,
+    recurse_categories: bool = False,
+) -> None:
+    """Scan a plugins root and merge every plugin's env-var declarations into OPTIONAL_ENV_VARS.
+
+    Layout:
+      * ``<plugins_root>/<plugin>/plugin.yaml`` — flat layout (always scanned).
+      * ``<plugins_root>/<category>/<plugin>/plugin.yaml`` — category layout
+        (scanned only when *recurse_categories* is True; a top-level dir
+        with no manifest of its own is treated as a category namespace,
+        matching the depth-2 cap in :class:`PluginManager._scan_directory_level`).
+    """
+    if not plugins_root.is_dir():
+        return
+    for child in sorted(plugins_root.iterdir()):
+        if not child.is_dir():
+            continue
+        manifest_path = child / "plugin.yaml"
+        if not manifest_path.exists():
+            manifest_path = child / "plugin.yml"
+        if manifest_path.exists():
+            _inject_env_vars_from_manifest(manifest_path, child, default_category)
+            continue
+        if not recurse_categories:
+            continue
+        for grandchild in sorted(child.iterdir()):
+            if not grandchild.is_dir():
+                continue
+            sub_manifest = grandchild / "plugin.yaml"
+            if not sub_manifest.exists():
+                sub_manifest = grandchild / "plugin.yml"
+            if sub_manifest.exists():
+                _inject_env_vars_from_manifest(sub_manifest, grandchild, default_category)
+
+
+def _inject_plugin_env_vars() -> None:
+    """Populate OPTIONAL_ENV_VARS from plugin manifests on disk.
+
+    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Failures are swallowed so a malformed plugin.yaml can't break CLI import.
+
+    Two sources are scanned, in order (first wins via the hardcoded-entry
+    rule in :func:`_merge_plugin_env_entry`):
+
+    1. **Bundled platform plugins** at ``<repo>/plugins/platforms/`` —
+       categorised as ``messaging`` for back-compat with the original
+       ``_inject_platform_plugin_env_vars`` behaviour.
+    2. **User-installed plugins** at ``~/.hermes/plugins/`` — installed
+       via ``hermes plugins install``. Supports both the flat layout
+       (``<name>/plugin.yaml``) and the category layout
+       (``<category>/<name>/plugin.yaml``), matching the runtime plugin
+       discovery in :class:`PluginManager._scan_directory_level`.
+    """
+    global _plugin_env_vars_injected
+    if _plugin_env_vars_injected:
+        return
+    _plugin_env_vars_injected = True
+    try:
         repo_root = Path(__file__).resolve().parents[1]
-        platforms_dir = repo_root / "plugins" / "platforms"
-        if not platforms_dir.is_dir():
-            return
-        for child in platforms_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest_path = child / "plugin.yaml"
-            if not manifest_path.exists():
-                manifest_path = child / "plugin.yml"
-            if not manifest_path.exists():
-                continue
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    manifest = yaml.safe_load(f) or {}
-            except Exception:
-                continue
-            label = manifest.get("label") or manifest.get("name") or child.name
-            # Merge required + optional env var declarations.
-            entries = list(manifest.get("requires_env") or [])
-            entries.extend(manifest.get("optional_env") or [])
-            for entry in entries:
-                if isinstance(entry, str):
-                    name = entry
-                    meta: dict = {}
-                elif isinstance(entry, dict) and entry.get("name"):
-                    name = entry["name"]
-                    meta = entry
-                else:
-                    continue
-                if name in OPTIONAL_ENV_VARS:
-                    continue  # hardcoded entry wins (back-compat)
-                # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
-                # is a password field unless explicitly overridden.
-                name_upper = name.upper()
-                is_secret = bool(meta.get("password") or meta.get("secret"))
-                if not is_secret and not meta.get("password") is False:
-                    is_secret = any(
-                        name_upper.endswith(suf)
-                        for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
-                    )
-                OPTIONAL_ENV_VARS[name] = {
-                    "description": (
-                        meta.get("description")
-                        or f"{label} configuration"
-                    ),
-                    "prompt": meta.get("prompt") or name,
-                    "url": meta.get("url") or None,
-                    "password": is_secret,
-                    "category": meta.get("category") or "messaging",
-                }
+        _inject_env_vars_from_plugins_dir(
+            repo_root / "plugins" / "platforms",
+            default_category="messaging",
+        )
+        _inject_env_vars_from_plugins_dir(
+            get_hermes_home() / "plugins",
+            default_category="plugins",
+            recurse_categories=True,
+        )
     except Exception:
         pass
 
 
-# Eagerly inject so that platform plugin env vars show up in the setup wizard.
-_inject_platform_plugin_env_vars()
+# Keep the old name as an alias so any external caller (or test) that
+# imported `_inject_platform_plugin_env_vars` by name still works.  The
+# function now scans user-installed plugins too, despite the legacy name.
+_inject_platform_plugin_env_vars = _inject_plugin_env_vars
+
+
+# Eagerly inject so that plugin env vars show up in the dashboard / setup wizard.
+_inject_plugin_env_vars()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plugin-contributed config.yaml schema
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# In addition to env-var declarations (requires_env / optional_env), a plugin
+# can opt into surfacing its configuration in the dashboard's CONFIG page (the
+# config.yaml editor) by declaring a top-level ``config_schema:`` block in its
+# plugin.yaml. The dict's keys become field names under a new section named
+# after the manifest's ``name``; values become defaults (types inferred by
+# :func:`_infer_type` in web_server).
+#
+# Example::
+#
+#     name: max-messenger
+#     config_schema:
+#       home_channel: ""
+#       allowed_users: ""
+#       allow_all_users: false
+#       parse_mode: markdown
+#       require_mention: false
+#
+# At runtime the plugin's adapter reads these via
+# ``cfg_get(load_config(), "max-messenger", "home_channel", default="")``.
+
+
+def _load_plugin_config_schemas() -> dict[str, dict]:
+    """Scan installed plugin manifests for ``config_schema:`` declarations.
+
+    Returns a mapping ``{section_key: schema_dict}`` suitable for merging
+    into :data:`DEFAULT_CONFIG`. ``section_key`` is the manifest's ``name``
+    field (a manifest may override with an explicit ``config_section:`` to
+    avoid collisions with bundled DEFAULT_CONFIG sections).
+
+    Reads from ``<hermes_home>/plugins/`` and supports both the flat layout
+    (``<name>/plugin.yaml``) and the category layout
+    (``<category>/<name>/plugin.yaml``), matching :func:`_inject_plugin_env_vars`.
+
+    All failures are swallowed so one bad manifest can't take down CLI import.
+    """
+    schemas: dict[str, dict] = {}
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return schemas
+
+    plugins_root = get_hermes_home() / "plugins"
+    if not plugins_root.is_dir():
+        return schemas
+
+    def _collect(manifest_path: Path) -> None:
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = yaml.safe_load(f)
+        except Exception:
+            return
+        if not isinstance(manifest, dict):
+            return
+        schema = manifest.get("config_schema")
+        if not isinstance(schema, dict) or not schema:
+            return
+        section = (
+            manifest.get("config_section")
+            or manifest.get("name")
+            or manifest_path.parent.name
+        )
+        if not isinstance(section, str) or not section:
+            return
+        # Last manifest wins on duplicate section names — caller may also
+        # log a warning when merging into DEFAULT_CONFIG.
+        schemas[section] = schema
+
+    for child in sorted(plugins_root.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        for cand in (child / "plugin.yaml", child / "plugin.yml"):
+            if cand.exists():
+                _collect(cand)
+                break
+        else:
+            # Treat as category layout: scan one level deeper for
+            # `<category>/<plugin>/plugin.yaml`.
+            for grandchild in sorted(child.iterdir()):
+                if not grandchild.is_dir():
+                    continue
+                for cand in (grandchild / "plugin.yaml", grandchild / "plugin.yml"):
+                    if cand.exists():
+                        _collect(cand)
+                        break
+
+    return schemas
+
+
+def get_effective_default_config() -> dict:
+    """:data:`DEFAULT_CONFIG` merged with plugin-contributed ``config_schema:`` sections.
+
+    Plugin sections that would collide with an existing top-level key in
+    DEFAULT_CONFIG are dropped with a logged warning — bundled sections
+    always win. Callers should treat the return value as read-only;
+    DEFAULT_CONFIG itself is not mutated.
+    """
+    import copy
+
+    merged = copy.deepcopy(DEFAULT_CONFIG)
+    for section, schema in _load_plugin_config_schemas().items():
+        if section in merged:
+            logger.warning(
+                "Plugin config_schema for section '%s' collides with a bundled "
+                "DEFAULT_CONFIG section; ignoring the plugin contribution. "
+                "Use 'config_section:' in plugin.yaml to choose a unique name.",
+                section,
+            )
+            continue
+        merged[section] = schema
+    return merged

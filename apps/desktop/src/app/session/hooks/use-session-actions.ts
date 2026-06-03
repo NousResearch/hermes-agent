@@ -2,7 +2,7 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { deleteSession, getSessionMessages } from '@/hermes'
+import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -15,6 +15,7 @@ import {
   $currentCwd,
   $messages,
   $sessions,
+  getRememberedWorkspaceCwd,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -32,6 +33,7 @@ import {
   setMessages,
   setSelectedStoredSessionId,
   setSessions,
+  setSessionsTotal,
   setSessionStartedAt,
   setTurnStartedAt
 } from '@/store/session'
@@ -291,7 +293,8 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      setCurrentCwd('')
+      // New chats inherit the current workspace.
+      setCurrentCwd(getRememberedWorkspaceCwd())
       setCurrentBranch('')
       clearComposerDraft()
       clearComposerAttachments()
@@ -300,7 +303,7 @@ export function useSessionActions({
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
   )
 
-  const createBackendSessionForSend = useCallback(async (): Promise<string | null> => {
+  const createBackendSessionForSend = useCallback(async (preview: string | null = null): Promise<string | null> => {
     const startingActiveSessionId = activeSessionIdRef.current
     const startingStoredSessionId = selectedStoredSessionIdRef.current
     const startingRouteToken = getRouteToken()
@@ -308,7 +311,7 @@ export function useSessionActions({
     creatingSessionRef.current = true
 
     try {
-      const cwd = $currentCwd.get().trim()
+      const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
       const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
       const stored = created.stored_session_id ?? null
 
@@ -327,7 +330,11 @@ export function useSessionActions({
       ensureSessionState(created.session_id, stored)
 
       if (stored) {
-        upsertOptimisticSession(created, stored)
+        // Seed the sidebar preview with the user's first message so the row
+        // reads meaningfully while the turn is in flight, instead of flashing
+        // "Untitled session" until the turn persists and auto-title runs. The
+        // server later returns its own preview/title and supersedes this.
+        upsertOptimisticSession(created, stored, null, preview?.trim() || null)
         navigate(sessionRoute(stored), { replace: true })
       }
 
@@ -687,6 +694,9 @@ export function useSessionActions({
       const previousPinned = $pinnedSessionIds.get()
 
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+      // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
+      // doesn't keep claiming the removed row is still on the server.
+      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -709,6 +719,7 @@ export function useSessionActions({
       } catch (err) {
         if (removed) {
           setSessions(prev => [removed, ...prev])
+          setSessionsTotal(prev => prev + 1)
         }
 
         $pinnedSessionIds.set(previousPinned)
@@ -751,7 +762,44 @@ export function useSessionActions({
     ]
   )
 
+  const archiveSession = useCallback(
+    async (storedSessionId: string) => {
+      clearNotifications()
+
+      const archived = $sessions.get().find(s => s.id === storedSessionId)
+      const wasSelected = selectedStoredSessionId === storedSessionId
+      const previousPinned = $pinnedSessionIds.get()
+
+      // Soft-hide: drop from the sidebar immediately, keep the data.
+      setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+      // Archived sessions are hidden by the listSessions(min_messages=1) query
+      // on the next refresh, so they count as "removed" for the load-more
+      // footer math.
+      setSessionsTotal(prev => Math.max(0, prev - 1))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+
+      if (wasSelected) {
+        startFreshSessionDraft(true)
+      }
+
+      try {
+        await setSessionArchived(storedSessionId, true)
+        notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
+      } catch (err) {
+        if (archived) {
+          setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
+          setSessionsTotal(prev => prev + 1)
+        }
+
+        $pinnedSessionIds.set(previousPinned)
+        notifyError(err, 'Archive failed')
+      }
+    },
+    [selectedStoredSessionId, startFreshSessionDraft]
+  )
+
   return {
+    archiveSession,
     branchCurrentSession,
     closeSettings,
     createBackendSessionForSend,

@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_platform TEXT,
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -451,12 +452,9 @@ class SessionDB:
         self._fts_unavailable_warned = True
         logger.warning(
             "SQLite FTS5 unavailable for %s; full-text session search "
-            "disabled. This usually means Hermes is running on an "
-            "unsupported install (e.g. a pip-installed or pip-managed "
-            "Python whose bundled SQLite lacks FTS5) rather than a "
-            "mainline install. Some features may be missing or behave "
-            "differently. Install the supported way: "
-            "https://hermes-agent.nousresearch.com (underlying error: %s)",
+            "disabled. Run `hermes update` to rebuild the venv with a "
+            "current Python (managed uv guarantees FTS5). "
+            "(underlying error: %s)",
             self.db_path,
             exc,
         )
@@ -1430,6 +1428,22 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
+    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+        """Archive or unarchive a session.
+
+        Archived sessions are hidden from the default session list but keep all
+        their messages — this is a soft hide, not a delete. Returns True when a
+        row was updated.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET archived = ? WHERE id = ?",
+                (1 if archived else 0, session_id),
+            )
+            return cursor.rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:
@@ -1549,6 +1563,8 @@ class SessionDB:
         min_message_count: int = 0,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
+        include_archived: bool = False,
+        archived_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1604,6 +1620,10 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         if order_by_last_active:
@@ -3027,7 +3047,13 @@ class SessionDB:
     # Utility
     # =========================================================================
 
-    def session_count(self, source: str = None, min_message_count: int = 0) -> int:
+    def session_count(
+        self,
+        source: str = None,
+        min_message_count: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
+    ) -> int:
         """Count sessions, optionally filtered by source."""
         where_clauses = []
         params = []
@@ -3038,6 +3064,10 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("message_count >= ?")
             params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("archived = 1")
+        elif not include_archived:
+            where_clauses.append("archived = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -3152,6 +3182,178 @@ class SessionDB:
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
+
+    def delete_sessions(
+        self,
+        session_ids: List[str],
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete every session in *session_ids* in a single transaction.
+
+        Backs the dashboard's bulk-select-then-delete flow on the
+        sessions page (``POST /api/sessions/bulk-delete``). Mirrors the
+        single-session :meth:`delete_session` contract per row:
+
+        * Unknown IDs are silently skipped (no 404) — selection state
+          in the UI can race against another tab's delete, and we'd
+          rather succeed-on-the-rest than fail-the-whole-batch.
+        * Children of every deleted ID are orphaned
+          (``parent_session_id → NULL``), never cascade-deleted, so a
+          branch / subagent transcript survives an inadvertent parent
+          delete.
+        * Messages and the session row both go in one
+          ``_execute_write`` call so a partial failure can't leave the
+          DB in a "messages gone but session row still there" state.
+        * On-disk transcript / ``request_dump_*`` files are cleaned up
+          outside the DB transaction when *sessions_dir* is provided,
+          matching :meth:`prune_sessions` and
+          :meth:`delete_empty_sessions`.
+
+        Returns the count of sessions that actually existed and were
+        deleted (may be less than ``len(session_ids)`` if some IDs were
+        already gone).
+        """
+        if not session_ids:
+            return 0
+        # Dedup + drop any non-string entries up-front. Avoids
+        # double-counting in the WHERE-IN list and protects against
+        # callers that pass a list with stray ``None`` values.
+        unique_ids = list({sid for sid in session_ids if isinstance(sid, str) and sid})
+        if not unique_ids:
+            return 0
+
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            placeholders = ",".join("?" * len(unique_ids))
+            # First, filter to IDs that actually exist — we want to
+            # return the real deleted count, not the input length.
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({placeholders})",
+                unique_ids,
+            )
+            existing = [row["id"] for row in cursor.fetchall()]
+            if not existing:
+                return 0
+
+            existing_placeholders = ",".join("?" * len(existing))
+            # Orphan children whose parent is in the kill list so the
+            # FK constraint stays satisfied. Pin children whose parent
+            # is itself in the kill list rather than NULL-ing parents
+            # of survivors — the IN list on ``parent_session_id`` does
+            # exactly this.
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({existing_placeholders})",
+                existing,
+            )
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
+                existing,
+            )
+            conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({existing_placeholders})",
+                existing,
+            )
+            removed_ids.extend(existing)
+            return len(existing)
+
+        count = self._execute_write(_do)
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
+
+    def count_empty_sessions(self) -> int:
+        """Return the count of empty, non-active, non-archived sessions.
+
+        "Empty" = ``message_count = 0`` AND the session has ended
+        (``ended_at IS NOT NULL``) AND is not archived. The ``ended_at``
+        guard matches the safety contract used by :meth:`prune_sessions`:
+        only ended sessions are candidates for bulk deletion, so a freshly
+        spawned session whose first message hasn't landed yet — or one
+        held open by the live agent — is never sniped out from under
+        the runtime.
+
+        Backs the ``GET /api/sessions/empty/count`` endpoint that lets the
+        web dashboard hide its "Delete empty" button when there's nothing
+        to clean up, and pre-populate the confirm dialog with the actual
+        count.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE message_count = 0 "
+                "AND ended_at IS NOT NULL "
+                "AND archived = 0"
+            )
+            return cursor.fetchone()[0]
+
+    def delete_empty_sessions(
+        self,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete every empty, ended, non-archived session.
+
+        Mirrors :meth:`prune_sessions`' transactional shape:
+
+        * Selects candidate IDs first (``message_count = 0`` AND
+          ``ended_at IS NOT NULL`` AND ``archived = 0``) so we never
+          touch a live session or one the user deliberately archived.
+        * Orphans any child whose parent is in the kill list — children
+          of an empty parent are kept and re-parented to ``NULL`` rather
+          than cascade-deleted, matching ``delete_session`` /
+          ``prune_sessions`` semantics so branch/subagent transcripts
+          survive an inadvertent parent cleanup.
+        * Deletes the rows in a single ``_execute_write`` callback so
+          the operation is atomic — a partial failure (e.g. SIGKILL
+          mid-loop) doesn't leave the DB in a "messages-deleted but
+          session-row-still-there" half-state.
+        * Cleans up on-disk transcript files (``.json`` / ``.jsonl`` /
+          ``request_dump_*``) outside the DB transaction when
+          ``sessions_dir`` is provided. Empty sessions don't typically
+          have transcript files, but the gateway can leave a stub
+          ``request_dump_*`` if it crashed before the first reply —
+          so we still sweep, matching ``prune_sessions``.
+
+        Returns the number of sessions deleted.
+        """
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM sessions "
+                "WHERE message_count = 0 "
+                "AND ended_at IS NOT NULL "
+                "AND archived = 0"
+            )
+            session_ids = {row["id"] for row in cursor.fetchall()}
+
+            if not session_ids:
+                return 0
+
+            placeholders = ",".join("?" * len(session_ids))
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({placeholders})",
+                list(session_ids),
+            )
+
+            for sid in session_ids:
+                # DELETE FROM messages is paranoia — by construction
+                # these rows have ``message_count = 0`` — but if a
+                # bookkeeping bug ever lets the counter drift below the
+                # real row count, we still leave a clean FK state.
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?", (sid,)
+                )
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                removed_ids.append(sid)
+            return len(session_ids)
+
+        count = self._execute_write(_do)
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
 
     def prune_sessions(
         self,

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -350,6 +351,14 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        leadGap: hasLeadGap(
+          prevRenderedMsg(i => virtualRows[i]?.msg, index, {
+            commandOverride: ui.detailsModeCommandOverride,
+            detailsMode: ui.detailsMode,
+            sections: ui.sections
+          }),
+          virtualRows[index]!.msg
+        ),
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
@@ -362,6 +371,9 @@ export function useMainApp(gw: GatewayClient) {
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
+      ui.detailsMode,
+      ui.detailsModeCommandOverride,
+      ui.sections,
       ui.theme.brand.prompt,
       virtualRows
     ]
@@ -988,7 +1000,17 @@ export function useMainApp(gw: GatewayClient) {
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
-      resumeById: session.resumeById,
+      // Resuming a cold session from the overlay CLOSES the current one, so it
+      // must respect the busy guard just like the `/resume` slash path.
+      // (Switching between live sessions and `+ new` keep the current session
+      // running, so those stay unguarded — that's the orchestrator's purpose.)
+      resumeById: (id: string) => {
+        if (session.guardBusySessionSwitch('switch sessions')) {
+          return
+        }
+
+        session.resumeById(id)
+      },
       setStickyPrompt
     }),
     [
@@ -1001,6 +1023,7 @@ export function useMainApp(gw: GatewayClient) {
       newPromptSession,
       onModelSelect,
       session.activateLiveSession,
+      session.guardBusySessionSwitch,
       session.newLiveSession,
       session.resumeById
     ]
@@ -1035,7 +1058,10 @@ export function useMainApp(gw: GatewayClient) {
 
   const appStatus = useMemo(
     () => ({
-      cwdLabel: fmtCwdBranch(cwd, gitBranch),
+      // Cap the status-bar cwd/branch label tighter than the shared default so
+      // it doesn't dominate the bar; the status rule reserves the left-side
+      // essentials and truncates this further on narrow terminals.
+      cwdLabel: fmtCwdBranch(cwd, gitBranch, 28),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,

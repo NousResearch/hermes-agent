@@ -31,6 +31,7 @@ import {
   enqueueQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
+  shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $messages } from '@/store/session'
@@ -64,7 +65,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
-import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
+import { detectTrigger, extractClipboardImageBlobs, shouldSkipTriggerRefreshOnKeyUp, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -124,6 +125,12 @@ export function ChatBar({
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
+  // Set when the user explicitly interrupts the running turn via the Stop
+  // button (busy + empty composer). It suppresses the next busy→false
+  // auto-drain so an explicit Stop actually halts instead of immediately
+  // firing the head of the queue. The queue is preserved; the user resumes
+  // it deliberately via Cmd/Ctrl+K, Enter, or the per-row "send now" arrow.
+  const userInterruptedRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
@@ -442,7 +449,14 @@ export function ChatBar({
     const detected = detectTrigger(before ?? composerPlainText(editor))
 
     setTrigger(detected)
-    setTriggerActive(0)
+
+    // Only reset the highlight when the trigger actually changed (opened, or
+    // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
+    // caret move (mouseup) or a stray refresh — must preserve the user's
+    // current selection instead of snapping back to the first item.
+    if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
+      setTriggerActive(0)
+    }
   }, [trigger])
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
@@ -602,7 +616,15 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = () => {
+  const handleEditorKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Arrow/Enter/Tab/Escape while the trigger menu is open are fully handled
+    // in keydown and never edit text. Refreshing the trigger here would reset
+    // the highlight to the top (breaking ArrowDown/ArrowUp) and re-open a menu
+    // that Escape just closed, so skip it.
+    if (shouldSkipTriggerRefreshOnKeyUp(event.key, trigger !== null)) {
+      return
+    }
+
     window.setTimeout(refreshTrigger, 0)
   }
 
@@ -844,26 +866,42 @@ export function ChatBar({
     [queueEdit, runDrain]
   )
 
-  const interruptAndSendNextQueued = useCallback(async () => {
-    if (queuedPrompts.length === 0) {
-      return false
-    }
-
-    await Promise.resolve(onCancel())
-
-    return drainNextQueued()
-  }, [drainNextQueued, onCancel, queuedPrompts.length])
-
-  // Auto-drain on busy → false (turn settled).
+  // Auto-drain on busy → false (turn settled). An explicit user interrupt
+  // (Stop button) sets userInterruptedRef so we skip exactly one auto-drain:
+  // the user asked to halt, so we must not immediately re-send the queue.
+  // The queued turns stay intact and the user resumes them on demand.
   useEffect(() => {
     const wasBusy = previousBusyRef.current
     previousBusyRef.current = busy
 
-    if (busy || !wasBusy || queuedPrompts.length === 0) {
+    // Clear the interrupt latch when a new turn starts (false → true). This
+    // guards the sub-frame race where a Stop click lands after busy already
+    // flipped false (button not yet unmounted): the stale latch can no longer
+    // survive into the next turn and wrongly suppress its natural auto-drain.
+    if (busy && !wasBusy) {
+      userInterruptedRef.current = false
+
       return
     }
 
-    void drainNextQueued()
+    const interrupted = userInterruptedRef.current
+
+    // Consume the interrupt latch on any settle so a later natural completion
+    // is not wrongly suppressed.
+    if (!busy && wasBusy && interrupted) {
+      userInterruptedRef.current = false
+    }
+
+    if (
+      shouldAutoDrainOnSettle({
+        isBusy: busy,
+        queueLength: queuedPrompts.length,
+        userInterrupted: interrupted,
+        wasBusy
+      })
+    ) {
+      void drainNextQueued()
+    }
   }, [busy, drainNextQueued, queuedPrompts.length])
 
   // Clean up queue edit when its target disappears (session swap or external delete).
@@ -886,9 +924,13 @@ export function ChatBar({
     } else if (busy) {
       if (hasComposerPayload) {
         queueCurrentDraft()
-      } else if (queuedPrompts.length > 0) {
-        void interruptAndSendNextQueued()
       } else {
+        // Stop button: an explicit interrupt must actually halt the running
+        // turn. Mark the interrupt so the busy→false auto-drain effect skips
+        // re-sending the queue — otherwise a queued follow-up would fire the
+        // instant we cancel and Stop would appear to "never work". Queued
+        // turns are preserved; the user sends them on demand.
+        userInterruptedRef.current = true
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
@@ -1024,6 +1066,8 @@ export function ChatBar({
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-label="Message"
+        autoCorrect="off"
+        autoCapitalize="off"
         className={cn(
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
@@ -1045,6 +1089,7 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
+        spellCheck="true"
         suppressContentEditableWarning
       />
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree

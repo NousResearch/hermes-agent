@@ -292,7 +292,7 @@ def _maybe_unescape_new_string(new_string: str,
     """
     # Cheap pre-check — bail out unless new_string actually contains one of
     # the suspect sequences. Keeps the common case free.
-    if "\\t" not in new_string and "\\r" not in new_string:
+    if "\\t" not in new_string and "\\r" not in new_string and "\\n" not in new_string:
         return new_string
 
     matched_regions = "".join(content[start:end] for start, end in matches)
@@ -301,6 +301,12 @@ def _maybe_unescape_new_string(new_string: str,
         out = out.replace("\\t", "\t")
     if "\\r" in out and "\r" in matched_regions:
         out = out.replace("\\r", "\r")
+    # LLMs can emit literal \\n (two-char backslash-n) when serialisation
+    # layers double-escape JSON.  Only unescape when the matched file
+    # region actually contains newline bytes — source-code regex/string
+    # constants with literal \\n on disk are left untouched.
+    if "\\n" in out and "\n" in matched_regions:
+        out = out.replace("\\n", "\n")
     return out
 
 

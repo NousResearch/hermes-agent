@@ -488,35 +488,37 @@ class TestEscapeNormalizedNewString:
         assert strategy == "escape_normalized"
         assert "replaced\r" in new
 
-    def test_newline_in_new_string_NOT_unescaped(self):
-        """``\\n`` is intentionally left alone — newlines serialize correctly
-        through JSON, and unescaping would corrupt source-code escape
-        sequences far more often than help.
-        """
+    def test_newline_in_new_string_unescaped_when_region_has_newlines(self):
+        """When the matched file region contains real newlines, literal
+        ``\\n`` in new_string is unescaped to a real newline.  This fixes
+        the case where serialisation layers double-escape JSON."""
         content = "line1\nline2\n"
         old_string = "line1\nline2"
         new_string = "alpha\\nbeta"                 # literal backslash + n
         new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
-        # The literal two-character sequence ``\n`` must survive verbatim.
-        assert "alpha\\nbeta" in new
-        # And there should be no real newline added where ``\\n`` sat.
-        assert "alpha\nbeta" not in new
+        # The literal ``\\n`` is converted to a real newline because the
+        # matched region contains newlines.
+        assert "alpha\\nbeta" not in new, repr(new)
+        assert "alpha\nbeta" in new
 
     def test_mixed_tab_and_newline_only_tab_unescaped(self):
-        """When new_string contains both \\t and \\n, only \\t is converted."""
+        """When new_string contains both \\t and \\n and the file region
+        has both real tabs and real newlines, both escape sequences are
+        converted to their real control characters."""
         content = "def foo():\n\tpass\n"
         old_string = "def foo():\n\tpass\n"
         new_string = "def bar():\\n\\treturn 1\\n"
         new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None, f"Unexpected error: {err}"
         assert count == 1
-        # \t -> real tab
+        # \\t -> real tab
         assert "\treturn 1" in new
         assert "\\t" not in new
-        # \n preserved as literal backslash-n
-        assert "\\n" in new
+        # \\n -> real newline (matched region contains real newlines)
+        assert "\\n" not in new
+        assert "def bar():\n\treturn 1\n" in new
 
     def test_exact_match_preserves_literal_backslash_t_in_string_literal(self):
         """If the matched region of the file does NOT contain a real tab,

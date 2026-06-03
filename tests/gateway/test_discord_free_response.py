@@ -56,11 +56,19 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(
+        self,
+        channel_id: int = 1,
+        name: str = "general",
+        guild_name: str = "Hermes Server",
+        members=None,
+    ):
         self.id = channel_id
         self.name = name
         self.guild = SimpleNamespace(name=guild_name)
         self.topic = None
+        if members is not None:
+            self.members = list(members)
 
     def history(self, *, limit, before, after=None, oldest_first=None):
         async def _iter():
@@ -137,6 +145,15 @@ def make_message(*, channel, content: str, mentions=None, msg_type=None):
         channel=channel,
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
+    )
+
+
+def make_member(member_id: int, *, bot: bool = False, name: str | None = None):
+    return SimpleNamespace(
+        id=member_id,
+        bot=bot,
+        display_name=name or f"user-{member_id}",
+        name=name or f"user-{member_id}",
     )
 
 
@@ -277,6 +294,58 @@ async def test_discord_can_still_require_mentions_when_enabled(adapter, monkeypa
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
     message = make_message(channel=FakeTextChannel(channel_id=789), content="ignored without mention")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_one_human_channel_allows_without_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    bot_user = make_member(adapter._client.user.id, bot=True, name="Hermes")
+    human_user = make_member(42, name="Lin")
+    channel = FakeTextChannel(channel_id=789, members=[bot_user, human_user])
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(channel=channel, content="one human can chat without mention")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "one human can chat without mention"
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_multi_human_channel_requires_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = make_member(adapter._client.user.id, bot=True, name="Hermes")
+    author = make_member(42, name="Lin")
+    other_human = make_member(43, name="Teammate")
+    channel = FakeTextChannel(channel_id=789, members=[bot_user, author, other_human])
+
+    message = make_message(channel=channel, content="group chat without mention stays quiet")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_unknown_channel_members_still_requires_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    channel = FakeTextChannel(channel_id=789)
+    message = make_message(channel=channel, content="cannot prove this is one-human")
 
     await adapter._handle_message(message)
 
@@ -924,7 +993,6 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     if adapter.handle_message.await_args is not None:
         event = adapter.handle_message.await_args.args[0]
         assert event.channel_context is None
-
 @pytest.mark.asyncio
 async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
     """Auto-created threads skip backfill — the thread is brand new with no prior context."""

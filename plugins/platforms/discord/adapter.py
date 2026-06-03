@@ -3948,6 +3948,52 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _discord_channel_allows_unmentioned_single_human(self, message: DiscordMessage) -> bool:
+        """Allow no-mention replies only when channel membership proves 1 human + this bot.
+
+        If Discord does not expose a complete enough member list, return
+        False and keep the normal @mention gate. This avoids accidentally
+        making busy guild channels chatty.
+        """
+        channel = getattr(message, "channel", None)
+        members = getattr(channel, "members", None)
+        if members is None:
+            return False
+
+        client_user = getattr(self._client, "user", None)
+        self_id = getattr(client_user, "id", None)
+        author_id = getattr(getattr(message, "author", None), "id", None)
+        if self_id is None or author_id is None:
+            return False
+
+        try:
+            member_list = list(members)
+        except TypeError:
+            return False
+
+        self_id_str = str(self_id)
+        author_id_str = str(author_id)
+        saw_self = False
+        saw_author = False
+        human_ids: set[str] = set()
+
+        for member in member_list:
+            member_id = getattr(member, "id", None)
+            if member_id is None:
+                continue
+            member_id_str = str(member_id)
+            is_self = member_id_str == self_id_str
+            is_bot = bool(getattr(member, "bot", False)) or is_self
+            if is_self:
+                saw_self = True
+            if is_bot:
+                continue
+            human_ids.add(member_id_str)
+            if member_id_str == author_id_str:
+                saw_author = True
+
+        return saw_self and saw_author and len(human_ids) <= 1
+
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
         configured = self.config.extra.get("history_backfill")
@@ -4805,6 +4851,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 "*" in free_channels
                 or bool(channel_ids & free_channels)
                 or is_voice_linked_channel
+                or self._discord_channel_allows_unmentioned_single_human(message)
             )
 
             # Skip the mention check if the message is in a thread where

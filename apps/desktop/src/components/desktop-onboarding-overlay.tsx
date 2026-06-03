@@ -56,8 +56,6 @@ interface ApiKeyOption {
   short?: string
 }
 
-const MIN_KEY_LENGTH = 8
-
 const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
     id: 'openrouter',
@@ -418,7 +416,9 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
   const [error, setError] = useState<null | string>(null)
 
   const isLocal = option.envKey === 'OPENAI_BASE_URL'
-  const canSave = value.trim().length >= (isLocal ? 1 : MIN_KEY_LENGTH)
+  // Only require a non-empty value — no length/format validation, so a short
+  // or unusual key can't block the user from continuing.
+  const canSave = value.trim().length >= 1
 
   const submit = async () => {
     if (!canSave || saving) {

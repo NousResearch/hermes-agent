@@ -916,6 +916,32 @@ canvas {
   margin-block: 0 !important;
 }
 
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'] {
+  position: relative;
+  transition:
+    border-color 180ms ease-out,
+    box-shadow 180ms ease-out,
+    background-color 180ms ease-out;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
+  animation:
+    code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both,
+    code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
+  border-color: color-mix(in srgb, var(--dt-ring) 24%, var(--ui-stroke-tertiary));
+  box-shadow:
+    0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 10%, transparent),
+    0 0.625rem 1.75rem color-mix(in srgb, var(--dt-ring) 8%, transparent);
+}
+
+[data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true']
+  [data-slot='code-card-body'] {
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
   border: 0.0625rem solid var(--ui-inline-code-border);
   background: var(--ui-inline-code-background);
@@ -1037,4 +1063,38 @@ canvas {
 .thinking-preview {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
   mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
+}
+
+@keyframes code-card-stream-enter {
+  from {
+    opacity: 0.74;
+    transform: translateY(0.375rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes code-card-stream-glow {
+  from {
+    border-color: color-mix(in srgb, var(--dt-ring) 18%, var(--ui-stroke-tertiary));
+    box-shadow:
+      0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 6%, transparent),
+      0 0.5rem 1.5rem color-mix(in srgb, var(--dt-ring) 5%, transparent);
+  }
+
+  to {
+    border-color: color-mix(in srgb, var(--dt-ring) 32%, var(--ui-stroke-tertiary));
+    box-shadow:
+      0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent),
+      0 0.75rem 2rem color-mix(in srgb, var(--dt-ring) 10%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
+    animation: none;
+  }
 }

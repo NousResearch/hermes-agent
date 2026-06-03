@@ -64,7 +64,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   const label = cleanLanguage && cleanLanguage !== 'unknown' ? cleanLanguage : ''
 
   return (
-    <CodeCard>
+    <CodeCard data-streaming={defer ? 'true' : undefined}>
       <CodeCardHeader>
         <CodeCardTitle>
           <CodeCardIcon name={codiconForLanguage(label)} />

@@ -333,6 +333,10 @@ export default function ProfilesPage() {
   // Tracks the latest description request (save / auto-describe) so a late
   // response can't overwrite state for a different, newly-opened editor.
   const activeDescRequest = useRef<string | null>(null);
+  // Counts in-flight save / auto-describe requests so the saving indicator
+  // is only cleared when the last concurrent request settles.
+  const descSavingCount = useRef(0);
+  const describingCount = useRef(0);
 
   // Inline model editor state
   const [editingModelFor, setEditingModelFor] = useState<string | null>(null);
@@ -545,6 +549,7 @@ export default function ProfilesPage() {
   );
 
   const handleSaveDesc = async (name: string) => {
+    descSavingCount.current += 1;
     setDescSaving(true);
     activeDescRequest.current = name;
     try {
@@ -571,11 +576,13 @@ export default function ProfilesPage() {
         showToast(`${t.status.error}: ${e}`, "error");
       }
     } finally {
-      setDescSaving(false);
+      descSavingCount.current -= 1;
+      if (descSavingCount.current === 0) setDescSaving(false);
     }
   };
 
   const handleAutoDescribe = async (name: string) => {
+    describingCount.current += 1;
     setDescribing(true);
     activeDescRequest.current = name;
     try {
@@ -603,7 +610,8 @@ export default function ProfilesPage() {
         showToast(`${t.status.error}: ${e}`, "error");
       }
     } finally {
-      setDescribing(false);
+      describingCount.current -= 1;
+      if (describingCount.current === 0) setDescribing(false);
     }
   };
 

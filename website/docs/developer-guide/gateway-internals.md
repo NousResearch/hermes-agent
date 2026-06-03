@@ -253,6 +253,73 @@ The gateway runs as a long-lived process, managed via:
 
 **Profile-scoped vs global**: `start_gateway()` uses profile-scoped PID files. `hermes gateway stop` stops only the current profile's gateway. `hermes gateway stop --all` uses global `ps aux` scanning to kill all gateway processes (used during updates).
 
+## Tool Callbacks (Blocking Tools)
+
+Some tools require blocking on user input and must bridge the synchronous agent loop to the asynchronous gateway. The gateway wires callbacks at startup that the tool executor calls into.
+
+### `clarify` callback
+
+```
+agent/agent_runtime_helpers.py
+  → clarify_tool(callback=kw["callback"])
+    → clarify_gateway.register() + wait()
+      → gateway callback → adapter.send_clarify()
+        → Discord: simple text question with numbered choices
+```
+
+Configured via `agent.clarify_timeout` (default 600s).
+
+### `interactive_prompt` callback
+
+```
+agent/agent_runtime_helpers.py
+  → interactive_prompt_tool(callback=kw["callback"])
+    → human_input_gateway.register() + wait()
+      → gateway callback → adapter.send_human_input()
+        → Discord: rich embed + buttons / modals
+        → Other platforms: numbered text fallback
+```
+
+**Feature-flagged.** The tool's `check_fn` reads `agent.interactive_prompt_enabled` from config (default `false`). When disabled the tool is excluded from the schema — the model cannot call it.
+
+Configured via `agent.interactive_prompt_timeout` (falls back to `agent.clarify_timeout`, then 900s).
+
+**Modal field types** supported in Discord:
+
+| Type | `discord.ui` class | Return shape | Cap |
+|------|---------------------|--------------|-----|
+| `text` | `TextInput` | `str \| None` | 4000 chars |
+| `select` | `Select` | `list[str]` | 25 options |
+| `radio` | `RadioGroup` | `str \| None` | 10 options |
+| `checkbox` | `CheckboxGroup` | `list[str]` | 10 options |
+
+Max 5 components per modal (Discord API hard limit). The renderer enforces this in `discord_interactive_views.py`; excess fields are logged and skipped.
+
+`file_upload` is planned for a future release — not yet implemented in the renderer or accepted by the schema.
+
+### Gateway cleanup
+
+In-flight prompts are cancelled in two places:
+
+1. **Per-session** at session boundaries (`_clear_session_boundary_security_state` in `gateway/run.py`):
+   ```python
+   from tools.clarify_gateway import clear_session as _clear_clarify_session
+   _clarify_session(session_key)
+
+   from tools.human_input_gateway import clear_session as _clear_human_input
+   _clear_human_input(session_key)
+   ```
+
+2. **All sessions** during gateway shutdown (`_kill_tool_subprocesses` in `gateway/run.py`):
+   ```python
+   from tools.clarify_gateway import clear_all as _clear_all_clarify
+   _clear_all_clarify()
+
+   from tools.human_input_gateway import clear_all as _clear_all_human
+   _clear_all_human()
+   ```
+   This runs twice in the shutdown path — once after drain-timeout agent interrupt, and once as a final catch-all — so in-flight prompts resolve with `status="cancelled"` instead of hanging until their timeout expires.
+
 ## Related Docs
 
 - [Session Storage](./session-storage.md)

@@ -624,6 +624,15 @@ agent:
   
   # Enable verbose logging
   verbose: false
+
+  # ── Interactive Prompt ──────────────────────────────────────────────
+  # Rich interactive prompts with buttons, modal forms, file uploads,
+  # and auth policies.  Disabled by default — opt-in per deployment.
+  # interactive_prompt_enabled: false
+
+  # Default timeout for interactive_prompt calls (seconds, 60–3600).
+  # Falls back to clarify_timeout if unset, then 900 (15 min).
+  # interactive_prompt_timeout: 900
   
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.

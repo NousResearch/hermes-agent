@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~71 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 9 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
+**Quick counts (current registry):** ~71 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 9 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `interactive_prompt`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -43,6 +43,48 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports two modes: 1. **Multiple choice** — provide up to 4 choices. The user picks one or types their own answer via a 5th 'Other' option. 2.… | — |
+
+## `interactive_prompt` toolset
+
+**Opt-in.** Disabled by default. Enable with `agent.interactive_prompt_enabled: true` in `config.yaml`. The tool is silently excluded from the schema when disabled — the model never sees it.
+
+Use `clarify` for simple single-choice or open-ended questions. Use `interactive_prompt` when you need file uploads, multi-field form collection, per-option styling, or structured response data.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `interactive_prompt` | Present a structured interactive prompt with buttons and modal forms. Each option can return immediately (`action="return"`) or open a modal form (`action="modal"`) that collects additional structured input. Discord renders rich embed + buttons; other platforms fall back to numbered text list. Returns JSON with `status`, `choice`, `actor`, optional `fields` (modal values) and `files` (uploads, planned). | `agent.interactive_prompt_enabled: true` |
+
+**Key parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `question` | string | required | Prompt text (max 2000 chars) |
+| `options` | array | required | 1–25 option objects with `label`, `value`, optional `action`, `modal`, `description`, `style` |
+| `display_type` | enum | `"buttons"` | `"buttons"` only (`"select"` planned) |
+| `timeout_seconds` | number | 900 | 60–3600 seconds; configurable via `agent.interactive_prompt_timeout` |
+| `auth_policy` | enum | `"session_owner_only"` | Who may interact: `"session_owner_only"`, `"any_allowed_user"`, `"any_allowed_role"`, `"any_allowed_user_or_role"` |
+
+**Modal field types** (when `action="modal"`):
+
+| Type | Widget | Options | Discord Limit |
+|------|--------|---------|---------------|
+| `text` | Freeform input (single-line or paragraph) | — | max 4000 chars |
+| `select` | Dropdown pick-one | 1–25 choices | — |
+| `radio` | Exclusive single-choice group | 1–10 choices | — |
+| `checkbox` | Multi-select group | 1–10 choices | — |
+
+Max **5 fields per modal** (Discord API limit). Fields beyond 5 are silently dropped with a warning.
+
+> **Note:** `file_upload` is planned for a future release. It is not accepted by the current schema and will be rejected if submitted.
+
+> ⚠️ **Auth policies have not been live-tested on Discord.** The auth enforcement logic is covered by 19 unit tests in `test_discord_component_auth.py` and shares infrastructure with the production `clarify`/approval views. Live verification (confirming ephemeral rejection messages render correctly for non-authorized users) is still pending.
+
+**Configuration keys** (in `config.yaml` under `agent:`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `interactive_prompt_enabled` | `false` | Feature flag — must be `true` for the tool to appear |
+| `interactive_prompt_timeout` | `900` | Default timeout in seconds; falls back to `clarify_timeout` if unset |
 
 ## `code_execution` toolset
 

@@ -2042,11 +2042,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, registry=None) -> int:
         # sequentially to avoid corrupting each other. Jobs without either field
         # stay parallel-safe.
         sequential_jobs = [
-            j for j in due_jobs
+            j for j in all_jobs
             if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
         ]
         parallel_jobs = [
-            j for j in due_jobs
+            j for j in all_jobs
             if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
         ]
 

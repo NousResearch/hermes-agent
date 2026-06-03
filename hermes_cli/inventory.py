@@ -115,6 +115,7 @@ def build_models_payload(
     picker_hints: bool = False,
     canonical_order: bool = False,
     pricing: bool = False,
+    capabilities: bool = False,
     max_models: int = 50,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -134,6 +135,10 @@ def build_models_payload(
       show $/Mtok columns and gate paid models on free accounts —
       mirroring the ``hermes model`` CLI picker. Adds network calls
       (pricing fetch + Nous tier check); only set for interactive pickers.
+    - ``capabilities``: add a per-row ``capabilities`` map
+      ``{model: {fast, reasoning}}`` so pickers can gate the model-options
+      controls (fast toggle / reasoning) to what each model actually
+      supports, instead of offering knobs the backend would reject.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -154,12 +159,52 @@ def build_models_payload(
         rows = _reorder_canonical(rows)
     if pricing:
         _apply_pricing(rows)
+    if capabilities:
+        _apply_capabilities(rows)
 
     return {
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def _apply_capabilities(rows: list[dict]) -> None:
+    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+
+    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
+    enforces). `reasoning` comes from the models.dev catalog when known and
+    defaults to True otherwise — the effort dial is broadly accepted and a
+    no-op on models that ignore it, whereas hiding it from a capable-but-
+    uncatalogued model is the worse failure.
+    """
+    from hermes_cli.models import model_supports_fast_mode
+
+    try:
+        from agent.models_dev import get_model_capabilities
+    except Exception:
+        get_model_capabilities = None  # type: ignore[assignment]
+
+    for row in rows:
+        slug = row.get("slug") or ""
+        caps: dict[str, dict[str, bool]] = {}
+
+        for model in row.get("models") or []:
+            reasoning = True
+            if get_model_capabilities is not None and slug:
+                try:
+                    meta = get_model_capabilities(slug, model)
+                    if meta is not None:
+                        reasoning = bool(meta.supports_reasoning)
+                except Exception:
+                    reasoning = True
+
+            caps[model] = {
+                "fast": bool(model_supports_fast_mode(model)),
+                "reasoning": reasoning,
+            }
+
+        row["capabilities"] = caps
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────

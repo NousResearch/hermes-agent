@@ -8961,6 +8961,39 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
+def _maybe_print_native_build_tools_guidance() -> None:
+    """Print actionable guidance when npm install likely failed due to missing
+    native build tools (make, gcc/g++).
+
+    Some Node.js packages (e.g. ``node-pty``) ship prebuilt binaries for
+    common platforms, but fall back to compiling from source via ``node-gyp``
+    when no prebuild matches the current OS/arch/Node version.  That
+    compilation requires ``make`` and a C/C++ compiler, which are often
+    absent on minimal Linux installs (WSL, containers, cloud VMs).
+
+    This heuristic checks whether the essential build tools are missing and,
+    if so, prints distro-specific install commands so the user doesn't have
+    to decipher ``gyp ERR!`` output.
+    """
+    if shutil.which("make") and (shutil.which("gcc") or shutil.which("g++")):
+        return  # Build tools are present — failure is something else.
+
+    print()
+    print("  💡 npm install may have failed because native build tools are missing.")
+    print("     Some Node.js packages (e.g. node-pty) need a C/C++ compiler and make")
+    print("     to compile native extensions when prebuilt binaries are unavailable.")
+    print()
+    print("  Install the required tools for your distro:")
+    print("    Debian/Ubuntu:  sudo apt install -y make gcc g++ python3-dev")
+    print("    Fedora/RHEL:    sudo dnf install -y make gcc gcc-c++ python3-devel")
+    print("    openSUSE:       sudo zypper install -y make gcc gcc-c++ python3-devel")
+    print("    Arch Linux:     sudo pacman -S --noconfirm base-devel")
+    print("    Alpine:         apk add make gcc g++ python3-dev")
+    print()
+    print("  Then re-run: hermes update")
+    print()
+
+
 def _update_node_dependencies() -> None:
     npm = shutil.which("npm")
     if not npm:
@@ -8992,6 +9025,7 @@ def _update_node_dependencies() -> None:
         stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
+        _maybe_print_native_build_tools_guidance()
         return
 
     # Step 2: install only the workspaces update needs (ui-tui, web).
@@ -9010,6 +9044,7 @@ def _update_node_dependencies() -> None:
         stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
+        _maybe_print_native_build_tools_guidance()
 
 
 class _UpdateOutputStream:

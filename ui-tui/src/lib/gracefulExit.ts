@@ -48,26 +48,29 @@ export function setupGracefulExit({ cleanups = [], failsafeMs = 4000, onError, o
 
 /**
  * Start a watchdog that detects when this process has been orphaned
- * (parent PID changed to 1 / launchd, or the original parent exited).
+ * (parent process exited, closing the stdin pipe or changing ppid).
  *
- * When a terminal window is closed or the desktop app quits, the TUI
- * process may survive as an orphan.  Without this watchdog the Ink
- * render loop can enter a tight busy-loop at ~100 % CPU because stdin
- * is gone but the event loop keeps running.
+ * **Primary detection — stdin pipe closure (event-driven, zero overhead):**
+ * When a terminal window is closed or the desktop app quits, the parent's
+ * side of the stdin pipe closes.  We listen for `'end'` / `'close'` on
+ * `process.stdin` — this fires immediately with no polling overhead.
  *
- * The check runs every `intervalMs` (default 10 s) and is `.unref()`'d
- * so it does not keep the process alive on its own.
+ * **Fallback — ppid polling:**
+ * In exotic environments (containers, certain SSH setups) the stdin events
+ * may not fire reliably.  As a safety net, we check `process.ppid` every
+ * `fallbackIntervalMs` (default 30 s).  The interval is `.unref()`'d so
+ * it does not keep the process alive on its own.
  *
  * @param onOrphaned  Called when orphaning is detected.  Receives a
  *                    human-readable reason string for logging.
- * @param intervalMs  How often to check (default: 10 000).
- * @returns           A stop function that clears the interval.
+ * @param fallbackIntervalMs  How often to poll ppid (default: 30 000).
+ * @returns           A stop function that removes listeners and clears timers.
  */
 export function startParentWatchdog(
   onOrphaned: (reason: string) => void,
-  intervalMs = 10_000
+  fallbackIntervalMs = 30_000
 ): () => void {
-  // Not supported on Windows (ppid is unreliable there).
+  // Not supported on Windows (ppid is unreliable, stdin events differ).
   if (process.platform === 'win32') {
     return () => {}
   }
@@ -86,14 +89,44 @@ export function startParentWatchdog(
     return () => {}
   }
 
+  let fired = false
+
+  const fire = (reason: string) => {
+    if (fired) {
+      return
+    }
+
+    fired = true
+    cleanup()
+    onOrphaned(reason)
+  }
+
+  // --- Primary: stdin pipe closure detection ---
+  // When the parent exits, its side of the stdin pipe closes.  Node's
+  // Readable stream emits 'end' (no more data) and 'close' (resource
+  // released).  Either event means the parent is gone.
+  //
+  // We listen on the raw file descriptor (fd 0) via `process.stdin`
+  // because Ink's readline consumes the stream but does not prevent
+  // the underlying 'end'/'close' from firing on the Readable itself.
+  const onStdinEnd = () => fire('stdin pipe closed (parent exited)')
+  const onStdinClose = () => fire('stdin stream closed')
+
+  process.stdin.once('end', onStdinEnd)
+  process.stdin.once('close', onStdinClose)
+
+  // --- Fallback: ppid polling ---
+  // Catches edge cases where stdin events don't fire (exotic container
+  // setups, certain SSH configurations).  Runs at a longer interval
+  // than the original 10 s because this is a safety net, not the
+  // primary mechanism.
   const timer = setInterval(() => {
     try {
       const currentPpid = process.ppid
 
       // Reparented to init/launchd → parent exited.
       if (currentPpid <= 1) {
-        onOrphaned(`parent exited (ppid changed from ${originalPpid} to ${currentPpid})`)
-        clearInterval(timer)
+        fire(`parent exited (ppid changed from ${originalPpid} to ${currentPpid})`)
         return
       }
 
@@ -101,8 +134,7 @@ export function startParentWatchdog(
       // means the original parent is gone (e.g. inside a container
       // with a reaper).  Treat as orphaned.
       if (currentPpid !== originalPpid) {
-        onOrphaned(`parent changed (ppid ${originalPpid} → ${currentPpid})`)
-        clearInterval(timer)
+        fire(`parent changed (ppid ${originalPpid} → ${currentPpid})`)
         return
       }
 
@@ -115,21 +147,26 @@ export function startParentWatchdog(
         process.kill(originalPpid, 0)
       } catch (err: unknown) {
         if (isErrnoException(err) && err.code === 'ESRCH') {
-          onOrphaned(`parent PID ${originalPpid} no longer exists (ESRCH)`)
-          clearInterval(timer)
+          fire(`parent PID ${originalPpid} no longer exists (ESRCH)`)
         }
       }
     } catch {
       // process.ppid may be undefined in exotic environments — ignore.
     }
-  }, intervalMs)
+  }, fallbackIntervalMs)
 
   // Don't let the watchdog keep the process alive if everything else
   // has cleaned up.  The timer is the only thing holding the event loop
   // open in that case, and we want the process to exit naturally.
   timer.unref?.()
 
-  return () => clearInterval(timer)
+  function cleanup() {
+    process.stdin.removeListener('end', onStdinEnd)
+    process.stdin.removeListener('close', onStdinClose)
+    clearInterval(timer)
+  }
+
+  return cleanup
 }
 
 function isErrnoException(err: unknown): err is NodeJS.ErrnoException {

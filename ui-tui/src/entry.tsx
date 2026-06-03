@@ -96,8 +96,8 @@ process.on('beforeExit', () => stopMemoryMonitor())
 
 // Detect orphaned processes (#38425). When the parent process exits (terminal
 // closed, desktop app quit), the TUI can be reparented to PID 1 and enter a
-// tight busy-loop at ~100% CPU. The watchdog checks the parent PID every 10 s
-// and triggers a clean exit when orphaning is detected.
+// tight busy-loop at ~100% CPU. The watchdog listens for stdin pipe closure
+// (immediate, event-driven) and falls back to ppid polling every 30 s.
 const stopParentWatchdog = startParentWatchdog(reason => {
   recordParentLifecycle(`orphan-detected: ${reason} → killing gateway and exiting`)
   process.stderr.write(`hermes-tui: orphaned (${reason}); exiting\n`)

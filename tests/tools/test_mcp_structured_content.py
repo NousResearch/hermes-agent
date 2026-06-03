@@ -18,6 +18,35 @@ class _FakeContentBlock:
         self.type = block_type
 
 
+class _FakeTextResourceContents:
+    """Minimal TextResourceContents stand-in."""
+
+    def __init__(self, uri: str, mimeType: str, text: str, meta=None):
+        self.uri = uri
+        self.mimeType = mimeType
+        self.text = text
+        self._meta = meta
+
+
+class _FakeBlobResourceContents:
+    """Minimal BlobResourceContents stand-in."""
+
+    def __init__(self, uri: str, mimeType: str, blob: str, meta=None):
+        self.uri = uri
+        self.mimeType = mimeType
+        self.blob = blob
+        self._meta = meta
+
+
+class _FakeEmbeddedResourceBlock:
+    """Minimal EmbeddedResource stand-in."""
+
+    def __init__(self, resource, meta=None):
+        self.type = "resource"
+        self.resource = resource
+        self._meta = meta
+
+
 class _FakeCallToolResult:
     """Minimal CallToolResult stand-in.
 
@@ -141,3 +170,73 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
+
+    def test_embedded_resource_content_is_preserved(self, _patch_mcp_server):
+        """MCP Apps / mcp-ui resources must survive tool result serialization."""
+        session = _patch_mcp_server
+        html = "<html><body><button>Ask Lisa</button></body></html>"
+        resource = _FakeTextResourceContents(
+            uri="ui://lisa-spike/card.html",
+            mimeType="text/html;profile=mcp-app",
+            text=html,
+            meta={"ui": {"visibility": ["model", "app"]}},
+        )
+        block_meta = {"ui": {"resourceUri": "ui://lisa-spike/card.html"}}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[
+                    _FakeContentBlock("Rendered card"),
+                    _FakeEmbeddedResourceBlock(resource, meta=block_meta),
+                ],
+                structuredContent={"answer": 42},
+            )
+        )
+
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+
+        assert data["result"][0] == "Rendered card"
+        resource_payload = data["result"][1]
+        assert resource_payload == {
+            "type": "resource",
+            "resource": {
+                "uri": "ui://lisa-spike/card.html",
+                "mimeType": "text/html;profile=mcp-app",
+                "text": html,
+                "_meta": {"ui": {"visibility": ["model", "app"]}},
+            },
+            "_meta": block_meta,
+        }
+        assert data["structuredContent"] == {"answer": 42}
+
+    def test_blob_embedded_resource_content_is_preserved(self, _patch_mcp_server):
+        """Binary MCP resources should keep their base64 blob payload."""
+        session = _patch_mcp_server
+        resource = _FakeBlobResourceContents(
+            uri="ui://lisa-spike/image.bin",
+            mimeType="application/octet-stream",
+            blob="AAECAw==",
+        )
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeEmbeddedResourceBlock(resource)],
+            )
+        )
+
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+
+        assert data == {
+            "result": [
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "ui://lisa-spike/image.bin",
+                        "mimeType": "application/octet-stream",
+                        "blob": "AAECAw==",
+                    },
+                }
+            ]
+        }

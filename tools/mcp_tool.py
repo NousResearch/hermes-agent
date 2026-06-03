@@ -2583,6 +2583,46 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
     return server
 
 
+def _serialize_mcp_resource_block(block) -> Optional[dict]:
+    """Serialize MCP EmbeddedResource/ResourceLink content blocks.
+
+    Text/image blocks already have compact legacy representations. Resource
+    blocks need their structured shape preserved so MCP Apps / mcp-ui hosts can
+    render ``ui://`` resources instead of losing them during text flattening.
+    """
+    block_type = getattr(block, "type", None)
+    resource = getattr(block, "resource", None)
+    if block_type == "resource" and resource is not None:
+        resource_payload = {}
+        if hasattr(resource, "uri"):
+            resource_payload["uri"] = str(resource.uri)
+        if getattr(resource, "mimeType", None):
+            resource_payload["mimeType"] = resource.mimeType
+        if hasattr(resource, "text"):
+            resource_payload["text"] = resource.text
+        if hasattr(resource, "blob"):
+            resource_payload["blob"] = resource.blob
+        if getattr(resource, "_meta", None) is not None:
+            resource_payload["_meta"] = resource._meta
+
+        payload = {"type": "resource", "resource": resource_payload}
+        if getattr(block, "_meta", None) is not None:
+            payload["_meta"] = block._meta
+        return payload
+
+    if block_type == "resource_link" and hasattr(block, "uri"):
+        payload = {"type": "resource_link", "uri": str(block.uri)}
+        for attr in ("name", "title", "description", "mimeType", "size"):
+            value = getattr(block, attr, None)
+            if value is not None:
+                payload[attr] = value
+        if getattr(block, "_meta", None) is not None:
+            payload["_meta"] = block._meta
+        return payload
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
@@ -2655,7 +2695,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # both too stale to cherry-pick. #10848's approach (integrate with
             # Hermes' MEDIA tag + cache_image_from_bytes) was the cleaner of
             # the two — plugs into existing infrastructure.
-            parts: List[str] = []
+            parts: List[object] = []
+            has_structured_parts = False
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
                     parts.append(block.text)
@@ -2663,7 +2704,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
-            text_result = "\n".join(parts) if parts else ""
+                    continue
+                resource_payload = _serialize_mcp_resource_block(block)
+                if resource_payload:
+                    parts.append(resource_payload)
+                    has_structured_parts = True
+            if not parts:
+                text_result = ""
+            elif has_structured_parts:
+                text_result = parts
+            else:
+                text_result = "\n".join(str(part) for part in parts)
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent

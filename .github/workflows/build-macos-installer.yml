@@ -1,0 +1,93 @@
+name: Build macOS Installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate: workflow_dispatch is already restricted to users with write access,
+  # but release installer artifacts should only be produced by repo admins.
+  authorize:
+    name: Authorize (admins only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check actor is a repo admin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          perm=$(gh api \
+            "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
+            --jq '.permission')
+          echo "Actor '${ACTOR}' has permission: ${perm}"
+          if [ "${perm}" != "admin" ]; then
+            echo "::error::'${ACTOR}' is not a repo admin (permission=${perm}). Refusing to build installer artifacts."
+            exit 1
+          fi
+          echo "Authorized: '${ACTOR}' is an admin."
+
+  build:
+    name: Hermes-Setup.dmg (universal)
+    needs: authorize
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust targets
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          workspaces: apps/bootstrap-installer/src-tauri
+
+      - name: Build universal macOS DMG
+        run: npm run tauri:build:macos:universal
+        working-directory: apps/bootstrap-installer
+
+      - name: Verify bundled app is universal
+        run: |
+          set -euo pipefail
+          app_path="apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/macos/Hermes Setup.app"
+          bin_path="${app_path}/Contents/MacOS/Hermes-Setup"
+          if [ ! -x "${bin_path}" ]; then
+            echo "::error::Expected executable not found at ${bin_path}"
+            find apps/bootstrap-installer/src-tauri/target -maxdepth 6 -type f -name 'Hermes-Setup' -print || true
+            exit 1
+          fi
+          file "${bin_path}"
+          lipo -info "${bin_path}" | tee /tmp/hermes-setup-lipo.txt
+          grep -q "x86_64" /tmp/hermes-setup-lipo.txt
+          grep -q "arm64" /tmp/hermes-setup-lipo.txt
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: Hermes-Setup-macos-universal-dmg
+          path: apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Upload app bundle artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: Hermes-Setup-macos-universal-app
+          path: apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error

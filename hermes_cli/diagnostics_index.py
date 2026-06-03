@@ -32,7 +32,7 @@ DIAGNOSTICS_INDEX: tuple[DiagnosticIndexEntry, ...] = (
     ),
     DiagnosticIndexEntry(
         name="reliability doctor",
-        command="hermes reliability doctor",
+        command="python3 scripts/hermes_reliability_doctor.py",
         area="reliability",
         purpose="Inspect Hermes reliability stop-state and health signals.",
         checks=("runtime health", "stop-state signals", "known reliability advisories"),

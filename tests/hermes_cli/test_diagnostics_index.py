@@ -43,7 +43,7 @@ def test_default_output_includes_baseline_entries():
     out = _run_index()
 
     assert "OR1 Start Gate" in out
-    assert "hermes reliability doctor" in out
+    assert "python3 scripts/hermes_reliability_doctor.py" in out
     assert "hermes status" in out
     assert "hermes doctor" in out
     assert "hermes gateway status" in out

@@ -221,6 +221,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isPlaceholder = messageStatus === 'running' && content.length === 0
   const interruptedOnly = useMemo(() => isInterruptedOnlyMessage(messageText), [messageText])
+  const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
     return null
@@ -231,6 +232,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
+      data-streaming={messageStatus === 'running' ? 'true' : undefined}
+      ref={enterRef}
     >
       <div
         className={cn(

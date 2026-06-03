@@ -8,6 +8,15 @@ each delegated worker to the cheapest model that can do that subtask.
 
 > Off by default · session-scoped · additive · fully tested.
 
+## Install (1 command)
+
+```bash
+git clone -b caduceus https://github.com/OnlyTerp/Hermes-caduceus.git
+python3 Hermes-caduceus/install_caduceus.py --with-desktop   # safe, reversible overlay
+```
+Then restart Hermes and run `/caduceus on`. Full details + uninstall:
+[`INSTALL.md`](INSTALL.md).
+
 ```
 /caduceus on        # plan-and-drive mode (bare /caduceus toggles)
 # ...give it a multi-step task; watch the live to-do plan
@@ -20,6 +29,7 @@ each delegated worker to the cheapest model that can do that subtask.
 
 | Doc | What |
 |---|---|
+| [`INSTALL.md`](INSTALL.md) | The 1-command installer (safe, reversible overlay). |
 | [`PR_DESCRIPTION.md`](PR_DESCRIPTION.md) | The contribution summary + surgical integration map (start here). |
 | [`USER_GUIDE.md`](USER_GUIDE.md) | How to use it + the full `caduceus.*` config reference. |
 | [`DESIGN.md`](DESIGN.md) | The full design record (architecture, prompt stack, the Loom, the Theater). |

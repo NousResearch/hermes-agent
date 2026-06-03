@@ -155,6 +155,75 @@ def _expand_acp_enabled_toolsets(
     return expanded
 
 
+def _resolve_acp_enabled_toolsets(config: dict) -> List[str]:
+    """Resolve ACP toolsets, falling back to CLI config when ACP is unset."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    configured_mcp_servers = [
+        str(name)
+        for name, cfg in (config.get("mcp_servers") or {}).items()
+        if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
+    ]
+    configured_mcp_server_set = set(configured_mcp_servers)
+
+    platform_toolsets = config.get("platform_toolsets") or {}
+    selected_platform = None
+    selected_toolsets = None
+
+    if isinstance(platform_toolsets.get("acp"), list):
+        selected_platform = "acp"
+        selected_toolsets = [str(ts) for ts in platform_toolsets["acp"]]
+        lookup_config = config
+    elif isinstance(platform_toolsets.get("cli"), list):
+        selected_platform = "cli"
+        selected_toolsets = [str(ts) for ts in platform_toolsets["cli"]]
+        lookup_config = {
+            **config,
+            "platform_toolsets": {
+                **platform_toolsets,
+                "acp": list(platform_toolsets["cli"]),
+            },
+        }
+    else:
+        lookup_config = config
+
+    resolved_toolsets = sorted(
+        _get_platform_tools(
+            lookup_config,
+            "acp",
+            include_default_mcp_servers=False,
+        )
+    )
+
+    base_toolsets = [
+        name
+        for name in resolved_toolsets
+        if name not in configured_mcp_server_set
+    ]
+
+    explicit_mcp_servers: List[str] = []
+    disable_default_mcp = False
+    if selected_platform and selected_toolsets is not None:
+        disable_default_mcp = "no_mcp" in selected_toolsets
+        for name in selected_toolsets:
+            raw_name = str(name)
+            server_name = raw_name[4:] if raw_name.startswith("mcp-") else raw_name
+            if server_name in configured_mcp_server_set and server_name not in explicit_mcp_servers:
+                explicit_mcp_servers.append(server_name)
+
+    if disable_default_mcp:
+        mcp_server_names: List[str] = []
+    elif explicit_mcp_servers:
+        mcp_server_names = explicit_mcp_servers
+    else:
+        mcp_server_names = configured_mcp_servers
+
+    return _expand_acp_enabled_toolsets(
+        base_toolsets,
+        mcp_server_names=mcp_server_names,
+    )
+
+
 def _clear_task_cwd(task_id: str) -> None:
     """Remove task-specific cwd overrides for an ACP session."""
     if not task_id:
@@ -587,18 +656,9 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
-        configured_mcp_servers = [
-            name
-            for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
-        ]
-
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
-            ),
+            "enabled_toolsets": _resolve_acp_enabled_toolsets(config),
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),

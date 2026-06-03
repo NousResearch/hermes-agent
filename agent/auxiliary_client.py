@@ -3343,7 +3343,8 @@ def resolve_provider_client(
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
     if not model:
-        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+        rt_model = (main_runtime or {}).get("model", "").strip() if isinstance(main_runtime, dict) else ""
+        model = _get_aux_model_for_provider(provider) or (rt_model or None) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.

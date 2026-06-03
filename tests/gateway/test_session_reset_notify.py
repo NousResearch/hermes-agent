@@ -71,6 +71,23 @@ class TestShouldResetReason:
         source = _make_source()
         assert store._should_reset(entry, source) == "idle"
 
+    def test_uppercase_mode_from_config_still_triggers_reset(self, tmp_path):
+        # Regression: an uppercase ``mode`` (e.g. YAML ``IDLE``) used to be
+        # stored verbatim and silently skip every reset check, leaving the
+        # session to grow unbounded.  from_dict() now normalizes it.
+        store = _make_store(
+            SessionResetPolicy.from_dict({"mode": "IDLE", "idle_minutes": 30}),
+            tmp_path,
+        )
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now() - timedelta(hours=2),
+            updated_at=datetime.now() - timedelta(hours=1),  # 60min ago > 30min threshold
+        )
+        source = _make_source()
+        assert store._should_reset(entry, source) == "idle"
+
     def test_returns_daily_when_daily_boundary_crossed(self, tmp_path):
         now = datetime.now()
         store = _make_store(

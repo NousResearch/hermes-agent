@@ -34,6 +34,8 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+# China mirror preset:
+# curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --mirror china
 ```
 
 ### Windows (native, PowerShell)
@@ -44,6 +46,9 @@ Run this in PowerShell:
 
 ```powershell
 iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+# China mirror preset:
+# Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 -OutFile install.ps1
+# .\install.ps1 -Mirror china
 ```
 
 The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.

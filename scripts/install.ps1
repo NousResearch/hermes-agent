@@ -16,6 +16,13 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "main",
+    [string]$Mirror = $(if ($env:HERMES_INSTALL_MIRROR) { $env:HERMES_INSTALL_MIRROR } else { "" }),
+    [string]$GithubMirror = $(if ($env:HERMES_GITHUB_MIRROR) { $env:HERMES_GITHUB_MIRROR } else { "" }),
+    [string]$PypiIndexUrl = $(if ($env:HERMES_PYPI_INDEX_URL) { $env:HERMES_PYPI_INDEX_URL } else { "" }),
+    [string]$NpmRegistry = $(if ($env:HERMES_NPM_REGISTRY) { $env:HERMES_NPM_REGISTRY } else { "" }),
+    [string]$NodeDistMirror = $(if ($env:HERMES_NODE_DIST_MIRROR) { $env:HERMES_NODE_DIST_MIRROR } else { "" }),
+    [string]$PlaywrightDownloadHost = $(if ($env:HERMES_PLAYWRIGHT_DOWNLOAD_HOST) { $env:HERMES_PLAYWRIGHT_DOWNLOAD_HOST } else { "" }),
+    [string]$UvInstallerUrl = $(if ($env:HERMES_UV_INSTALLER_URL) { $env:HERMES_UV_INSTALLER_URL } else { "" }),
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
     # bundles).  When set, the repository stage clones $Branch (faster than
@@ -185,6 +192,72 @@ function Write-Err {
     Write-Host "[X] $Message" -ForegroundColor Red
 }
 
+function Join-UrlPrefix {
+    param([string]$Prefix, [string]$Url)
+    if (-not $Prefix) { return $Url }
+    if ($Prefix.EndsWith("/")) { return "$Prefix$Url" }
+    return "$Prefix/$Url"
+}
+
+function Resolve-GithubUrl {
+    param([string]$Url)
+    return (Join-UrlPrefix -Prefix $script:GithubMirror -Url $Url)
+}
+
+function Get-NodeDistUrl {
+    $base = if ($script:NodeDistMirror) { $script:NodeDistMirror } else { "https://nodejs.org/dist" }
+    $base = $base.TrimEnd("/")
+    return "$base/latest-v${NodeVersion}.x/"
+}
+
+function Configure-InstallMirrors {
+    switch ($Mirror.ToLowerInvariant()) {
+        "" {}
+        "none" {}
+        "official" {}
+        "china" {
+            if (-not $script:GithubMirror) { $script:GithubMirror = "https://gh-proxy.com/" }
+            if (-not $script:PypiIndexUrl) { $script:PypiIndexUrl = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+            if (-not $script:NpmRegistry) { $script:NpmRegistry = "https://registry.npmmirror.com" }
+            if (-not $script:NodeDistMirror) { $script:NodeDistMirror = "https://npmmirror.com/mirrors/node" }
+            if (-not $script:PlaywrightDownloadHost) { $script:PlaywrightDownloadHost = "https://npmmirror.com/mirrors/playwright" }
+        }
+        "cn" {
+            if (-not $script:GithubMirror) { $script:GithubMirror = "https://gh-proxy.com/" }
+            if (-not $script:PypiIndexUrl) { $script:PypiIndexUrl = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+            if (-not $script:NpmRegistry) { $script:NpmRegistry = "https://registry.npmmirror.com" }
+            if (-not $script:NodeDistMirror) { $script:NodeDistMirror = "https://npmmirror.com/mirrors/node" }
+            if (-not $script:PlaywrightDownloadHost) { $script:PlaywrightDownloadHost = "https://npmmirror.com/mirrors/playwright" }
+        }
+        default {
+            Write-Err "Unknown mirror preset: $Mirror"
+            Write-Info "Supported presets: china, none"
+            throw "unknown mirror preset"
+        }
+    }
+
+    if ($script:PypiIndexUrl) {
+        $env:PIP_INDEX_URL = $script:PypiIndexUrl
+        $env:UV_DEFAULT_INDEX = $script:PypiIndexUrl
+    }
+    if ($script:NpmRegistry) { $env:npm_config_registry = $script:NpmRegistry }
+    if ($script:PlaywrightDownloadHost) { $env:PLAYWRIGHT_DOWNLOAD_HOST = $script:PlaywrightDownloadHost }
+    if ($script:GithubMirror) { $env:HERMES_GITHUB_MIRROR = $script:GithubMirror }
+    if ($script:NodeDistMirror) { $env:HERMES_NODE_DIST_MIRROR = $script:NodeDistMirror }
+    if ($script:UvInstallerUrl) { $env:HERMES_UV_INSTALLER_URL = $script:UvInstallerUrl }
+
+    if ($Mirror -or $script:GithubMirror -or $script:PypiIndexUrl -or $script:NpmRegistry -or $script:NodeDistMirror -or $script:PlaywrightDownloadHost -or $script:UvInstallerUrl) {
+        Write-Info "Download mirrors configured:"
+        if ($Mirror) { Write-Info "  preset: $Mirror" }
+        if ($script:GithubMirror) { Write-Info "  GitHub: $script:GithubMirror" }
+        if ($script:PypiIndexUrl) { Write-Info "  PyPI: $script:PypiIndexUrl" }
+        if ($script:NpmRegistry) { Write-Info "  npm: $script:NpmRegistry" }
+        if ($script:NodeDistMirror) { Write-Info "  Node.js: $script:NodeDistMirror" }
+        if ($script:PlaywrightDownloadHost) { Write-Info "  Playwright: $script:PlaywrightDownloadHost" }
+        if ($script:UvInstallerUrl) { Write-Info "  uv installer: $script:UvInstallerUrl" }
+    }
+}
+
 # --- Ensure-mode helpers ---
 
 function Resolve-NpmCmd {
@@ -311,7 +384,12 @@ function Install-Uv {
     try {
         $ErrorActionPreference = "Continue"
         $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
-        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+        $installerUrl = if ($script:UvInstallerUrl) { $script:UvInstallerUrl } else { "https://astral.sh/uv/install.ps1" }
+        $tmpInstaller = Join-Path $env:TEMP "hermes-uv-install-$(Get-Random).ps1"
+        Write-Info "Downloading uv installer from $installerUrl ..."
+        Invoke-WebRequest -Uri $installerUrl -OutFile $tmpInstaller -UseBasicParsing
+        powershell -ExecutionPolicy ByPass -File $tmpInstaller 2>&1 | Out-Null
+        Remove-Item -Force $tmpInstaller -ErrorAction SilentlyContinue
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
@@ -587,7 +665,7 @@ function Install-Git {
             $downloadIsZip = $false
         }
 
-        $downloadUrl = "https://github.com/git-for-windows/git/releases/download/$gitTag/$assetName"
+        $downloadUrl = Resolve-GithubUrl "https://github.com/git-for-windows/git/releases/download/$gitTag/$assetName"
         $downloadExt = if ($downloadIsZip) { "zip" } else { "7z.exe" }
         $tmpFile = "$env:TEMP\$assetName"
         $gitDir = "$HermesHome\git"
@@ -748,7 +826,7 @@ function Test-Node {
     Write-Info "(no admin rights required; isolated from any system Node install)"
     try {
         $arch = Get-WindowsArch
-        $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
+        $indexUrl = Get-NodeDistUrl
         $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
         $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
 
@@ -1037,6 +1115,10 @@ function Install-Repository {
         if ($repoValid) {
             Write-Info "Existing installation found, updating..."
             Push-Location $InstallDir
+            if ($script:GithubMirror) {
+                Write-Info "Using mirrored GitHub remote for update"
+                git -c windows.appendAtomically=false remote set-url origin (Resolve-GithubUrl $RepoUrlHttps) 2>$null
+            }
             # Wrap the entire fetch+checkout block in EAP=Continue so git's
             # routine stderr output (e.g. 'From <url>' info lines emitted by
             # `git fetch`) doesn't terminate the script under the global
@@ -1101,20 +1183,23 @@ function Install-Repository {
         $env:GIT_CONFIG_VALUE_0 = "false"
         git config --global windows.appendAtomically false 2>$null
 
-        # Try SSH first, then HTTPS, with -c flag for atomic write fix
-        Write-Info "Trying SSH clone..."
-        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        try {
-            git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
-            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-        } catch { }
-        $env:GIT_SSH_COMMAND = $null
+        # Try SSH first, then HTTPS, with -c flag for atomic write fix.
+        # Mirror/proxy URLs only apply to HTTPS, so skip SSH when one is set.
+        if (-not $script:GithubMirror) {
+            Write-Info "Trying SSH clone..."
+            $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+            try {
+                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
+                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+            } catch { }
+            $env:GIT_SSH_COMMAND = $null
+        }
 
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
-            Write-Info "SSH failed, trying HTTPS..."
+            if ($script:GithubMirror) { Write-Info "Trying mirrored HTTPS clone..." } else { Write-Info "SSH failed, trying HTTPS..." }
             try {
-                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
+                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules (Resolve-GithubUrl $RepoUrlHttps) $InstallDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1128,13 +1213,13 @@ function Install-Repository {
                 # for.  GitHub supports archive URLs for commits, tags, and
                 # branches; we honour Commit > Tag > Branch.
                 if ($Commit) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipUrl = Resolve-GithubUrl "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
                     $zipLabel = $Commit
                 } elseif ($Tag) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipUrl = Resolve-GithubUrl "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
                     $zipLabel = $Tag
                 } else {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipUrl = Resolve-GithubUrl "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
                     $zipLabel = $Branch
                 }
                 $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"
@@ -1155,7 +1240,7 @@ function Install-Repository {
                     Push-Location $InstallDir
                     git -c windows.appendAtomically=false init 2>$null
                     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
-                    git remote add origin $RepoUrlHttps 2>$null
+                    git remote add origin (Resolve-GithubUrl $RepoUrlHttps) 2>$null
                     Pop-Location
                     Write-Success "Git repo initialized for future updates"
 
@@ -2675,6 +2760,7 @@ function Invoke-PostInstallMode {
 
 function Main {
     Write-Banner
+    Configure-InstallMirrors
     Invoke-AllStages
     if (-not $Json) {
         Write-Completion
@@ -2697,10 +2783,12 @@ try {
             Write-Err "Cannot use -Ensure and -Stage simultaneously"
             exit 1
         }
+        Configure-InstallMirrors
         Invoke-EnsureMode -Deps $Ensure
         exit 0
     }
     if ($PostInstall) {
+        Configure-InstallMirrors
         Invoke-PostInstallMode
         exit 0
     }
@@ -2732,6 +2820,7 @@ try {
     # operation.  Empty string is a contract violation; surface it as
     # unknown-stage exit 2 with a structured JSON frame.
     if ($PSBoundParameters.ContainsKey("Stage")) {
+        Configure-InstallMirrors
         $def = Get-InstallStage -Name $Stage
         if (-not $def) {
             $err = @{

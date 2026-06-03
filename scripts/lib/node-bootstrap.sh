@@ -21,6 +21,7 @@
 #   HERMES_NODE_MIN_VERSION   (default: 20)   — accepted on PATH
 #   HERMES_NODE_TARGET_MAJOR  (default: 22)   — installed when we install
 #   HERMES_HOME               (default: $HOME/.hermes)
+#   HERMES_NODE_DIST_MIRROR   (default: https://nodejs.org/dist)
 # ============================================================================
 
 HERMES_NODE_MIN_VERSION="${HERMES_NODE_MIN_VERSION:-20}"
@@ -53,6 +54,11 @@ _nb_node_major() {
 _nb_have_modern_node() {
     command -v node >/dev/null 2>&1 || return 1
     [ "$(_nb_node_major)" -ge "$HERMES_NODE_MIN_VERSION" ]
+}
+
+_nb_node_dist_url() {
+    local base="${HERMES_NODE_DIST_MIRROR:-https://nodejs.org/dist}"
+    printf '%s/latest-v%s.x/' "$(printf '%s' "$base" | sed 's#/*$##')" "$HERMES_NODE_TARGET_MAJOR"
 }
 
 # ---------------------------------------------------------------------------
@@ -145,7 +151,8 @@ _nb_install_bundled_node() {
             ;;
     esac
 
-    local index_url="https://nodejs.org/dist/latest-v${HERMES_NODE_TARGET_MAJOR}.x/"
+    local index_url
+    index_url="$(_nb_node_dist_url)"
     local tarball
     tarball=$(curl -fsSL "$index_url" \
         | grep -oE "node-v${HERMES_NODE_TARGET_MAJOR}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \

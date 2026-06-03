@@ -18,6 +18,20 @@ description: "在 Linux、macOS、WSL2、原生 Windows 或通过 Termux 在 And
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
+如果国际网络较慢或被阻断，可以使用内置镜像预设：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --mirror china
+```
+
+如果 `raw.githubusercontent.com` 本身也无法访问，可先通过同一个 GitHub 代理获取脚本：
+
+```bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --mirror china
+```
+
+`china` 预设会将 GitHub 下载走代理，并为 PyPI、npm、Node.js 和 Playwright 使用更适合中国网络的默认源。也可以用 `--github-mirror`、`--pypi-index-url`、`--npm-registry`、`--node-dist-mirror`、`--playwright-download-host` 或 `--uv-installer-url` 单独覆盖任一下载源。
+
 ### Windows（原生，PowerShell）
 
 原生 Windows 无需 WSL 即可运行 Hermes——CLI、gateway、TUI 和工具均可原生运行。（原生安装与 WSL2 安装可干净共存；唯一仅限 WSL2 的功能见下方功能说明。）遇到 bug 请[提交 issue](https://github.com/NousResearch/hermes-agent/issues)。
@@ -27,6 +41,15 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 ```powershell
 iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 ```
+
+中国网络环境可使用 `-Mirror china`：
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 -OutFile install.ps1
+.\install.ps1 -Mirror china
+```
+
+如果 GitHub raw 下载被阻断，可将第一条命令里的 URL 替换为 `https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1`。
 
 安装程序处理**一切**：`uv`、Python 3.11、Node.js 22、`ripgrep`、`ffmpeg`，**以及一个便携式 Git Bash**（PortableGit——一个自包含的 Git-for-Windows 发行版，附带 `bash.exe` 和 Hermes 用于 shell 命令的完整 POSIX 工具链；在 32 位 Windows 上安装程序会回退到 MinGit，后者缺少 bash，终端工具和 agent 浏览器功能将被禁用）。它将仓库克隆到 `%LOCALAPPDATA%\hermes\hermes-agent`，创建虚拟环境，并将 `hermes` 添加到**用户 PATH**。安装完成后请重启终端（或打开新的 PowerShell 窗口）以使 PATH 生效。
 

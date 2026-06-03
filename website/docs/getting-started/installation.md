@@ -26,6 +26,20 @@ For a git-based install that tracks `main` and gives you the latest changes imme
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
+For users behind slow or blocked international routes, the installer supports a mirror preset:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --mirror china
+```
+
+If `raw.githubusercontent.com` itself is unreachable, fetch the script through the same GitHub proxy:
+
+```bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --mirror china
+```
+
+The `china` preset switches GitHub downloads through a proxy and uses China-friendly defaults for PyPI, npm, Node.js, and Playwright. You can override any source with `--github-mirror`, `--pypi-index-url`, `--npm-registry`, `--node-dist-mirror`, `--playwright-download-host`, or `--uv-installer-url`.
+
 ### Windows (native, PowerShell)
 
 Native Windows runs Hermes without WSL — the CLI, gateway, TUI, and tools all work natively. (Both native and WSL2 installs coexist cleanly; see the feature note below for the one WSL2-only feature.) Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
@@ -35,6 +49,15 @@ Open PowerShell and run:
 ```powershell
 iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 ```
+
+China-friendly mirrors are available with `-Mirror china`:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 -OutFile install.ps1
+.\install.ps1 -Mirror china
+```
+
+If GitHub raw downloads are blocked, replace the first URL with `https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1`.
 
 The installer handles **everything**: `uv`, Python 3.11, Node.js 22, `ripgrep`, `ffmpeg`, **and a portable Git Bash** (PortableGit — a self-contained Git-for-Windows distribution that ships `bash.exe` and the full POSIX toolchain Hermes uses for shell commands; on 32-bit Windows the installer falls back to MinGit, which lacks bash and disables terminal-tool / agent-browser features).  It clones the repo under `%LOCALAPPDATA%\hermes\hermes-agent`, creates a virtualenv, and adds `hermes` to your **User PATH**.  Restart your terminal (or open a new PowerShell window) after the install so PATH picks up.
 

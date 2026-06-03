@@ -62,6 +62,8 @@ PyPI releases track tagged versions (major/minor releases), not every commit on 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+# China mirror preset:
+# curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --mirror china
 ```
 
 Prefer native installers for desktop use?

@@ -71,6 +71,7 @@ USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
 NO_SKILLS=false
+INSTALL_MIRROR="${HERMES_INSTALL_MIRROR:-}"
 BRANCH="main"
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
@@ -108,6 +109,38 @@ while [[ $# -gt 0 ]]; do
         --no-skills)
             NO_SKILLS=true
             shift
+            ;;
+        --mirror)
+            INSTALL_MIRROR="$2"
+            shift 2
+            ;;
+        --china-mirror|--cn-mirror)
+            INSTALL_MIRROR="china"
+            shift
+            ;;
+        --github-mirror)
+            HERMES_GITHUB_MIRROR="$2"
+            shift 2
+            ;;
+        --pypi-index-url)
+            HERMES_PYPI_INDEX_URL="$2"
+            shift 2
+            ;;
+        --npm-registry)
+            HERMES_NPM_REGISTRY="$2"
+            shift 2
+            ;;
+        --node-dist-mirror)
+            HERMES_NODE_DIST_MIRROR="$2"
+            shift 2
+            ;;
+        --playwright-download-host)
+            HERMES_PLAYWRIGHT_DOWNLOAD_HOST="$2"
+            shift 2
+            ;;
+        --uv-installer-url)
+            HERMES_UV_INSTALLER_URL="$2"
+            shift 2
             ;;
         --branch|-Branch)
             BRANCH="$2"
@@ -166,6 +199,20 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
+            echo "  --mirror NAME  Use a mirror preset for downloads (supported: china, none)"
+            echo "  --china-mirror Shortcut for --mirror china"
+            echo "  --github-mirror URL"
+            echo "                 Prefix GitHub URLs with a mirror/proxy URL"
+            echo "  --pypi-index-url URL"
+            echo "                 Use this PyPI/simple index for pip and uv"
+            echo "  --npm-registry URL"
+            echo "                 Use this npm registry"
+            echo "  --node-dist-mirror URL"
+            echo "                 Use this Node.js dist mirror (default: https://nodejs.org/dist)"
+            echo "  --playwright-download-host URL"
+            echo "                 Use this Playwright browser download mirror"
+            echo "  --uv-installer-url URL"
+            echo "                 Download the uv installer from this URL"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
@@ -239,6 +286,75 @@ json_escape() {
     printf '%s' "$1" | tr '\n' ' ' | sed \
         -e 's/\\/\\\\/g' \
         -e 's/"/\\"/g'
+}
+
+append_slash() {
+    case "$1" in
+        */) printf '%s' "$1" ;;
+        *) printf '%s/' "$1" ;;
+    esac
+}
+
+github_url() {
+    local url="$1"
+    if [ -n "${HERMES_GITHUB_MIRROR:-}" ]; then
+        printf '%s%s' "$(append_slash "$HERMES_GITHUB_MIRROR")" "$url"
+    else
+        printf '%s' "$url"
+    fi
+}
+
+node_dist_url() {
+    local base="${HERMES_NODE_DIST_MIRROR:-https://nodejs.org/dist}"
+    printf '%s/latest-v%s.x/' "$(printf '%s' "$base" | sed 's#/*$##')" "$NODE_VERSION"
+}
+
+configure_install_mirrors() {
+    case "$INSTALL_MIRROR" in
+        ""|none|official)
+            ;;
+        china|cn)
+            HERMES_GITHUB_MIRROR="${HERMES_GITHUB_MIRROR:-https://gh-proxy.com/}"
+            HERMES_PYPI_INDEX_URL="${HERMES_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+            HERMES_NPM_REGISTRY="${HERMES_NPM_REGISTRY:-https://registry.npmmirror.com}"
+            HERMES_NODE_DIST_MIRROR="${HERMES_NODE_DIST_MIRROR:-https://npmmirror.com/mirrors/node}"
+            HERMES_PLAYWRIGHT_DOWNLOAD_HOST="${HERMES_PLAYWRIGHT_DOWNLOAD_HOST:-https://npmmirror.com/mirrors/playwright}"
+            ;;
+        *)
+            log_error "Unknown mirror preset: $INSTALL_MIRROR"
+            log_info "Supported presets: china, none"
+            exit 1
+            ;;
+    esac
+
+    if [ -n "${HERMES_PYPI_INDEX_URL:-}" ]; then
+        export PIP_INDEX_URL="$HERMES_PYPI_INDEX_URL"
+        export UV_DEFAULT_INDEX="$HERMES_PYPI_INDEX_URL"
+    fi
+    if [ -n "${HERMES_NPM_REGISTRY:-}" ]; then
+        export npm_config_registry="$HERMES_NPM_REGISTRY"
+    fi
+    if [ -n "${HERMES_PLAYWRIGHT_DOWNLOAD_HOST:-}" ]; then
+        export PLAYWRIGHT_DOWNLOAD_HOST="$HERMES_PLAYWRIGHT_DOWNLOAD_HOST"
+    fi
+    export HERMES_GITHUB_MIRROR="${HERMES_GITHUB_MIRROR:-}"
+    export HERMES_NODE_DIST_MIRROR="${HERMES_NODE_DIST_MIRROR:-}"
+    export HERMES_UV_INSTALLER_URL="${HERMES_UV_INSTALLER_URL:-}"
+
+    if [ -n "$INSTALL_MIRROR" ] || [ -n "${HERMES_GITHUB_MIRROR:-}" ] \
+        || [ -n "${HERMES_PYPI_INDEX_URL:-}" ] || [ -n "${HERMES_NPM_REGISTRY:-}" ] \
+        || [ -n "${HERMES_NODE_DIST_MIRROR:-}" ] || [ -n "${HERMES_PLAYWRIGHT_DOWNLOAD_HOST:-}" ] \
+        || [ -n "${HERMES_UV_INSTALLER_URL:-}" ]; then
+        log_info "Download mirrors configured:"
+        [ -n "$INSTALL_MIRROR" ] && log_info "  preset: $INSTALL_MIRROR"
+        [ -n "${HERMES_GITHUB_MIRROR:-}" ] && log_info "  GitHub: $HERMES_GITHUB_MIRROR"
+        [ -n "${HERMES_PYPI_INDEX_URL:-}" ] && log_info "  PyPI: $HERMES_PYPI_INDEX_URL"
+        [ -n "${HERMES_NPM_REGISTRY:-}" ] && log_info "  npm: $HERMES_NPM_REGISTRY"
+        [ -n "${HERMES_NODE_DIST_MIRROR:-}" ] && log_info "  Node.js: $HERMES_NODE_DIST_MIRROR"
+        [ -n "${HERMES_PLAYWRIGHT_DOWNLOAD_HOST:-}" ] && log_info "  Playwright: $HERMES_PLAYWRIGHT_DOWNLOAD_HOST"
+        [ -n "${HERMES_UV_INSTALLER_URL:-}" ] && log_info "  uv installer: $HERMES_UV_INSTALLER_URL"
+    fi
+    return 0
 }
 
 # npm rewrites tracked package-lock.json files non-deterministically during
@@ -497,8 +613,21 @@ install_uv() {
     local _uv_install_log _uv_installer
     _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
     _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
-    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
-        log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
+    local _uv_url _uv_urls _uv_downloaded=false
+    _uv_urls="${HERMES_UV_INSTALLER_URL:-https://astral.sh/uv/install.sh}"
+    if [ -z "${HERMES_UV_INSTALLER_URL:-}" ] && [ -n "${HERMES_GITHUB_MIRROR:-}" ]; then
+        _uv_urls="$_uv_urls $(github_url "https://astral.sh/uv/install.sh")"
+    fi
+    for _uv_url in $_uv_urls; do
+        : > "$_uv_install_log"
+        log_info "Downloading uv installer from $_uv_url ..."
+        if curl -LsSf "$_uv_url" -o "$_uv_installer" 2>"$_uv_install_log"; then
+            _uv_downloaded=true
+            break
+        fi
+    done
+    if [ "$_uv_downloaded" = false ]; then
+        log_error "Failed to download uv installer"
         log_info "curl output:"
         sed 's/^/    /' "$_uv_install_log" >&2
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
@@ -770,7 +899,8 @@ install_node() {
     esac
 
     # Resolve the latest v22.x.x tarball name from the index page
-    local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
+    local index_url
+    index_url="$(node_dist_url)"
     local tarball_name
     tarball_name=$(curl -fsSL "$index_url" \
         | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
@@ -843,7 +973,12 @@ check_network_prerequisites() {
 
     local url
     local failed=false
-    local checks=("https://pypi.org/simple/" "https://duckduckgo.com/")
+    local checks=("${PIP_INDEX_URL:-https://pypi.org/simple/}" "https://duckduckgo.com/")
+    case "$INSTALL_MIRROR" in
+        china|cn)
+            checks=("${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}" "${HERMES_NPM_REGISTRY:-https://registry.npmmirror.com}")
+            ;;
+    esac
 
     if ! command -v curl >/dev/null 2>&1; then
         log_warn "curl not found; skipping connectivity probes"
@@ -1075,6 +1210,10 @@ clone_repo() {
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
+            if [ -n "${HERMES_GITHUB_MIRROR:-}" ]; then
+                log_info "Using mirrored GitHub remote for update"
+                git remote set-url origin "$(github_url "$REPO_URL_HTTPS")" 2>/dev/null || true
+            fi
 
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
@@ -1126,17 +1265,28 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
+        # Try SSH first (for private repo access), fall back to HTTPS.
+        # Mirror/proxy URLs only apply to HTTPS, so skip SSH when one is set.
         # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
         # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
+        if [ -z "${HERMES_GITHUB_MIRROR:-}" ]; then
+            log_info "Trying SSH clone..."
+            if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+               git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+                log_success "Cloned via SSH"
+            else
+                rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
+                log_info "SSH failed, trying HTTPS..."
+                if git clone --branch "$BRANCH" "$(github_url "$REPO_URL_HTTPS")" "$INSTALL_DIR"; then
+                    log_success "Cloned via HTTPS"
+                else
+                    log_error "Failed to clone repository"
+                    exit 1
+                fi
+            fi
         else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            log_info "Trying mirrored HTTPS clone..."
+            if git clone --branch "$BRANCH" "$(github_url "$REPO_URL_HTTPS")" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -2447,6 +2597,7 @@ run_stage_body() {
 
 run_stage_protocol() {
     local stage="$1"
+    configure_install_mirrors
     if [ -z "$stage" ]; then
         log_error "--stage requires a stage name"
         if [ "$JSON_OUTPUT" = true ]; then
@@ -2490,6 +2641,7 @@ run_stage_protocol() {
 
 main() {
     print_banner
+    configure_install_mirrors
 
     detect_os
     resolve_install_layout
@@ -2523,8 +2675,10 @@ if [ "$MANIFEST_MODE" = true ]; then
 elif [ -n "$STAGE_NAME" ]; then
     run_stage_protocol "$STAGE_NAME"
 elif [ -n "$ENSURE_DEPS" ]; then
+    configure_install_mirrors
     ensure_mode
 elif [ "$POSTINSTALL_MODE" = true ]; then
+    configure_install_mirrors
     postinstall_mode
 else
     main

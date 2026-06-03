@@ -4410,11 +4410,11 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
 
-            # Clarify text-capture bypass: if the agent is blocked on a
-            # clarify_tool call awaiting a free-form text response (open-
-            # ended clarify, or user picked "Other"), the next non-command
-            # message in this session MUST reach the runner so the
-            # clarify-intercept can resolve it and unblock the agent.
+            # Clarify reply bypass: if the agent is blocked on a
+            # clarify_tool call, the next non-command message in this
+            # session MUST reach the runner so typed numeric choices,
+            # exact choices, and free-form "Other" answers can resolve the
+            # clarify-intercept and unblock the agent.
             #
             # Without this bypass: the message gets queued in
             # _pending_messages as a follow-up turn instead of reaching the
@@ -4427,7 +4427,10 @@ class BasePlatformAdapter(ABC):
                 try:
                     from tools import clarify_gateway as _clarify_mod
                     _has_text_clarify = (
-                        _clarify_mod.get_pending_for_session(session_key) is not None
+                        _clarify_mod.get_pending_for_session(
+                            session_key,
+                            include_choice_prompts=True,
+                        ) is not None
                     )
                 except Exception:
                     _has_text_clarify = False

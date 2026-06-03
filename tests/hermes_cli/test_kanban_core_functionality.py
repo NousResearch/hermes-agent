@@ -1096,10 +1096,16 @@ def test_enforce_max_runtime_integrates_with_dispatch(kanban_home, monkeypatch):
                 "UPDATE tasks SET started_at = ? WHERE id = ?",
                 (old_started, tid),
             )
+            # Set a recent last_heartbeat_at so enforce_missing_heartbeat
+            # (run by dispatch_once below) skips this task. worker_pid above
+            # == os.getpid(); without this guard a future heartbeat-block
+            # path would SIGTERM pytest itself. enforce_max_runtime is
+            # exercised directly with a signal stub; this only protects the
+            # real-os.kill dispatch_once call.
             conn.execute(
-                "UPDATE task_runs SET started_at = ? "
+                "UPDATE task_runs SET started_at = ?, last_heartbeat_at = ? "
                 "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
-                (old_started, tid),
+                (old_started, int(time.time()), tid),
             )
         # Use enforce_max_runtime directly with our signal stub — dispatch_once
         # uses the default os.kill, but integration-wise calling
@@ -4516,10 +4522,15 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
             conn.execute(
                 "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
             )
+            # Set a recent last_heartbeat_at so enforce_missing_heartbeat (run
+            # by dispatch_once independently of stale_timeout_seconds) skips
+            # this task. Without it, worker_pid == os.getpid() gets SIGTERM'd
+            # and pytest itself dies before printing its summary. This test
+            # isolates STALE detection, not heartbeat enforcement.
             conn.execute(
-                "UPDATE task_runs SET started_at = ? "
+                "UPDATE task_runs SET started_at = ?, last_heartbeat_at = ? "
                 "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
-                (five_hours_ago, t),
+                (five_hours_ago, int(time.time()), t),
             )
 
         res = kb.dispatch_once(

@@ -3503,12 +3503,18 @@ def _(rid, params: dict) -> dict:
         messages = list(session.get("history", []))
 
     session_id = getattr(agent, "session_id", None) or session.get("session_key") or ""
-    created_at = session.get("created_at")
-    session_start = (
-        datetime.fromtimestamp(created_at).isoformat()
-        if isinstance(created_at, (int, float))
-        else ""
-    )
+    # Prefer the agent's session_start datetime (matches the classic CLI export);
+    # fall back to the gateway session's created_at timestamp.
+    agent_start = getattr(agent, "session_start", None)
+    if isinstance(agent_start, datetime):
+        session_start = agent_start.isoformat()
+    else:
+        created_at = session.get("created_at")
+        session_start = (
+            datetime.fromtimestamp(created_at).isoformat()
+            if isinstance(created_at, (int, float))
+            else ""
+        )
 
     try:
         with open(path, "w", encoding="utf-8") as f:

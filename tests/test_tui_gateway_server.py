@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -5497,6 +5498,7 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     agent = types.SimpleNamespace(
         model="hermes-test",
         session_id="20260101_120000_abc123",
+        session_start=datetime(2026, 1, 1, 12, 0, 0),
         _cached_system_prompt="You are Hermes.",
     )
     history = [
@@ -5528,5 +5530,6 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     payload = json.loads(saved_file.read_text())
     assert payload["model"] == "hermes-test"
     assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
     assert payload["system_prompt"] == "You are Hermes."
     assert payload["messages"] == history

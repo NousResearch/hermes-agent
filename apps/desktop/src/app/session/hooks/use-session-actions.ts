@@ -36,7 +36,8 @@ import {
   setSessions,
   setSessionsTotal,
   setSessionStartedAt,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setYoloActive
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -247,6 +248,10 @@ function applyRuntimeInfo(
   if (typeof info.fast === 'boolean') {
     setCurrentFastMode(info.fast)
   }
+
+  // Always sync YOLO on resume/create so switching sessions can't leave a stale
+  // "on" indicator (the gateway clears per-session yolo on some resume paths).
+  setYoloActive(info.yolo === true)
 
   if (info.usage) {
     setCurrentUsage(current => ({ ...current, ...info.usage }))

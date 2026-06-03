@@ -1582,11 +1582,27 @@ def _session_info(agent, session: dict | None = None) -> dict:
     ):
         reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
+    # Surface YOLO (approval-bypass) state so clients (desktop status bar, TUI)
+    # can hydrate their indicator on session start/resume. Mirror exactly what
+    # `config.set yolo` reports: the session-scoped flag when we have a session,
+    # else the process-level HERMES_YOLO_MODE env toggle.
+    yolo = False
+    try:
+        session_key = (session or {}).get("session_key")
+        if session_key:
+            from tools.approval import is_session_yolo_enabled
+
+            yolo = bool(is_session_yolo_enabled(session_key))
+        if not yolo:
+            yolo = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
+    except Exception:
+        yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
+        "yolo": yolo,
         "tools": {},
         "skills": {},
         "cwd": cwd,

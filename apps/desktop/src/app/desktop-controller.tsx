@@ -526,6 +526,7 @@ export function DesktopController() {
     modelMenuContent,
     openAgents,
     openCommandCenterSection,
+    requestGateway,
     statusSnapshot,
     toggleCommandCenter
   })

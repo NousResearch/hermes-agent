@@ -1,10 +1,10 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Sparkles } from '@/lib/icons'
+import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Sparkles, Zap } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
+  $activeSessionId,
   $busy,
   $currentFastMode,
   $currentModel,
@@ -21,7 +22,9 @@ import {
   $sessionStartedAt,
   $turnStartedAt,
   $workingSessionIds,
-  setModelPickerOpen
+  $yoloActive,
+  setModelPickerOpen,
+  setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
@@ -41,6 +44,7 @@ interface StatusbarItemsOptions {
   modelMenuContent?: ReactNode
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
+  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
 }
@@ -56,9 +60,12 @@ export function useStatusbarItems({
   modelMenuContent,
   openAgents,
   openCommandCenterSection,
+  requestGateway,
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
+  const activeSessionId = useStore($activeSessionId)
+  const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentFastMode = useStore($currentFastMode)
   const currentModel = useStore($currentModel)
@@ -77,6 +84,24 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+
+  // Flip per-session approval bypass via the same `config.set yolo` RPC the TUI
+  // uses, then recolour from the gateway's reported value. The gateway has no
+  // `value` arg for yolo — sending the key alone toggles it.
+  const toggleYolo = useCallback(async () => {
+    const sid = $activeSessionId.get()
+
+    if (!sid) {
+      return
+    }
+
+    try {
+      const result = await requestGateway<{ value?: string }>('config.set', { key: 'yolo', session_id: sid })
+      setYoloActive(result?.value === '1')
+    } catch {
+      // Leave the indicator as-is if the toggle RPC fails.
+    }
+  }, [requestGateway])
 
   const gatewayMenuContent = useMemo(
     () => (
@@ -231,9 +256,26 @@ export function useStatusbarItems({
         title: 'Open cron jobs',
         to: CRON_ROUTE,
         variant: 'action'
+      },
+      {
+        // Gray (inherits tertiary text) when off, amber/yellow when on — amber
+        // is the app's existing "heads-up" colour and tracks dark/light theme.
+        className: yoloActive
+          ? 'text-amber-600 hover:text-amber-600 dark:text-amber-300 dark:hover:text-amber-300'
+          : undefined,
+        hidden: !activeSessionId,
+        icon: <Zap className="size-3" />,
+        id: 'yolo',
+        label: 'YOLO',
+        onSelect: () => void toggleYolo(),
+        title: yoloActive
+          ? 'YOLO on — auto-approving commands this session. Click to turn off.'
+          : 'YOLO off — click to auto-approve commands this session.',
+        variant: 'action'
       }
     ],
     [
+      activeSessionId,
       agentsOpen,
       bgFailed,
       bgRunning,
@@ -245,7 +287,9 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       subagentsRunning,
-      toggleCommandCenter
+      toggleCommandCenter,
+      toggleYolo,
+      yoloActive
     ]
   )
 

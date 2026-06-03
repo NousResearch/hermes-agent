@@ -106,6 +106,16 @@ pub fn copy_self_to_hermes_home() -> std::io::Result<()> {
     }
     std::fs::copy(&src, &dest)?;
     repair_macos_installer_helper(&dest);
+    // The copy inherits the source binary's mode, which may be tighter than
+    // expected (e.g. translocated/staged origins). Normalize to 0755 so the
+    // desktop's later `--update` handoff can always execute the staged
+    // installer. Mode bits are not part of the code signature, so this does
+    // not undo the repair above.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+    }
     tracing::info!(?src, ?dest, "copied installer to HERMES_HOME");
     Ok(())
 }
@@ -126,8 +136,16 @@ fn repair_macos_installer_helper(path: &Path) {
         .status();
 
     if !matches!(verify, Ok(status) if status.success()) {
+        // Re-seal with an ad-hoc signature, preserving the original
+        // identifier/entitlements/flags so Gatekeeper and TCC still see the
+        // same identity instead of a filename-derived ad-hoc one.
         let _ = Command::new("/usr/bin/codesign")
-            .args(["--force", "--sign", "-"])
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--preserve-metadata=identifier,entitlements,flags",
+            ])
             .arg(path)
             .status();
     }

@@ -168,6 +168,50 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+def get_hidden_skills_for_user(user_id: str | None = None) -> Set[str]:
+    """Skills hidden from the current sender by the skills.permissions allowlist.
+
+    A skill is hidden when it declares a non-empty ``allowed_users`` list that
+    the sender's Slack user ID is NOT in.  Matching is by user ID (``U…``)
+    ONLY — usernames/display names are user-editable and must never carry
+    permission semantics (impersonation would be trivial).
+
+    Absent/empty ``allowed_users`` = visible to all (backward compatible).
+    Missing user_id (cron/CLI/解析失败) fails closed: restricted skills hidden.
+
+    ``user_id`` defaults to the session contextvar set by the gateway; pass it
+    explicitly at call sites that run BEFORE ``_set_session_env`` (notably
+    slash-command dispatch, where the contextvar is not yet populated).
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return set()
+    try:
+        skills_cfg = (yaml_load(config_path.read_text(encoding="utf-8")) or {}).get("skills") or {}
+    except Exception:
+        return set()
+    permissions = skills_cfg.get("permissions") or {}
+    if not permissions:
+        return set()  # feature not enabled → hide nothing
+
+    if user_id is None:
+        from gateway.session_context import get_session_env
+        user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+
+    # NOTE: model-facing surfaces (system prompt, skills_list, skill_view) fold
+    # this into their disabled set via ``disabled | get_hidden_skills_for_user()``.
+    # Do NOT call from code that populates a cross-user shared cache (the
+    # slash-command registry, the CLI config UI): that would bake one user's
+    # permissions into a process-global cache. Slash dispatch instead calls this
+    # with an explicit user_id at request time (see gateway/run.py).
+    return {
+        str(name).strip()
+        for name, rule in permissions.items()
+        if (allowed := _normalize_string_set((rule or {}).get("allowed_users")))
+        and user_id not in allowed
+    }
+
+
 # ── External skills directories ──────────────────────────────────────────
 
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by

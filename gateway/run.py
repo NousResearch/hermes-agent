@@ -6845,6 +6845,20 @@ class GatewayRunner:
                 skill_cmds = get_skill_commands()
                 cmd_key = resolve_skill_command_key(command)
                 if cmd_key is not None:
+                    # Per-user permission allowlist (skills.permissions): a
+                    # restricted skill the sender may not see must behave like
+                    # an unknown command at slash dispatch too. This runs BEFORE
+                    # _set_session_env, so pass user_id explicitly (the session
+                    # contextvar is not yet populated). Nulling cmd_key routes it
+                    # through the existing unknown-command path — same response a
+                    # nonexistent command gets, so it can't be probed via slash.
+                    from agent.skill_utils import get_hidden_skills_for_user
+                    _perm_name = skill_cmds[cmd_key].get("name", "")
+                    if _perm_name and _perm_name in get_hidden_skills_for_user(
+                        user_id=str(source.user_id or "")
+                    ):
+                        cmd_key = None
+                if cmd_key is not None:
                     # Check per-platform disabled status before executing.
                     # get_skill_commands() only applies the *global* disabled
                     # list at scan time; per-platform overrides need checking

@@ -20,6 +20,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_hidden_skills_for_user,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_platform,
@@ -1018,7 +1019,14 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
-    disabled = get_disabled_skill_names()
+    # Per-user permission allowlist (skills.permissions) folds skills this
+    # sender may not see into `disabled`, reusing every downstream filter check
+    # (snapshot/cold/external) AND the cache_key below — each user gets a
+    # distinct cached prompt and restricted skills never reach the model.
+    # NB: keep get_disabled_skill_names() as a distinct call (not a combined
+    # helper) so the disabled/platform set stays mockable independent of the
+    # permission set. Never fold per-user hiding into a cross-user shared cache.
+    disabled = get_disabled_skill_names() | get_hidden_skills_for_user()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),

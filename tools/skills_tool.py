@@ -592,8 +592,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     skills = []
     seen_names: set = set()
 
-    # Load disabled set once (not per-skill)
-    disabled = set() if skip_disabled else _get_disabled_skill_names()
+    # Load disabled set once (not per-skill). Fold the per-user permission
+    # allowlist into the disabled set so the system prompt hides restricted
+    # skills from skills_list too — otherwise "list all skills" would leak
+    # names/descriptions the prompt already hides. skip_disabled=True (config
+    # UI) keeps all. _get_disabled_skill_names() is kept as the seam so the
+    # disabled/platform part stays mockable independently of permissions.
+    from agent.skill_utils import get_hidden_skills_for_user
+    disabled = (
+        set()
+        if skip_disabled
+        else _get_disabled_skill_names() | get_hidden_skills_for_user()
+    )
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
@@ -898,6 +908,16 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        # Per-user permission allowlist: a skill the sender may not see must be
+        # indistinguishable from one that doesn't exist — return the same
+        # not-found error rather than "no permission" so it can't be probed.
+        from agent.skill_utils import get_hidden_skills_for_user
+        if name in get_hidden_skills_for_user():
+            return json.dumps(
+                {"success": False, "error": f"Skill '{name}' not found."},
+                ensure_ascii=False,
+            )
+
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.

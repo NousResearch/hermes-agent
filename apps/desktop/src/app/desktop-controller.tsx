@@ -285,7 +285,7 @@ export function DesktopController() {
   })
 
   const openProviderSettings = useCallback(() => {
-    navigate(`${SETTINGS_ROUTE}?tab=keys`)
+    navigate(`${SETTINGS_ROUTE}?tab=providers`)
   }, [navigate])
 
   const modelMenuContent = useMemo(

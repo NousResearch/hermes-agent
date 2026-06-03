@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Wrench } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Sparkles, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -19,11 +19,13 @@ import { SEARCH_PLACEHOLDER, SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
+import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
+  'providers',
   'gateway',
   'keys',
   'mcp',
@@ -33,6 +35,14 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 
 export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  // Providers subnav (Accounts vs API keys) lives in its own param so each
+  // sub-view is deep-linkable and survives a refresh.
+  const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
+
+  const openProviderView = (view: ProviderView) => {
+    setActiveView('providers')
+    setProviderView(view)
+  }
 
   const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
     about: '',
@@ -40,6 +50,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
     gateway: '',
     keys: '',
     mcp: '',
+    providers: '',
     sessions: ''
   })
 
@@ -100,13 +111,18 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
       closeLabel="Close settings"
       headerContent={
         <OverlaySearchInput
-          containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
+          containerClassName="w-[min(32rem,calc(100vw-34rem))] min-w-72"
           inputRef={searchInputRef}
           onChange={setQuery}
           placeholder={SEARCH_PLACEHOLDER[queryKey]}
           value={query}
         />
       }
+      // The split layout has a 13rem sidebar; nudge the search bar right by
+      // half that so it reads as centered over the content column rather
+      // than the whole panel. Reverts to true-center once the sidebar
+      // collapses at the layout's narrow breakpoint.
+      headerContentClassName="left-[calc(50%+6.5rem)] max-[47.5rem]:left-1/2"
       onClose={onClose}
     >
       <OverlaySplitLayout>
@@ -126,6 +142,30 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           })}
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
+            active={activeView === 'providers'}
+            icon={Zap}
+            label="Providers"
+            onClick={() => setActiveView('providers')}
+          />
+          {activeView === 'providers' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 border-l border-border/30 pl-1.5">
+              <OverlayNavItem
+                active={providerView === 'accounts'}
+                icon={Sparkles}
+                label="Accounts"
+                nested
+                onClick={() => openProviderView('accounts')}
+              />
+              <OverlayNavItem
+                active={providerView === 'keys'}
+                icon={KeyRound}
+                label="API keys"
+                nested
+                onClick={() => openProviderView('keys')}
+              />
+            </div>
+          )}
+          <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
             label="Gateway"
@@ -134,7 +174,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           <OverlayNavItem
             active={activeView === 'keys'}
             icon={KeyRound}
-            label="API Keys"
+            label="Tools & Keys"
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
@@ -197,6 +237,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               onMainModelChanged={onMainModelChanged}
               query={queries.config}
             />
+          ) : activeView === 'providers' ? (
+            <ProvidersSettings onViewChange={setProviderView} query={queries.providers} view={providerView} />
           ) : activeView === 'keys' ? (
             <KeysSettings query={queries.keys} />
           ) : activeView === 'mcp' ? (

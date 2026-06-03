@@ -11,6 +11,11 @@ interface OverlayViewProps {
   closeLabel?: string
   contentClassName?: string
   headerContent?: ReactNode
+  /** Extra classes for the absolutely-positioned header wrapper. Lets a
+   *  split-layout overlay nudge its centered search over the content column
+   *  instead of the full panel (which would read as off-center next to the
+   *  sidebar). */
+  headerContentClassName?: string
   rootClassName?: string
 }
 
@@ -20,6 +25,7 @@ export function OverlayView({
   closeLabel = 'Close',
   contentClassName,
   headerContent,
+  headerContentClassName,
   rootClassName
 }: OverlayViewProps) {
   const closeOverlay = () => {
@@ -64,7 +70,12 @@ export function OverlayView({
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
           {headerContent && (
-            <div className="pointer-events-auto absolute left-1/2 top-[calc(1rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]">
+            <div
+              className={cn(
+                'pointer-events-auto absolute left-1/2 top-[calc(1rem+var(--titlebar-height)/2)] -translate-x-1/2 -translate-y-1/2 [-webkit-app-region:no-drag]',
+                headerContentClassName
+              )}
+            >
               {headerContent}
             </div>
           )}

@@ -80,7 +80,7 @@ def _capture_check(monkeypatch, results, name=None) -> str:
     return sink.getvalue()
 
 
-def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, bool]]]:
+def _capture_update(monkeypatch, results) -> tuple[str, list[dict[str, object]]]:
     import tools.skills_hub as hub
     import hermes_cli.skills_hub as cli_hub
 
@@ -92,7 +92,25 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
     monkeypatch.setattr(hub, "HubLockFile", lambda: type("L", (), {
         "get_installed": lambda self, name: {"install_path": "category/" + name}
     })())
-    monkeypatch.setattr(cli_hub, "do_install", lambda identifier, category="", force=False, console=None: installs.append((identifier, category, force)))
+    def fake_do_install(
+        identifier,
+        category="",
+        force=False,
+        console=None,
+        skip_confirm=False,
+        reinstall_existing=False,
+    ):
+        installs.append(
+            {
+                "identifier": identifier,
+                "category": category,
+                "force": force,
+                "skip_confirm": skip_confirm,
+                "reinstall_existing": reinstall_existing,
+            }
+        )
+
+    monkeypatch.setattr(cli_hub, "do_install", fake_do_install)
 
     do_update(console=console)
     return sink.getvalue(), installs
@@ -245,8 +263,56 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
         {"name": "other-skill", "identifier": "github/example/other-skill", "status": "up_to_date"},
     ])
 
-    assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
+    assert installs == [
+        {
+            "identifier": "skills-sh/example/repo/hub-skill",
+            "category": "category",
+            "force": False,
+            "skip_confirm": True,
+            "reinstall_existing": True,
+        }
+    ]
     assert "Updated 1 skill" in output
+
+
+def test_do_update_reports_blocked_update_when_lock_hash_stays_stale(monkeypatch):
+    import tools.skills_hub as hub
+    import hermes_cli.skills_hub as cli_hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    installs = []
+
+    class _Lock:
+        def get_installed(self, name):
+            return {"install_path": "category/" + name, "content_hash": "sha256:old"}
+
+    monkeypatch.setattr(
+        hub,
+        "check_for_skill_updates",
+        lambda **_kwargs: [
+            {
+                "name": "hub-skill",
+                "identifier": "skills-sh/example/repo/hub-skill",
+                "status": "update_available",
+                "latest_hash": "sha256:new",
+            }
+        ],
+    )
+    monkeypatch.setattr(hub, "HubLockFile", _Lock)
+    monkeypatch.setattr(
+        cli_hub,
+        "do_install",
+        lambda identifier, **kwargs: installs.append((identifier, kwargs)),
+    )
+
+    do_update(console=console)
+
+    assert installs
+    output = sink.getvalue()
+    assert "Updated 1 skill" not in output
+    assert "Skipped 1 blocked update" in output
+    assert "hub-skill" in output
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
@@ -483,6 +549,59 @@ def test_url_install_uses_name_override_on_non_interactive_surface(monkeypatch, 
     )
 
     assert installs == [{"name": "my-url-skill", "category": ""}]
+
+
+def test_reinstall_existing_does_not_force_scan_policy(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    installs = _install_mocks(
+        monkeypatch,
+        tmp_path,
+        _make_url_bundle_fetcher(name="existing-skill", awaiting_name=False),
+    )
+    force_args = []
+
+    monkeypatch.setattr(
+        hub,
+        "HubLockFile",
+        lambda: type(
+            "Lock",
+            (),
+            {"get_installed": lambda self, name: {"install_path": f"category/{name}"}},
+        )(),
+    )
+    monkeypatch.setattr(
+        guard,
+        "scan_skill",
+        lambda skill_path, source="community": guard.ScanResult(
+            skill_name="existing-skill",
+            source=source,
+            trust_level="community",
+            verdict="caution",
+            findings=[guard.Finding("x", "high", "c", "f", 1, "m", "d")],
+        ),
+    )
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan blocked")
+
+    def block_without_force(result, force=False):
+        force_args.append(force)
+        return False, "Blocked by scan"
+
+    monkeypatch.setattr(guard, "should_allow_install", block_without_force)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_install(
+        "https://example.com/existing-skill/SKILL.md",
+        console=console,
+        skip_confirm=True,
+        reinstall_existing=True,
+    )
+
+    assert force_args == [False]
+    assert installs == []
+    assert "Installation blocked" in sink.getvalue()
 
 
 def test_url_install_rejects_invalid_name_override(monkeypatch, tmp_path, hub_env):
@@ -780,4 +899,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

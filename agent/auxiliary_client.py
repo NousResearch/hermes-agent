@@ -3539,7 +3539,18 @@ def resolve_provider_client(
                 except Exception:
                     pass
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
-            client = _wrap_if_needed(client, final_model, custom_base, custom_key)
+            # Pass the ORIGINAL base_url (before _to_openai_base_url rewrite)
+            # to _wrap_if_needed so that _maybe_wrap_anthropic builds the
+            # Anthropic SDK client with the correct endpoint.  When the URL
+            # ends in /anthropic, _to_openai_base_url rewrites it to /v1 for
+            # OpenAI-wire clients, but if we're going to wrap in Anthropic
+            # transport the SDK needs the original /anthropic path (it appends
+            # /v1/messages itself).
+            _wrap_base = (explicit_base_url or "").strip().rstrip("/") if (
+                api_mode == "anthropic_messages"
+                or _endpoint_speaks_anthropic_messages(explicit_base_url or "")
+            ) else custom_base
+            client = _wrap_if_needed(client, final_model, _wrap_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then API-key providers (Codex excluded here:

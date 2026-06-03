@@ -26,6 +26,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -84,7 +85,44 @@ except ImportError:
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
-app = FastAPI(title="Hermes Agent", version=__version__)
+
+@asynccontextmanager
+async def _lifespan(app):
+    """Initialise per-app event state inside the running event loop.
+
+    Why: ``asyncio.Lock()`` binds to the loop that is *running* when it is
+    created. Building it at import time binds it to the wrong loop (or no
+    loop), so under a threaded TestClient the lock raises ``RuntimeError``
+    and broadcasts get silently dropped. Creating the lock here guarantees
+    it lives on the same loop that serves requests.
+    What: Sets ``app.state.event_channels`` (channel -> subscriber set) and
+    ``app.state.event_lock`` for the lifetime of the application.
+    Test: Start the app via TestClient, publish on /api/pub and assert a
+    subscriber on /api/events receives the frame.
+    """
+    app.state.event_channels = {}
+    app.state.event_lock = asyncio.Lock()
+    yield
+
+
+def _get_event_state(app) -> Tuple[Dict[str, set], asyncio.Lock]:
+    """Return ``(event_channels, event_lock)`` for the given app.
+
+    Why: WebSocket handlers need the channel registry and its lock without
+    reaching for module globals (which would re-introduce the wrong-loop
+    bug). The fallback init keeps the bare ASGI/TestClient path working even
+    when the lifespan handler has not populated ``app.state`` yet.
+    What: Lazily initialises and returns the per-app event channels and lock.
+    Test: Call with a fresh FastAPI app and assert it returns a dict and an
+    ``asyncio.Lock`` instance.
+    """
+    if not hasattr(app.state, "event_lock"):
+        app.state.event_channels = {}
+        app.state.event_lock = asyncio.Lock()
+    return app.state.event_channels, app.state.event_lock
+
+
+app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -6507,8 +6545,9 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
-_event_channels: dict[str, set] = {}
-_event_lock = asyncio.Lock()
+# NOTE: the channel registry and its lock now live on ``app.state`` (see
+# ``_lifespan`` / ``_get_event_state``) so the lock binds to the running event
+# loop rather than the import-time loop.
 
 
 def _resolve_chat_argv(
@@ -6617,10 +6656,11 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     return f"ws://{netloc}/api/pub?{qs}"
 
 
-async def _broadcast_event(channel: str, payload: str) -> None:
+async def _broadcast_event(app, channel: str, payload: str) -> None:
     """Fan out one publisher frame to every subscriber on `channel`."""
-    async with _event_lock:
-        subs = list(_event_channels.get(channel, ()))
+    event_channels, event_lock = _get_event_state(app)
+    async with event_lock:
+        subs = list(event_channels.get(channel, ()))
 
     for sub in subs:
         try:
@@ -6811,7 +6851,7 @@ async def pub_ws(ws: WebSocket) -> None:
 
     try:
         while True:
-            await _broadcast_event(channel, await ws.receive_text())
+            await _broadcast_event(ws.app, channel, await ws.receive_text())
     except WebSocketDisconnect:
         pass
 
@@ -6837,8 +6877,10 @@ async def events_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
-    async with _event_lock:
-        _event_channels.setdefault(channel, set()).add(ws)
+    event_channels, event_lock = _get_event_state(ws.app)
+
+    async with event_lock:
+        event_channels.setdefault(channel, set()).add(ws)
 
     try:
         while True:
@@ -6849,14 +6891,14 @@ async def events_ws(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        async with _event_lock:
-            subs = _event_channels.get(channel)
+        async with event_lock:
+            subs = event_channels.get(channel)
 
             if subs is not None:
                 subs.discard(ws)
 
                 if not subs:
-                    _event_channels.pop(channel, None)
+                    event_channels.pop(channel, None)
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:

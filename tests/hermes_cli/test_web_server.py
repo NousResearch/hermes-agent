@@ -3410,12 +3410,13 @@ class TestPtyWebSocket:
         with self.client.websocket_connect(sub_path) as sub:
             # Wait for the subscriber to be registered on the server side.
             # websocket_connect returns when ws.accept() completes, but the
-            # server adds us to ``_event_channels`` in a follow-up await,
-            # so a publish immediately after connect can race ahead of the
-            # subscriber registration and the message is dropped.
+            # server adds us to ``app.state.event_channels`` in a follow-up
+            # await, so a publish immediately after connect can race ahead of
+            # the subscriber registration and the message is dropped.
+            event_channels, _ = ws_mod._get_event_state(ws_mod.app)
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                if ws_mod._event_channels.get("broadcast-test"):
+                if event_channels.get("broadcast-test"):
                     break
                 time.sleep(0.01)
             else:

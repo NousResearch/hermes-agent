@@ -2362,7 +2362,44 @@ def _caduceus_defaults() -> dict:
         "worker": dict(c.get("worker") or {"provider": "", "model": ""}),
         "budget": (c.get("workflow") or {}).get("default_budget_tokens"),
         "effort": c.get("effort") or "high",
+        # Auto Router (per-task worker selection) + /local (GPU workers) toggles.
+        "router_enabled": bool((c.get("router") or {}).get("enabled", False)),
+        "local_enabled": bool((c.get("local") or {}).get("enabled", False)),
     }
+
+
+def _caduceus_local_summary(cstate, enabled: bool) -> dict:
+    """Build the /local summary (catalog + what's loaded) for the desktop popover.
+
+    Catalog is shown whenever models are declared (independent of the toggle) so
+    the popover can list them; ``enabled`` reflects the live /local switch.
+    """
+    out = {"enabled": bool(enabled), "models": [], "loaded": None, "default_worker": ""}
+    try:
+        lc = (getattr(cstate, "local", None) if cstate is not None else None) or {}
+        if not lc:
+            from hermes_cli.config import load_config_readonly
+            lc = (load_config_readonly().get("caduceus") or {}).get("local") or {}
+        if not lc:
+            return out
+        from agent.local_manager import get_local_manager
+        mgr = get_local_manager(lc)
+        if mgr is not None:
+            out["models"] = mgr.catalog()
+            out["loaded"] = mgr.status().get("loaded")
+            out["default_worker"] = mgr.default_worker_id
+    except Exception:
+        pass
+    return out
+
+
+def _caduceus_full_summary(base: dict, cstate, settings: dict) -> dict:
+    """Augment a base Caduceus summary with the Auto Router + /local state."""
+    summary = dict(base or {})
+    summary["router_enabled"] = bool(settings.get("router_enabled"))
+    summary["local"] = _caduceus_local_summary(cstate, bool(settings.get("local_enabled")))
+    summary["local_enabled"] = summary["local"]["enabled"]
+    return summary
 
 
 def _caduceus_session(sid: str) -> dict:
@@ -2393,6 +2430,11 @@ def _apply_caduceus(sid: str, agent) -> dict:
         cstate.budget_tokens = int(budget) if budget else None
     except (TypeError, ValueError):
         cstate.budget_tokens = None
+    # Auto Router + /local toggles (live flip on the agent's CaduceusState).
+    if isinstance(getattr(cstate, "router", None), dict):
+        cstate.router["enabled"] = bool(settings.get("router_enabled"))
+    if isinstance(getattr(cstate, "local", None), dict):
+        cstate.local["enabled"] = bool(settings.get("local_enabled"))
     want = bool(settings.get("enabled"))
     if want and not cstate.enabled:
         cstate.activate()
@@ -2407,7 +2449,7 @@ def _apply_caduceus(sid: str, agent) -> dict:
         except Exception:
             pass
     agent._cached_system_prompt = None
-    return cstate.summary()
+    return _caduceus_full_summary(cstate.summary(), cstate, settings)
 
 
 def _apply_caduceus_to_session(sid: str) -> dict:
@@ -2417,13 +2459,14 @@ def _apply_caduceus_to_session(sid: str) -> dict:
     if agent is not None:
         return _apply_caduceus(sid, agent)
     settings = _caduceus_session(sid)
-    return {
+    base = {
         "enabled": bool(settings.get("enabled")),
         "orchestrator": dict(settings.get("orchestrator") or {}),
         "worker": dict(settings.get("worker") or {}),
         "budget": settings.get("budget"),
         "effort": settings.get("effort"),
     }
+    return _caduceus_full_summary(base, None, settings)
 
 
 def _make_agent(sid: str, key: str, session_id: str | None = None):
@@ -6823,17 +6866,32 @@ def _(rid, params: dict) -> dict:
 
 @method("caduceus.set")
 def _(rid, params: dict) -> dict:
-    """Toggle Caduceus deep-planning mode for a session.
+    """Toggle Caduceus mode + its Auto Router / Local-worker sub-switches.
 
-    Caduceus is a single switch — only ``enabled`` is honored here. Effort,
-    model tiers, and budget are auto-tuned (power-user overrides live in the
-    ``caduceus:`` config section), so there are no tier/budget RPCs.
+    Honored params (all optional): ``enabled`` (the mode), ``router`` (Auto
+    Router — per-task worker selection), ``local`` (run workflow workers on
+    local GPU models). Effort, model tiers, and budget are auto-tuned (power-user
+    overrides live in the ``caduceus:`` config section). The router/local flags
+    are persisted to config so they survive restarts (matching the CLI).
     """
     try:
         sid = params.get("session_id", "")
         settings = _caduceus_session(sid)
         if "enabled" in params:
             settings["enabled"] = bool(params.get("enabled"))
+        _persist = []
+        if "router" in params:
+            settings["router_enabled"] = bool(params.get("router"))
+            _persist.append(("caduceus.router.enabled", settings["router_enabled"]))
+        if "local" in params:
+            settings["local_enabled"] = bool(params.get("local"))
+            _persist.append(("caduceus.local.enabled", settings["local_enabled"]))
+        for _key, _val in _persist:
+            try:
+                from cli import save_config_value as _save_cfg
+                _save_cfg(_key, _val)
+            except Exception as exc:
+                logging.debug("persist %s failed: %s", _key, exc)
         summary = _apply_caduceus_to_session(sid)
         _emit("caduceus.state", sid, summary)
         return _ok(rid, summary)

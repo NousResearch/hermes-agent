@@ -83,6 +83,7 @@ MANIFEST = [
     "apps/desktop/src/app/session/hooks/use-message-stream.ts",
     "apps/desktop/src/app/settings/constants.ts",
     "apps/desktop/src/app/shell/app-shell.tsx",
+    "apps/desktop/src/app/shell/caduceus-menu-panel.tsx",
     "apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx",
     "apps/desktop/src/components/workflow/AgentCard.tsx",
     "apps/desktop/src/components/workflow/TheaterPanels.tsx",

@@ -287,8 +287,9 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
   const { status } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
-  // Keep code parsing enabled while streaming so incomplete fenced blocks still
-  // render as code cards. The expensive Shiki pass is deferred by
+  // Always include the `code` plugin regardless of streaming state, so
+  // code-block chrome (headers, copy buttons) is present from the first
+  // render. The expensive Shiki pass is still deferred by
   // `SyntaxHighlighter` below when `isStreaming` is true.
   const plugins = useMemo(() => ({ math: mathPlugin, code }), [])
 
@@ -374,8 +375,10 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
       // amounts) leaks those dollars out to the math parser and they
       // get rendered as broken inline math until the closing fence
       // arrives. Shiki is independently deferred via `defer={isStreaming}`
-      // on the SyntaxHighlighter component, so we don't pay code-block
-      // tokenization on every token even with this set.
+      // on the SyntaxHighlighter component (uses a 120 ms delay during
+      // streaming to avoid re-tokenizing on every token, and 0 ms delay
+      // once streaming ends), so we don't pay code-block tokenization
+      // on every token even with this set.
       parseIncompleteMarkdown
       plugins={plugins}
       preprocess={preprocessMarkdown}

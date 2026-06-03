@@ -82,22 +82,18 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       </CodeCardHeader>
       <CodeCardBody>
         <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
-          {defer ? (
-            <code className="block whitespace-pre">{trimmed}</code>
-          ) : (
-            <ShikiHighlighter
-              addDefaultStyles={false}
-              as="div"
-              colorReplacements={SHIKI_COLOR_REPLACEMENTS}
-              defaultColor="light-dark()"
-              delay={120}
-              language={language || 'text'}
-              showLanguage={false}
-              theme={SHIKI_THEME}
-            >
-              {trimmed}
-            </ShikiHighlighter>
-          )}
+          <ShikiHighlighter
+            addDefaultStyles={false}
+            as="div"
+            colorReplacements={SHIKI_COLOR_REPLACEMENTS}
+            defaultColor="light-dark()"
+            delay={defer ? 120 : 0}
+            language={language || 'text'}
+            showLanguage={false}
+            theme={SHIKI_THEME}
+          >
+            {trimmed}
+          </ShikiHighlighter>
         </Pre>
       </CodeCardBody>
     </CodeCard>

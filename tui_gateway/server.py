@@ -708,8 +708,14 @@ def _ensure_session_db_row(session: dict) -> None:
     Called from prompt.submit so a row only exists once the user actually sends
     a message — abandoned drafts never leave an empty "Untitled" session behind.
     Uses INSERT OR IGNORE under the hood, so re-calls (and the AIAgent's own
-    lazy create) are no-ops. Captures cwd up front so workspace grouping works
-    without waiting for a separate cwd update.
+    lazy create) are no-ops.
+
+    Only an *explicitly chosen* workspace is persisted as the session's cwd.
+    The agent still runs in the auto-detected directory (session["cwd"]), but
+    we don't stamp that onto the row — otherwise every session the user never
+    picked a folder for gets grouped under whatever directory the desktop
+    happened to launch in (e.g. "desktop"). Leaving it null groups them under
+    "No workspace", which is the desired default.
     """
     key = session.get("session_key")
     if not key:
@@ -722,7 +728,7 @@ def _ensure_session_db_row(session: dict) -> None:
             key,
             source="tui",
             model=_resolve_model(),
-            cwd=_session_cwd(session),
+            cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
@@ -733,6 +739,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
     session["cwd"] = resolved
+    # An explicit user choice — persist it as the workspace (and let a later
+    # lazy row creation persist it too, not the launch-dir fallback).
+    session["explicit_cwd"] = True
     _register_session_cwd(session)
     db = _get_db()
     if db is not None:
@@ -800,11 +809,31 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = None
 
 
-def _set_session_context(session_key: str) -> list:
+def _cwd_for_session_key(session_key: str) -> str:
+    """Reverse-map session_key to the session's logical cwd.
+
+    Snapshots ``_sessions`` first: concurrent RPC handlers mutate it from the
+    thread pool, so iterating the live view risks ``RuntimeError: dictionary
+    changed size during iteration``.
+    """
+    if not session_key:
+        return ""
+    for sess in list(_sessions.values()):
+        if sess.get("session_key") == session_key:
+            return str(sess.get("cwd") or "")
+    return ""
+
+
+def _set_session_context(session_key: str, cwd: str | None = None) -> list:
     try:
         from gateway.session_context import set_session_vars
 
-        return set_session_vars(session_key=session_key)
+        # Ephemeral task IDs (background, preview) aren't in `_sessions`, so the
+        # reverse-map returns "" and would clear the cwd override. Callers that
+        # know the parent workspace pass it explicitly so spawned agents inherit
+        # it instead of falling back to the gateway launch dir.
+        resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
+        return set_session_vars(session_key=session_key, cwd=resolved)
     except Exception:
         return []
 
@@ -2746,6 +2775,16 @@ def _(rid, params: dict) -> dict:
     cols = int(params.get("cols", 80))
     history = _coerce_seed_history(params.get("messages"))
     title = str(params.get("title") or "").strip()
+    # Did the client pick a workspace, or are we falling back to the gateway's
+    # launch directory? Only an explicit choice is persisted as the session's
+    # workspace (see _ensure_session_db_row); otherwise it lands in "No
+    # workspace" instead of whatever folder the desktop launched in.
+    raw_cwd = str(params.get("cwd") or "").strip()
+    try:
+        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+    except Exception:
+        explicit_cwd = False
+    resolved_cwd = _completion_cwd(params)
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2759,11 +2798,12 @@ def _(rid, params: dict) -> dict:
         "cols": cols,
         "created_at": now,
         "edit_snapshots": {},
+        "explicit_cwd": explicit_cwd,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
-        "cwd": _completion_cwd(params),
+        "cwd": resolved_cwd,
         "inflight_turn": None,
         "last_active": now,
         "pending_title": title or None,
@@ -4605,7 +4645,7 @@ def _(rid, params: dict) -> dict:
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
 
     def run():
-        session_tokens = _set_session_context(task_id)
+        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
         try:
             from run_agent import AIAgent
 
@@ -4690,14 +4730,25 @@ def _(rid, params: dict) -> dict:
         if line
     )
 
+    # Normalize defensively: a malformed client path (embedded NUL, etc.) must
+    # not blow up the whole restart — treat it as "no validated cwd".
+    try:
+        preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
+        if preview_cwd and not os.path.isdir(preview_cwd):
+            preview_cwd = ""
+    except Exception:
+        preview_cwd = ""
+
     def run():
-        session_tokens = _set_session_context(task_id)
+        # Pin the validated preview cwd, else the parent workspace — never an
+        # invalid client path, which would silently fall back to the launch dir.
+        session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
         try:
             from run_agent import AIAgent
             from tools.terminal_tool import register_task_env_overrides
 
-            if cwd and os.path.isdir(os.path.abspath(os.path.expanduser(cwd))):
-                register_task_env_overrides(task_id, {"cwd": os.path.abspath(os.path.expanduser(cwd))})
+            if preview_cwd:
+                register_task_env_overrides(task_id, {"cwd": preview_cwd})
 
             history_note = (
                 f" (with {len(parent_history)} parent-session messages of context)"
@@ -6608,6 +6659,7 @@ def _(rid, params: dict) -> dict:
             picker_hints=True,
             canonical_order=True,
             pricing=True,
+            capabilities=True,
             max_models=50,
         )
         return _ok(rid, payload)

@@ -58,6 +58,22 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             echo "ok" > $out/result
           ''
         );
+
+        # Verify the default package builds successfully (cross-platform).
+        # On Linux the runtime checks below already depend on the package,
+        # but this ensures darwin builders also build it during flake check.
+        build-package = pkgs.runCommand "hermes-build-package" { } ''
+          echo "PASS: package built at ${hermes-agent}"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify the devShell builds successfully (cross-platform).
+        build-devshell = pkgs.runCommand "hermes-build-devshell" { } ''
+          echo "PASS: devShell built at ${self'.devShells.default}"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Verify binaries exist and are executable
         package-contents = pkgs.runCommand "hermes-package-contents" { } ''

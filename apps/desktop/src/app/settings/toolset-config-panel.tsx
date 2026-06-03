@@ -195,16 +195,23 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
   const providers = useMemo(() => cfg?.providers ?? [], [cfg])
 
-  // Default the expanded provider to the first one that is fully configured,
-  // else the first provider.
+  // Default the expanded provider to the one actually active in config
+  // (`is_active` / `cfg.active_provider`, mirroring the CLI picker), then the
+  // first fully-configured provider, else the first provider. Without this the
+  // panel highlighted the first keyless provider (e.g. Nous Portal) even when
+  // the user had already selected another (e.g. DuckDuckGo).
   useEffect(() => {
     if (activeProvider || providers.length === 0) {
       return
     }
 
-    const configured = providers.find(p => providerConfigured(p, envState))
-    setActiveProvider((configured ?? providers[0]).name)
-  }, [activeProvider, providers, envState])
+    const selected =
+      providers.find(p => p.is_active) ??
+      (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
+      providers.find(p => providerConfigured(p, envState)) ??
+      providers[0]
+    setActiveProvider(selected.name)
+  }, [activeProvider, providers, envState, cfg])
 
   async function handleSelect(provider: ToolProvider) {
     setActiveProvider(provider.name)

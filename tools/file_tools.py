@@ -289,11 +289,46 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
+    """Return the container-side Hermes mirror prefix for Docker file tools."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        return None
+
+    try:
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+
+        if env is not None:
+            if env.__class__.__name__ == "DockerEnvironment" and bool(
+                getattr(env, "_persistent", False)
+            ):
+                return "/root/.hermes"
+            return None
+
+        config = _get_env_config()
+    except Exception:
+        return None
+
+    if config.get("env_type") == "docker" and config.get("container_persistent", True):
+        return "/root/.hermes"
+    return None
+
+
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
     """Return a soft-guard warning when ``filepath`` lands in another Hermes
-    profile's scoped area or a sandbox-mirror of authoritative profile state.
+    profile's scoped area, a host-side sandbox-mirror of authoritative profile
+    state, or the Docker container's sandbox mirror of Hermes state.
 
-    Two detectors run in order:
+    Three detectors run in order:
 
     * cross-profile (#TBD) — writes that hit another profile's
       ``skills/plugins/cron/memories`` directory.
@@ -302,17 +337,22 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
       non-local terminal backend (Docker, Daytona, etc.), where the host
       Hermes process never reads the mirror and the authoritative file is
       left untouched.
+    * container-mirror (#32049 follow-up) — writes from inside a Docker
+      container whose bind-mounted home strips the ``sandboxes/`` prefix, so
+      the agent sees a plain ``/root/.hermes/…`` path.
 
     Returns ``None`` when the write is in-scope or outside Hermes scope.
-    Both detectors are soft guards — the agent can override either by
+    All detectors are soft guards — the agent can override any by
     passing ``cross_profile=True`` to its write tool after explicit user
     direction. Defense-in-depth, NOT a security boundary — the terminal
     tool runs as the same OS user and can write any of these paths
-    directly. See ``agent/file_safety.classify_cross_profile_target`` and
-    ``classify_sandbox_mirror_target`` for the detection rules.
+    directly. See ``agent/file_safety.classify_cross_profile_target``,
+    ``classify_sandbox_mirror_target`` and ``classify_container_mirror_target``
+    for the detection rules.
     """
     try:
         from agent.file_safety import (
+            get_container_mirror_warning,
             get_cross_profile_warning,
             get_sandbox_mirror_warning,
         )
@@ -332,7 +372,15 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     warning = get_cross_profile_warning(resolved)
     if warning is not None:
         return warning
-    return get_sandbox_mirror_warning(resolved)
+
+    warning = get_sandbox_mirror_warning(resolved)
+    if warning is not None:
+        return warning
+
+    return get_container_mirror_warning(
+        resolved,
+        mirror_prefix=_get_container_mirror_prefix_for_task(task_id),
+    )
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:

@@ -641,6 +641,41 @@ canvas {
   .scrollbar-dt *::-webkit-scrollbar-button {
     display: none;
   }
+
+  /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
+     render under document.body, outside the `.scrollbar-dt` scope on
+     #root. Same visual treatment, applied directly to the overlay
+     container so its (and only its) internal scrollbar is themed. */
+  .dt-portal-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+  }
+
+  .dt-portal-scrollbar::-webkit-scrollbar {
+    width: 0.375rem;
+    height: 0.375rem;
+  }
+
+  .dt-portal-scrollbar::-webkit-scrollbar-track,
+  .dt-portal-scrollbar::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .dt-portal-scrollbar::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--dt-midground) 28%, transparent);
+    border-radius: 9999rem;
+    border: 0.0625rem solid transparent;
+    background-clip: padding-box;
+  }
+
+  .dt-portal-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--dt-midground) 50%, transparent);
+    background-clip: padding-box;
+  }
+
+  .dt-portal-scrollbar::-webkit-scrollbar-button {
+    display: none;
+  }
 }
 
 /* Bottom clearance lives on [data-slot='aui_composer-clearance'] —

@@ -706,6 +706,19 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_get_env_vars_marks_channel_managed_keys(self):
+        from hermes_cli.web_server import _channel_managed_env_keys
+
+        data = self.client.get("/api/env").json()
+        # Every entry carries the classification the Keys page relies on.
+        assert all("channel_managed" in info for info in data.values())
+
+        channel_keys = _channel_managed_env_keys()
+        # Messaging-platform credentials owned by the Channels page are flagged;
+        # everything else stays visible on the Keys page.
+        for key, info in data.items():
+            assert info["channel_managed"] is (key in channel_keys)
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
@@ -1497,6 +1510,132 @@ class TestNewEndpoints:
     def test_profile_soul_unknown_profile_404(self):
         resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
+
+    # --- New profiles endpoints: active / description / model / describe-auto ---
+
+    def test_profiles_active_defaults(self):
+        from hermes_constants import get_hermes_home
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] == "default"
+        assert data["current"] == "default"
+
+    def test_profiles_set_active_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "router"})
+
+        resp = self.client.post("/api/profiles/active", json={"name": "router"})
+        assert resp.status_code == 200
+        assert resp.json()["active"] == "router"
+        assert self.client.get("/api/profiles/active").json()["active"] == "router"
+
+    def test_profiles_set_active_unknown_404(self):
+        resp = self.client.post("/api/profiles/active", json={"name": "ghost"})
+        assert resp.status_code == 404
+
+    def test_profile_description_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "desc-prof"})
+
+        put = self.client.put(
+            "/api/profiles/desc-prof/description",
+            json={"description": "Handles code review"},
+        )
+        assert put.status_code == 200
+        body = put.json()
+        assert body["description"] == "Handles code review"
+        assert body["description_auto"] is False
+
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["desc-prof"]["description"] == "Handles code review"
+        assert profiles["desc-prof"]["description_auto"] is False
+
+    def test_profile_description_unknown_404(self):
+        resp = self.client.put(
+            "/api/profiles/nope/description", json={"description": "x"}
+        )
+        assert resp.status_code == 404
+
+    def test_profile_model_round_trip(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof"})
+
+        resp = self.client.put(
+            "/api/profiles/model-prof/model",
+            json={"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "openrouter"
+
+        import yaml
+        cfg_path = get_hermes_home() / "profiles" / "model-prof" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert cfg["model"]["provider"] == "openrouter"
+        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+
+    def test_profile_model_requires_provider_and_model(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof2"})
+        resp = self.client.put(
+            "/api/profiles/model-prof2/model",
+            json={"provider": "", "model": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_profile_describe_auto_success(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-prof"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, True, "described", description="Generated blurb"
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-prof/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["description"] == "Generated blurb"
+        assert body["description_auto"] is True
+
+    def test_profile_describe_auto_failure_is_not_auto(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-fail"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, False, "no aux client", description=None
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-fail/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["description_auto"] is False
 
     def test_skills_list(self):
         resp = self.client.get("/api/skills")

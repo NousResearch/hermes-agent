@@ -1,7 +1,9 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -77,6 +79,48 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert "thread_id" not in data  # no thread → omitted
 
 
+def test_macos_launchd_service_process_false_off_macos(monkeypatch):
+    """launchd detection is inert on non-macOS platforms."""
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+
+    assert gateway_run._is_macos_launchd_service_process() is False
+
+
+def test_macos_launchd_service_process_matches_current_pid(monkeypatch):
+    """macOS launchd detection matches the current PID in launchctl output."""
+    calls = []
+
+    def _fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='{\n    "PID" = 4242;\n}')
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 4242)
+    monkeypatch.setattr("hermes_cli.gateway.get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    assert gateway_run._is_macos_launchd_service_process() is True
+    assert calls == [
+        (
+            ["launchctl", "list", "ai.hermes.gateway"],
+            {"capture_output": True, "text": True, "timeout": 2},
+        )
+    ]
+
+
+def test_macos_launchd_service_process_false_on_launchctl_failure(monkeypatch):
+    """launchctl errors degrade to False instead of blocking /restart."""
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setattr("hermes_cli.gateway.get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=113, stdout=""),
+    )
+
+    assert gateway_run._is_macos_launchd_service_process() is False
+
+
 @pytest.mark.asyncio
 async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monkeypatch):
     """Under systemd (INVOCATION_ID set), /restart uses via_service=True."""
@@ -99,10 +143,43 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under macOS launchd, /restart must exit through the service restart path."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(
+        gateway_run,
+        "_is_macos_launchd_service_process",
+        lambda: True,
+        raising=False,
+    )
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_without_service_manager(tmp_path, monkeypatch):
+    """Without a service manager/container, /restart uses detached relaunch."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(
+        gateway_run,
+        "_is_macos_launchd_service_process",
+        lambda: False,
+        raising=False,
+    )
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

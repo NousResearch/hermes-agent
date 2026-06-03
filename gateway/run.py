@@ -1156,6 +1156,29 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _is_macos_launchd_service_process() -> bool:
+    """Return True when this gateway PID is the loaded macOS launchd service."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        from hermes_cli.gateway import get_launchd_label
+        import subprocess
+
+        current_pid = os.getpid()
+        result = subprocess.run(
+            ["launchctl", "list", get_launchd_label()],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode != 0:
+            return False
+        return bool(re.search(rf'"PID"\s*=\s*{current_pid}\s*;', result.stdout or ""))
+    except Exception as exc:
+        logger.debug("macOS launchd service detection failed: %s", exc)
+        return False
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -10737,13 +10760,16 @@ class GatewayRunner:
         active_agents = self._running_agent_count()
         # When running under a service manager (systemd/launchd) or inside a
         # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # code 75/clean service semantics so the service manager / container
+        # restart policy restarts us. The detached subprocess approach
+        # (setsid + bash) doesn't work under systemd (KillMode=mixed kills
+        # the cgroup), launchd-managed macOS services (clean exit does not
+        # relaunch with KeepAlive.SuccessfulExit=false), or Docker (tini exits
+        # when the gateway dies, taking the detached helper with it).
+        _under_systemd_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        _under_launchd_service = _is_macos_launchd_service_process()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        if _under_systemd_service or _under_launchd_service or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

@@ -211,8 +211,19 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank = self._config.get("rerank", True)
 
     def _read_filters(self) -> Dict[str, Any]:
-        """Filters for search/get_all — scoped to user only for cross-session recall."""
-        return {"user_id": self._user_id}
+        """Filters for search/get_all — OR of user-only and user+agent scopes.
+
+        The write filter includes ``agent_id`` for attribution, so the read
+        filter must explicitly cover both:
+        - older memories stored without ``agent_id`` (user-only scope)
+        - newer memories stored with both ``user_id`` and ``agent_id``
+        """
+        return {
+            "OR": [
+                {"user_id": self._user_id},
+                {"user_id": self._user_id, "agent_id": self._agent_id},
+            ]
+        }
 
     def _write_filters(self) -> Dict[str, Any]:
         """Filters for add — scoped to user + agent for attribution."""

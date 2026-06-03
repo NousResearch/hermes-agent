@@ -7715,18 +7715,27 @@ class GatewayRunner:
                 agent_path = to_agent_visible_cache_path(path)
 
                 if mtype.startswith("text/"):
+                    file_content = ""
+                    try:
+                        with open(path, "r", encoding="utf-8", errors="replace") as _f:
+                            file_content = _f.read(50000)
+                        if len(file_content) >= 50000:
+                            file_content += "\n... [truncated]"
+                    except Exception as _exc:
+                        logger.warning("Failed to read text document %s: %s", path, _exc)
                     context_note = (
                         f"[The user sent a text document: '{display_name}'. "
                         f"Its content has been included below. "
                         f"The file is also saved at: {agent_path}]"
                     )
+                    message_text = f"{context_note}\n\n```\n{file_content}\n```\n\n{message_text}"
                 else:
                     context_note = (
                         f"[The user sent a document: '{display_name}'. "
                         f"The file is saved at: {agent_path}. "
                         f"Ask the user what they'd like you to do with it.]"
                     )
-                message_text = f"{context_note}\n\n{message_text}"
+                    message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text

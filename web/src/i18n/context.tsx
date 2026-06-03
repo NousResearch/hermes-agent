@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
+import { vi } from "./vi";
 import { zh } from "./zh";
 import { zhHant } from "./zh-hant";
 import { ja } from "./ja";
@@ -19,6 +20,7 @@ import { hu } from "./hu";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
+  vi,
   zh,
   "zh-hant": zhHant,
   ja,
@@ -47,6 +49,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 // mismapping that flag pairings inevitably create.
 export const LOCALE_META: Record<Locale, { name: string }> = {
   en: { name: "English" },
+  vi: { name: "Tiếng Việt" },
   zh: { name: "简体中文" },
   "zh-hant": { name: "繁體中文" },
   ja: { name: "日本語" },

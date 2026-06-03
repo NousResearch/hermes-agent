@@ -232,6 +232,10 @@ RUN mkdir -p /etc/cont-init.d && \
     chmod +x /etc/cont-init.d/01-hermes-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
 COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
+# 03-seed-data-services re-seeds volume-defined s6 services (e.g. the Claude
+# Code proxy under $HERMES_HOME/services/) into the tmpfs scandir on boot, so
+# they survive image rebuilds. Ordered after 02 (per-profile gateways first).
+COPY --chmod=0755 docker/cont-init.d/03-seed-data-services /etc/cont-init.d/03-seed-data-services
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

@@ -1,0 +1,55 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Seed data-volume-backed s6 services into the runtime scandir on boot.
+#
+# Some s6 services (notably the Claude Code proxy on :11435) are defined on
+# the persistent VOLUME under $HERMES_HOME/services/<name>/ rather than baked
+# into the image. /run/service/ is tmpfs and wiped on every container
+# restart, and these defs are NOT in the image, so a freshly-rebuilt
+# container comes up WITHOUT them -- the gateway then loses its Claude
+# provider on :11435 and fails over to the fallback. This hook re-seeds them
+# from the volume on every boot so they survive image rebuilds and restarts.
+#
+# Ordered after 02-reconcile-profiles: per-profile gateways are primary;
+# these auxiliary volume services layer onto the same scandir, which 02 has
+# already chowned (and whose s6-svscan control FIFO it made writable).
+#
+# Best-effort: a seed failure logs a warning but never aborts container boot
+# (always exits 0) -- a missing auxiliary service is recoverable, a wedged
+# boot is not. Idempotent: an already-present runtime service is left
+# untouched, so re-running never clobbers a live supervise/ tree.
+
+SERVICES_SRC="${HERMES_HOME:-/opt/data}/services"
+SCANDIR=/run/service
+
+if [ ! -d "$SERVICES_SRC" ]; then
+    echo "seed-services: $SERVICES_SRC absent -- nothing to seed"
+    exit 0
+fi
+
+seeded=""
+for svc in "$SERVICES_SRC"/*; do
+    [ -d "$svc" ] || continue
+    name=$(basename "$svc")
+    dest="$SCANDIR/$name"
+    if [ -e "$dest" ]; then
+        echo "seed-services: '$name' already present -- skipping"
+        continue
+    fi
+    # cp -a preserves perms/ownership; the run script drops to the hermes
+    # user via s6-setuidgid. s6-supervise creates supervise/ at scan time.
+    if cp -a "$svc" "$dest"; then
+        seeded="$seeded $name"
+    else
+        echo "seed-services: WARN failed to seed '$name'"
+    fi
+done
+
+if [ -n "$seeded" ]; then
+    echo "seed-services: seeded ->$seeded ; rescanning $SCANDIR"
+    s6-svscanctl -a "$SCANDIR" || echo "seed-services: WARN rescan signal failed"
+else
+    echo "seed-services: nothing new to seed"
+fi
+
+exit 0

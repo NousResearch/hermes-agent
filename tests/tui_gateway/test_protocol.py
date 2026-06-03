@@ -343,7 +343,7 @@ def test_session_create_with_explicit_cwd_registers_terminal_override(server, mo
     assert calls == [(resp["result"]["stored_session_id"], {"cwd": str(tmp_path)})]
 
 
-def test_init_session_registers_persisted_cwd_override(server, monkeypatch, tmp_path):
+def test_init_session_keeps_persisted_cwd_without_terminal_override(server, monkeypatch, tmp_path):
     calls = []
     terminal_tool = types.SimpleNamespace(
         register_task_env_overrides=lambda key, overrides: calls.append((key, overrides))
@@ -364,8 +364,33 @@ def test_init_session_registers_persisted_cwd_override(server, monkeypatch, tmp_
     with patch.dict(sys.modules, {"tools.terminal_tool": terminal_tool}):
         server._init_session("sid-persisted", "session-key", MagicMock(), [], cols=80)
 
-    assert server._sessions["sid-persisted"]["explicit_cwd"] is True
+    assert server._sessions["sid-persisted"]["cwd"] == str(tmp_path)
+    assert server._sessions["sid-persisted"]["explicit_cwd"] is False
+    assert calls == []
+
+
+def test_set_session_cwd_registers_terminal_override(server, monkeypatch, tmp_path):
+    calls = []
+    updated = []
+    terminal_tool = types.SimpleNamespace(
+        cleanup_vm=lambda _key: None,
+        register_task_env_overrides=lambda key, overrides: calls.append((key, overrides)),
+    )
+
+    class _DB:
+        def update_session_cwd(self, key, cwd):
+            updated.append((key, cwd))
+
+    session = {"cwd": "/old", "explicit_cwd": False, "session_key": "session-key"}
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    with patch.dict(sys.modules, {"tools.terminal_tool": terminal_tool}):
+        cwd = server._set_session_cwd(session, str(tmp_path))
+
+    assert cwd == str(tmp_path)
+    assert session["explicit_cwd"] is True
     assert calls == [("session-key", {"cwd": str(tmp_path)})]
+    assert updated == [("session-key", str(tmp_path))]
 
 
 # ── session.resume payload ────────────────────────────────────────────

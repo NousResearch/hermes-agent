@@ -692,6 +692,9 @@ def _session_cwd(session: dict | None) -> str:
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
+    # This flag controls per-session terminal cwd overrides, not the session's
+    # display/completion cwd. Fallback dirs from TERMINAL_CWD/os.getcwd() should
+    # not force Docker or other remote backends to use a host launch path.
     if not session.get("explicit_cwd"):
         return
     try:
@@ -2405,12 +2408,8 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         row = db.get_session(key)
         if row and row.get("cwd"):
             _sessions[sid]["cwd"] = row["cwd"]
-            _sessions[sid]["explicit_cwd"] = True
         else:
-            try:
-                db.update_session_cwd(key, _sessions[sid]["cwd"])
-            except Exception:
-                logger.debug("failed to persist resumed session cwd", exc_info=True)
+            logger.debug("resumed TUI session has no persisted cwd")
     _register_session_cwd(_sessions[sid])
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(

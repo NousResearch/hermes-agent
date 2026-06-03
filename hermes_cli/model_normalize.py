@@ -80,6 +80,7 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
     "openai-codex",
+    "openai-oauth",
 })
 
 # Providers whose native naming is authoritative -- pass through unchanged.

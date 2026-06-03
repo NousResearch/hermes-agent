@@ -2417,7 +2417,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
         ):
-            provider = "openai-codex"
+            provider = configured_provider if configured_provider in {"openai-codex", "openai-oauth"} else "openai-codex"
             api_mode = "codex_responses"
         elif base_url_hostname(configured_base_url) == "api.anthropic.com":
             provider = "anthropic"

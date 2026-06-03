@@ -155,3 +155,50 @@ def test_openai_oauth_missing_store_raises(tmp_path, monkeypatch):
     with pytest.raises(AuthError) as exc_info:
         resolve_openai_oauth_runtime_credentials(refresh_if_expiring=False)
     assert exc_info.value.code == "openai_oauth_auth_missing"
+
+
+# ---------------------------------------------------------------------------
+# Codepath coverage: openai-oauth in model normalization, vision, delegation
+# ---------------------------------------------------------------------------
+
+
+def test_openai_oauth_model_normalize_strips_prefix():
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    assert normalize_model_for_provider("openai/gpt-5.4", "openai-oauth") == "gpt-5.4"
+
+
+def test_openai_oauth_model_normalize_bare_name_unchanged():
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    assert normalize_model_for_provider("gpt-5.4", "openai-oauth") == "gpt-5.4"
+
+
+def test_openai_oauth_supports_vision_tool_results():
+    from tools.vision_tools import _supports_media_in_tool_results
+
+    assert _supports_media_in_tool_results("openai-oauth", "gpt-5.4") is True
+
+
+def test_openai_oauth_in_strip_vendor_providers():
+    from hermes_cli.model_normalize import _STRIP_VENDOR_ONLY_PROVIDERS
+
+    assert "openai-oauth" in _STRIP_VENDOR_ONLY_PROVIDERS
+
+
+def test_delegation_preserves_openai_oauth_provider():
+    from tools.delegate_tool import _resolve_delegation_credentials
+
+    class FakeParent:
+        provider = "openai-oauth"
+        base_url = "https://chatgpt.com/backend-api/codex"
+        api_key = "tok_test"
+        api_mode = "codex_responses"
+
+    cfg = {
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "provider": "openai-oauth",
+    }
+    result = _resolve_delegation_credentials(cfg, FakeParent())
+    assert result["provider"] == "openai-oauth"
+    assert result["api_mode"] == "codex_responses"

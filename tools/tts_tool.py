@@ -401,7 +401,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
-COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
+COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "opus", "flac"})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
 
 
@@ -613,7 +613,7 @@ def _get_command_tts_output_format(
     config: Dict[str, Any],
     output_path: Optional[str] = None,
 ) -> str:
-    """Return the validated output format (mp3/wav/ogg/flac)."""
+    """Return the validated output format (mp3/wav/ogg/opus/flac)."""
     if output_path:
         suffix = Path(output_path).suffix.lower().strip().lstrip(".")
         if suffix in COMMAND_TTS_OUTPUT_FORMATS:
@@ -933,6 +933,11 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     return None
 
 
+def _is_opus_voice_file(file_path: str) -> bool:
+    """Return True when *file_path* already points to an Opus voice payload."""
+    return file_path.lower().endswith((".ogg", ".opus"))
+
+
 # ===========================================================================
 # Provider: Edge TTS (free)
 # ===========================================================================
@@ -987,7 +992,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
 
     # Determine output format based on file extension
-    if output_path.endswith(".ogg"):
+    if output_path.lower().endswith((".ogg", ".opus")):
         output_format = "opus_48000_64"
     else:
         output_format = "mp3_44100_128"
@@ -1048,7 +1053,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         model = DEFAULT_OPENAI_MODEL
 
     # Determine response format from extension
-    if output_path.endswith(".ogg"):
+    if output_path.lower().endswith((".ogg", ".opus")):
         response_format = "opus"
     else:
         response_format = "mp3"
@@ -1447,7 +1452,7 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
     voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
 
-    if output_path.endswith(".ogg"):
+    if output_path.lower().endswith((".ogg", ".opus")):
         response_format = "opus"
     elif output_path.endswith(".wav"):
         response_format = "wav"
@@ -1788,7 +1793,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         if ffmpeg:
             # For .ogg output, force libopus encoding (Telegram voice bubbles
             # require Opus specifically; ffmpeg's default for .ogg is Vorbis).
-            if output_path.lower().endswith(".ogg"):
+            if output_path.lower().endswith((".ogg", ".opus")):
                 cmd = [
                     ffmpeg, "-i", wav_path,
                     "-acodec", "libopus", "-ac", "1",
@@ -2194,12 +2199,12 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Telegram and Feishu voice bubbles prefer Opus audio. OpenAI and
+    # ElevenLabs can produce Opus natively (no ffmpeg needed). Edge TTS
+    # always outputs MP3 and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in {"telegram", "feishu"}
 
     # Determine output path
     if output_path:
@@ -2236,8 +2241,8 @@ def text_to_speech_tool(
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
-        # Use .ogg for Telegram with providers that support native Opus output,
-        # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
+        # Use .ogg for platforms with native Opus voice delivery, otherwise
+        # fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
@@ -2390,7 +2395,7 @@ def text_to_speech_tool(
                 "error": f"TTS generation produced no output (provider: {provider})"
             }, ensure_ascii=False)
 
-        # Try Opus conversion for Telegram compatibility.
+        # Try Opus conversion for voice-message compatibility.
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV. Keep those native
         # formats for local/CLI playback and only convert when the current
         # platform actually needs Opus voice delivery.
@@ -2400,11 +2405,11 @@ def text_to_speech_tool(
             # delivery only kicks in when the user explicitly opts in
             # via ``voice_compatible: true`` in their provider config.
             if _is_command_tts_voice_compatible(command_provider_config):
-                if not file_str.endswith(".ogg"):
+                if not _is_opus_voice_file(file_str):
                     opus_path = _convert_to_opus(file_str)
                     if opus_path:
                         file_str = opus_path
-                voice_compatible = file_str.endswith(".ogg")
+                voice_compatible = _is_opus_voice_file(file_str)
         elif provider not in BUILTIN_TTS_PROVIDERS:
             # Plugin-registered provider (issue #30398). Voice-bubble
             # delivery opts in via ``TTSProvider.voice_compatible``
@@ -2412,22 +2417,26 @@ def text_to_speech_tool(
             # already write Opus skip the ffmpeg conversion.
             plugin_voice_compatible = _plugin_provider_is_voice_compatible(provider)
             if plugin_voice_compatible:
-                if not file_str.endswith(".ogg"):
+                if not _is_opus_voice_file(file_str):
                     opus_path = _convert_to_opus(file_str)
                     if opus_path:
                         file_str = opus_path
-                voice_compatible = file_str.endswith(".ogg")
+                voice_compatible = _is_opus_voice_file(file_str)
         elif (
             want_opus
             and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
-            and not file_str.endswith(".ogg")
+            and not _is_opus_voice_file(file_str)
         ):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
-            voice_compatible = want_opus and file_str.endswith(".ogg")
+            if want_opus and not _is_opus_voice_file(file_str):
+                opus_path = _convert_to_opus(file_str)
+                if opus_path:
+                    file_str = opus_path
+            voice_compatible = want_opus and _is_opus_voice_file(file_str)
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)

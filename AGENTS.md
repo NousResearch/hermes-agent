@@ -782,7 +782,7 @@ go to `~/.hermes/skills/.archive/` and are restorable.
   prompt) + `agent/curator_backup.py` (pre-run tar.gz snapshots).
 - **CLI:** `hermes_cli/curator.py` wires `hermes curator <verb>` where
   verbs are: `status`, `run`, `pause`, `resume`, `pin`, `unpin`,
-  `archive`, `restore`, `prune`, `backup`, `rollback`.
+  `archive`, `restore`, `list-archived`, `prune`, `backup`, `rollback`.
 - **Telemetry:** `tools/skill_usage.py` owns the sidecar
   `~/.hermes/skills/.usage.json` — per-skill `use_count`, `view_count`,
   `patch_count`, `last_activity_at`, `state` (active / stale /

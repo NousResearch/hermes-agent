@@ -7070,6 +7070,64 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
+
+def _desktop_linux_sandbox_fixup(desktop_dir: Path) -> None:
+    """Fix chrome-sandbox permissions so Electron can launch on Linux.
+
+    electron-builder produces the SUID sandbox binary but can't set its
+    owner/mode without root.  Without the fix Electron refuses to start:
+
+        FATAL: The SUID sandbox helper binary was found, but is not
+        configured correctly.  Rather than run without sandboxing I'm
+        aborting now.  You need to make sure that .../chrome-sandbox is
+        owned by root and has mode 4755.
+
+    Best-effort: tries sudo; prints instructions on failure.  No-op when
+    the binary is already correctly configured.
+    """
+    if sys.platform == "darwin" or sys.platform == "win32":
+        return
+
+    release_dir = desktop_dir / "release" / "linux-unpacked"
+    sandbox = release_dir / "chrome-sandbox"
+    if not sandbox.exists():
+        return
+
+    # Check current state — skip if already correct
+    try:
+        st = sandbox.stat()
+        if st.st_uid == 0 and st.st_gid == 0 and (st.st_mode & 0o777) == 0o4755:
+            return  # already correct
+    except OSError:
+        return
+
+    sudo = shutil.which("sudo")
+    if not sudo:
+        print("→ chrome-sandbox needs root SUID permissions. Run:")
+        print(f"  sudo chown root:root {sandbox}")
+        print(f"  sudo chmod 4755 {sandbox}")
+        return
+
+    try:
+        result = subprocess.run(
+            [sudo, "chown", "root:root", str(sandbox)],
+            check=False, timeout=10,
+        )
+        if result.returncode != 0:
+            raise OSError(f"chown returned {result.returncode}")
+        result = subprocess.run(
+            [sudo, "chmod", "4755", str(sandbox)],
+            check=False, timeout=10,
+        )
+        if result.returncode != 0:
+            raise OSError(f"chmod returned {result.returncode}")
+    except Exception as exc:
+        print(f"  (warning: chrome-sandbox fixup failed: {exc})")
+        print(f"  Fix manually:")
+        print(f"    sudo chown root:root {sandbox}")
+        print(f"    sudo chmod 4755 {sandbox}")
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
@@ -7161,6 +7219,9 @@ def cmd_gui(args: argparse.Namespace):
                 # an in-place self-update (otherwise macOS reports "Hermes is
                 # damaged"). No-op on non-macOS and on real-identity builds.
                 _desktop_macos_relaunchable_fixup(desktop_dir)
+                # Fix chrome-sandbox SUID permissions so Electron can launch on
+                # Linux (electron-builder can't set them without root).
+                _desktop_linux_sandbox_fixup(desktop_dir)
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)

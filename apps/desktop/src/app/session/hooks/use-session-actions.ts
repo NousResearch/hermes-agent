@@ -16,6 +16,7 @@ import {
   $messages,
   $sessions,
   getRememberedWorkspaceCwd,
+  sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -692,12 +693,15 @@ export function useSessionActions({
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
+      // Pins are keyed on the durable lineage-root id; the stored id may be the
+      // live tip after compression. Drop both so the pin can't linger.
+      const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
@@ -769,6 +773,9 @@ export function useSessionActions({
       const archived = $sessions.get().find(s => s.id === storedSessionId)
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
+      // Pins are keyed on the durable lineage-root id; the stored id may be the
+      // live tip after compression. Drop both so the pin can't linger.
+      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
@@ -776,7 +783,7 @@ export function useSessionActions({
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
+      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
         startFreshSessionDraft(true)

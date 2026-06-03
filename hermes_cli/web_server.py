@@ -1529,7 +1529,15 @@ async def get_sessions(
 
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
-    """Full-text search across session message content using FTS5."""
+    """Full-text search across session message content using FTS5.
+
+    Results are deduped by compression lineage, not by raw ``session_id``.
+    Auto-compression rotates a conversation onto a fresh session id (and leaves
+    the old segment's messages in the FTS index), so one logical chat can own
+    many ``sessions`` rows that all match the same query. Branches also use
+    ``parent_session_id``, but they are real alternate conversations; don't
+    collapse branch-specific hits back into the parent.
+    """
     if not q or not q.strip():
         return {"results": []}
     try:
@@ -1547,20 +1555,99 @@ async def search_sessions(q: str = "", limit: int = 20):
                 else:
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
+            # Over-fetch so lineage dedup can still surface `limit` distinct
+            # conversations even when several hits collapse onto one root.
+            fetch_limit = max(limit * 5, 50)
+            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+
+            # Walk parent_session_id to the compression root, memoized so a
+            # chain of compression segments only costs one walk. We deliberately
+            # stop at branch/delegate edges: those sessions may diverge from the
+            # parent and should remain searchable on their own.
+            root_cache: dict = {}
+
+            def compression_root(session_id: str) -> str:
+                if not session_id:
+                    return session_id
+                if session_id in root_cache:
+                    return root_cache[session_id]
+                chain = []
+                cur = session_id
+                visited = set()
+                root = session_id
+                while cur and cur not in visited:
+                    visited.add(cur)
+                    chain.append(cur)
+                    if cur in root_cache:
+                        root = root_cache[cur]
+                        break
+                    try:
+                        s = db.get_session(cur)
+                    except Exception:
+                        s = None
+                    if not s:
+                        root = cur
+                        break
+                    parent = s.get("parent_session_id") if isinstance(s, dict) else None
+                    if not parent:
+                        root = cur
+                        break
+                    try:
+                        parent_session = db.get_session(parent)
+                    except Exception:
+                        parent_session = None
+                    if not parent_session:
+                        root = cur
+                        break
+                    parent_ended_at = parent_session.get("ended_at")
+                    started_at = s.get("started_at")
+                    is_compression_edge = (
+                        parent_session.get("end_reason") == "compression"
+                        and parent_ended_at is not None
+                        and started_at is not None
+                        and started_at >= parent_ended_at
+                    )
+                    if not is_compression_edge:
+                        root = cur
+                        break
+                    cur = parent
+                for node in chain:
+                    root_cache[node] = root
+                return root
+
+            tip_cache: dict = {}
+
+            def lineage_tip(root_id: str) -> str:
+                if root_id in tip_cache:
+                    return tip_cache[root_id]
+                tip = root_id
+                try:
+                    resolved = db.get_compression_tip(root_id)
+                    if resolved:
+                        tip = resolved
+                except Exception:
+                    pass
+                tip_cache[root_id] = tip
+                return tip
+
+            # Keep the best (first / most relevant) hit per compression root.
             seen: dict = {}
             for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
+                raw_sid = m["session_id"]
+                root = compression_root(raw_sid)
+                if root in seen:
+                    continue
+                seen[root] = {
+                    "session_id": lineage_tip(root),
+                    "lineage_root": root,
+                    "snippet": m.get("snippet", ""),
+                    "role": m.get("role"),
+                    "source": m.get("source"),
+                    "model": m.get("model"),
+                    "session_started": m.get("session_started"),
+                }
+                if len(seen) >= limit:
+                    break
             return {"results": list(seen.values())}
         finally:
             db.close()

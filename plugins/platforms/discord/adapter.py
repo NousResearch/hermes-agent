@@ -4864,43 +4864,47 @@ class DiscordAdapter(BasePlatformAdapter):
                         import aiohttp
                         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
                         
-                        payload = {
-                            "message_id": str(message.id),
-                            "channel_id": str(message.channel.id),
-                            "author_id": str(message.author.id),
-                            "author_name": message.author.name,
-                            "content": message.content,
-                            "audio_attachments": [
-                                {
-                                    "id": str(att.id),
-                                    "filename": att.filename,
-                                    "size": att.size,
-                                    "url": att.url,
-                                    "proxy_url": att.proxy_url
-                                }
-                            ]
-                        }
-                        
-                        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
-                        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-                        
-                        logger.info("[Discord] Routing audio to n8n webhook: %s", n8n_webhook_url)
-                        async with aiohttp.ClientSession(**_sess_kw) as session:
-                            async with session.post(
-                                n8n_webhook_url,
-                                json=payload,
-                                timeout=aiohttp.ClientTimeout(total=15),
-                                **_req_kw
-                            ) as resp:
-                                if resp.status >= 400:
-                                    raise Exception(f"n8n webhook returned HTTP {resp.status}")
-                                response_data = await resp.json()
-                                if response_data and "reply" in response_data:
-                                    reply_text = response_data["reply"]
-                                    if pending_text_injection:
-                                        pending_text_injection = f"{pending_text_injection}\n\n[n8n Audio Analysis]: {reply_text}"
-                                    else:
-                                        pending_text_injection = f"[n8n Audio Analysis]: {reply_text}"
+                        await self.send_typing(str(effective_channel.id))
+                        try:
+                            payload = {
+                                "message_id": str(message.id),
+                                "channel_id": str(message.channel.id),
+                                "author_id": str(message.author.id),
+                                "author_name": message.author.name,
+                                "content": message.content,
+                                "audio_attachments": [
+                                    {
+                                        "id": str(att.id),
+                                        "filename": att.filename,
+                                        "size": att.size,
+                                        "url": att.url,
+                                        "proxy_url": att.proxy_url
+                                    }
+                                ]
+                            }
+                            
+                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+                            
+                            logger.info("[Discord] Routing audio to n8n webhook: %s", n8n_webhook_url)
+                            async with aiohttp.ClientSession(**_sess_kw) as session:
+                                async with session.post(
+                                    n8n_webhook_url,
+                                    json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=15),
+                                    **_req_kw
+                                ) as resp:
+                                    if resp.status >= 400:
+                                        raise Exception(f"n8n webhook returned HTTP {resp.status}")
+                                    response_data = await resp.json()
+                                    if response_data and "reply" in response_data:
+                                        reply_text = response_data["reply"]
+                                        if pending_text_injection:
+                                            pending_text_injection = f"{pending_text_injection}\n\n[n8n Audio Analysis]: {reply_text}"
+                                        else:
+                                            pending_text_injection = f"[n8n Audio Analysis]: {reply_text}"
+                        finally:
+                            await self.stop_typing(str(effective_channel.id))
                         
                         media_urls.append(att.url)
                         media_types.append(content_type)

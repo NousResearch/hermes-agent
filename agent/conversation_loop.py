@@ -907,7 +907,16 @@ def run_conversation(
         
         api_start_time = time.time()
         retry_count = 0
-        max_retries = agent._api_max_retries
+        try:
+            from agent.openai_codex_resilience import resolve_openai_codex_retry_budget
+
+            max_retries = resolve_openai_codex_retry_budget(
+                platform=getattr(agent, "platform", None),
+                provider=getattr(agent, "provider", None),
+                default_retries=agent._api_max_retries,
+            )
+        except Exception:
+            max_retries = agent._api_max_retries
         _retry = TurnRetryState()
         max_compression_attempts = 3
 
@@ -3407,6 +3416,18 @@ def run_conversation(
                             _final_response += f"\n\n{_billing_guidance}"
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                    try:
+                        from agent.openai_codex_resilience import maybe_format_codex_cron_failure
+
+                        _cron_notice = maybe_format_codex_cron_failure(
+                            agent,
+                            api_error,
+                            attempts=max_retries,
+                        )
+                        if _cron_notice:
+                            _final_response = _cron_notice
+                    except Exception:
+                        pass
                     if _is_stream_drop:
                         _final_response += (
                             "\n\nThe provider's stream connection keeps "

@@ -1933,6 +1933,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 or (result.get("final_response") or "").strip()
                 or "agent reported failure"
             )
+            try:
+                from agent.openai_codex_resilience import (
+                    classify_openai_codex_error,
+                    format_openai_codex_failure_notice,
+                )
+
+                _provider = str(runtime.get("provider") or "").strip().lower()
+                if _provider == "openai-codex" and (
+                    (result.get("final_response") or "").strip()
+                    and "not a Kynver harness failure" in (result.get("final_response") or "")
+                ):
+                    _err_text = (result.get("final_response") or "").strip()
+                elif _provider == "openai-codex":
+                    _classified = classify_openai_codex_error(_err_text)
+                    _err_text = format_openai_codex_failure_notice(
+                        job_name=job_name,
+                        provider=_provider,
+                        model=str(model or ""),
+                        error_class=_classified.error_class,
+                        summary=_classified.summary,
+                        attempts=getattr(agent, "_api_max_retries", 3),
+                        degraded=_classified.transient,
+                    )
+            except Exception:
+                pass
             raise RuntimeError(_err_text)
 
         final_response = result.get("final_response", "") or ""
@@ -1963,6 +1988,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
+        if str(e).strip() and "not a Kynver harness failure" in str(e):
+            error_msg = str(e).strip()
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
         output = f"""# Cron Job: {job_name} (FAILED)
@@ -2197,12 +2224,21 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition due jobs: jobs with a per-job workdir and/or profile touch
+        # process-global runtime state inside run_job. Workdir jobs temporarily
+        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
+        # Hermes home override, scheduler _hermes_home hook, and temporary
+        # profile .env load into os.environ with snapshot/restore. They MUST run
+        # sequentially to avoid corrupting each other. Jobs without either field
+        # stay parallel-safe.
+        sequential_jobs = [
+            j for j in due_jobs
+            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+        ]
+        parallel_jobs = [
+            j for j in due_jobs
+            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+        ]
 
         _results: list = []
         _all_futures: list = []

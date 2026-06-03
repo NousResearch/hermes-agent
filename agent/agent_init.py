@@ -1288,6 +1288,16 @@ def init_agent(
     except (TypeError, ValueError):
         _api_retries = 3
     agent._api_max_retries = _api_retries
+    try:
+        from agent.openai_codex_resilience import resolve_openai_codex_retry_budget
+
+        agent._api_max_retries = resolve_openai_codex_retry_budget(
+            platform=getattr(agent, "platform", None),
+            provider=getattr(agent, "provider", None),
+            default_retries=agent._api_max_retries,
+        )
+    except Exception:
+        pass
 
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit

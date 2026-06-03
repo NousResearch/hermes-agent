@@ -1,6 +1,7 @@
 from argparse import Namespace
 import os
 from pathlib import Path
+import subprocess
 import sys
 import types
 
@@ -411,6 +412,102 @@ def test_termux_ultrafast_version_runs_before_heavy_startup(
     assert "Install directory:" in out
     assert "Python:" in out
     assert "OpenAI SDK:" in out
+
+
+def test_ultrafast_version_runs_off_termux(monkeypatch, capsys, main_mod):
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
+
+    assert main_mod._try_ultrafast_version() is True
+
+    out = capsys.readouterr().out
+    assert "Hermes Agent v" in out
+    assert "Project:" in out
+    assert "Python:" in out
+    assert "OpenAI SDK:" in out
+
+
+def test_project_root_fast_path_reprioritizes_existing_entry(monkeypatch, main_mod):
+    project_root = main_mod._project_root_str_fast()
+    monkeypatch.setattr(sys, "path", ["", "shadow", project_root, "later"])
+
+    main_mod._ensure_project_root_on_path_fast()
+
+    assert sys.path == [project_root, "", "shadow", "later"]
+
+
+def test_ultrafast_version_skips_container_mode_marker(
+    monkeypatch, tmp_path, capsys, main_mod
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".container-mode").write_text("backend=podman\n", encoding="utf-8")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.delenv("HERMES_DEV", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(main_mod, "_is_container_startup_environment_fast", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
+
+    assert main_mod._try_ultrafast_version() is False
+    assert capsys.readouterr().out == ""
+
+
+def test_ultrafast_version_skips_root_hermes_home_with_active_profile(
+    monkeypatch, tmp_path, capsys, main_mod
+):
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home / "profiles" / "coder").mkdir(parents=True)
+    (hermes_home / "active_profile").write_text("coder\n", encoding="utf-8")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.delenv("HERMES_DEV", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(main_mod, "_is_container_startup_environment_fast", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
+
+    assert main_mod._try_ultrafast_version() is False
+    assert capsys.readouterr().out == ""
+
+
+def test_ultrafast_version_direct_script_invocation_works():
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "hermes_cli" / "main.py"), "--version"],
+        cwd=repo_root.parent,
+        env={**os.environ, "PYTHONPATH": ""},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Hermes Agent v" in result.stdout
+    assert "Project:" in result.stdout
+
+
+def test_ultrafast_version_preserves_non_termux_version_command(
+    monkeypatch, capsys, main_mod
+):
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "version"])
+
+    assert main_mod._try_ultrafast_version() is False
+    assert capsys.readouterr().out == ""
+
+
+def test_termux_ultrafast_version_disable_stays_termux_scoped(
+    monkeypatch, capsys, main_mod
+):
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("HERMES_TERMUX_DISABLE_FAST_CLI", "1")
+    monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
+
+    assert main_mod._try_ultrafast_version() is True
+
+    assert "Hermes Agent v" in capsys.readouterr().out
 
 
 def test_read_openai_version_fast(monkeypatch, tmp_path, main_mod):

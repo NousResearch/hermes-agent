@@ -65,6 +65,22 @@ import os
 import sys
 
 
+def _project_root_str_fast() -> str:
+    return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+
+
+def _ensure_project_root_on_path_fast() -> None:
+    project_root = _project_root_str_fast()
+    normalized_root = os.path.normcase(os.path.realpath(project_root))
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if not entry
+        or os.path.normcase(os.path.realpath(entry)) != normalized_root
+    ]
+    sys.path.insert(0, project_root)
+
+
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
@@ -221,6 +237,55 @@ def _is_termux_fast_version_argv(argv: list[str]) -> bool:
     return argv in (["--version"], ["-V"], ["version"])
 
 
+def _is_global_fast_version_argv(argv: list[str]) -> bool:
+    return argv in (["--version"], ["-V"])
+
+
+def _is_container_startup_environment_fast() -> bool:
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", encoding="utf-8") as handle:
+            cgroup = handle.read()
+    except OSError:
+        return False
+    return "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup
+
+
+def _active_profile_may_override_home_fast(hermes_root: str) -> bool:
+    active_profile = os.path.join(hermes_root, "active_profile")
+    try:
+        if os.path.exists(active_profile):
+            with open(active_profile, encoding="utf-8") as handle:
+                active = handle.read().strip()
+            return bool(active and active != "default")
+    except (OSError, UnicodeDecodeError):
+        pass
+    return False
+
+
+def _container_mode_may_be_active_fast() -> bool:
+    if os.environ.get("HERMES_DEV") == "1":
+        return False
+    if _is_container_startup_environment_fast():
+        return False
+
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_home:
+        if os.path.exists(os.path.join(hermes_home, ".container-mode")):
+            return True
+        parent_name = os.path.basename(os.path.dirname(os.path.normpath(hermes_home)))
+        return (
+            parent_name != "profiles"
+            and _active_profile_may_override_home_fast(hermes_home)
+        )
+
+    default_home = os.path.join(os.path.expanduser("~"), ".hermes")
+    if _active_profile_may_override_home_fast(default_home):
+        return True
+    return os.path.exists(os.path.join(default_home, ".container-mode"))
+
+
 def _read_openai_version_fast() -> str | None:
     """Read OpenAI SDK version without importing ``importlib.metadata``."""
     for base in sys.path:
@@ -253,20 +318,36 @@ def _print_fast_version_info() -> None:
     print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
 
 
-def _try_termux_ultrafast_version() -> bool:
-    """Handle ``hermes --version`` before config/logging imports on Termux."""
-    if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
+def _try_ultrafast_version() -> bool:
+    """Handle ``hermes --version`` before config/logging imports."""
+    is_termux = _is_termux_startup_environment_fast()
+    if (
+        is_termux
+        and os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1"
+    ):
         return False
-    if not _is_termux_startup_environment_fast():
+    if is_termux:
+        if not _is_termux_fast_version_argv(sys.argv[1:]):
+            return False
+    elif not _is_global_fast_version_argv(sys.argv[1:]):
         return False
-    if not _is_termux_fast_version_argv(sys.argv[1:]):
+    elif _container_mode_may_be_active_fast():
         return False
 
     _print_fast_version_info()
     return True
 
 
-if _try_termux_ultrafast_version():
+def _try_termux_ultrafast_version() -> bool:
+    """Backward-compatible test hook for the Termux startup fast path."""
+    if not _is_termux_startup_environment_fast():
+        return False
+    return _try_ultrafast_version()
+
+
+_ensure_project_root_on_path_fast()
+
+if _try_ultrafast_version():
     raise SystemExit(0)
 
 import argparse
@@ -339,8 +420,8 @@ def _require_tty(command_name: str) -> None:
 
 
 # Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(_project_root_str_fast())
+_ensure_project_root_on_path_fast()
 
 
 # ---------------------------------------------------------------------------

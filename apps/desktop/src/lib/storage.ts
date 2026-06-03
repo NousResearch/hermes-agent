@@ -1,3 +1,24 @@
+/**
+ * localStorage-backed state persistence utilities.
+ *
+ * These functions bridge nanostores with browser localStorage for fast,
+ * synchronous read/write within a session. For durability across app
+ * restarts, each persister also writes through IPC to the main process
+ * filesystem (see desktop-state.ts for hydration).
+ */
+
+// ── IPC persistence fire-and-forget ────────────────────────────────
+// Writes also go to the main process filesystem so state survives
+// Electron renderer-localStorage wipes (app restart, auto-update, etc.).
+function ipcPersist(key: string, value: null | string) {
+  if (typeof window === 'undefined' || !window.hermesDesktop?.setDesktopState) return
+  window.hermesDesktop.setDesktopState(key, value).catch(() => {
+    // IPC persistence is best-effort; localStorage is the primary store.
+  })
+}
+
+// ── Boolean persistence ────────────────────────────────────────────
+
 export function storedBoolean(key: string, fallback: boolean): boolean {
   try {
     const value = window.localStorage.getItem(key)
@@ -14,7 +35,11 @@ export function persistBoolean(key: string, value: boolean) {
   } catch {
     // Local storage is a convenience; ignore failures in restricted contexts.
   }
+
+  ipcPersist(key, String(value))
 }
+
+// ── String persistence ─────────────────────────────────────────────
 
 export function storedString(key: string): null | string {
   try {
@@ -34,7 +59,11 @@ export function persistString(key: string, value: null | string) {
   } catch {
     // Storage is best-effort.
   }
+
+  ipcPersist(key, value)
 }
+
+// ── String array persistence ───────────────────────────────────────
 
 export function storedStringArray(key: string): string[] {
   try {
@@ -62,7 +91,11 @@ export function persistStringArray(key: string, value: string[]) {
   } catch {
     // Pins are a local preference; restricted storage should not break chat.
   }
+
+  ipcPersist(key, JSON.stringify(value))
 }
+
+// ── Utility helpers ────────────────────────────────────────────────
 
 export function arraysEqual(left: string[], right: string[]) {
   return left.length === right.length && left.every((item, index) => item === right[index])
@@ -74,4 +107,30 @@ export function insertUniqueId(ids: string[], id: string, index: number) {
   next.splice(boundedIndex, 0, id)
 
   return next
+}
+
+/**
+ * Re-read a key from localStorage (after it's been seeded by IPC hydration)
+ * and return its parsed value. Returns `undefined` when the key is absent
+ * or unparseable.
+ */
+export function reloadStringArray(key: string): string[] | undefined {
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((i): i is string => typeof i === 'string') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function reloadJSON<T = unknown>(key: string): T | undefined {
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return undefined
+    return JSON.parse(raw) as T
+  } catch {
+    return undefined
+  }
 }

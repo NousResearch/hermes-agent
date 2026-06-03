@@ -210,6 +210,16 @@ const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstr
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
+
+// ── Desktop state persistence ──────────────────────────────────────────
+// Generic key-value state for renderer-side context that must survive app
+// restarts: pinned sessions, pane states, layout prefs, sidebar collapse
+// state, etc. Each key maps to a JSON file in a dedicated userData
+// subdirectory so auto-updates don't wipe it.
+const DESKTOP_STATE_DIR = path.join(app.getPath('userData'), 'desktop-state')
+
+// ── Window state persistence ───────────────────────────────────────────
+const WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
@@ -3166,6 +3176,58 @@ function writeDesktopConnectionConfig(config) {
   connectionConfigCache = config
 }
 
+// ── Window state persistence ───────────────────────────────────────
+let windowStateSaveTimer = null
+
+function loadWindowState() {
+  try {
+    const raw = fs.readFileSync(WINDOW_STATE_PATH, 'utf8')
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function saveWindowState(state) {
+  try {
+    fs.mkdirSync(path.dirname(WINDOW_STATE_PATH), { recursive: true })
+    fs.writeFileSync(WINDOW_STATE_PATH, JSON.stringify(state, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[window-state] save failed: ${error.message}`)
+  }
+}
+
+// ── Desktop state helpers ──────────────────────────────────────────
+// Sanitize key to prevent path traversal and restrict to safe chars.
+function safeStateKey(key) {
+  return String(key).replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+function desktopStatePath(key) {
+  return path.join(DESKTOP_STATE_DIR, `${safeStateKey(key)}.json`)
+}
+
+function readDesktopState(key) {
+  try {
+    const fullPath = desktopStatePath(key)
+    if (!fileExists(fullPath)) return null
+    return JSON.parse(fs.readFileSync(fullPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function writeDesktopState(key, value) {
+  try {
+    const fullPath = desktopStatePath(key)
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true })
+    fs.writeFileSync(fullPath, JSON.stringify(value, null, 2), 'utf8')
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
+}
+
 function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
   const remoteToken = decryptDesktopSecret(config.remote?.token)
 
@@ -3455,9 +3517,13 @@ async function startHermes() {
 
 function createWindow() {
   const icon = getAppIconPath()
+  // Restore persisted window state if available.
+  const savedState = loadWindowState()
   mainWindow = new BrowserWindow({
-    width: 1220,
-    height: 800,
+    width: savedState?.width ?? 1220,
+    height: savedState?.height ?? 800,
+    x: savedState?.x ?? undefined,
+    y: savedState?.y ?? undefined,
     minWidth: 900,
     minHeight: 620,
     title: 'Hermes',
@@ -3500,6 +3566,50 @@ function createWindow() {
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
+
+  // ── Window state persistence: save position/size on change ──────
+  // Debounced so rapid resize/move doesn't thrash the disk.
+  const debouncedSaveWindowState = () => {
+    if (windowStateSaveTimer) clearTimeout(windowStateSaveTimer)
+    windowStateSaveTimer = setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      const isMaximized = mainWindow.isMaximized()
+      const isFullScreen = mainWindow.isFullScreen()
+      // Don't overwrite saved normal bounds while maximized or full-screen.
+      if (isMaximized || isFullScreen) {
+        const existing = loadWindowState() || {}
+        saveWindowState({ ...existing, maximized: isMaximized, fullScreen: isFullScreen })
+        return
+      }
+      const bounds = mainWindow.getBounds()
+      saveWindowState({ ...bounds, maximized: false, fullScreen: false })
+    }, 400)
+  }
+
+  mainWindow.on('resize', debouncedSaveWindowState)
+  mainWindow.on('move', debouncedSaveWindowState)
+
+  // On close save the final state immediately so we don't lose the last
+  // position change to the debounce delay.
+  mainWindow.on('close', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const isMaximized = mainWindow.isMaximized()
+    const isFullScreen = mainWindow.isFullScreen()
+    // Preserve normal bounds from the debounced save — don't overwrite
+    // them with maximized/full-screen bounds.
+    if (isMaximized || isFullScreen) {
+      const existing = loadWindowState() || {}
+      saveWindowState({ ...existing, maximized: isMaximized, fullScreen: isFullScreen })
+    } else {
+      const bounds = mainWindow.getBounds()
+      saveWindowState({ ...bounds, maximized: false, fullScreen: false })
+    }
+  })
+
+  // Call maximize after creation if the window was maximized before.
+  if (savedState?.maximized) {
+    setImmediate(() => { try { mainWindow?.maximize() } catch { /* ok */ } })
+  }
 
   installPreviewShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
@@ -4129,6 +4239,13 @@ ipcMain.handle('hermes:version', async () => ({
   platform: process.platform,
   hermesRoot: resolveUpdateRoot()
 }))
+
+// ── Desktop state IPC: persist renderer state to filesystem ───────
+// The renderer reads state at startup to seed localStorage and writes
+// every state change through IPC, giving us durable filesystem-backed
+// storage that survives app restarts and auto-updates.
+ipcMain.handle('hermes:desktop-state:get', async (_event, key) => readDesktopState(key))
+ipcMain.handle('hermes:desktop-state:set', async (_event, key, value) => writeDesktopState(key, value))
 
 // ---------------------------------------------------------------------------
 // macOS first-launch placement: move into /Applications and pin to the Dock

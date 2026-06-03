@@ -131,9 +131,11 @@ def consume_internal_credential(value: str) -> Dict[str, Any]:
 
     Unlike :func:`consume_ticket` this is **not** single-use — the value is
     not removed on success, so a server-spawned child can present it on every
-    (re)connect. Returns the fixed server-internal identity ``info`` dict so
-    the WS handler can carry it into its session log, mirroring the shape
-    ``consume_ticket`` returns.
+    (re)connect. Returns the fixed server-internal identity ``info`` dict
+    (``{user_id, provider}``), mirroring the ``info`` shape ``consume_ticket``
+    returns, so a caller that wants to record the connecting identity can; the
+    current ``_ws_auth_ok`` caller validates for the boolean outcome only and
+    discards the dict.
 
     A constant-time compare against the (lazily-minted) credential avoids
     leaking length / prefix information on mismatch. If no internal

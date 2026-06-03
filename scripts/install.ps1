@@ -1268,7 +1268,19 @@ function Install-Venv {
     
     # uv creates the venv and pins the Python version in one step
     & $UvCmd venv venv --python $PythonVersion
-    
+
+    # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
+    # the user's shell). uv honours UV_PYTHON over an existing venv for the
+    # later `uv sync` / `uv pip install` tiers, so without this it would
+    # silently delete this 3.11 venv and recreate it at the inherited version
+    # -- building Rust transitives that have no wheel for that version from
+    # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
+    # just created forces every subsequent uv command onto it.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (Test-Path $venvPythonExe) {
+        $env:UV_PYTHON = $venvPythonExe
+    }
+
     Pop-Location
     
     Write-Success "Virtual environment ready (Python $PythonVersion)"
@@ -1282,6 +1294,20 @@ function Install-Dependencies {
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
+    }
+
+    # Re-pin UV_PYTHON to the venv interpreter. Install-Venv already does this,
+    # but the bootstrap runs install stages (venv, python-deps) as separate
+    # processes, so the env var set in Install-Venv does NOT survive into a
+    # separate python-deps invocation. Re-deriving it here covers that path.
+    # Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
+    # tiers below recreate the venv at 3.14 and fail the maturin source build
+    # (no cp314 wheels yet).
+    if (-not $NoVenv) {
+        $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+        if (Test-Path $venvPythonExe) {
+            $env:UV_PYTHON = $venvPythonExe
+        }
     }
 
     # Hash-verified install (Tier 0) -- when uv.lock is present, prefer

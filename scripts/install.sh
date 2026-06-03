@@ -1178,11 +1178,32 @@ setup_venv() {
     # uv creates the venv and pins the Python version in one step
     $UV_CMD venv venv --python "$PYTHON_VERSION"
 
+    # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
+    # user's shell env). uv honours UV_PYTHON over an existing venv for the
+    # later `uv sync` / `uv pip install` tiers, so without this it would
+    # silently delete this 3.11 venv and recreate it at the inherited
+    # version — building Rust transitives that have no wheel for that
+    # version from source via maturin, which fails. Pinning UV_PYTHON to the
+    # interpreter we just created forces every subsequent uv command onto it.
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
+
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
 install_deps() {
     log_info "Installing dependencies..."
+
+    # Re-pin UV_PYTHON to the venv interpreter. setup_venv already does this,
+    # but the bootstrap runs install stages (`venv`, `python-deps`) as separate
+    # processes, so an export from setup_venv does NOT survive into a separate
+    # python-deps invocation. Re-deriving it here covers that path. Without it,
+    # an inherited UV_PYTHON=3.14 makes the uv sync/pip tiers below recreate the
+    # venv at 3.14 and fail the maturin source build (no cp314 wheels yet).
+    if [ "$DISTRO" != "termux" ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    fi
 
     if [ "$DISTRO" = "termux" ]; then
         if [ "$USE_VENV" = true ]; then

@@ -9487,14 +9487,39 @@ class GatewayRunner:
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl
+                from gateway.runtime_footer import (
+                    build_footer_line as _bfl,
+                    resolve_footer_config as _rfc,
+                )
+                _footer_config = _load_gateway_config()
+                _footer_platform = _platform_config_key(source.platform)
+                _footer_effective = _rfc(_footer_config, _footer_platform)
+                _footer_session_title = None
+                if (
+                    _footer_effective.get("enabled")
+                    and "session_title" in (_footer_effective.get("fields") or ())
+                    and self._session_db
+                ):
+                    try:
+                        _footer_session_title = self._session_db.get_session_title(
+                            session_entry.session_id,
+                        )
+                    except Exception:
+                        logger.debug("runtime_footer session title lookup failed", exc_info=True)
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
+                    user_config=_footer_config,
+                    platform_key=_footer_platform,
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    session_title=_footer_session_title,
+                    session_id=session_entry.session_id,
+                    profile=self._active_profile_name(),
+                    platform=_footer_platform,
+                    chat=source.chat_name or source.chat_id,
+                    thread_id=source.thread_id,
+                    topic=source.chat_topic,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

@@ -53,6 +53,23 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _session_id_short(session_id: Optional[str]) -> str:
+    """Return a compact session id for footer display."""
+    if not session_id:
+        return ""
+    value = str(session_id)
+    parts = value.split("_")
+    if len(parts) >= 3 and parts[0] and parts[-1]:
+        return f"{parts[0]}-{parts[-1][:6]}"
+    return value[:8]
+
+
+def _string_value(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -95,6 +112,13 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    session_title: Optional[str] = None,
+    session_id: Optional[str] = None,
+    profile: Optional[str] = None,
+    platform: Optional[str] = None,
+    chat: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    topic: Optional[str] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -115,6 +139,38 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "session_title":
+            value = _string_value(session_title)
+            if value:
+                parts.append(value)
+        elif field == "session_id":
+            value = _string_value(session_id)
+            if value:
+                parts.append(value)
+        elif field == "session_id_short":
+            value = _session_id_short(session_id)
+            if value:
+                parts.append(value)
+        elif field == "profile":
+            value = _string_value(profile)
+            if value:
+                parts.append(value)
+        elif field in {"platform", "source"}:
+            value = _string_value(platform)
+            if value:
+                parts.append(value)
+        elif field == "chat":
+            value = _string_value(chat)
+            if value:
+                parts.append(value)
+        elif field == "thread":
+            value = _string_value(thread_id)
+            if value:
+                parts.append(f"thread:{value}")
+        elif field == "topic":
+            value = _string_value(topic)
+            if value:
+                parts.append(value)
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +186,13 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    session_title: Optional[str] = None,
+    session_id: Optional[str] = None,
+    profile: Optional[str] = None,
+    platform: Optional[str] = None,
+    chat: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    topic: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +209,11 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        session_title=session_title,
+        session_id=session_id,
+        profile=profile,
+        platform=platform,
+        chat=chat,
+        thread_id=thread_id,
+        topic=topic,
     )

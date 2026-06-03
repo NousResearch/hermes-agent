@@ -147,6 +147,34 @@ def test_format_footer_unknown_field_silently_ignored():
     assert out == "gpt-5.4 · 50%"
 
 
+def test_format_footer_session_metadata_fields():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=50,
+        context_length=100,
+        cwd="/x",
+        fields=(
+            "session_title",
+            "session_id_short",
+            "profile",
+            "platform",
+            "thread",
+            "topic",
+            "model",
+        ),
+        session_title="slack-to-notion-sync",
+        session_id="20260603_101530_a1b2c3d4",
+        profile="default",
+        platform="telegram",
+        thread_id="17585",
+        topic="maeve-main",
+    )
+    assert out == (
+        "slack-to-notion-sync · 20260603-a1b2c3 · default · telegram · "
+        "thread:17585 · maeve-main · gpt-5.4"
+    )
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
@@ -229,6 +257,29 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+def test_build_footer_renders_configured_session_metadata():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["session_title", "session_id_short", "profile", "source"],
+                },
+            },
+        },
+        platform_key="telegram",
+        model="openai/gpt-5.4",
+        context_tokens=25,
+        context_length=100,
+        cwd="/tmp/proj",
+        session_title="Research notes",
+        session_id="20260603_101530_a1b2c3d4",
+        profile="coder",
+        platform="telegram",
+    )
+    assert out == "Research notes · 20260603-a1b2c3 · coder · telegram"
 
 
 def test_build_footer_per_platform_off_suppresses():

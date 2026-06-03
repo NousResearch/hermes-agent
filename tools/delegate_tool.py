@@ -221,6 +221,112 @@ def list_active_subagents() -> List[Dict[str, Any]]:
         ]
 
 
+# ---------------------------------------------------------------------------
+# model_hint resolver (OMO / Dynamic Workflows 借鉴 — P0 路线图)
+# ---------------------------------------------------------------------------
+#
+# OMO 工具把 subagent 按工作分层用不同 model：
+#   - opus:   reviewer / metis / planner / momus  (重活决策)
+#   - haiku:  explorer / librarian               (轻活侦察)
+# 借鉴目标：让 delegate_task 接受 `model_hint: "haiku" | "opus" | "<model id>"`
+# 把"分层选模型"暴露给上层决策，无需手动查 provider 解析。
+#
+# 解析规则：
+#   1. 已经是完整 model id（包含 "/" 或 "." 或在已知 model 列表里）→ 原样返回
+#   2. short name 映射到当前 provider 上对应的轻/重模型
+#   3. 未识别 → 原样返回（让 provider 自己报未知 model，比我们猜更安全）
+#
+# 何时回退（fail-safe）：
+#   - provider 未知 / 模型列表拉不到 → 不强行猜，直接 return 原始 hint，
+#     让后续 _build_child_agent 用 parent_agent.model 继承
+
+# Short name → 实际 model id 的可识别前缀（用来判断"是不是 short name"）
+_MODEL_HINT_SHORT_NAMES = {
+    # Anthropic
+    "haiku": ("haiku",),         # claude-3-5-haiku, claude-haiku-4-5 等
+    "sonnet": ("sonnet",),       # claude-3-5-sonnet, claude-sonnet-4 等
+    "opus": ("opus",),           # claude-opus-4 等
+    # OpenAI
+    "nano": ("nano",),           # gpt-4.1-nano
+    "mini": ("gpt-4o-mini", "gpt-4.1-mini", "o4-mini"),
+    "gpt-4o": ("gpt-4o",),
+    "o1": ("o1",),
+    "o3": ("o3",),
+    "o4": ("o4",),
+    # Minimax（用户主 provider）
+    "minimax-highspeed": ("minimax-m2.7-highspeed",),
+    "minimax": ("minimax",),
+}
+
+
+def _is_full_model_id(hint: str) -> bool:
+    """判断 hint 是否已经是完整 model id（带 provider 前缀 / 完整版本号）。"""
+    if not hint:
+        return False
+    # 0) 先查 short name 集合：列表里的就是 short name（即使含数字也按 short name 处理）
+    if hint.lower() in _MODEL_HINT_SHORT_NAMES:
+        return False
+    # 1) 带 provider 前缀（"openai/gpt-4o"、"anthropic/claude-opus-4"）
+    if "/" in hint:
+        return True
+    # 2) 带版本号（"claude-3-5-sonnet-20241022"、"gpt-4o-2024-08-06"）
+    # 简单启发式：含数字 + "-" 视作完整 id
+    if any(c.isdigit() for c in hint) and "-" in hint:
+        return True
+    # 3) 含点号（"claude-3.5-sonnet"）→ 完整 id
+    if "." in hint:
+        return True
+    return False
+
+
+def _resolve_model_hint(
+    hint: Optional[str],
+    *,
+    parent_model: Optional[str] = None,
+) -> Optional[str]:
+    """把 "haiku"/"opus"/完整 model id 解析成子 agent 实际要用的 model。
+
+    行为：
+    - hint=None → return None（让调用方继承 parent_agent.model）
+    - hint 是完整 id → return hint
+    - hint 是 short name → 在 parent_model 同 provider/family 里找匹配的轻/重 model
+    - 解析失败 → return hint 原值（让 provider 报"unknown model"，
+      比我们瞎猜安全）
+    """
+    if not hint:
+        return None
+
+    hint = hint.strip()
+    if not hint:
+        return None
+
+    # 完整 id → 原样返回
+    if _is_full_model_id(hint):
+        return hint
+
+    # short name → 在 parent_model 上做模糊匹配
+    key = hint.lower()
+    candidates = _MODEL_HINT_SHORT_NAMES.get(key)
+    if not candidates:
+        # 未注册的 short name → 原样返回（让 provider 决定）
+        return hint
+
+    # 在 parent_model 里找包含 candidates 中任一前缀的 model
+    # 优先匹配 family 最近的版本
+    if parent_model:
+        parent_lower = parent_model.lower()
+        # 先看 parent 自己是不是同一 family（比如 parent 是 sonnet，
+        # 想用 opus，那直接拿 opus 的最新 id 即可）
+        for c in candidates:
+            if c in parent_lower:
+                # parent 已经在这个 family 里，hint 想换的也是这个 family
+                # → 直接返回 hint 让 provider 解析到最新版本
+                return hint
+
+    # parent 不在同一 family / parent 未知 → 返回 hint 走默认解析
+    return hint
+
+
 def _extract_output_tail(
     result: Dict[str, Any],
     *,
@@ -1924,19 +2030,32 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model_hint: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, model_hint)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, model_hint}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'model_hint' parameter (OMO / Dynamic Workflows 借鉴 — P0) lets the
+    caller route this child to a different model than the parent, using
+    short names like "haiku" / "opus" / "sonnet" or a full model id.
+    Resolution rules — see `_resolve_model_hint`:
+      - hint=None              → child inherits parent_agent.model
+      - hint=完整 model id     → 原样使用（"openai/gpt-4o"、"minimax-m2.7-highspeed"）
+      - hint=short name        → 在同 family 找匹配的轻/重模型
+      - 解析失败                → 交给 provider 报"unknown model"
+    Per-task model_hint beats the top-level one.  Cost savings example:
+    parent runs on opus (deep reasoning), but an "explore this directory"
+    subagent can be downgraded to haiku for ~1/20 the token cost.
 
     Returns JSON with results array, one entry per task.
     """
@@ -1997,6 +2116,20 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # ── model_hint (OMO P0) ─────────────────────────────────────────────
+    # If the caller supplied model_hint at the top level, resolve it against
+    # the parent's current model and override the resolved creds['model'].
+    # Per-task model_hint overrides this further down (per-task wins).
+    if model_hint:
+        parent_model = getattr(parent_agent, "model", None)
+        resolved = _resolve_model_hint(model_hint, parent_model=parent_model)
+        if resolved:
+            creds["model"] = resolved
+            logger.debug(
+                "delegate_task: top-level model_hint=%r → resolved=%r",
+                model_hint, resolved,
+            )
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2017,7 +2150,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "model_hint": model_hint,  # may be None → inherits top-level
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2058,12 +2197,25 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model_hint beats top-level — resolve it now and
+            # override the creds-derived model just for this child.
+            effective_model = creds["model"]
+            task_hint = t.get("model_hint")
+            if task_hint:
+                parent_model = getattr(parent_agent, "model", None)
+                resolved_hint = _resolve_model_hint(task_hint, parent_model=parent_model)
+                if resolved_hint:
+                    effective_model = resolved_hint
+                    logger.debug(
+                        "delegate_task: task %d model_hint=%r → resolved=%r",
+                        i, task_hint, resolved_hint,
+                    )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=effective_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,

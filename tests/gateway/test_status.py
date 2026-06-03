@@ -1036,3 +1036,42 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+
+class TestRespawnStormBreaker:
+    def test_no_storm_under_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for _ in range(5):
+            result = status.record_start_and_check_storm(max_starts=5, window_s=120)
+            assert result is None
+
+    def test_storm_detected_over_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        result = None
+        for _ in range(7):
+            result = status.record_start_and_check_storm(max_starts=5, window_s=120)
+        assert result is not None
+        assert result.count >= 6
+        assert result.backoff_s > 0
+
+    def test_old_starts_pruned_outside_window(self, tmp_path, monkeypatch):
+        import time
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        log_path = tmp_path / "gateway-starts.log"
+        old_ts = time.time() - 10000
+        log_path.write_text("\n".join(f"{old_ts:.6f}" for _ in range(10)) + "\n")
+
+        result = status.record_start_and_check_storm(max_starts=5, window_s=120)
+        assert result is None
+
+
+class TestLaunchdPlistRespawnGovernance:
+    def test_plist_has_throttle_interval(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.gateway import generate_launchd_plist
+
+        plist = generate_launchd_plist()
+        assert "<key>ThrottleInterval</key>" in plist
+        assert "<key>ExitTimeOut</key>" in plist
+        assert "<key>KeepAlive</key>" in plist

@@ -20,7 +20,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -1043,3 +1043,82 @@ def is_gateway_running(
 ) -> bool:
     """Check if the gateway daemon is currently running."""
     return get_running_pid(pid_path, cleanup_stale=cleanup_stale) is not None
+
+
+class StormInfo(NamedTuple):
+    """Result of a respawn-storm check.
+
+    ``count`` is how many starts were recorded inside ``window_s`` seconds,
+    ``window_s`` is the observation window, and ``backoff_s`` is how long the
+    caller should sleep to break the storm.
+    """
+
+    count: int
+    window_s: float
+    backoff_s: float
+
+
+def _get_starts_log_path() -> Path:
+    """Return the path to the gateway start-times log, respecting HERMES_HOME."""
+    return get_hermes_home() / "gateway-starts.log"
+
+
+def record_start_and_check_storm(
+    max_starts: int = 5,
+    window_s: float = 120.0,
+    *,
+    backoff_cap_s: float = 300.0,
+) -> Optional[StormInfo]:
+    """Record a gateway start and detect a respawn storm.
+
+    Appends the current UTC timestamp to ``{HERMES_HOME}/gateway-starts.log``,
+    prunes entries older than ``window_s``, and ring-buffers the file so it can
+    never grow unbounded. If more than ``max_starts`` starts have happened
+    inside the window, returns a :class:`StormInfo` describing an exponential
+    backoff the caller should sleep for to break the storm; otherwise returns
+    ``None``.
+
+    This is a portable, app-level circuit breaker that works regardless of the
+    supervisor (launchd ``KeepAlive``, systemd ``Restart=``, or bare manual
+    re-runs) — anything that re-invokes the gateway process gets counted.
+
+    The entire body is wrapped in a broad ``try/except`` that returns ``None``
+    on any failure: the breaker must never block or crash startup.
+    """
+    try:
+        now = datetime.now(timezone.utc).timestamp()
+        log_path = _get_starts_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing: list[float] = []
+        if log_path.exists():
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    existing.append(float(line))
+                except ValueError:
+                    continue
+
+        existing.append(now)
+
+        # Keep only entries within the observation window.
+        recent = [ts for ts in existing if now - ts <= window_s]
+
+        # Ring-buffer the on-disk log so it can't grow unbounded.
+        keep = max(max_starts * 4, 40)
+        to_write = existing[-keep:]
+        log_path.write_text(
+            "\n".join(f"{ts:.6f}" for ts in to_write) + "\n",
+            encoding="utf-8",
+        )
+
+        if len(recent) > max_starts:
+            over = len(recent) - max_starts
+            backoff_s = min(backoff_cap_s, 5.0 * (2 ** min(over, 6)))
+            return StormInfo(count=len(recent), window_s=window_s, backoff_s=backoff_s)
+
+        return None
+    except Exception:
+        return None

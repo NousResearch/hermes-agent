@@ -3087,7 +3087,17 @@ def generate_launchd_plist() -> str:
         <key>SuccessfulExit</key>
         <false/>
     </dict>
-    
+
+    <!-- ThrottleInterval raises launchd's default 10s respawn floor to 30s so a
+         repeatedly-SIGTERM'd gateway can't trigger a tight respawn storm (~40
+         restarts in 7 min observed 2026-05-23). ExitTimeOut gives the process
+         25s of graceful-drain headroom before launchd SIGKILLs it on stop. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ExitTimeOut</key>
+    <integer>25</integer>
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     
@@ -3566,6 +3576,33 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         _exit_diag("atexit.hook", sys_exc=repr(sys.exc_info()))
 
     _atexit.register(_atexit_hook)
+
+    # Portable, supervisor-agnostic respawn-storm circuit breaker. If this
+    # process has been (re)started too many times in a short window — e.g. a
+    # launchd KeepAlive / systemd Restart= loop — back off before re-entering
+    # the event loop so we don't melt the machine. Never let this block or
+    # crash startup.
+    try:
+        import time as _time
+        from gateway.status import record_start_and_check_storm
+
+        _storm = record_start_and_check_storm()
+        if _storm is not None:
+            logger.warning(
+                "Gateway (re)started %d times in %.0fs — backing off %.0fs to break a respawn storm.",
+                _storm.count,
+                _storm.window_s,
+                _storm.backoff_s,
+            )
+            _exit_diag(
+                "gateway.respawn_storm_backoff",
+                count=_storm.count,
+                window_s=_storm.window_s,
+                backoff_s=_storm.backoff_s,
+            )
+            _time.sleep(_storm.backoff_s)
+    except Exception:
+        pass
 
     success = False
     try:

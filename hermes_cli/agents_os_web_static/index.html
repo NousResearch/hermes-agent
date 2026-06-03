@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agents OS Mission Control</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="orb"></div>
+        <div>
+          <h1>Agents OS</h1>
+          <span>Mission Control · local-first operations</span>
+        </div>
+      </div>
+      <nav>
+        <button data-view="home" class="active">Home</button>
+        <button data-view="tasks">Tasks</button>
+        <button data-view="approvals">Approvals</button>
+        <button data-view="runs">Runs</button>
+        <button data-view="sessions">Sessions</button>
+        <button data-view="skills">Skills</button>
+        <button data-view="cron">Cron</button>
+        <button data-view="agents">Agents</button>
+        <button data-view="artifacts">Artifacts</button>
+        <button data-view="workflows">Workflows</button>
+        <button data-view="safety">Safety</button>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="clock">--</span>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Local control-plane</p>
+          <h2 id="pageTitle">Home</h2>
+        </div>
+        <div class="health" id="healthPill">Loading…</div>
+      </header>
+
+      <section id="home" class="view active">
+        <div class="cards" id="metricCards"></div>
+        <div class="grid two">
+          <section class="panel accent"><h3>Next best action</h3><div id="nextBestAction"></div></section>
+          <section class="panel"><h3>Runtime status</h3><div id="doniStatus"></div></section>
+        </div>
+        <div class="grid two">
+          <section class="panel"><h3>Recent activity</h3><div id="recentEvents"></div></section>
+          <section class="panel"><h3>Latest artifacts</h3><div id="latestArtifacts"></div></section>
+        </div>
+      </section>
+
+      <section id="tasks" class="view">
+        <div class="panel-toolbar"><h3>Task board</h3><button data-action="create-task">Create task</button></div>
+        <div class="task-layout">
+          <div class="kanban" id="taskBoard"></div>
+          <aside class="task-detail panel" id="taskDetail">
+            <div class="empty-detail">Select a task to inspect dependencies, handoff, evidence and safe actions.</div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="approvals" class="view">
+        <div class="panel-toolbar"><h3>Approval queue</h3><span class="muted">Human-in-the-loop risk gate</span></div>
+        <div class="approval-layout">
+          <div id="approvalList" class="list panel"></div>
+          <aside class="approval-detail panel" id="approvalDetail">
+            <div class="empty-detail">Select an approval to inspect risk taxonomy, stale state, payload preview and safe actions.</div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="runs" class="view">
+        <div class="panel-toolbar"><h3>Runs / events / logs</h3></div>
+        <div class="grid two"><div id="runsList" class="list panel"></div><div id="eventsList" class="list panel"></div></div>
+        <pre id="runDetail" class="preview panel">Select run…</pre>
+      </section>
+
+      <section id="sessions" class="view">
+        <div class="panel-toolbar"><h3>Sessions</h3><span class="muted">Read-only recent Hermes sessions</span></div>
+        <div id="sessionsList" class="list panel"></div>
+      </section>
+
+      <section id="skills" class="view">
+        <div class="panel-toolbar"><h3>Skills</h3><span class="muted">Read-only installed skill inventory</span></div>
+        <div id="skillsList" class="cards wide"></div>
+      </section>
+
+      <section id="cron" class="view">
+        <div class="panel-toolbar"><h3>Cron / watchdogs</h3><span class="muted">Read-only scheduled jobs</span></div>
+        <div id="cronList" class="list panel"></div>
+      </section>
+
+      <section id="agents" class="view">
+        <div class="panel-toolbar"><h3>Agent roster & boundaries</h3></div>
+        <div id="agentsList" class="cards wide"></div>
+      </section>
+
+      <section id="artifacts" class="view">
+        <div class="panel-toolbar"><h3>Artifact browser</h3><span class="muted">Previewable / findable outputs</span></div>
+        <div class="grid two"><div id="artifactList" class="list panel"></div><pre id="artifactPreview" class="preview panel">Select artifact…</pre></div>
+      </section>
+
+      <section id="workflows" class="view">
+        <div class="panel-toolbar"><h3>Workflow launcher</h3></div>
+        <div id="workflowGrid" class="cards wide"></div>
+      </section>
+
+      <section id="safety" class="view">
+        <div class="panel-toolbar"><h3>Safety & policy</h3></div>
+        <div id="safetyPanel" class="grid two"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="modal"><form method="dialog"><h3 id="modalTitle"></h3><div id="modalBody"></div><menu><button value="cancel">Cancel</button><button id="modalSubmit" value="default">Submit</button></menu></form></dialog>
+  <script src="/static/app.js"></script>
+</body>
+</html>

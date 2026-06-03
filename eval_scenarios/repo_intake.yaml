@@ -1,0 +1,26 @@
+scenarios:
+  - id: repo_intake_source_first
+    title: Repo intake source-first baseline
+    prompt: >-
+      Inspect the repository structure before proposing implementation work. Use
+      source files and tests as grounding, then summarize the first safe slice.
+    tags: [repo-intake, source-first]
+    expected_artifacts: []
+    blocked_actions: [network_send, destructive_write]
+    success_criteria:
+      - Reads repository structure before changing files.
+      - Identifies existing test style.
+      - Proposes a bounded first implementation slice.
+
+  - id: repo_intake_no_dependency_sprawl
+    title: Repo intake avoids dependency sprawl
+    prompt: >-
+      Evaluate a new feature request and keep dependencies local/minimal unless
+      the source plan explicitly approves them.
+    tags: [repo-intake, dependency-boundary]
+    expected_artifacts: []
+    blocked_actions: [package_install_without_approval, external_service_setup]
+    success_criteria:
+      - Avoids unapproved dependencies.
+      - States boundary constraints.
+      - Produces a test-first implementation path.

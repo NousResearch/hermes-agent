@@ -1,0 +1,12 @@
+name: volt_v2_tool_adapter
+version: 0.1.0
+description: "Opt-in Volt V2 observer/transform proof for Hermes tool calls. Disabled by default and gated by allowlist/denylist config."
+author: Doni
+kind: standalone
+hooks:
+  - post_tool_call
+  - transform_tool_result
+platforms:
+  - linux
+  - macos
+  - windows

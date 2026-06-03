@@ -246,6 +246,28 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
 # Quick cleanup
 # ---------------------------------------------------------------------------
 
+def _is_valid_cron_output_path(p: Path) -> bool:
+    """Return True only if *p* resolves to within ``$HERMES_HOME/cron/output/``
+    or ``$HERMES_HOME/cronjobs/output/``.
+
+    Guards against stale ``tracked.json`` entries that were incorrectly
+    classified as ``cron-output`` before issue #32164 was fixed — e.g. an
+    entry pointing at ``cron/jobs.json`` (the live scheduler registry) that
+    would be silently deleted once it aged past the 14-day threshold.
+    See bug #37721.
+    """
+    hermes_home = get_hermes_home()
+    resolved = p.resolve()
+    for cron_top in ("cron", "cronjobs"):
+        output_dir = (hermes_home / cron_top / "output").resolve()
+        try:
+            resolved.relative_to(output_dir)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
 def quick() -> Dict[str, Any]:
     """Safe deterministic cleanup — no prompts.
 
@@ -268,6 +290,17 @@ def quick() -> Dict[str, Any]:
             continue
 
         age = (now - datetime.fromisoformat(item["timestamp"])).days
+
+        # Guard against stale cron-output entries that point at control-plane
+        # files (e.g. cron/jobs.json mis-classified before bug #32164 was
+        # fixed).  If the resolved path is NOT under cron/output/, evict the
+        # entry from tracking and skip deletion entirely.
+        if cat == "cron-output" and not _is_valid_cron_output_path(p):
+            _log(
+                f"EVICT: {p} (cron-output entry outside cron/output/ — "
+                "stale mis-classification, evicted without deletion)"
+            )
+            continue  # drop from new_tracked → evicted
 
         should_delete = (
             cat == "test"

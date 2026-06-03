@@ -223,6 +223,123 @@ class TestTrackForgetQuick:
         for d in ("logs", "memories", "sessions", "cron", "cache"):
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
 
+    # ------------------------------------------------------------------
+    # Bug #37721 — stale cron-output entries must never delete control-
+    # plane files like cron/jobs.json
+    # ------------------------------------------------------------------
+
+    def test_quick_evicts_stale_cron_output_pointing_at_jobs_json(
+        self, _isolate_env
+    ):
+        """Regression for #37721.
+
+        A tracked.json entry with category='cron-output' but a path that
+        resolves to cron/jobs.json (outside cron/output/) must be evicted
+        from tracking WITHOUT deleting the file.
+        """
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        jobs_json = cron_dir / "jobs.json"
+        jobs_json.write_text('{"jobs": []}')
+
+        # Manually inject a stale mis-classified entry (bypasses track()
+        # which would correctly refuse to track this path as cron-output).
+        import json as _json
+        from datetime import datetime, timezone, timedelta
+        stale_ts = (
+            datetime.now(timezone.utc) - timedelta(days=20)
+        ).isoformat()
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(
+            _json.dumps([
+                {
+                    "path": str(jobs_json.resolve()),
+                    "timestamp": stale_ts,
+                    "category": "cron-output",
+                    "size": jobs_json.stat().st_size,
+                }
+            ])
+        )
+
+        summary = dg.quick()
+
+        # The scheduler registry must survive.
+        assert jobs_json.exists(), "jobs.json must NOT be deleted"
+        # The entry must be evicted (not re-saved to tracked.json).
+        remaining = _json.loads(tracked_file.read_text())
+        assert remaining == [], "stale entry should be evicted from tracked.json"
+        # And the deletion counter must be zero.
+        assert summary["deleted"] == 0
+
+    def test_quick_evicts_stale_cron_output_pointing_at_cron_root_file(
+        self, _isolate_env
+    ):
+        """Any file directly under cron/ (not cron/output/) is control-plane."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        tick_lock = cron_dir / ".tick.lock"
+        tick_lock.write_text("")
+
+        import json as _json
+        from datetime import datetime, timezone, timedelta
+        stale_ts = (
+            datetime.now(timezone.utc) - timedelta(days=20)
+        ).isoformat()
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(
+            _json.dumps([
+                {
+                    "path": str(tick_lock.resolve()),
+                    "timestamp": stale_ts,
+                    "category": "cron-output",
+                    "size": 0,
+                }
+            ])
+        )
+
+        dg.quick()
+
+        assert tick_lock.exists(), ".tick.lock must NOT be deleted"
+        remaining = _json.loads(tracked_file.read_text())
+        assert remaining == []
+
+    def test_quick_still_deletes_legitimate_aged_cron_output(
+        self, _isolate_env
+    ):
+        """A real cron/output/ artifact aged > 14 days must still be deleted."""
+        dg = _load_lib()
+        output_dir = _isolate_env / "cron" / "output" / "job_42"
+        output_dir.mkdir(parents=True)
+        run_md = output_dir / "run.md"
+        run_md.write_text("output")
+
+        import json as _json
+        from datetime import datetime, timezone, timedelta
+        old_ts = (
+            datetime.now(timezone.utc) - timedelta(days=15)
+        ).isoformat()
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(
+            _json.dumps([
+                {
+                    "path": str(run_md.resolve()),
+                    "timestamp": old_ts,
+                    "category": "cron-output",
+                    "size": run_md.stat().st_size,
+                }
+            ])
+        )
+
+        summary = dg.quick()
+
+        assert not run_md.exists(), "expired cron output should be deleted"
+        assert summary["deleted"] == 1
+
 
 class TestStatus:
     def test_empty_status(self, _isolate_env):

@@ -132,6 +132,43 @@ class TestSanitizeApiMessages:
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "c_valid"
 
+    def test_image_data_urls_are_normalized_before_api_replay(self, monkeypatch):
+        """Stale sessions can replay old native image tool outputs.
+
+        Even if the original tool result was written before current vision
+        normalization existed, the pre-call sanitizer should repair provider-
+        hostile data URLs on the API-bound copy instead of resending them.
+        """
+        stale_url = "data:image/png;base64,stale-cgbi-png"
+        fixed_url = "data:image/png;base64,provider-safe-png"
+
+        monkeypatch.setattr(
+            "tools.vision_tools.normalize_image_data_url_for_provider",
+            lambda url: fixed_url if url == stale_url else None,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "tool",
+            "tool_call_id": "c7",
+            "content": [
+                {"type": "input_text", "text": "screenshot"},
+                {"type": "input_image", "image_url": stale_url},
+                {"type": "image_url", "image_url": {"url": stale_url}},
+            ],
+        }, {
+            "role": "assistant",
+            "tool_calls": [assistant_dict_call("c7")],
+        }]
+
+        out = AIAgent._sanitize_api_messages(msgs)
+
+        tool_content = out[0]["content"]
+        assert tool_content[1]["image_url"] == fixed_url
+        assert tool_content[2]["image_url"]["url"] == fixed_url
+        assert msgs[0]["content"][1]["image_url"] == stale_url
+        assert msgs[0]["content"][2]["image_url"]["url"] == stale_url
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

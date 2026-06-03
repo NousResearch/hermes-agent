@@ -2389,6 +2389,90 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
+def _normalize_provider_image_data_urls_in_messages(
+    messages: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], int]:
+    """Normalize provider-hostile inline image data URLs in API-bound messages.
+
+    Stored session history can contain old multimodal tool outputs created
+    before the vision layer learned how to normalize Apple CgBI PNGs.  The
+    session itself should remain an honest transcript, but the per-call API
+    payload must be repaired so stale chats do not fail every future replay.
+
+    Returns a copy-on-write message list plus the replacement count.  Unchanged
+    branches keep their original objects; changed nested dict/list structures are
+    copied so canonical conversation history is not mutated by a shallow API
+    replay copy.
+    """
+    if not messages:
+        return messages, 0
+
+    try:
+        from tools.vision_tools import normalize_image_data_url_for_provider
+    except Exception as exc:
+        logger.debug("Pre-call sanitizer: image data URL normalizer unavailable: %s", exc)
+        return messages, 0
+
+    changed = 0
+
+    def _rewrite_url(url: Any) -> Any:
+        nonlocal changed
+        if not isinstance(url, str):
+            return url
+        replacement = normalize_image_data_url_for_provider(url)
+        if replacement and replacement != url:
+            changed += 1
+            return replacement
+        return url
+
+    def _rewrite_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            updated: Optional[dict] = None
+            for key, nested in value.items():
+                if key == "image_url":
+                    if isinstance(nested, dict):
+                        url = nested.get("url")
+                        rewritten_url = _rewrite_url(url)
+                        if rewritten_url is not url:
+                            rewritten_nested = dict(nested)
+                            rewritten_nested["url"] = rewritten_url
+                        else:
+                            rewritten_nested = _rewrite_value(nested)
+                        rewritten = rewritten_nested
+                    elif isinstance(nested, str):
+                        rewritten = _rewrite_url(nested)
+                    else:
+                        rewritten = _rewrite_value(nested)
+                else:
+                    rewritten = _rewrite_value(nested)
+
+                if rewritten is not nested:
+                    if updated is None:
+                        updated = dict(value)
+                    updated[key] = rewritten
+            return updated if updated is not None else value
+
+        if isinstance(value, list):
+            updated_items = None
+            for idx, item in enumerate(value):
+                rewritten = _rewrite_value(item)
+                if rewritten is not item:
+                    if updated_items is None:
+                        updated_items = list(value)
+                    updated_items[idx] = rewritten
+            return updated_items if updated_items is not None else value
+
+        return value
+
+    normalized_messages = _rewrite_value(messages)
+    if changed:
+        logger.info(
+            "Pre-call sanitizer: normalized %d inline image data URL(s) for provider replay",
+            changed,
+        )
+    return normalized_messages, changed
+
+
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -2584,6 +2668,9 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # 4. Repair stale multimodal history on the API-bound copy.
+    messages, _ = _normalize_provider_image_data_urls_in_messages(messages)
     return messages
 
 

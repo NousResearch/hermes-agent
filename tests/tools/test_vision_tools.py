@@ -21,6 +21,7 @@ from tools.vision_tools import (
     _is_image_size_error,
     _MAX_BASE64_BYTES,
     _RESIZE_TARGET_BYTES,
+    normalize_image_data_url_for_provider,
     vision_analyze_tool,
     check_vision_requirements,
 )
@@ -165,6 +166,58 @@ class TestImageToBase64DataUrl:
     def test_file_not_found_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             _image_to_base64_data_url(tmp_path / "nonexistent.png")
+
+    def test_apple_cgbi_png_is_normalized_for_provider_data_url(self, tmp_path):
+        """Apple-optimized iOS PNGs contain a CgBI chunk rejected by vision APIs."""
+        pytest.importorskip("PIL.Image")
+        cgbi_png_b64 = (
+            "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"
+            "AABJRU5ErkJggg=="
+        )
+        img = tmp_path / "ios-icon.png"
+        img.write_bytes(base64.b64decode(cgbi_png_b64))
+
+        result = _image_to_base64_data_url(img, mime_type="image/png")
+        normalized = base64.b64decode(result.split(",", 1)[1])
+
+        assert result.startswith("data:image/png;base64,")
+        assert b"CgBI" in img.read_bytes()
+        assert b"CgBI" not in normalized
+
+        replayed = normalize_image_data_url_for_provider(
+            f"data:image/png;base64,{cgbi_png_b64}"
+        )
+        assert replayed is not None
+        replayed_bytes = base64.b64decode(replayed.split(",", 1)[1])
+        assert b"CgBI" not in replayed_bytes
 
 
 # ---------------------------------------------------------------------------

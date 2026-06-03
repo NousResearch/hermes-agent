@@ -515,6 +515,164 @@ def _determine_mime_type(image_path: Path) -> str:
     return mime_types.get(extension, 'image/jpeg')
 
 
+def _png_contains_chunk(data: bytes, chunk_type: bytes) -> bool:
+    """Return True when PNG bytes contain ``chunk_type``.
+
+    Apple's iOS-optimized PNGs include a private ``CgBI`` chunk. Pillow can
+    still open them, but some model providers reject the raw bytes as invalid
+    image data. Detecting the chunk lets us normalize only the problematic
+    format instead of recompressing every image.
+    """
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+
+    offset = 8
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "big")
+        chunk = data[offset + 4:offset + 8]
+        if chunk == chunk_type:
+            return True
+        offset += 8 + length + 4
+        if length < 0 or offset > len(data):
+            return False
+    return False
+
+
+def _normalize_image_bytes_for_data_url(
+    image_path: Path,
+    data: bytes,
+    mime_type: str,
+) -> tuple[bytes, str]:
+    """Normalize image bytes that are valid locally but rejected by providers."""
+    if mime_type != "image/png" or not _png_contains_chunk(data, b"CgBI"):
+        return data, mime_type
+
+    normalized = _revert_apple_cgbi_png(data)
+    if normalized is not None:
+        logger.info(
+            "Normalized Apple CgBI PNG for vision payload: %s (%.1f KB -> %.1f KB)",
+            image_path,
+            len(data) / 1024,
+            len(normalized) / 1024,
+        )
+        return normalized, "image/png"
+
+    logger.warning(
+        "Failed to normalize Apple CgBI PNG for vision payload: %s",
+        image_path,
+    )
+    return data, mime_type
+
+
+def normalize_image_data_url_for_provider(
+    data_url: str,
+    *,
+    source_label: str = "inline data URL",
+) -> Optional[str]:
+    """Return a provider-safe replacement for an image data URL when needed.
+
+    This is used for stale session replay as well as new vision tool outputs:
+    a previous Hermes version may have already stored a raw Apple CgBI PNG in
+    message history, so normalizing only when the file is first read is not
+    enough.  Return ``None`` when the URL is already safe or cannot be helped.
+    """
+    if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
+        return None
+
+    header, separator, payload = data_url.partition(",")
+    if separator != "," or ";base64" not in header.lower():
+        return None
+
+    mime = header[len("data:"):].split(";", 1)[0].strip().lower()
+    if mime != "image/png":
+        # Today the only provider-hostile format we can repair is Apple's
+        # PNG-with-CgBI variant. Avoid decoding large JPEG/WebP payloads on
+        # every stale-history replay when we already know they cannot change.
+        return None
+
+    try:
+        raw = base64.b64decode(payload)
+    except Exception as exc:
+        logger.debug("Could not decode image data URL for provider normalization: %s", exc)
+        return None
+
+    normalized, normalized_mime = _normalize_image_bytes_for_data_url(
+        Path(source_label),
+        raw,
+        mime,
+    )
+    if normalized == raw and normalized_mime == mime:
+        return None
+
+    encoded = base64.b64encode(normalized).decode("ascii")
+    return f"data:{normalized_mime};base64,{encoded}"
+
+
+def _revert_apple_cgbi_png(data: bytes) -> Optional[bytes]:
+    """Return a standard PNG for Apple CgBI bytes, or None if unavailable."""
+    # Xcode's pngcrush knows how to undo iPhone PNG optimisation correctly.
+    # Prefer it when present; Pillow may open CgBI files but can fail while
+    # loading their altered IDAT stream.
+    try:
+        import shutil
+        import subprocess
+        import tempfile
+
+        pngcrush = shutil.which("pngcrush")
+        if pngcrush is None:
+            xcrun = shutil.which("xcrun")
+            if xcrun:
+                probe = subprocess.run(
+                    [xcrun, "-find", "pngcrush"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                candidate = probe.stdout.strip()
+                if probe.returncode == 0 and candidate:
+                    pngcrush = candidate
+
+        if pngcrush:
+            with tempfile.TemporaryDirectory(prefix="hermes-cgbi-") as td:
+                src = Path(td) / "input.png"
+                dst = Path(td) / "output.png"
+                src.write_bytes(data)
+                proc = subprocess.run(
+                    [pngcrush, "-q", "-revert-iphone-optimizations", str(src), str(dst)],
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+                if proc.returncode == 0 and dst.exists():
+                    reverted = dst.read_bytes()
+                    if reverted.startswith(b"\x89PNG\r\n\x1a\n") and not _png_contains_chunk(reverted, b"CgBI"):
+                        return reverted
+    except Exception as exc:
+        logger.debug("pngcrush CgBI normalization failed: %s", exc, exc_info=True)
+
+    try:
+        from PIL import Image, ImageFile
+        import io as _io
+
+        previous = ImageFile.LOAD_TRUNCATED_IMAGES
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        try:
+            with Image.open(_io.BytesIO(data)) as img:
+                img.load()
+                buf = _io.BytesIO()
+                img.save(buf, format="PNG")
+                normalized = buf.getvalue()
+            if normalized.startswith(b"\x89PNG\r\n\x1a\n") and not _png_contains_chunk(normalized, b"CgBI"):
+                return normalized
+        finally:
+            ImageFile.LOAD_TRUNCATED_IMAGES = previous
+    except Exception as exc:
+        logger.debug("Pillow CgBI normalization failed: %s", exc, exc_info=True)
+
+    return None
+
+
 def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
     """
     Convert an image file to a base64-encoded data URL.
@@ -528,16 +686,17 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     """
     # Read the image as bytes
     data = image_path.read_bytes()
-    
-    # Encode to base64
-    encoded = base64.b64encode(data).decode("ascii")
-    
+
     # Determine MIME type
     mime = mime_type or _determine_mime_type(image_path)
-    
+    data, mime = _normalize_image_bytes_for_data_url(image_path, data, mime)
+
+    # Encode to base64
+    encoded = base64.b64encode(data).decode("ascii")
+
     # Create data URL
     data_url = f"data:{mime};base64,{encoded}"
-    
+
     return data_url
 
 

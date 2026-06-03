@@ -1345,6 +1345,51 @@ def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id
         )
 
 
+def test_preflight_codex_api_kwargs_normalizes_stale_image_data_urls(monkeypatch):
+    """Preflight is the last guard before Codex sees replayed image bytes."""
+    agent = _build_agent(monkeypatch)
+    stale_url = "data:image/png;base64,stale-cgbi-png"
+    fixed_url = "data:image/png;base64,provider-safe-png"
+
+    monkeypatch.setattr(
+        "tools.vision_tools.normalize_image_data_url_for_provider",
+        lambda url: fixed_url if url == stale_url else None,
+        raising=False,
+    )
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    preflight = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "look"},
+                        {"type": "input_image", "image_url": stale_url},
+                    ],
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_vision",
+                    "output": [
+                        {"type": "input_text", "text": "screenshot"},
+                        {"type": "input_image", "image_url": stale_url},
+                    ],
+                },
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    user_content = preflight["input"][0]["content"]
+    output = preflight["input"][1]["output"]
+    assert user_content[1]["image_url"] == fixed_url
+    assert output[1]["image_url"] == fixed_url
+
+
 def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()

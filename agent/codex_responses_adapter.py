@@ -76,6 +76,22 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
 # Multimodal content helpers
 # ---------------------------------------------------------------------------
 
+def _normalize_provider_image_data_url(url: str) -> str:
+    """Normalize provider-hostile inline image data URLs when possible."""
+    if not isinstance(url, str) or not url.startswith("data:image/"):
+        return url
+    try:
+        from tools.vision_tools import normalize_image_data_url_for_provider
+    except Exception as exc:
+        logger.debug("Codex preflight image data URL normalizer unavailable: %s", exc)
+        return url
+    replacement = normalize_image_data_url_for_provider(url)
+    if replacement and replacement != url:
+        logger.info("Codex preflight normalized inline image data URL for provider replay")
+        return replacement
+    return url
+
+
 def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
     """Convert chat-style multimodal content to Responses API input parts.
 
@@ -120,6 +136,7 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
                 url = image_ref
             if not isinstance(url, str) or not url:
                 continue
+            url = _normalize_provider_image_data_url(url)
             image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
             if isinstance(detail, str) and detail.strip():
                 image_part["detail"] = detail.strip()
@@ -638,6 +655,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                     elif ptype == "input_image":
                         url = part.get("image_url")
                         if isinstance(url, str) and url:
+                            url = _normalize_provider_image_data_url(url)
                             entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
                             detail = part.get("detail")
                             if isinstance(detail, str) and detail.strip():
@@ -763,6 +781,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                             url = image_ref
                         if not isinstance(url, str):
                             url = str(url or "")
+                        url = _normalize_provider_image_data_url(url)
                         image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
                         if isinstance(detail, str) and detail.strip():
                             image_part["detail"] = detail.strip()

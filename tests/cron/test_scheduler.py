@@ -1880,6 +1880,45 @@ class TestSilentDelivery:
         assert update_mock.call_args.args[1]["state"] == "completed"
         assert update_mock.call_args.args[1]["next_run_at"] is None
 
+    def test_kb_completion_watcher_stops_after_operator_degradation_receipt(self):
+        job = self._make_job()
+        job.update(
+            {
+                "id": "watcher-job",
+                "name": "KB sync completion watcher gen-0a4abf47b640",
+                "prompt": (
+                    "Watch production KB workflow run gen-0a4abf47b640. "
+                    "Report once when terminal."
+                ),
+                "schedule": {"kind": "interval", "minutes": 5},
+            }
+        )
+        final_response = "\n".join(
+            [
+                "KB workflow completed with degradation.",
+                "",
+                "- Workflow: update_kb",
+                "- Run: gen-0a4abf47b640",
+                "- Status: completed_with_degradation",
+                "- Publication posture: dirty, not pushed",
+            ]
+        )
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# terminal output", final_response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler.update_job", create=True) as update_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        update_mock.assert_called_once()
+        assert update_mock.call_args.args[0] == "watcher-job"
+        assert update_mock.call_args.args[1]["enabled"] is False
+        assert update_mock.call_args.args[1]["state"] == "completed"
+        assert update_mock.call_args.args[1]["completed_reason"] == "terminal_workflow_report_delivered"
+
     def test_recurring_completion_watcher_keeps_running_until_terminal(self):
         job = self._make_job()
         job.update(

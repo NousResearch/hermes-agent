@@ -1371,6 +1371,10 @@ DEFAULT_CONFIG = {
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
+            # Mattermost uses repeated editMessage for streaming, which
+            # visibly flickers — same as Discord/Slack.  Disable by default
+            # so users get clean final replies.  Symmetric with discord/slack.
+            "mattermost": {"streaming": False},
         },
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders

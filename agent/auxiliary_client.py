@@ -4734,6 +4734,82 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     return {}
 
 
+_CODEX_COMPRESSION_MIN_TIMEOUT = 360.0
+
+
+def _is_codex_responses_backend(provider: str, client: Any = None, base_url: str = "") -> bool:
+    """Return True for ChatGPT/Codex Responses-backed auxiliary clients."""
+    if _normalize_aux_provider(provider or "") == "openai-codex":
+        return True
+    actual_base = str(base_url or getattr(client, "base_url", "") or "")
+    if base_url_host_matches(actual_base, "chatgpt.com") and "codex" in actual_base.lower():
+        return True
+    # CodexAuxiliaryClient exposes the wrapped OpenAI client but tests and
+    # adapters may use lightweight stand-ins; type-name detection keeps this
+    # helper dependency-free and harmless for mocks.
+    return type(client).__name__ in {"CodexAuxiliaryClient", "AsyncCodexAuxiliaryClient"}
+
+
+def _adjust_timeout_for_resolved_client(
+    task: str,
+    timeout: float,
+    provider: str,
+    client: Any,
+    base_url: str = "",
+) -> float:
+    """Apply provider-sensitive timeout floors after client resolution.
+
+    Context compression prompts can be very large (often 100k+ tokens right
+    before compaction).  Codex/ChatGPT Responses frequently needs longer than
+    the generic 120s auxiliary timeout for that workload, and generated
+    config.yaml files already contain the old default explicitly, so changing
+    DEFAULT_CONFIG alone would not heal existing installs.  Treat the old
+    120s value as too small for Codex compression and lift it at runtime while
+    leaving other tasks/providers unchanged.
+    """
+    if task != "compression" or timeout is None:
+        return timeout
+    try:
+        timeout_f = float(timeout)
+    except (TypeError, ValueError):
+        return timeout
+    if timeout_f >= _CODEX_COMPRESSION_MIN_TIMEOUT:
+        return timeout_f
+    if not _is_codex_responses_backend(provider, client=client, base_url=base_url):
+        return timeout_f
+    logger.info(
+        "Auxiliary compression: raising Codex timeout from %.1fs to %.1fs for large context summarization",
+        timeout_f,
+        _CODEX_COMPRESSION_MIN_TIMEOUT,
+    )
+    return _CODEX_COMPRESSION_MIN_TIMEOUT
+
+
+def _apply_codex_compression_defaults(
+    task: str,
+    extra_body: Dict[str, Any],
+    provider: str,
+    client: Any,
+    base_url: str = "",
+) -> Dict[str, Any]:
+    """Default Codex compression to low reasoning unless user configured it.
+
+    Compression is a lossy summarization side-task, not primary reasoning.
+    Low effort materially reduces timeout risk on large compaction prompts
+    while preserving explicit auxiliary.compression.extra_body.reasoning
+    overrides when the user provides them.
+    """
+    if task != "compression":
+        return extra_body
+    if not _is_codex_responses_backend(provider, client=client, base_url=base_url):
+        return extra_body
+    if "reasoning" in extra_body:
+        return extra_body
+    updated = dict(extra_body)
+    updated["reasoning"] = {"effort": "low"}
+    return updated
+
+
 # ---------------------------------------------------------------------------
 # Anthropic-compatible endpoint detection + image block conversion
 # ---------------------------------------------------------------------------
@@ -5028,6 +5104,12 @@ def call_llm(
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    effective_timeout = _adjust_timeout_for_resolved_client(
+        task, effective_timeout, resolved_provider, client, _base_info or resolved_base_url or ""
+    )
+    effective_extra_body = _apply_codex_compression_defaults(
+        task, effective_extra_body, resolved_provider, client, _base_info or resolved_base_url or ""
+    )
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
@@ -5506,6 +5588,12 @@ async def async_call_llm(
     # endpoint-specific temperature overrides can distinguish
     # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
     _client_base = str(getattr(client, "base_url", "") or "")
+    effective_timeout = _adjust_timeout_for_resolved_client(
+        task, effective_timeout, resolved_provider, client, _client_base or resolved_base_url or ""
+    )
+    effective_extra_body = _apply_codex_compression_defaults(
+        task, effective_extra_body, resolved_provider, client, _client_base or resolved_base_url or ""
+    )
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,

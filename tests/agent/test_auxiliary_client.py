@@ -29,6 +29,8 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _adjust_timeout_for_resolved_client,
+    _apply_codex_compression_defaults,
 )
 
 
@@ -88,6 +90,46 @@ class TestAuxiliaryMaxTokensParam:
         with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
              patch("agent.auxiliary_client._read_nous_auth", return_value=None):
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+
+class TestCodexCompressionDefaults:
+    def test_codex_compression_timeout_lifts_old_120s_default(self):
+        client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex/")
+
+        timeout = _adjust_timeout_for_resolved_client(
+            "compression", 120, "auto", client, str(client.base_url)
+        )
+
+        assert timeout == 360.0
+
+    def test_codex_compression_uses_low_reasoning_by_default(self):
+        client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex/")
+
+        extra_body = _apply_codex_compression_defaults(
+            "compression", {}, "auto", client, str(client.base_url)
+        )
+
+        assert extra_body["reasoning"] == {"effort": "low"}
+
+    def test_codex_compression_preserves_user_reasoning_override(self):
+        client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex/")
+        configured = {"reasoning": {"effort": "high"}}
+
+        extra_body = _apply_codex_compression_defaults(
+            "compression", configured, "auto", client, str(client.base_url)
+        )
+
+        assert extra_body is configured
+        assert extra_body["reasoning"] == {"effort": "high"}
+
+    def test_non_codex_compression_timeout_unchanged(self):
+        client = SimpleNamespace(base_url="https://openrouter.ai/api/v1")
+
+        timeout = _adjust_timeout_for_resolved_client(
+            "compression", 120, "openrouter", client, str(client.base_url)
+        )
+
+        assert timeout == 120.0
 
 
 class TestBuildCallKwargsMaxTokens:

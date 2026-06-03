@@ -699,3 +699,635 @@ def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
 
     # Returns True because _pid_exists immediately says "gone".
     assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True
+
+
+# ---------------------------------------------------------------------------
+# Coverage for pure helpers, path resolution, and command flows (issue #36401)
+#
+# gateway_windows is win32-gated and several helpers call into ctypes.windll,
+# which only exists on Windows. To keep these tests cross-platform (they run in
+# CI on Linux) we no-op _assert_windows and inject a fake windll where needed.
+# ---------------------------------------------------------------------------
+
+
+def _patch_windows(monkeypatch):
+    """Make the Windows-only guard a no-op so tests run on non-Windows CI too."""
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+
+
+class _FakeShell32:
+    def __init__(self, is_admin=1, shellexec=33):
+        self._is_admin = is_admin
+        self._shellexec = shellexec
+        self.shellexec_calls = []
+
+    def IsUserAnAdmin(self):
+        return self._is_admin
+
+    def ShellExecuteW(self, *args):
+        self.shellexec_calls.append(args)
+        return self._shellexec
+
+
+class _FakeWindll:
+    def __init__(self, shell32):
+        self.shell32 = shell32
+
+
+def _patch_windll(monkeypatch, *, is_admin=1, shellexec=33):
+    shell32 = _FakeShell32(is_admin=is_admin, shellexec=shellexec)
+    # raising=False: ctypes has no `windll` attribute on non-Windows platforms.
+    monkeypatch.setattr(
+        gateway_windows.ctypes, "windll", _FakeWindll(shell32), raising=False
+    )
+    return shell32
+
+
+# --- quoting helpers -------------------------------------------------------
+
+
+def test_quote_cmd_script_arg_variants():
+    assert gateway_windows._quote_cmd_script_arg("") == '""'
+    assert gateway_windows._quote_cmd_script_arg("plain") == "plain"
+    assert gateway_windows._quote_cmd_script_arg("a b") == '"a b"'
+    assert gateway_windows._quote_cmd_script_arg('a"b') == '"a""b"'
+    with pytest.raises(ValueError):
+        gateway_windows._quote_cmd_script_arg("line\nbreak")
+
+
+def test_quote_schtasks_arg_backslash_escapes_quotes():
+    assert gateway_windows._quote_schtasks_arg("plain") == "plain"
+    assert gateway_windows._quote_schtasks_arg("a b") == '"a b"'
+    assert gateway_windows._quote_schtasks_arg('a"b') == '"a\\"b"'
+
+
+# --- schtasks wrapper ------------------------------------------------------
+
+
+def test_exec_schtasks_reports_missing_binary(monkeypatch):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: None)
+    code, out, err = gateway_windows._exec_schtasks(["/Query"])
+    assert code == 1
+    assert "not found" in err
+
+
+def test_exec_schtasks_success_passes_args_and_no_window_flag(monkeypatch):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(
+        gateway_windows.shutil, "which", lambda name: "C:/Windows/schtasks.exe"
+    )
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "X"])
+    assert (code, out, err) == (0, "ok", "")
+    assert captured["argv"][0].endswith("schtasks.exe")
+    assert captured["argv"][1:] == ["/Query", "/TN", "X"]
+    assert captured["kwargs"]["creationflags"] == 0x08000000
+
+
+def test_exec_schtasks_timeout_returns_124(monkeypatch):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: "schtasks")
+
+    def fake_run(*args, **kwargs):
+        raise gateway_windows.subprocess.TimeoutExpired(cmd="schtasks", timeout=15)
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+    code, out, err = gateway_windows._exec_schtasks(["/Query"])
+    assert code == 124
+    assert "timed out" in err
+
+
+def test_exec_schtasks_oserror_returns_1(monkeypatch):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: "schtasks")
+
+    def fake_run(*args, **kwargs):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+    code, out, err = gateway_windows._exec_schtasks(["/Query"])
+    assert code == 1
+    assert "invocation failed" in err
+
+
+def test_is_access_denied_matches_localized_phrases():
+    assert gateway_windows._is_access_denied("ERROR: Access is denied.") is True
+    assert gateway_windows._is_access_denied("acceso denegado") is True
+    assert gateway_windows._is_access_denied("file not found") is False
+    assert gateway_windows._is_access_denied("") is False
+
+
+def test_is_running_as_admin_reads_shell32(monkeypatch):
+    _patch_windows(monkeypatch)
+    _patch_windll(monkeypatch, is_admin=1)
+    assert gateway_windows._is_running_as_admin() is True
+    _patch_windll(monkeypatch, is_admin=0)
+    assert gateway_windows._is_running_as_admin() is False
+
+
+def test_is_running_as_admin_false_on_error(monkeypatch):
+    _patch_windows(monkeypatch)
+
+    class _Boom:
+        @property
+        def shell32(self):
+            raise OSError("no shell32 here")
+
+    monkeypatch.setattr(gateway_windows.ctypes, "windll", _Boom(), raising=False)
+    assert gateway_windows._is_running_as_admin() is False
+
+
+def test_current_profile_cli_args_splits_profile_arg(monkeypatch):
+    monkeypatch.setattr("hermes_cli.gateway._profile_arg", lambda: "--profile alice")
+    assert gateway_windows._current_profile_cli_args() == ["--profile", "alice"]
+    monkeypatch.setattr("hermes_cli.gateway._profile_arg", lambda: "")
+    assert gateway_windows._current_profile_cli_args() == []
+
+
+# --- elevated launchers ----------------------------------------------------
+
+
+def test_launch_elevated_gateway_command_success(monkeypatch):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr("hermes_cli.gateway._profile_arg", lambda: "")
+    monkeypatch.setattr(
+        gateway_windows, "_derive_venv_pythonw", lambda exe: "C:/py/pythonw.exe"
+    )
+    shell32 = _patch_windll(monkeypatch, shellexec=42)
+    assert (
+        gateway_windows._launch_elevated_gateway_command("status", ["--deep"]) is True
+    )
+    verb, params = shell32.shellexec_calls[0][1], shell32.shellexec_calls[0][3]
+    assert verb == "runas"
+    assert "status" in params and "--deep" in params
+
+
+def test_launch_elevated_gateway_command_failure_code(monkeypatch, capsys):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr("hermes_cli.gateway._profile_arg", lambda: "")
+    monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: "pythonw")
+    _patch_windll(monkeypatch, shellexec=5)  # <= 32 means ShellExecuteW failed
+    assert gateway_windows._launch_elevated_gateway_command("install") is False
+    assert "not started" in capsys.readouterr().out
+
+
+def test_launch_elevated_gateway_command_exception(monkeypatch, capsys):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr("hermes_cli.gateway._profile_arg", lambda: "")
+    monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: "pythonw")
+
+    class _Shell32Raise:
+        def ShellExecuteW(self, *args):
+            raise OSError("shell exec blew up")
+
+    monkeypatch.setattr(
+        gateway_windows.ctypes, "windll", _FakeWindll(_Shell32Raise()), raising=False
+    )
+    assert gateway_windows._launch_elevated_gateway_command("install") is False
+    assert "Could not launch" in capsys.readouterr().out
+
+
+def test_launch_elevated_install_sets_then_restores_env(monkeypatch):
+    _patch_windows(monkeypatch)
+    # START_NOW is unset (exercises the unset->removed restore branch); HANDOFF
+    # has a pre-existing value (exercises the restore-to-previous-value branch).
+    monkeypatch.delenv("HERMES_GATEWAY_INSTALL_START_NOW", raising=False)
+    monkeypatch.setenv("HERMES_GATEWAY_ELEVATED_HANDOFF", "OLD")
+    captured = {}
+
+    def fake_cmd(command, extra_args=None):
+        captured["command"] = command
+        captured["extra_args"] = list(extra_args or [])
+        captured["start_now_during"] = gateway_windows.os.environ.get(
+            "HERMES_GATEWAY_INSTALL_START_NOW"
+        )
+        captured["handoff_during"] = gateway_windows.os.environ.get(
+            "HERMES_GATEWAY_ELEVATED_HANDOFF"
+        )
+        return True
+
+    monkeypatch.setattr(gateway_windows, "_launch_elevated_gateway_command", fake_cmd)
+
+    result = gateway_windows._launch_elevated_install(
+        force=True, start_now=True, start_on_login=False
+    )
+    assert result is True
+    assert captured["command"] == "install"
+    assert "--elevated-handoff" in captured["extra_args"]
+    assert "--force" in captured["extra_args"]
+    assert "--start-now" in captured["extra_args"]
+    assert "--no-start-on-login" in captured["extra_args"]
+    # env vars are set for the duration of the elevated handoff...
+    assert captured["start_now_during"] == "1"
+    assert captured["handoff_during"] == "1"
+    # ...and restored afterwards: the previously-unset var is removed, and the
+    # pre-existing one is put back to its original value.
+    assert "HERMES_GATEWAY_INSTALL_START_NOW" not in gateway_windows.os.environ
+    assert gateway_windows.os.environ["HERMES_GATEWAY_ELEVATED_HANDOFF"] == "OLD"
+
+
+def test_launch_elevated_uninstall_delegates(monkeypatch):
+    monkeypatch.setattr(
+        gateway_windows,
+        "_launch_elevated_gateway_command",
+        lambda command: command == "uninstall",
+    )
+    assert gateway_windows._launch_elevated_uninstall() is True
+
+
+# --- names and paths -------------------------------------------------------
+
+
+def test_get_task_name_default_and_profiled(monkeypatch):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    assert gateway_windows.get_task_name() == gateway_windows._TASK_NAME_DEFAULT
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "alice")
+    assert (
+        gateway_windows.get_task_name() == f"{gateway_windows._TASK_NAME_DEFAULT}_alice"
+    )
+
+
+def test_sanitize_filename_replaces_illegal_chars():
+    assert gateway_windows._sanitize_filename('a:b/c\\d*e?f"g') == "a_b_c_d_e_f_g"
+    assert gateway_windows._sanitize_filename("clean_name") == "clean_name"
+
+
+def test_get_task_script_path_under_hermes_home(monkeypatch, tmp_path):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(
+        gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice"
+    )
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    path = gateway_windows.get_task_script_path()
+    assert path == tmp_path / "gateway-service" / "Hermes_Gateway_alice.cmd"
+    assert (tmp_path / "gateway-service").is_dir()
+
+
+def test_startup_dir_prefers_appdata(monkeypatch):
+    monkeypatch.setenv("APPDATA", "/roamingdir/Roaming")
+    result = gateway_windows._startup_dir()
+    assert result.name == "Startup"
+    assert "Roaming" in str(result)
+
+
+def test_startup_dir_falls_back_to_userprofile(monkeypatch):
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setenv("USERPROFILE", "/home/user")
+    result = gateway_windows._startup_dir()
+    assert result.name == "Startup"
+    assert "AppData" in result.parts and "Roaming" in result.parts
+
+
+def test_startup_dir_raises_without_env(monkeypatch):
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
+    with pytest.raises(RuntimeError):
+        gateway_windows._startup_dir()
+
+
+def test_get_startup_entry_path(monkeypatch, tmp_path):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: tmp_path)
+    assert gateway_windows.get_startup_entry_path() == tmp_path / "Hermes_Gateway.cmd"
+
+
+# --- venv / python resolution ----------------------------------------------
+
+
+def test_read_pyvenv_cfg_parses_and_handles_missing(tmp_path):
+    (tmp_path / "pyvenv.cfg").write_text(
+        "home = C:/py\nuv = 0.1\nno_equals_line\n", encoding="utf-8"
+    )
+    cfg = gateway_windows._read_pyvenv_cfg(tmp_path)
+    assert cfg["home"] == "C:/py"
+    assert cfg["uv"] == "0.1"
+    assert "no_equals_line" not in cfg
+    assert gateway_windows._read_pyvenv_cfg(tmp_path / "absent") == {}
+
+
+def test_derive_venv_pythonw_prefers_w_variant(tmp_path):
+    py = tmp_path / "python.exe"
+    pyw = tmp_path / "pythonw.exe"
+    py.write_text("", encoding="utf-8")
+    pyw.write_text("", encoding="utf-8")
+    assert gateway_windows._derive_venv_pythonw(str(py)) == str(pyw)
+
+    lonely = tmp_path / "sub" / "python.exe"
+    lonely.parent.mkdir()
+    lonely.write_text("", encoding="utf-8")
+    assert gateway_windows._derive_venv_pythonw(str(lonely)) == str(lonely)
+
+
+def test_resolve_detached_python_uv_uses_base_pythonw(tmp_path):
+    venv = tmp_path / "venv"
+    scripts = venv / "Scripts"
+    site = venv / "Lib" / "site-packages"
+    base = tmp_path / "base"
+    for directory in (scripts, site, base):
+        directory.mkdir(parents=True)
+    (scripts / "python.exe").write_text("", encoding="utf-8")
+    (base / "pythonw.exe").write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\nuv = 0.1\n", encoding="utf-8")
+
+    windowed, venv_dir, extra = gateway_windows._resolve_detached_python(
+        str(scripts / "python.exe")
+    )
+    assert windowed == str(base / "pythonw.exe")
+    assert venv_dir == venv
+    assert extra == [str(site)]
+
+
+def test_resolve_detached_python_non_uv_returns_windowed(tmp_path):
+    venv = tmp_path / "venv"
+    scripts = venv / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "python.exe").write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("home = C:/py\n", encoding="utf-8")  # no uv key
+
+    windowed, venv_dir, extra = gateway_windows._resolve_detached_python(
+        str(scripts / "python.exe")
+    )
+    assert extra == []
+    assert venv_dir == venv
+    # No pythonw.exe sibling and no uv launcher: fall back to the given python.
+    assert windowed == str(scripts / "python.exe")
+
+
+def test_prepend_pythonpath_joins_and_skips_empty(monkeypatch):
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    overlay = {}
+    gateway_windows._prepend_pythonpath(overlay, ["", "a", "b"])
+    assert overlay["PYTHONPATH"] == gateway_windows.os.pathsep.join(["a", "b"])
+
+
+def test_prepend_pythonpath_appends_existing(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "EXISTING")
+    overlay = {}
+    gateway_windows._prepend_pythonpath(overlay, ["a"])
+    assert overlay["PYTHONPATH"] == "a" + gateway_windows.os.pathsep + "EXISTING"
+
+
+def test_prepend_pythonpath_noop_when_all_empty():
+    overlay = {}
+    gateway_windows._prepend_pythonpath(overlay, ["", ""])
+    assert "PYTHONPATH" not in overlay
+
+
+# --- install-choice env parsing --------------------------------------------
+
+
+def test_install_choice_from_env(monkeypatch):
+    monkeypatch.delenv("HERMES_TEST_CHOICE", raising=False)
+    assert gateway_windows._install_choice_from_env("HERMES_TEST_CHOICE") is None
+    monkeypatch.setenv("HERMES_TEST_CHOICE", "Yes")
+    assert gateway_windows._install_choice_from_env("HERMES_TEST_CHOICE") is True
+    monkeypatch.setenv("HERMES_TEST_CHOICE", "off")
+    assert gateway_windows._install_choice_from_env("HERMES_TEST_CHOICE") is False
+    monkeypatch.setenv("HERMES_TEST_CHOICE", "maybe")
+    assert gateway_windows._install_choice_from_env("HERMES_TEST_CHOICE") is None
+
+
+# --- detached spawn --------------------------------------------------------
+
+
+def test_spawn_detached_returns_pid_and_writes_stray_log(monkeypatch, tmp_path):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_build_gateway_argv",
+        lambda: (["pythonw", "-m", "hermes_cli.main"], str(tmp_path), {}),
+    )
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    captured = {}
+
+    class _Proc:
+        pid = 4321
+
+    def fake_popen(argv, **kwargs):
+        captured["flags"] = kwargs["creationflags"]
+        return _Proc()
+
+    monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+    pid = gateway_windows._spawn_detached()
+    assert pid == 4321
+    assert (tmp_path / "logs" / "gateway-stdio.log").exists()
+    # First attempt includes CREATE_BREAKAWAY_FROM_JOB.
+    assert captured["flags"] & 0x01000000
+
+
+def test_spawn_detached_retries_without_breakaway_on_oserror(monkeypatch, tmp_path):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(
+        gateway_windows, "_build_gateway_argv", lambda: (["pythonw"], str(tmp_path), {})
+    )
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    attempts = []
+
+    class _Proc:
+        pid = 999
+
+    def fake_popen(argv, **kwargs):
+        attempts.append(kwargs["creationflags"])
+        if len(attempts) == 1:
+            raise OSError("breakaway not permitted")
+        return _Proc()
+
+    monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+    pid = gateway_windows._spawn_detached()
+    assert pid == 999
+    assert len(attempts) == 2
+    # Retry drops the CREATE_BREAKAWAY_FROM_JOB bit.
+    assert not (attempts[1] & 0x01000000)
+
+
+# --- status query / installed checks ---------------------------------------
+
+
+def test_query_task_status_empty_on_nonzero(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "T")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (1, "", "err"))
+    assert gateway_windows.query_task_status() == {}
+
+
+def test_query_task_status_parses_list_output(monkeypatch):
+    out = (
+        "Folder: \\\n"
+        "Status:                  Ready\n"
+        "Last Run Time:           6/3/2026 1:00:00 PM\n"
+        "Last Result:             0\n"
+        "Irrelevant line without colon\n"
+    )
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "T")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, out, ""))
+    info = gateway_windows.query_task_status()
+    assert info["status"] == "Ready"
+    assert info["last run time"].startswith("6/3/2026")
+    # "Last Result" (some locales) aliases onto "last run result".
+    assert info["last run result"] == "0"
+
+
+def test_is_task_registered_uses_query_exit_code(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "T")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, "", ""))
+    assert gateway_windows.is_task_registered() is True
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (1, "", ""))
+    assert gateway_windows.is_task_registered() is False
+
+
+def test_is_installed_true_when_either_present(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: True)
+    assert gateway_windows.is_installed() is True
+
+
+def test_gateway_pids_delegates_to_finder(monkeypatch):
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1, 2])
+    assert gateway_windows._gateway_pids() == [1, 2]
+
+
+def test_wait_for_gateway_ready_returns_pids(monkeypatch):
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [7])
+    assert gateway_windows._wait_for_gateway_ready(timeout_s=1, interval_s=0.01) == [7]
+
+
+def test_wait_for_gateway_ready_times_out(monkeypatch):
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda s: None)
+    assert (
+        gateway_windows._wait_for_gateway_ready(timeout_s=0.05, interval_s=0.01) == []
+    )
+
+
+def test_report_gateway_start_success_and_failure(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda: [11])
+    gateway_windows._report_gateway_start("scheduled task")
+    assert "11" in capsys.readouterr().out
+
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda: [])
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    gateway_windows._report_gateway_start("scheduled task")
+    assert "no process detected" in capsys.readouterr().out
+
+
+def test_print_next_steps(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    gateway_windows._print_next_steps()
+    assert "Next steps" in capsys.readouterr().out
+
+
+# --- status / start / restart ----------------------------------------------
+
+
+def test_status_reports_task_and_running_process(monkeypatch, capsys):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [42])
+    monkeypatch.setattr(
+        gateway_windows,
+        "query_task_status",
+        lambda: {"status": "Ready", "last run result": "0"},
+    )
+    gateway_windows.status()
+    out = capsys.readouterr().out
+    assert "Scheduled Task registered" in out
+    assert "Status: Ready" in out
+    assert "42" in out
+
+
+def test_status_not_installed_shows_install_hint(monkeypatch, capsys):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    gateway_windows.status()
+    out = capsys.readouterr().out
+    assert "not installed" in out
+    assert "hermes gateway install" in out
+
+
+def test_status_deep_prints_paths(monkeypatch, capsys, tmp_path):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(
+        gateway_windows, "get_task_script_path", lambda: tmp_path / "t.cmd"
+    )
+    monkeypatch.setattr(
+        gateway_windows, "get_startup_entry_path", lambda: tmp_path / "s.cmd"
+    )
+    gateway_windows.status(deep=True)
+    out = capsys.readouterr().out
+    assert "login item installed" in out
+    assert "Task name:" in out
+
+
+def test_start_runs_scheduled_task_when_registered(monkeypatch):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, "", ""))
+    reported = []
+    monkeypatch.setattr(
+        gateway_windows, "_report_gateway_start", lambda via: reported.append(via)
+    )
+    gateway_windows.start()
+    assert reported and "Scheduled Task" in reported[0]
+
+
+def test_start_falls_back_to_spawn_when_run_fails(monkeypatch, capsys):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (1, "", "boom"))
+    spawned = []
+    monkeypatch.setattr(
+        gateway_windows, "_spawn_detached", lambda: spawned.append(True) or 7
+    )
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
+    gateway_windows.start()
+    assert spawned == [True]
+
+
+def test_start_declined_install_is_noop(monkeypatch, capsys):
+    _patch_windows(monkeypatch)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **k: False)
+    gateway_windows.start()
+    assert "hermes gateway install" in capsys.readouterr().out
+
+
+def test_restart_stops_then_starts(monkeypatch):
+    _patch_windows(monkeypatch)
+    order = []
+    monkeypatch.setattr(gateway_windows, "stop", lambda: order.append("stop"))
+    monkeypatch.setattr(gateway_windows, "start", lambda: order.append("start"))
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda s: None)
+    gateway_windows.restart()
+    assert order == ["stop", "start"]

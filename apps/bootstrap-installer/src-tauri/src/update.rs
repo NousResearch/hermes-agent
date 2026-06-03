@@ -87,7 +87,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
     let update_branch = update_branch_from_args(std::env::args().skip(1))
         .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
         .unwrap_or_else(|| "main".to_string());
-    let target_app = target_app_from_args(std::env::args().skip(1));
+    let target_app = if cfg!(target_os = "macos") {
+        target_app_from_args(std::env::args().skip(1))
+    } else {
+        None
+    };
 
     let hermes = resolve_hermes(&install_root).ok_or_else(|| {
         let msg = format!(

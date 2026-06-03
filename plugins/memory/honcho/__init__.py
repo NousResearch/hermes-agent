@@ -29,6 +29,58 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 
+def _content_to_text(content: Any) -> str:
+    """Normalize provider message content into text before memory sync.
+
+    Model providers may pass OpenAI/Anthropic-style content parts instead of a
+    plain string, e.g. ``[{"type": "text", "text": "..."}]``. Honcho memory
+    ingest and ``sanitize_context()`` operate on strings, so convert known text
+    parts and preserve non-text parts as compact placeholders instead of raising.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (int, float, bool)):
+        return str(content)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            text = _content_part_to_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        return _content_part_to_text(content) or json.dumps(content, ensure_ascii=False, default=str)
+    return str(content)
+
+
+def _content_part_to_text(part: Any) -> str:
+    if part is None:
+        return ""
+    if isinstance(part, str):
+        return part
+    if not isinstance(part, dict):
+        return str(part)
+
+    text = part.get("text")
+    if isinstance(text, str):
+        return text
+
+    nested = part.get("content")
+    if isinstance(nested, str):
+        return nested
+    if isinstance(nested, list):
+        return _content_to_text(nested)
+
+    part_type = str(part.get("type") or "content_part")
+    if part_type in {"image", "image_url", "input_image"}:
+        return "[image content omitted from memory sync]"
+    if part_type in {"tool_use", "tool_result", "function_call"}:
+        return f"[{part_type} omitted from memory sync]"
+    return json.dumps(part, ensure_ascii=False, default=str)
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
@@ -1198,7 +1250,14 @@ class HonchoMemoryProvider(MemoryProvider):
             ),
         }
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: Any,
+        assistant_content: Any,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
         Messages exceeding the Honcho API limit (default 25k chars) are
@@ -1213,8 +1272,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
-        clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        clean_user_content = sanitize_context(_content_to_text(user_content)).strip()
+        clean_assistant_content = sanitize_context(_content_to_text(assistant_content)).strip()
 
         def _sync():
             try:

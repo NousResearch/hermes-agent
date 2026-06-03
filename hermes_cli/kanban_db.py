@@ -3182,6 +3182,184 @@ def autopilot_parent_report(conn: sqlite3.Connection, parent_task_id: str) -> di
     }
 
 
+def _child_parent_rollup_item(row: sqlite3.Row) -> dict[str, Any]:
+    evidence = _json_loads_maybe(row["closeout_evidence"]) or {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    verifier = evidence.get("verifier_result") if isinstance(evidence.get("verifier_result"), Mapping) else {}
+    verification = evidence.get("verification") if isinstance(evidence.get("verification"), Mapping) else {}
+    return {
+        "task_id": row["id"],
+        "public_id": row["public_id"] or row["id"],
+        "title": row["title"],
+        "status": row["status"],
+        "review_phase": row["review_phase"],
+        "closeout_schema": evidence.get("schema"),
+        "verifier_verdict": verifier.get("verdict"),
+        "verification_allowed": verification.get("allowed"),
+        "evidence": evidence,
+    }
+
+
+def autopilot_rollup_parent_review_ready(
+    conn: sqlite3.Connection,
+    parent_task_id: str,
+    *,
+    apply: bool = True,
+) -> dict[str, Any]:
+    """Create a grouped parent-level review package once children are review-ready.
+
+    This is the parent Autopilot closeout join point. Child worker/verifier
+    facts remain on the child tasks; the parent receives only an aggregate
+    evidence package when every descendant has reached a terminal review surface.
+    It never merges, deploys, restarts, or mutates customer/prod/env surfaces.
+    """
+    parent = resolve_task_ref(conn, parent_task_id)
+    if parent is None:
+        raise ValueError(f"no such parent task: {parent_task_id}")
+    descendants = hierarchy_descendant_ids(conn, parent)
+    if not descendants:
+        return {
+            "status": "blocked",
+            "reason": "no_children",
+            "parent_task_id": parent,
+            "blockers": ["no_children"],
+            "applied": False,
+        }
+    task_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    public_expr = "public_id" if "public_id" in task_cols else "NULL AS public_id"
+    placeholders = ",".join("?" for _ in descendants)
+    rows = conn.execute(
+        f"""
+        SELECT id, {public_expr}, title, status, review_phase, closeout_evidence
+          FROM tasks
+         WHERE id IN ({placeholders})
+         ORDER BY public_id, created_at, id
+        """,
+        tuple(descendants),
+    ).fetchall()
+    children: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for row in rows:
+        item = _child_parent_rollup_item(row)
+        children.append(item)
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), Mapping) else {}
+        verifier = evidence.get("verifier_result") if isinstance(evidence.get("verifier_result"), Mapping) else {}
+        verification = evidence.get("verification") if isinstance(evidence.get("verification"), Mapping) else {}
+        review_phase = str(row["review_phase"] or "")
+        status = str(row["status"] or "")
+        child_ok = (
+            review_phase in {"review_ready", "closed"}
+            or status in {"done", "archived"}
+        )
+        if not child_ok:
+            if review_phase == "worker_done":
+                blockers.append("child_waiting_for_verifier")
+            elif status == "running":
+                blockers.append("child_running")
+            elif status in {"ready", "todo", "triage"}:
+                blockers.append("child_not_executed")
+            else:
+                blockers.append("child_not_review_ready")
+            continue
+        if str(verifier.get("verdict") or "").strip().lower() != "pass":
+            blockers.append("child_missing_verifier_pass")
+        if verification.get("allowed") is False:
+            blockers.append("child_verification_blocked")
+    blockers = list(dict.fromkeys(blockers))
+    package = {
+        "schema": "kanban_parent_review_package.v1",
+        "parent_task_id": parent,
+        "parent_public_id": _task_public_id(conn, parent),
+        "children": children,
+        "review_package": {
+            "schema": "kanban_parent_review_package.v1",
+            "kind": "grouped_parent_evidence",
+            "child_count": len(children),
+        },
+        "side_effects": {
+            "merge": False,
+            "deploy": False,
+            "gateway_restart_or_reload": False,
+            "prod_env_secret_customer_mutation": False,
+        },
+        "verification": {
+            "allowed": not blockers,
+            "blockers": blockers,
+            "grouped_parent_level_evidence": True,
+        },
+    }
+    if blockers:
+        return {
+            "status": "blocked",
+            "reason": "children_not_review_ready",
+            "parent_task_id": parent,
+            "blockers": blockers,
+            "package": package,
+            "applied": False,
+        }
+    parent_row = conn.execute(
+        "SELECT status, review_phase FROM tasks WHERE id = ?",
+        (parent,),
+    ).fetchone()
+    if parent_row and parent_row["review_phase"] == "review_ready":
+        return {
+            "status": "already_review_ready",
+            "reason": "parent_already_review_ready",
+            "parent_task_id": parent,
+            "blockers": [],
+            "package": package,
+            "applied": False,
+        }
+    if apply:
+        now = int(time.time())
+        with write_txn(conn):
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'blocked',
+                       review_phase = 'review_ready',
+                       closeout_evidence = ?,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       current_run_id = NULL,
+                       completed_at = NULL
+                 WHERE id = ?
+                   AND status != 'archived'
+                   AND (review_phase IS NULL OR review_phase = '' OR review_phase = 'worker_done')
+                """,
+                (_json_dumps_dict(package, "closeout_evidence"), parent),
+            )
+            if cur.rowcount != 1:
+                return {
+                    "status": "blocked",
+                    "reason": "parent_review_ready_write_failed",
+                    "parent_task_id": parent,
+                    "blockers": ["parent_review_ready_write_failed"],
+                    "package": package,
+                    "applied": False,
+                }
+            _append_event(
+                conn,
+                parent,
+                "autopilot_parent_review_ready",
+                {
+                    "child_count": len(children),
+                    "children": [item["task_id"] for item in children],
+                    "side_effects": package["side_effects"],
+                    "at": now,
+                },
+            )
+    return {
+        "status": "transitioned" if apply else "would_transition",
+        "reason": "parent_review_ready_grouped_package",
+        "parent_task_id": parent,
+        "blockers": [],
+        "package": package,
+        "applied": bool(apply),
+    }
+
 def _contract_lookup_keys(row: sqlite3.Row) -> list[str]:
     keys: list[str] = []
     for field in ("id", "public_id", "title"):
@@ -3397,9 +3575,20 @@ def autopilot_tick(
             parent_task_id=parent_task_id,
             board=board,
         )
+        parent_rollup = None
+        if not effective_dry_run and not res.spawned:
+            parent_rollup = autopilot_rollup_parent_review_ready(
+                conn,
+                parent_task_id,
+                apply=True,
+            )
         selected_task_id = res.spawned[0][0] if res.spawned else None
-        decision = "spawn" if res.spawned and not effective_dry_run else "select" if res.spawned else "skip"
-        reason = "spawned" if res.spawned and not effective_dry_run else "dry_run_selected" if res.spawned else "no_eligible_child"
+        if parent_rollup and parent_rollup.get("status") in {"transitioned", "already_review_ready"}:
+            decision = "select"
+            reason = "parent_review_ready"
+        else:
+            decision = "spawn" if res.spawned and not effective_dry_run else "select" if res.spawned else "skip"
+            reason = "spawned" if res.spawned and not effective_dry_run else "dry_run_selected" if res.spawned else "no_eligible_child"
         with write_txn(conn):
             conn.execute(
                 """

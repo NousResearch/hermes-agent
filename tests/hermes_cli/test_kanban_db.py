@@ -2085,6 +2085,99 @@ def test_autopilot_parent_report_does_not_show_done_child_as_autopilot_ready(kan
     assert "non_dispatchable_status" in report["autopilot_blocked"][0]["ready_gate_reason_codes"]
 
 
+def _review_ready_child_evidence(child_id: str, *, summary: str = "child verified") -> dict:
+    return {
+        "schema": "kanban_closeout_evidence.v1",
+        "summary": summary,
+        "worker_evidence": {
+            "schema": "kanban_worker_evidence.v1",
+            "authority_boundary_confirmed": True,
+            "forbidden_actions_performed": [],
+            "per_criterion": {"dc-1": {"claim": "satisfied", "notes": "worker proof"}},
+        },
+        "verifier_result": {
+            "schema": "kanban_verifier_result.v1",
+            "verdict": "pass",
+            "authority_boundary_ok": True,
+            "per_criterion": {"dc-1": {"verdict": "pass", "notes": "independent proof"}},
+        },
+        "review_package": {
+            "schema": "kanban_review_package.v1",
+            "kind": "no_pr_evidence",
+            "changed_files": [],
+        },
+        "child_task_id": child_id,
+        "verification": {"allowed": True, "blockers": []},
+    }
+
+
+def test_autopilot_tick_rolls_up_parent_review_ready_when_children_are_review_ready(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        first = kb.create_task(conn, title="child one", assignee="alice")
+        second = kb.create_task(conn, title="child two", assignee="alice")
+        kb.link_tasks(conn, parent, first, relation_type="hierarchy")
+        kb.link_tasks(conn, parent, second, relation_type="hierarchy")
+        for child in (first, second):
+            assert kb.apply_closeout_transition(
+                conn,
+                child,
+                review_phase="review_ready",
+                closeout_evidence=_review_ready_child_evidence(child),
+            ) is True
+        kb.set_autopilot_enabled(conn, parent_task_ref=parent, mode="auto")
+
+        res = kb.autopilot_tick(conn)
+        parent_task = kb.get_task(conn, parent)
+        state = kb.get_autopilot_state(conn)
+        events = kb.list_events(conn, task_id=parent)
+
+    assert res is not None
+    assert parent_task.status == "blocked"
+    assert parent_task.review_phase == "review_ready"
+    assert parent_task.closeout_evidence["schema"] == "kanban_parent_review_package.v1"
+    assert parent_task.closeout_evidence["parent_task_id"] == parent
+    assert {item["task_id"] for item in parent_task.closeout_evidence["children"]} == {first, second}
+    assert parent_task.closeout_evidence["verification"]["allowed"] is True
+    assert state["last_decision"] == "parent_review_ready"
+    assert any(event.kind == "autopilot_parent_review_ready" for event in events)
+
+
+def test_autopilot_parent_rollup_blocks_when_child_still_needs_verifier(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        child = kb.create_task(conn, title="child pending verifier", assignee="alice")
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', review_phase='worker_done', closeout_evidence=? WHERE id=?",
+            (json.dumps({"schema": "kanban_closeout_evidence.v1", "summary": "worker only"}), child),
+        )
+        conn.commit()
+        kb.set_autopilot_enabled(conn, parent_task_ref=parent, mode="dry_run")
+
+        kb.autopilot_tick(conn)
+        parent_task = kb.get_task(conn, parent)
+        state = kb.get_autopilot_state(conn)
+
+    assert parent_task.review_phase is None
+    assert state["last_decision"] != "parent_review_ready"
+
+
+def test_autopilot_parent_rollup_rejects_done_child_without_verifier_pass(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        child = kb.create_task(conn, title="legacy done child", assignee="alice")
+        kb.link_tasks(conn, parent, child, relation_type="hierarchy")
+        assert kb.complete_task(conn, child, result="legacy done without verifier") is True
+
+        rollup = kb.autopilot_rollup_parent_review_ready(conn, parent, apply=True)
+        parent_task = kb.get_task(conn, parent)
+
+    assert rollup["status"] == "blocked"
+    assert "child_missing_verifier_pass" in rollup["blockers"]
+    assert parent_task.review_phase is None
+
+
 
 def _governed_worker_body() -> str:
     return """

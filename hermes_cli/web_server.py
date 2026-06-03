@@ -6606,15 +6606,25 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
         # Packaged Electron loads the desktop renderer over a non-web origin
-        # such as file:// or null. This helper is called only after _ws_auth_ok
-        # has accepted the WS credential; in non-gated mode that credential is
-        # the legacy dashboard session token, including for explicit Tailscale /
-        # LAN binds opened with --insecure. Real DNS-rebinding attacks arrive
-        # from http(s) origins and still have to match the bound host below.
+        # such as file://, null, or a custom app:// scheme. This helper is
+        # called only AFTER _ws_auth_ok has already accepted the WS credential,
+        # which is the real auth boundary in every mode:
+        #   * loopback bind          → legacy dashboard session token
+        #   * non-loopback --insecure → legacy session token (Tailscale / LAN)
+        #   * OAuth-gated public bind → single-use, 30s-TTL, identity-bound
+        #     ?ticket= minted at the cookie-authed POST /api/auth/ws-ticket
+        # A non-web origin can only be produced by a native client (the desktop
+        # shell); a DNS-rebinding attack always arrives from an http(s) origin
+        # and is still match-checked against the bound host below. So once the
+        # credential check upstream has passed, the Origin guard adds nothing
+        # for a non-web origin — trust it in every mode.
         #
-        # OAuth-gated public dashboards authenticate with cookies/tickets and
-        # have no legitimate file:// client, so keep them strict.
-        return not getattr(app.state, "auth_required", False)
+        # (Earlier revisions restricted this to loopback, then to non-gated
+        # binds; both excluded the packaged desktop talking to a remote
+        # OAuth-gated gateway, whose file:// renderer origin then got rejected
+        # at the WS upgrade even with a valid ticket. The ticket is the gate,
+        # not the origin.)
+        return True
 
     if not parsed.netloc:
         return False

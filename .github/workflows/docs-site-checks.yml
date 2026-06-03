@@ -46,3 +46,7 @@ jobs:
       - name: Build Docusaurus
         run: npm run build
         working-directory: website
+
+      - name: Check for /docs/<locale>/docs/ double-prefixed links
+        run: npm run check:localized-links
+        working-directory: website

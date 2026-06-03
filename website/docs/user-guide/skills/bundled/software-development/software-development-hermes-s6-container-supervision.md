@@ -20,7 +20,7 @@ Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent
 | Author | Hermes Agent |
 | License | MIT |
 | Tags | `docker`, `s6`, `supervision`, `gateway`, `profiles` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), `hermes-agent-dev` |
+| Related skills | [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), `hermes-agent-dev` |
 
 ## Reference: full SKILL.md
 

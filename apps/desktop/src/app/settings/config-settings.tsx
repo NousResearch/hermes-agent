@@ -13,6 +13,7 @@ import {
   getHermesConfigSchema,
   saveHermesConfig
 } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
@@ -37,9 +38,20 @@ function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
 }) {
-  const label = FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+  const { t } = useI18n()
+
+  const label =
+    t.settings.fieldLabels[schemaKey] ?? FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  const rawDescription = (FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '').trim()
+
+  const rawDescription = (
+    t.settings.fieldDescriptions[schemaKey] ??
+    FIELD_DESCRIPTIONS[schemaKey] ??
+    schema.description ??
+    ''
+  ).trim()
+
   const normalizedDesc = normalize(rawDescription)
 
   const description =

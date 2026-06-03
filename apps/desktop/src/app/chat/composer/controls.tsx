@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -55,6 +56,9 @@ export function ComposerControls({
   voiceStatus: VoiceStatus
   onDictate: () => void
 }) {
+  const { t } = useI18n()
+  const c = t.composer
+
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
@@ -65,9 +69,9 @@ export function ComposerControls({
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       {showVoicePrimary ? (
-        <Tip label="Start voice conversation">
+        <Tip label={c.startVoice}>
           <Button
-            aria-label="Start voice conversation"
+            aria-label={c.startVoice}
             className={PRIMARY_ICON_BTN}
             disabled={disabled}
             onClick={() => {
@@ -81,9 +85,9 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : (
-        <Tip label={busy ? (busyAction === 'queue' ? 'Queue message' : 'Stop') : 'Send'}>
+        <Tip label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}>
           <Button
-            aria-label={busy ? (busyAction === 'queue' ? 'Queue message' : 'Stop') : 'Send'}
+            aria-label={busy ? (busyAction === 'queue' ? c.queueMessage : c.stop) : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
@@ -113,25 +117,27 @@ function ConversationPill({
   onToggleMute,
   status
 }: ConversationProps & { disabled: boolean }) {
+  const { t } = useI18n()
+  const c = t.composer
   const speaking = status === 'speaking'
   const listening = status === 'listening' && !muted
 
   const label =
     status === 'speaking'
-      ? 'Speaking'
+      ? c.speaking
       : status === 'transcribing'
-        ? 'Transcribing'
+        ? c.transcribing
         : status === 'thinking'
-          ? 'Thinking'
+          ? c.thinking
           : muted
-            ? 'Muted'
-            : 'Listening'
+            ? c.muted
+            : c.listening
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <Tip label={muted ? 'Unmute microphone' : 'Mute microphone'}>
+      <Tip label={muted ? c.unmuteMic : c.muteMic}>
         <Button
-          aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+          aria-label={muted ? c.unmuteMic : c.muteMic}
           aria-pressed={muted}
           className={cn(GHOST_ICON_BTN, 'p-0', muted && 'bg-muted text-muted-foreground')}
           disabled={disabled}
@@ -148,32 +154,34 @@ function ConversationPill({
       </Tip>
       {listening && (
         <Button
-          aria-label="Stop listening and send"
+          aria-label={c.stopListening}
           className="h-(--composer-control-size) shrink-0 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           disabled={disabled}
           onClick={() => {
             triggerHaptic('submit')
             onStopTurn()
           }}
+          title={c.stopListening}
           type="button"
           variant="ghost"
         >
           <Square className="fill-current" size={11} />
-          <span>Stop</span>
+          <span>{c.stopShort}</span>
         </Button>
       )}
       <Button
-        aria-label="End voice conversation"
+        aria-label={c.endConversation}
         className="h-(--composer-control-size) gap-1.5 rounded-full bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
         disabled={disabled}
         onClick={() => {
           triggerHaptic('close')
           onEnd()
         }}
+        title={c.endConversation}
         type="button"
       >
         <ConversationIndicator level={level} listening={listening} speaking={speaking} />
-        <span>End</span>
+        <span>{c.endShort}</span>
       </Button>
       <span className="sr-only" role="status">
         {label}
@@ -220,10 +228,12 @@ function DictationButton({
   status: VoiceStatus
   onToggle: () => void
 }) {
+  const { t } = useI18n()
+  const c = t.composer
   const active = state.active || status !== 'idle'
 
   const aria =
-    status === 'recording' ? 'Stop dictation' : status === 'transcribing' ? 'Transcribing dictation' : 'Voice dictation'
+    status === 'recording' ? c.stopDictation : status === 'transcribing' ? c.transcribingDictation : c.voiceDictation
 
   return (
     <Tip label={aria}>

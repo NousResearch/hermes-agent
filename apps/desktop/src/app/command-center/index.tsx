@@ -1,26 +1,45 @@
 import { useStore } from '@nanostores/react'
-import { IconBookmark, IconBookmarkFilled, IconDownload, IconTrash } from '@tabler/icons-react'
-import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  IconBookmark,
+  IconBookmarkFilled,
+  IconDownload,
+  IconRefresh,
+  IconTrash
+} from '@tabler/icons-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { PageLoader } from '@/components/page-loader'
-import { Button } from '@/components/ui/button'
-import { SearchField } from '@/components/ui/search-field'
-import { SegmentedControl } from '@/components/ui/segmented-control'
-import { Tip } from '@/components/ui/tooltip'
-import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import {
+  getActionStatus,
+  getLogs,
+  getStatus,
+  getUsageAnalytics,
+  restartGateway,
+  searchSessions,
+  updateHermes
+} from '@/hermes'
+import type {
+  ActionStatusResponse,
+  AnalyticsResponse,
+  SessionInfo,
+  SessionSearchResult as SessionSearchApiResult,
+  StatusResponse
+} from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, type IconComponent, Pin } from '@/lib/icons'
+import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, sessionPinId } from '@/store/session'
+import { $sessions } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { OverlayActionButton, OverlayCard, overlayCardClass, OverlayIconButton } from '../overlays/overlay-chrome'
+import { OverlaySearchInput } from '../overlays/overlay-search-input'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import { ARTIFACTS_ROUTE, MESSAGING_ROUTE, NEW_CHAT_ROUTE, SETTINGS_ROUTE, SKILLS_ROUTE } from '../routes'
 
 export type CommandCenterSection = 'sessions' | 'system' | 'usage'
 
@@ -33,28 +52,55 @@ interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
+  onNavigateRoute: (path: string) => void
   onOpenSession: (sessionId: string) => void
 }
 
-const SECTION_LABELS: Record<CommandCenterSection, string> = {
-  sessions: 'Sessions',
-  system: 'System',
-  usage: 'Usage'
+type NavKey = 'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts'
+
+const NAV_ROUTES: readonly { key: NavKey; route: string }[] = [
+  { key: 'newChat', route: NEW_CHAT_ROUTE },
+  { key: 'settings', route: SETTINGS_ROUTE },
+  { key: 'skills', route: SKILLS_ROUTE },
+  { key: 'messaging', route: MESSAGING_ROUTE },
+  { key: 'artifacts', route: ARTIFACTS_ROUTE }
+]
+
+interface SessionSearchHit {
+  detail?: string
+  kind: 'session'
+  sessionId: string
+  snippet: string
+  title: string
 }
 
-const SECTION_DESCRIPTIONS: Record<CommandCenterSection, string> = {
-  sessions: 'Search and manage sessions',
-  system: 'Status, logs, and system actions',
-  usage: 'Token, cost, and skill activity over time'
+interface RouteSearchHit {
+  detail?: string
+  kind: 'route'
+  route: string
+  title: string
 }
 
-const SECTION_ICONS: Record<CommandCenterSection, IconComponent> = {
-  sessions: Pin,
-  system: Activity,
-  usage: BarChart3
+interface SectionSearchHit {
+  detail?: string
+  kind: 'section'
+  section: CommandCenterSection
+  title: string
 }
 
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+type CommandCenterSearchResult = RouteSearchHit | SectionSearchHit | SessionSearchHit
+
+interface CommandCenterSearchProvider {
+  id: string
+  label: string
+  search: (query: string) => Promise<CommandCenterSearchResult[]>
+}
+
+interface CommandCenterSearchGroup {
+  id: string
+  label: string
+  results: CommandCenterSearchResult[]
+}
 
 function formatTimestamp(value?: number | null): string {
   if (!value) {
@@ -70,6 +116,24 @@ function formatTimestamp(value?: number | null): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
+function splitSessionSearchResult(result: SessionSearchApiResult, sessionsById: Map<string, SessionInfo>) {
+  const row = sessionsById.get(result.session_id)
+  const title = row ? sessionTitle(row) : result.session_id
+  const detail = [result.model, result.source].filter(Boolean).join(' · ')
+
+  return { detail, title }
+}
+
+function matchesSearchQuery(query: string, ...values: Array<string | undefined>): boolean {
+  const normalized = query.trim().toLowerCase()
+
+  if (!normalized) {
+    return true
+  }
+
+  return values.some(value => value?.toLowerCase().includes(normalized))
+}
+
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value)
 
@@ -82,54 +146,23 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced
 }
 
-function RowIconButton({
-  children,
-  className,
-  onClick,
-  title
-}: {
-  children: ReactNode
-  className?: string
-  onClick: (event: MouseEvent<HTMLButtonElement>) => void
-  title: string
-}) {
-  return (
-    <Tip label={title}>
-      <Button
-        aria-label={title}
-        className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
-        onClick={onClick}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        {children}
-      </Button>
-    </Tip>
-  )
-}
-
-function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title: string }) {
-  return (
-    <div className="grid min-h-48 place-items-center px-6 text-center">
-      <div>
-        <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
-        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {description}
-        </div>
-        {action && <div className="mt-3 flex justify-center">{action}</div>}
-      </div>
-    </div>
-  )
-}
-
-export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+export function CommandCenterView({
+  initialSection,
+  onClose,
+  onDeleteSession,
+  onNavigateRoute,
+  onOpenSession
+}: CommandCenterViewProps) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
   const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
 
   const [query, setQuery] = useState('')
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchGroups, setSearchGroups] = useState<CommandCenterSearchGroup[]>([])
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [systemLoading, setSystemLoading] = useState(false)
@@ -139,30 +172,78 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState('')
+  const searchRequestRef = useRef(0)
   const usageRequestRef = useRef(0)
 
   const debouncedQuery = useDebouncedValue(query.trim(), 180)
 
-  const filteredSessions = useMemo(() => {
-    const sorted = [...sessions].sort((a, b) => {
-      const left = a.last_active || a.started_at || 0
-      const right = b.last_active || b.started_at || 0
+  const sessionsById = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
 
-      return right - left
-    })
+  const filteredSessions = useMemo(
+    () =>
+      [...sessions].sort((a, b) => {
+        const left = a.last_active || a.started_at || 0
+        const right = b.last_active || b.started_at || 0
 
-    const needle = debouncedQuery.toLowerCase()
+        return right - left
+      }),
+    [sessions]
+  )
 
-    if (!needle) {
-      return sorted
-    }
+  const searchProviders = useMemo<readonly CommandCenterSearchProvider[]>(
+    () => [
+      {
+        id: 'navigation',
+        label: cc.providerNavigate,
+        search: async searchQuery => {
+          const routeHits: RouteSearchHit[] = NAV_ROUTES.filter(entry =>
+            matchesSearchQuery(searchQuery, cc.nav[entry.key].title, cc.nav[entry.key].detail, entry.route)
+          ).map(entry => ({
+            detail: cc.nav[entry.key].detail,
+            kind: 'route',
+            route: entry.route,
+            title: cc.nav[entry.key].title
+          }))
 
-    return sorted.filter(session => {
-      const haystack = `${sessionTitle(session)} ${session.id} ${session._lineage_root_id ?? ''}`.toLowerCase()
+          const sectionHits: SectionSearchHit[] = SECTIONS.filter(section =>
+            matchesSearchQuery(
+              searchQuery,
+              cc.sectionEntries[section].title,
+              cc.sectionEntries[section].detail,
+              cc.sections[section]
+            )
+          ).map(section => ({
+            detail: cc.sectionEntries[section].detail,
+            kind: 'section',
+            section,
+            title: cc.sectionEntries[section].title
+          }))
 
-      return haystack.includes(needle)
-    })
-  }, [debouncedQuery, sessions])
+          return [...routeHits, ...sectionHits]
+        }
+      },
+      {
+        id: 'sessions',
+        label: cc.providerSessions,
+        search: async searchQuery => {
+          const response = await searchSessions(searchQuery)
+
+          return response.results.map(result => {
+            const { detail, title } = splitSessionSearchResult(result, sessionsById)
+
+            return {
+              detail,
+              kind: 'session',
+              sessionId: result.session_id,
+              snippet: result.snippet || '',
+              title
+            } satisfies SessionSearchHit
+          })
+        }
+      }
+    ],
+    [cc, sessionsById]
+  )
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true)
@@ -180,7 +261,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       setStatus(nextStatus)
       setLogs(nextLogs.lines)
     } catch (error) {
-      setSystemError(errorText(error))
+      setSystemError(error instanceof Error ? error.message : String(error))
     } finally {
       setSystemLoading(false)
     }
@@ -200,7 +281,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       }
     } catch (error) {
       if (usageRequestRef.current === requestId) {
-        setUsageError(errorText(error))
+        setUsageError(error instanceof Error ? error.message : String(error))
       }
     } finally {
       if (usageRequestRef.current === requestId) {
@@ -208,6 +289,42 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!debouncedQuery) {
+      setSearchGroups([])
+      setSearchLoading(false)
+
+      return
+    }
+
+    const requestId = searchRequestRef.current + 1
+    searchRequestRef.current = requestId
+    setSearchLoading(true)
+
+    void Promise.all(
+      searchProviders.map(async provider => ({
+        id: provider.id,
+        label: provider.label,
+        results: await provider.search(debouncedQuery)
+      }))
+    )
+      .then(groups => {
+        if (searchRequestRef.current === requestId) {
+          setSearchGroups(groups.filter(group => group.results.length > 0))
+        }
+      })
+      .catch(() => {
+        if (searchRequestRef.current === requestId) {
+          setSearchGroups([])
+        }
+      })
+      .finally(() => {
+        if (searchRequestRef.current === requestId) {
+          setSearchLoading(false)
+        }
+      })
+  }, [debouncedQuery, searchProviders])
 
   useEffect(() => {
     if (section === 'system' && !status && !systemLoading) {
@@ -229,6 +346,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     }
   })
 
+  const showGlobalSearchResults = debouncedQuery.length > 0
+  const hasGlobalSearchResults = searchGroups.length > 0
   const sessionListHasResults = filteredSessions.length > 0
 
   const runSystemAction = useCallback(
@@ -254,7 +373,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         if (!nextStatus) {
           const pendingStatus = {
             exit_code: null,
-            lines: ['Action started, waiting for status...'],
+            lines: [cc.actionStartedWaiting],
             name: started.name,
             pid: started.pid,
             running: true
@@ -264,131 +383,234 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           upsertDesktopActionTask(pendingStatus)
         }
       } catch (error) {
-        setSystemError(errorText(error))
+        setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
         void refreshSystem()
       }
     },
-    [refreshSystem]
+    [cc, refreshSystem]
+  )
+
+  const handleSearchSelect = useCallback(
+    (result: CommandCenterSearchResult) => {
+      if (result.kind === 'route') {
+        onNavigateRoute(result.route)
+
+        return
+      }
+
+      if (result.kind === 'section') {
+        setSection(result.section)
+        setQuery('')
+
+        return
+      }
+
+      onOpenSession(result.sessionId)
+    },
+    [onNavigateRoute, onOpenSession, setSection]
   )
 
   return (
-    <OverlayView closeLabel="Close command center" onClose={onClose}>
+    <OverlayView
+      closeLabel={cc.close}
+      headerContent={
+        <OverlaySearchInput
+          containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
+          loading={searchLoading}
+          onChange={next => setQuery(next)}
+          placeholder={cc.searchPlaceholder}
+          value={query}
+        />
+      }
+      onClose={onClose}
+    >
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(value => (
             <OverlayNavItem
               active={section === value}
-              icon={SECTION_ICONS[value]}
+              icon={value === 'sessions' ? Pin : value === 'system' ? Activity : BarChart3}
               key={value}
-              label={SECTION_LABELS[value]}
+              label={cc.sections[value]}
               onClick={() => setSection(value)}
             />
           ))}
         </OverlaySidebar>
 
         <OverlayMain>
-          <header className="mb-4 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
-                {SECTION_LABELS[section]}
-              </h2>
-              <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {SECTION_DESCRIPTIONS[section]}
-              </p>
+          <header className="mb-4 flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">{cc.sections[section]}</h2>
+              <p className="text-xs text-muted-foreground">{cc.sectionDescriptions[section]}</p>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {section === 'sessions' && sessions.length > 0 && (
-                <SearchField
-                  containerClassName="max-w-[40vw]"
-                  onChange={next => setQuery(next)}
-                  placeholder="Search sessions…"
-                  value={query}
-                />
-              )}
-              {section === 'usage' && (
-                <SegmentedControl
-                  onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
-                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: `${value}d` }))}
-                  value={String(usagePeriod)}
-                />
-              )}
-            </div>
+            {section === 'system' && (
+              <OverlayActionButton disabled={systemLoading} onClick={() => void refreshSystem()}>
+                <IconRefresh className={cn('mr-1.5 size-3.5', systemLoading && 'animate-spin')} />
+                {systemLoading ? cc.refreshing : cc.refresh}
+              </OverlayActionButton>
+            )}
+            {section === 'usage' && (
+              <OverlayActionButton disabled={usageLoading} onClick={() => void refreshUsage(usagePeriod)}>
+                <IconRefresh className={cn('mr-1.5 size-3.5', usageLoading && 'animate-spin')} />
+                {usageLoading ? cc.refreshing : cc.refresh}
+              </OverlayActionButton>
+            )}
           </header>
 
-          {section === 'sessions' ? (
+          {showGlobalSearchResults ? (
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              {!hasGlobalSearchResults ? (
+                <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">{cc.noResults}</OverlayCard>
+              ) : (
+                <div className="grid gap-3">
+                  {searchGroups.map(group => (
+                    <section className="grid gap-1.5" key={group.id}>
+                      <h3 className="px-0.5 text-xs font-semibold tracking-[0.08em] text-muted-foreground/80 uppercase">
+                        {group.label}
+                      </h3>
+                      {group.results.map(result => {
+                        if (result.kind === 'session') {
+                          const pinned = pinnedSessionIds.includes(result.sessionId)
+
+                          return (
+                            <OverlayCard className="p-2.5" key={`${group.id}:${result.sessionId}:${result.snippet}`}>
+                              <button
+                                className="w-full text-left"
+                                onClick={() => handleSearchSelect(result)}
+                                type="button"
+                              >
+                                <div className="truncate text-sm font-medium text-foreground">{result.title}</div>
+                                <div className="mt-0.5 text-xs text-muted-foreground">
+                                  {result.detail || result.sessionId}
+                                </div>
+                                {result.snippet && (
+                                  <div className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground/85">
+                                    {result.snippet}
+                                  </div>
+                                )}
+                              </button>
+                              <div className="mt-2 flex gap-1">
+                                <OverlayIconButton
+                                  onClick={event => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    pinned ? unpinSession(result.sessionId) : pinSession(result.sessionId)
+                                  }}
+                                  title={pinned ? cc.unpinSession : cc.pinSession}
+                                >
+                                  {pinned ? (
+                                    <IconBookmarkFilled className="size-3.5" />
+                                  ) : (
+                                    <IconBookmark className="size-3.5" />
+                                  )}
+                                </OverlayIconButton>
+                                <OverlayIconButton
+                                  onClick={event => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    void exportSession(result.sessionId, { title: result.title })
+                                  }}
+                                  title={cc.exportSession}
+                                >
+                                  <IconDownload className="size-3.5" />
+                                </OverlayIconButton>
+                                <OverlayIconButton
+                                  className="hover:text-destructive"
+                                  onClick={event => {
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    void onDeleteSession(result.sessionId)
+                                  }}
+                                  title={cc.deleteSession}
+                                >
+                                  <IconTrash className="size-3.5" />
+                                </OverlayIconButton>
+                              </div>
+                            </OverlayCard>
+                          )
+                        }
+
+                        return (
+                          <button
+                            className={cn(
+                              overlayCardClass,
+                              'w-full px-3 py-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--dt-muted)_48%,var(--dt-card))]'
+                            )}
+                            key={`${group.id}:${result.kind}:${result.title}`}
+                            onClick={() => handleSearchSelect(result)}
+                            type="button"
+                          >
+                            <div className="text-sm font-medium text-foreground">{result.title}</div>
+                            {result.detail && (
+                              <div className="mt-0.5 text-xs text-muted-foreground">{result.detail}</div>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </section>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
-                <EmptyPanel
-                  description={
-                    debouncedQuery
-                      ? 'No sessions match your search.'
-                      : 'Sessions you start will show up here to search, pin, and export.'
-                  }
-                  title={debouncedQuery ? 'No matches' : 'No sessions yet'}
-                />
+                <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">{cc.noSessions}</OverlayCard>
               ) : (
-                <ul>
+                <div className="grid gap-1.5">
                   {filteredSessions.map(session => {
-                    const pinId = sessionPinId(session)
-                    const pinned = pinnedSessionIds.includes(pinId)
+                    const pinned = pinnedSessionIds.includes(session.id)
 
                     return (
-                      <li className="group flex items-center gap-2 py-2" key={session.id}>
+                      <OverlayCard className="flex items-center gap-2 px-2.5 py-2" key={session.id}>
                         <button
                           className="min-w-0 flex-1 text-left"
                           onClick={() => onOpenSession(session.id)}
                           type="button"
                         >
-                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {sessionTitle(session)}
-                          </div>
-                          <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          <div className="truncate text-sm font-medium text-foreground">{sessionTitle(session)}</div>
+                          <div className="truncate text-xs text-muted-foreground">
                             {formatTimestamp(session.last_active || session.started_at)}
                           </div>
                         </button>
-                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                          <RowIconButton
-                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                            title={pinned ? 'Unpin session' : 'Pin session'}
-                          >
-                            {pinned ? (
-                              <IconBookmarkFilled className="size-3.5" />
-                            ) : (
-                              <IconBookmark className="size-3.5" />
-                            )}
-                          </RowIconButton>
-                          <RowIconButton
-                            onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                            title="Export session"
-                          >
-                            <IconDownload className="size-3.5" />
-                          </RowIconButton>
-                          <RowIconButton
-                            className="hover:text-destructive"
-                            onClick={() => void onDeleteSession(session.id)}
-                            title="Delete session"
-                          >
-                            <IconTrash className="size-3.5" />
-                          </RowIconButton>
-                        </div>
-                      </li>
+                        <OverlayIconButton
+                          onClick={() => (pinned ? unpinSession(session.id) : pinSession(session.id))}
+                          title={pinned ? cc.unpinSession : cc.pinSession}
+                        >
+                          {pinned ? <IconBookmarkFilled className="size-3.5" /> : <IconBookmark className="size-3.5" />}
+                        </OverlayIconButton>
+                        <OverlayIconButton
+                          onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
+                          title={cc.exportSession}
+                        >
+                          <IconDownload className="size-3.5" />
+                        </OverlayIconButton>
+                        <OverlayIconButton
+                          className="hover:text-destructive"
+                          onClick={() => void onDeleteSession(session.id)}
+                          title={cc.deleteSession}
+                        >
+                          <IconTrash className="size-3.5" />
+                        </OverlayIconButton>
+                      </OverlayCard>
                     )
                   })}
-                </ul>
+                </div>
               )}
             </div>
           ) : section === 'usage' ? (
             <UsagePanel
               error={usageError}
               loading={usageLoading}
+              onPeriodChange={setUsagePeriod}
               onRefresh={() => void refreshUsage(usagePeriod)}
               period={usagePeriod}
               usage={usage}
             />
           ) : (
-            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
-              <div className="border-b border-(--ui-stroke-tertiary) pb-4">
+            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-3">
+              <OverlayCard className="p-3 text-sm">
                 {status ? (
                   <div className="grid gap-2">
                     <div className="flex items-start justify-between gap-3">
@@ -400,51 +622,49 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                               status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
                             )}
                           />
-                          <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {status.gateway_running ? 'Messaging gateway running' : 'Messaging gateway stopped'}
+                          <span className="font-medium text-foreground">
+                            {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
                           </span>
                         </div>
-                        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          Hermes {status.version} · Active sessions {status.active_sessions}
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
-                          Restart messaging
-                        </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
-                          Update Hermes
-                        </Button>
+                        <OverlayActionButton className="h-7 px-2.5" onClick={() => void runSystemAction('restart')}>
+                          {cc.restartMessaging}
+                        </OverlayActionButton>
+                        <OverlayActionButton className="h-7 px-2.5" onClick={() => void runSystemAction('update')}>
+                          {cc.updateHermes}
+                        </OverlayActionButton>
                       </div>
                     </div>
                     {systemAction && (
-                      <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                      <div className="text-xs text-muted-foreground">
                         {systemAction.name} ·{' '}
-                        {systemAction.running ? 'running' : systemAction.exit_code === 0 ? 'done' : 'failed'}
+                        {systemAction.running ? cc.actionRunning : systemAction.exit_code === 0 ? cc.actionDone : cc.actionFailed}
                       </div>
                     )}
                   </div>
                 ) : (
-                  <PageLoader className="min-h-32" label="Loading status" />
+                  <div className="text-xs text-muted-foreground">{cc.loadingStatus}</div>
                 )}
-              </div>
+              </OverlayCard>
 
-              <div className="flex min-h-0 flex-col">
+              <OverlayCard className="min-h-0 overflow-hidden p-2">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-                    Recent logs
-                  </span>
+                  <span className="text-xs font-medium text-muted-foreground">{cc.recentLogs}</span>
                   {systemError && (
-                    <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
+                    <span className="inline-flex items-center gap-1 text-xs text-destructive">
                       <AlertCircle className="size-3.5" />
                       {systemError}
                     </span>
                   )}
                 </div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)">
-                  {logs.length ? logs.join('\n') : 'No logs loaded yet.'}
+                <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
+                  {logs.length ? logs.join('\n') : cc.noLogs}
                 </pre>
-              </div>
+              </OverlayCard>
             </div>
           )}
         </OverlayMain>
@@ -488,12 +708,15 @@ function formatInteger(value: null | number | undefined): string {
 interface UsagePanelProps {
   error: string
   loading: boolean
+  onPeriodChange: (period: UsagePeriod) => void
   onRefresh: () => void
   period: UsagePeriod
   usage: AnalyticsResponse | null
 }
 
-function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProps) {
+function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }: UsagePanelProps) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
   const daily = useMemo(() => usage?.daily ?? [], [usage])
   const totals = usage?.totals
   const byModel = usage?.by_model ?? []
@@ -507,82 +730,92 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
     return daily.reduce((acc, entry) => Math.max(acc, (entry.input_tokens || 0) + (entry.output_tokens || 0)), 1)
   }, [daily])
 
-  if (!totals) {
-    return (
-      <div className="min-h-0 flex-1">
-        {loading ? (
-          <PageLoader className="min-h-48" label="Loading usage" />
-        ) : (
-          <EmptyPanel
-            action={
-              <Button onClick={onRefresh} size="xs" variant="outline">
-                Retry
-              </Button>
-            }
-            description={`No token, cost, or skill activity recorded in the last ${period} days.`}
-            title="No usage yet"
-          />
-        )}
-      </div>
-    )
-  }
-
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pb-2">
-      {error && (
-        <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
-          <AlertCircle className="size-3.5" />
-          {error}
-        </span>
-      )}
-
-      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-4">
-        <UsageStat label="Sessions" value={formatInteger(totals.total_sessions)} />
-        <UsageStat label="API calls" value={formatInteger(totals.total_api_calls)} />
-        <UsageStat
-          label="Tokens in/out"
-          value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
-        />
-        <UsageStat
-          hint={totals.total_actual_cost > 0 ? `actual ${formatCost(totals.total_actual_cost)}` : undefined}
-          label="Est. cost"
-          value={formatCost(totals.total_estimated_cost)}
-        />
-      </div>
-
-      <section>
-        <div className="mb-2 flex items-baseline justify-between">
-          <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-            Daily tokens
-          </span>
-          <span className="flex items-center gap-3 text-[0.65rem] text-(--ui-text-tertiary)">
-            <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> input
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> output
-            </span>
-          </span>
+    <div className="grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3">
+      <OverlayCard className="flex flex-wrap items-center justify-between gap-2 p-3">
+        <div className="flex items-center gap-1">
+          {USAGE_PERIODS.map(value => (
+            <button
+              className={cn(
+                'h-7 rounded-md px-2.5 text-xs transition-colors',
+                value === period
+                  ? 'bg-foreground text-background'
+                  : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
+              )}
+              key={value}
+              onClick={() => onPeriodChange(value)}
+              type="button"
+            >
+              {cc.days(value)}
+            </button>
+          ))}
         </div>
-        {daily.length === 0 ? (
-          <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            No daily activity.
-          </div>
-        ) : (
-          <>
-            <div className="flex h-24 items-end gap-px">
-              {daily.map(entry => {
-                const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
-                const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
+        {error && (
+          <span className="inline-flex items-center gap-1 text-xs text-destructive">
+            <AlertCircle className="size-3.5" />
+            {error}
+          </span>
+        )}
+      </OverlayCard>
 
-                return (
-                  <Tip
-                    key={entry.day}
-                    label={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
-                  >
-                    <div className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end">
+      <OverlayCard className="p-3">
+        {totals ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
+            <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
+            <UsageStat
+              label={cc.statTokens}
+              value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
+            />
+            <UsageStat
+              hint={totals.total_actual_cost > 0 ? cc.actualCost(formatCost(totals.total_actual_cost)) : undefined}
+              label={cc.statCost}
+              value={formatCost(totals.total_estimated_cost)}
+            />
+          </div>
+        ) : loading ? (
+          <div className="text-xs text-muted-foreground">{cc.loadingUsage}</div>
+        ) : (
+          <div className="text-xs text-muted-foreground">
+            {cc.noUsage(period)}{' '}
+            <button className="underline underline-offset-4 decoration-current/20" onClick={onRefresh} type="button">
+              {cc.retry}
+            </button>
+          </div>
+        )}
+      </OverlayCard>
+
+      <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
+        <OverlayCard className="p-3">
+          <div className="mb-2 flex items-baseline justify-between">
+            <span className="text-xs font-medium text-muted-foreground">{cc.dailyTokens}</span>
+            <span className="flex items-center gap-3 text-[0.65rem] text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                <span className="size-2 bg-[color:var(--dt-primary)]/60" /> {cc.input}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="size-2 bg-emerald-500/70" /> {cc.output}
+              </span>
+            </span>
+          </div>
+          {daily.length === 0 ? (
+            <div className="grid h-24 place-items-center text-xs text-muted-foreground">{cc.noDailyActivity}</div>
+          ) : (
+            <>
+              <div className="flex h-24 items-end gap-px">
+                {daily.map(entry => {
+                  const total = (entry.input_tokens || 0) + (entry.output_tokens || 0)
+                  const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
+                  const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
+
+                  return (
+                    <div
+                      className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
+                      key={entry.day}
+                      title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                    >
                       <div
-                        className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
+                        className="w-full bg-[color:var(--dt-primary)]/50"
                         style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
                       />
                       <div
@@ -590,80 +823,78 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
                         style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
                       />
                     </div>
-                  </Tip>
-                )
-              })}
-            </div>
-            <div className="mt-1 flex justify-between text-[0.6rem] text-(--ui-text-tertiary)">
-              <span>{daily[0]?.day}</span>
-              <span>{daily[daily.length - 1]?.day}</span>
-            </div>
-          </>
-        )}
-      </section>
+                  )
+                })}
+              </div>
+              <div className="mt-1 flex justify-between text-[0.6rem] text-muted-foreground/70">
+                <span>{daily[0]?.day}</span>
+                <span>{daily[daily.length - 1]?.day}</span>
+              </div>
+            </>
+          )}
+        </OverlayCard>
 
-      <div className="grid min-h-0 gap-x-8 gap-y-5 border-t border-(--ui-stroke-tertiary) pt-5 sm:grid-cols-2">
-        <UsageList
-          emptyLabel="No model usage yet."
-          rows={byModel.slice(0, 6).map(entry => ({
-            key: entry.model,
-            label: entry.model,
-            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
-          }))}
-          title="Top models"
-        />
-        <UsageList
-          emptyLabel="No skill activity yet."
-          rows={topSkills.slice(0, 6).map(entry => ({
-            key: entry.skill,
-            label: entry.skill,
-            value: `${entry.total_count.toLocaleString()} actions`
-          }))}
-          title="Top skills"
-        />
+        <OverlayCard className="min-h-0 overflow-auto p-2">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <section className="min-w-0">
+              <div className="mb-1.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+                {cc.topModels}
+              </div>
+              {byModel.length === 0 ? (
+                <div className="text-xs text-muted-foreground">{cc.noModelUsage}</div>
+              ) : (
+                <ul className="space-y-1">
+                  {byModel.slice(0, 6).map(entry => (
+                    <li
+                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/40"
+                      key={entry.model}
+                    >
+                      <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{entry.model}</span>
+                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                        {formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} ·{' '}
+                        {formatCost(entry.estimated_cost)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="min-w-0">
+              <div className="mb-1.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+                {cc.topSkills}
+              </div>
+              {topSkills.length === 0 ? (
+                <div className="text-xs text-muted-foreground">{cc.noSkillActivity}</div>
+              ) : (
+                <ul className="space-y-1">
+                  {topSkills.slice(0, 6).map(entry => (
+                    <li
+                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/40"
+                      key={entry.skill}
+                    >
+                      <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{entry.skill}</span>
+                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                        {cc.actions(entry.total_count.toLocaleString())}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+        </OverlayCard>
       </div>
     </div>
-  )
-}
-
-function UsageList({
-  emptyLabel,
-  rows,
-  title
-}: {
-  emptyLabel: string
-  rows: Array<{ key: string; label: string; value: string }>
-  title: string
-}) {
-  return (
-    <section className="min-w-0">
-      <div className="mb-1.5 text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-        {title}
-      </div>
-      {rows.length === 0 ? (
-        <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          {emptyLabel}
-        </div>
-      ) : (
-        <ul>
-          {rows.map(row => (
-            <li className="flex items-center justify-between gap-2 py-1.5" key={row.key}>
-              <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{row.label}</span>
-              <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">{row.value}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   )
 }
 
 function UsageStat({ hint, label, value }: { hint?: string; label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <div className="text-[0.625rem] font-medium uppercase tracking-[0.12em] text-(--ui-text-tertiary)">{label}</div>
-      <div className="mt-1 truncate text-base font-semibold tracking-tight text-foreground">{value}</div>
-      {hint && <div className="mt-0.5 truncate text-[0.62rem] text-(--ui-text-tertiary)">{hint}</div>}
+      <div className="text-[0.65rem] font-medium uppercase tracking-[0.12em] text-muted-foreground">{label}</div>
+      <div className="mt-0.5 truncate text-sm font-semibold tracking-tight text-foreground">{value}</div>
+      {hint && <div className="mt-0.5 truncate text-[0.62rem] text-muted-foreground/80">{hint}</div>}
     </div>
   )
 }

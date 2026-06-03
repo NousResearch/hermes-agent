@@ -3,6 +3,7 @@ import type * as React from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 
 interface CronJobActions {
@@ -32,12 +33,15 @@ export function CronJobActionsMenu({
   sideOffset = 6,
   title
 }: CronJobActionsMenuProps) {
+  const { t } = useI18n()
+  const c = t.cron
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent
         align={align}
-        aria-label={`Actions for ${title}`}
+        aria-label={c.actionsFor(title)}
         className="w-44"
         sideOffset={sideOffset}
       >
@@ -49,7 +53,7 @@ export function CronJobActionsMenu({
           }}
         >
           <Codicon name={isPaused ? 'play' : 'debug-pause'} size="0.875rem" />
-          <span>{isPaused ? 'Resume' : 'Pause'}</span>
+          <span>{isPaused ? c.resumeTitle : c.pauseTitle}</span>
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -60,7 +64,7 @@ export function CronJobActionsMenu({
           }}
         >
           <Codicon name="zap" size="0.875rem" />
-          <span>Trigger now</span>
+          <span>{c.triggerNow}</span>
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -70,7 +74,7 @@ export function CronJobActionsMenu({
           }}
         >
           <Codicon name="edit" size="0.875rem" />
-          <span>Edit</span>
+          <span>{c.edit}</span>
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -81,7 +85,7 @@ export function CronJobActionsMenu({
           variant="destructive"
         >
           <Codicon name="trash" size="0.875rem" />
-          <span>Delete</span>
+          <span>{t.common.delete}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -93,12 +97,14 @@ interface CronJobActionsTriggerProps extends Omit<React.ComponentProps<typeof Bu
 }
 
 export function CronJobActionsTrigger({ className, title, ...props }: CronJobActionsTriggerProps) {
+  const { t } = useI18n()
+
   return (
     <Button
-      aria-label={`Actions for ${title}`}
+      aria-label={t.cron.actionsFor(title)}
       className={className}
       size="icon-sm"
-      title="Cron job actions"
+      title={t.cron.actionsTitle}
       variant="ghost"
       {...props}
     >

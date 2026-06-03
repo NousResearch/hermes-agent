@@ -60,6 +60,10 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
+    // Optional: non-English locales fall back to the English literal in the
+    // component until translated, matching the enriched-profiles keys.
+    gateway?: string;
+    gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };

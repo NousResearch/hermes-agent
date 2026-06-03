@@ -513,7 +513,7 @@ export default function EnvPage() {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
         tool: "Tools",
-        messaging: "Gateway",
+        messaging: t.common.gateway ?? "Gateway",
         setting: "Settings",
       };
       for (const cat of categories) {
@@ -526,7 +526,7 @@ export default function EnvPage() {
       }
     }
     return items;
-  }, [vars]);
+  }, [vars, t]);
 
   useLayoutEffect(() => {
     if (!vars) {
@@ -687,11 +687,12 @@ export default function EnvPage() {
     // settings and relabelled accordingly.
     const CATEGORY_META_LABELS: Record<string, string> = {
       tool: t.app.nav.keys,
-      messaging: "Gateway",
+      messaging: t.common.gateway ?? "Gateway",
       setting: t.app.nav.config,
     };
     const CATEGORY_META_HINTS: Record<string, string | undefined> = {
       messaging:
+        t.common.gatewayHint ??
         "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     };
     const otherCategories = ["tool", "messaging", "setting"];

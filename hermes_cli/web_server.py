@@ -6000,7 +6000,10 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
         "ok": bool(outcome.ok),
         "reason": outcome.reason,
         "description": outcome.description,
-        "description_auto": True,
+        # Only a successful generation is an auto-authored description. A failed
+        # sweep leaves any existing description untouched, so don't claim it's
+        # auto-generated.
+        "description_auto": bool(outcome.ok),
     }
 
 

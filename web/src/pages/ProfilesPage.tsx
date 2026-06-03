@@ -99,12 +99,16 @@ function ProfileActionsMenu({
   onSetActive,
 }: ProfileActionsMenuProps) {
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && !target.closest?.("[data-profile-actions]")) setOpen(false);
+      const target = e.target as Node | null;
+      // Close only when the click lands outside *this* menu. Matching any
+      // `[data-profile-actions]` would treat another card's menu as "inside"
+      // and leave several menus open at once.
+      if (target && !containerRef.current?.contains(target)) setOpen(false);
     };
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
@@ -121,7 +125,7 @@ function ProfileActionsMenu({
     "flex w-full items-center gap-2.5 px-3 py-2 text-xs uppercase tracking-wider hover:bg-muted/50 disabled:opacity-40";
 
   return (
-    <div className="relative" data-profile-actions>
+    <div className="relative" data-profile-actions ref={containerRef}>
       <Button
         ghost
         size="icon"

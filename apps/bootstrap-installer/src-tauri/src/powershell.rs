@@ -45,6 +45,14 @@ pub async fn run_script(
 ) -> Result<ScriptResult> {
     let mut cmd = build_command(script_path, args);
 
+    // The installer can be launched from a .app bundle that is later replaced
+    // during self-update. Pin child scripts to a stable directory so bash/zsh
+    // never starts from a deleted cwd and emits getcwd/job-working-directory
+    // errors at the end of an otherwise successful install.
+    if let Some(cwd) = stable_script_cwd(script_path, hermes_home_override) {
+        cmd.current_dir(cwd);
+    }
+
     if let Some(home) = hermes_home_override {
         cmd.env("HERMES_HOME", home);
     }
@@ -144,6 +152,16 @@ pub async fn run_script(
         exit_code: status.code(),
         killed,
     })
+}
+
+fn stable_script_cwd<'a>(script_path: &'a Path, hermes_home_override: Option<&'a str>) -> Option<&'a Path> {
+    if let Some(home) = hermes_home_override {
+        let path = Path::new(home);
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    script_path.parent().filter(|p| p.is_dir())
 }
 
 async fn recv_cancel(rx: &mut Option<CancelRx>) {
@@ -263,5 +281,12 @@ info line
     fn parse_returns_none_when_no_match() {
         assert!(parse_stage_result("just banner\n").is_none());
         assert!(parse_manifest("just banner\n").is_none());
+    }
+
+    #[test]
+    fn stable_script_cwd_prefers_existing_hermes_home() {
+        let script = Path::new("/tmp/install.sh");
+        let cwd = stable_script_cwd(script, Some("/"));
+        assert_eq!(cwd, Some(Path::new("/")));
     }
 }

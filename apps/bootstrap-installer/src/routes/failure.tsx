@@ -3,8 +3,10 @@ import { useStore } from '@nanostores/react'
 import { Button } from '../components/button'
 import {
   $logPath,
+  $mode,
   openLogDir,
   startInstall,
+  startUpdate,
   type BootstrapStateModel
 } from '../store'
 import { RefreshCw, FileText } from 'lucide-react'
@@ -22,6 +24,8 @@ interface FailureProps {
  */
 export default function Failure({ bootstrap }: FailureProps) {
   const logPath = useStore($logPath)
+  const mode = useStore($mode)
+  const isUpdate = mode === 'update'
 
   return (
     <div className="hermes-fade-in flex h-full flex-col items-center justify-center gap-6 px-12 py-10">
@@ -37,24 +41,27 @@ export default function Failure({ bootstrap }: FailureProps) {
           }
         >
           <span>
-            <span>Install didn&rsquo;t finish</span>
+            <span>{isUpdate ? 'Update didn\u2019t finish' : 'Install didn\u2019t finish'}</span>
           </span>
-          <span aria-hidden="true">Install didn&rsquo;t finish</span>
+          <span aria-hidden="true">{isUpdate ? 'Update didn\u2019t finish' : 'Install didn\u2019t finish'}</span>
         </p>
 
         <p className="m-0 mx-auto max-w-xl text-center text-sm leading-normal tracking-tight text-muted-foreground">
-          {bootstrap.error ?? 'Something went wrong during installation.'}
+          {bootstrap.error ??
+            (isUpdate
+              ? 'Something went wrong during the update.'
+              : 'Something went wrong during installation.')}
         </p>
       </div>
 
       <div className="flex items-center gap-3">
         <Button
-          onClick={() => void startInstall()}
+          onClick={() => void (isUpdate ? startUpdate() : startInstall())}
           size="lg"
           className="inline-flex items-center gap-2 px-6"
         >
           <RefreshCw size={16} />
-          Retry install
+          {isUpdate ? 'Retry update' : 'Retry install'}
         </Button>
         <Button
           variant="outline"

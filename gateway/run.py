@@ -11533,99 +11533,6 @@ class GatewayRunner:
         )
         return "\n".join(lines)
 
-    def _handle_usage_command(self, event: MessageEvent) -> str:
-        """Render the /usage subcommand output.
-
-        Supports:
-          /usage                — same as /usage today
-          /usage today          — today's calls (local-day start)
-          /usage 7d             — last 7 days
-          /usage session        — last 24h within this session_key
-          /usage model          — all-time, by model breakdown
-
-        Reads :func:`gateway.llm_call_logs.aggregate_by_period`.
-        """
-        from agent.i18n import t as _t
-        from gateway.llm_call_logs import aggregate_by_period
-
-        source = event.source
-        session_key = self._session_key_for_source(source)
-        args = event.get_command_args().strip().lower()
-        period = args.split()[0] if args else "today"
-        if period not in ("today", "7d", "session", "model", "all"):
-            period = "today"
-
-        # "model" = full breakdown; otherwise use the period for the
-        # totals + by_model / by_provider / by_agent breakdown
-        if period == "model":
-            agg = aggregate_by_period(period="all")
-        elif period == "session":
-            agg = aggregate_by_period(period="session", session_key=session_key)
-        elif period == "7d":
-            agg = aggregate_by_period(period="7d")
-        elif period == "all":
-            agg = aggregate_by_period(period="all")
-        else:
-            agg = aggregate_by_period(period="today")
-
-        lines: List[str] = []
-        period_label = {
-            "today": "今天", "7d": "过去 7 天",
-            "session": "本 session 最近 24h",
-            "model": "全量（按 model 明细）",
-            "all": "全量",
-        }.get(period, period)
-        lines.append(f"📈 **Usage — {period_label}**")
-        lines.append("")
-        if agg["total_requests"] == 0:
-            lines.append("  (尚无记录)")
-            return "\n".join(lines)
-        lines.append(
-            f"requests:    {agg['total_requests']}"
-        )
-        lines.append(
-            f"input:       {agg['total_input_tokens']:,}"
-        )
-        lines.append(
-            f"output:      {agg['total_output_tokens']:,}"
-        )
-        lines.append(
-            f"total:       {agg['total_tokens']:,}"
-        )
-        lines.append(
-            f"cost (USD):  ${agg['estimated_cost_usd']:.4f}"
-        )
-        if agg["by_model"]:
-            lines.append("")
-            lines.append("**by_model:**")
-            for row in agg["by_model"]:
-                lines.append(
-                    f"  • model: `{row.get('model') or '—'}`  "
-                    f"provider: `{row.get('provider') or '—'}`  "
-                    f"requests: {row.get('requests', 0)}  "
-                    f"tokens: {row.get('total_tokens', 0):,}  "
-                    f"cost: ${float(row.get('cost', 0) or 0):.4f}"
-                )
-        if agg["by_provider"]:
-            lines.append("")
-            lines.append("**by_provider:**")
-            for row in agg["by_provider"]:
-                lines.append(
-                    f"  • `{row.get('provider') or '—'}`  "
-                    f"requests: {row.get('requests', 0)}  "
-                    f"tokens: {row.get('total_tokens', 0):,}"
-                )
-        if agg["by_agent"]:
-            lines.append("")
-            lines.append("**by_agent:**")
-            for row in agg["by_agent"]:
-                lines.append(
-                    f"  • `{row.get('agent_name') or '—'}`  "
-                    f"requests: {row.get('requests', 0)}  "
-                    f"tokens: {row.get('total_tokens', 0):,}"
-                )
-        return "\n".join(lines)
-
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from hermes_constants import display_hermes_home
@@ -14365,6 +14272,65 @@ class GatewayRunner:
             return "\n".join(lines)
         if account_lines:
             return "\n".join(account_lines)
+
+        # BOSS spec: also surface gateway.llm_call_logs aggregation so
+        # the user can see per-model / per-provider breakdown across
+        # the whole session.  Falls through to a generic no-data
+        # message when llm_call_logs has no rows AND no agent
+        # account snapshot was available.
+        try:
+            from gateway.llm_call_logs import aggregate_by_period
+            _usage_args = event.get_command_args().strip().lower()
+            _usage_period = (
+                _usage_args.split()[0] if _usage_args else "today"
+            )
+            if _usage_period not in (
+                "today", "7d", "session", "model", "all",
+            ):
+                _usage_period = "today"
+            if _usage_period == "model" or _usage_period == "all":
+                _usage_period = "all"
+            if _usage_period == "session":
+                _agg = aggregate_by_period(
+                    period="session", session_key=session_key,
+                )
+            elif _usage_period == "7d":
+                _agg = aggregate_by_period(period="7d")
+            else:
+                _agg = aggregate_by_period(period="today")
+            if _agg.get("total_requests", 0) > 0:
+                _label = {
+                    "today": "今天", "7d": "过去 7 天",
+                    "session": "本 session 最近 24h",
+                    "all": "全量",
+                }.get(_usage_period, _usage_period)
+                _lines: list[str] = [
+                    f"📈 **Usage — {_label}**",
+                    "",
+                    f"requests:    {_agg['total_requests']}",
+                    f"input:       {_agg['total_input_tokens']:,}",
+                    f"output:      {_agg['total_output_tokens']:,}",
+                    f"total:       {_agg['total_tokens']:,}",
+                    f"cost (USD):  ${_agg['estimated_cost_usd']:.4f}",
+                ]
+                for row in _agg.get("by_model", []):
+                    _lines.append(
+                        f"  • model: `{row.get('model') or '—'}`  "
+                        f"provider: `{row.get('provider') or '—'}`  "
+                        f"requests: {row.get('requests', 0)}  "
+                        f"tokens: {row.get('total_tokens', 0):,}  "
+                        f"cost: ${float(row.get('cost', 0) or 0):.4f}"
+                    )
+                for row in _agg.get("by_provider", []):
+                    _lines.append(
+                        f"  • `{row.get('provider') or '—'}`  "
+                        f"requests: {row.get('requests', 0)}  "
+                        f"tokens: {row.get('total_tokens', 0):,}"
+                    )
+                return "\n".join(_lines)
+        except Exception as _usage_err:
+            logger.debug("llm_call_logs aggregate failed: %s", _usage_err)
+
         return t("gateway.usage.no_data")
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

@@ -250,6 +250,10 @@ class SessionResetPolicy:
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs
     notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
+    # When > 0, on session reset in a group/channel context, load the last N
+    # messages from the prior session and prepend them as context so Hermes
+    # can infer topic continuity.  0 (default) = disabled.
+    group_context_on_reset: int = 0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -258,6 +262,7 @@ class SessionResetPolicy:
             "idle_minutes": self.idle_minutes,
             "notify": self.notify,
             "notify_exclude_platforms": list(self.notify_exclude_platforms),
+            "group_context_on_reset": self.group_context_on_reset,
         }
     
     @classmethod
@@ -268,12 +273,20 @@ class SessionResetPolicy:
         idle_minutes = data.get("idle_minutes")
         notify = data.get("notify")
         exclude = data.get("notify_exclude_platforms")
+        raw_gcr = data.get("group_context_on_reset")
+        group_context_on_reset = 0
+        if raw_gcr is not None:
+            try:
+                group_context_on_reset = int(raw_gcr)
+            except (TypeError, ValueError):
+                pass
         return cls(
             mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
             notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
+            group_context_on_reset=group_context_on_reset,
         )
 
 

@@ -459,6 +459,12 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
 
+    # The session_id of the session that was replaced by an auto-reset.
+    # Set when was_auto_reset=True so the message handler can optionally
+    # load prior group/channel context from that transcript.
+    # Consumed once by _handle_message_with_agent; not persisted across restarts.
+    prior_session_id: Optional[str] = None
+
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
     # skill re-injection on the first message of the new session.  We can't
@@ -929,6 +935,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                prior_session_id=db_end_session_id if was_auto_reset else None,
             )
 
             self._entries[session_key] = entry

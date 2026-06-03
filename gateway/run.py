@@ -8353,6 +8353,70 @@ class GatewayRunner:
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
 
+        # ---------------------------------------------------------------
+        # Group/channel context reload on session reset
+        #
+        # When a session resets (idle, daily, or suspended) in a group or
+        # channel context, and the operator has configured
+        # session_reset.group_context_on_reset > 0, load the last N
+        # messages from the prior session and prepend them as read-only
+        # context so Hermes can infer topic continuity rather than
+        # starting cold.  This only fires on auto-reset (was_auto_reset
+        # was True before being cleared above); manual /new or /reset
+        # (is_fresh_reset) intentionally start cold.
+        # ---------------------------------------------------------------
+        _prior_session_id = getattr(session_entry, "prior_session_id", None)
+        if _prior_session_id and source.chat_type in ("group", "channel"):
+            try:
+                _reset_policy = self.session_store.config.get_reset_policy(
+                    platform=source.platform,
+                    session_type=source.chat_type,
+                )
+                _gcor = getattr(_reset_policy, "group_context_on_reset", 0)
+                if _gcor > 0:
+                    _prior_msgs = self.session_store.load_transcript(_prior_session_id)
+                    # Filter to user/assistant text turns only; skip system,
+                    # tool, and session_meta rows which are internal plumbing.
+                    _text_turns = [
+                        m for m in (_prior_msgs or [])
+                        if m.get("role") in ("user", "assistant")
+                        and m.get("content")
+                        and not m.get("tool_calls")
+                        and not m.get("tool_call_id")
+                    ]
+                    _tail = _text_turns[-_gcor:]
+                    if _tail:
+                        _lines = ["[Prior conversation context (last {} message{} before session reset):]".format(
+                            len(_tail), "s" if len(_tail) != 1 else ""
+                        )]
+                        for _m in _tail:
+                            _role = _m.get("role", "")
+                            _ts = _m.get("timestamp")
+                            _ts_str = ""
+                            if _ts:
+                                try:
+                                    import datetime as _dt
+                                    _ts_str = " @ " + _dt.datetime.fromtimestamp(float(_ts)).strftime("%Y-%m-%d %H:%M")
+                                except Exception:
+                                    pass
+                            _sender = _m.get("user_name") or _m.get("user_id") or (
+                                "assistant" if _role == "assistant" else "user"
+                            )
+                            _content = str(_m.get("content") or "").strip()
+                            _lines.append(f"[{_sender}{_ts_str}]: {_content}")
+                        _history_block = "\n".join(_lines)
+                        context_prompt = _history_block + "\n\n" + context_prompt
+                        logger.info(
+                            "[Gateway] Injected %d prior group context message(s) for session reset (chat=%s)",
+                            len(_tail), source.chat_id,
+                        )
+            except Exception as _gcor_err:
+                logger.debug("Group context on reset failed (non-fatal): %s", _gcor_err)
+            finally:
+                # Consume the prior_session_id so it doesn't leak onto
+                # subsequent messages in the same session.
+                session_entry.prior_session_id = None
+
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
         # Only inject on NEW sessions — ongoing conversations already have the

@@ -13,6 +13,8 @@ the proper ``model: {default: ..., provider: ...}`` form.
 
 import yaml
 import pytest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
@@ -26,6 +28,12 @@ def _make_runner():
     runner._voice_mode = {}
     runner._session_model_overrides = {}
     runner._running_agents = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SimpleNamespace(
+        session_id="sess-1"
+    )
     return runner
 
 
@@ -156,3 +164,64 @@ async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path,
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert written["model"]["default"] == "gpt-5.5"
     assert written["model"]["provider"] == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_model_switch_persists_provider_for_dashboard(tmp_path, monkeypatch):
+    """Session-scoped /model must rewrite the stored provider/base_url too.
+
+    Regression for #37794: gateway /model already updated the session's model
+    column, but left billing_provider on the original config route. The
+    dashboard grouped by the stale provider and showed the wrong label.
+    """
+    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_state import SessionDB
+
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {
+            "default": "gpt-5.5",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: ModelSwitchResult(
+            success=True,
+            new_model="deepseek-v4-flash",
+            target_provider="opencode-go",
+            provider_changed=True,
+            api_key="sk-test",
+            base_url="https://api.opencode-go.example/v1",
+            api_mode="chat_completions",
+            provider_label="OpenCode Go",
+            is_global=False,
+        ),
+    )
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session(session_id="sess-1", source="discord", model="gpt-5.5")
+        db.update_session_billing_route(
+            "sess-1",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+
+        runner = _make_runner()
+        runner._session_db = db
+
+        result = await runner._handle_model_command(
+            _make_event("/model deepseek-v4-flash --provider opencode-go")
+        )
+
+        session = db.get_session("sess-1")
+        assert result is not None
+        assert session["model"] == "deepseek-v4-flash"
+        assert session["billing_provider"] == "opencode-go"
+        assert session["billing_base_url"] == "https://api.opencode-go.example/v1"
+    finally:
+        db.close()

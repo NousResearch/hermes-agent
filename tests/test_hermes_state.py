@@ -196,6 +196,26 @@ class TestSessionLifecycle:
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
 
+    def test_update_session_billing_route_overwrites_existing(self, db):
+        db.create_session(session_id="s1", source="discord", model="deepseek-v4-flash")
+        db.update_session_billing_route(
+            "s1",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            billing_mode="subscription_included",
+        )
+
+        db.update_session_billing_route(
+            "s1",
+            provider="opencode-go",
+            base_url="https://api.opencode-go.example/v1",
+        )
+
+        session = db.get_session("s1")
+        assert session["billing_provider"] == "opencode-go"
+        assert session["billing_base_url"] == "https://api.opencode-go.example/v1"
+        assert session["billing_mode"] == "subscription_included"
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")

@@ -11012,6 +11012,11 @@ class GatewayRunner:
                                 _sess_db.update_session_model(
                                     _sess_entry.session_id, result.new_model
                                 )
+                                _sess_db.update_session_billing_route(
+                                    _sess_entry.session_id,
+                                    provider=result.target_provider,
+                                    base_url=result.base_url,
+                                )
                             except Exception as exc:
                                 logger.debug(
                                     "Failed to persist model switch to DB: %s", exc
@@ -11162,6 +11167,11 @@ class GatewayRunner:
                 _sess_entry = self.session_store.get_or_create_session(source)
                 _sess_db.update_session_model(
                     _sess_entry.session_id, result.new_model
+                )
+                _sess_db.update_session_billing_route(
+                    _sess_entry.session_id,
+                    provider=result.target_provider,
+                    base_url=result.base_url,
                 )
             except Exception as exc:
                 logger.debug(

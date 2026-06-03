@@ -1128,6 +1128,50 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_billing_route(
+        self,
+        session_id: str,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        billing_mode: Optional[str] = None,
+    ) -> None:
+        """Update the persisted billing route after a mid-session switch.
+
+        Gateway ``/model`` changes can move an existing session onto a
+        different provider/base URL. Keep the billing columns in sync so the
+        dashboard reflects the active route instead of the session's original
+        config defaults.
+        """
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions SET
+                   billing_provider = CASE
+                       WHEN ? IS NULL OR ? = '' THEN billing_provider
+                       ELSE ?
+                   END,
+                   billing_base_url = CASE
+                       WHEN ? IS NULL THEN billing_base_url
+                       ELSE ?
+                   END,
+                   billing_mode = CASE
+                       WHEN ? IS NULL THEN billing_mode
+                       ELSE ?
+                   END
+                   WHERE id = ?""",
+                (
+                    provider,
+                    provider,
+                    provider,
+                    base_url,
+                    base_url,
+                    billing_mode,
+                    billing_mode,
+                    session_id,
+                ),
+            )
+        self._execute_write(_do)
+
     def update_token_counts(
         self,
         session_id: str,

@@ -1,6 +1,6 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { type ComponentProps, type FC, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { type ComponentProps, type FC, memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
@@ -55,7 +55,7 @@ function buildGroups(signature: string): MessageGroup[] {
   return groups
 }
 
-export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
+const _VirtualizedThread: FC<VirtualizedThreadProps> = ({
   clampToComposer,
   components,
   emptyPlaceholder,
@@ -70,6 +70,10 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
 
+  // Shared ref so scrollToFn can check whether the user is parked at the
+  // bottom without needing a ref from inside useThreadScrollAnchor.
+  const stickyBottomRef = useRef(true)
+
   const virtualizer = useVirtualizer({
     count: groups.length,
     estimateSize: () => ESTIMATED_ITEM_HEIGHT,
@@ -78,7 +82,28 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
     // Seed the rect so the initial range mounts something before
     // `observeElementRect` reports the real layout (it overrides this).
     initialRect: { height: 600, width: 800 },
-    overscan: OVERSCAN
+    overscan: OVERSCAN,
+    // When the virtualizer adjusts scroll due to item measurement changes,
+    // skip the adjustment if the user is at the bottom. Our ResizeObserver +
+    // pinToBottom loop handles scroll anchoring; letting the virtualizer also
+    // adjust creates a feedback loop where the two fight each other,
+    // producing visible rubber-banding (the view snaps to the composer
+    // then jumps back up).
+    scrollToFn: (offset, _options, instance) => {
+      const el = instance.scrollElement
+      if (!el) return
+
+      if (stickyBottomRef.current) {
+        const maxScroll = el.scrollHeight - el.clientHeight
+        const distFromBottom = maxScroll - el.scrollTop
+
+        if (distFromBottom <= AT_BOTTOM_THRESHOLD && offset < maxScroll) {
+          return
+        }
+      }
+
+      ;(el as HTMLElement).scrollTo(0, offset)
+    }
   })
 
   useThreadScrollAnchor({
@@ -86,6 +111,7 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
     groupCount: groups.length,
     scrollerRef,
     sessionKey: sessionKey ?? null,
+    stickyBottomRef,
     virtualizer
   })
 
@@ -169,21 +195,24 @@ export const VirtualizedThread: FC<VirtualizedThreadProps> = ({
   )
 }
 
+export const VirtualizedThread = memo(_VirtualizedThread)
+
 interface ScrollAnchorOptions {
   enabled: boolean
   groupCount: number
   scrollerRef: React.RefObject<HTMLDivElement | null>
   sessionKey: string | null
+  stickyBottomRef: React.MutableRefObject<boolean>
   virtualizer: Virtualizer<HTMLDivElement, Element>
 }
 
-function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, virtualizer }: ScrollAnchorOptions) {
-  // `armed` = parked at bottom, content growth should follow. Cleared on
+function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, stickyBottomRef, virtualizer }: ScrollAnchorOptions) {
+  // `stickyBottomRef` = parked at bottom, content growth should follow. Cleared on
   // user-driven upward scroll; re-armed when they reach bottom again.
-  const armedRef = useRef(true)
+  // This is a shared ref — scrollToFn reads it to prevent the virtualizer's
+  // measurement adjustments from fighting our pinToBottom.
   const lastTopRef = useRef(0)
   const lastHeightRef = useRef(0)
-  const lastClientHeightRef = useRef(0)
   // Counter that tracks how many scroll events we expect to be ours rather
   // than the user's. `pinToBottom` writes `el.scrollTop`, which fires an
   // async `scroll` event; without this guard the on-scroll handler can race
@@ -209,18 +238,17 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     el.scrollTop = el.scrollHeight
     lastTopRef.current = el.scrollTop
     lastHeightRef.current = el.scrollHeight
-    lastClientHeightRef.current = el.clientHeight
   }, [scrollerRef])
 
   const jumpToBottom = useCallback(() => {
-    armedRef.current = true
+    stickyBottomRef.current = true
 
     if (groupCount > 0) {
       virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
     }
 
     requestAnimationFrame(() => {
-      if (armedRef.current) {
+      if (stickyBottomRef.current) {
         pinToBottom()
       }
     })
@@ -238,7 +266,7 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     }
 
     const disarm = () => {
-      armedRef.current = false
+      stickyBottomRef.current = false
       programmaticScrollPendingRef.current = 0
     }
 
@@ -256,53 +284,39 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
         programmaticScrollPendingRef.current -= 1
         lastTopRef.current = top
         lastHeightRef.current = el.scrollHeight
-        lastClientHeightRef.current = el.clientHeight
         // Always re-arm — sticky-bottom should hold through clamp races.
-        armedRef.current = true
+        stickyBottomRef.current = true
         const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
         setThreadScrolledUp(!atBottom)
 
         return
       }
 
-      // Disarm only when `scrollTop` decreases AND neither `scrollHeight` nor
-      // `clientHeight` grew this frame. A bare `top < lastTopRef.current` check
-      // is unsafe for two reasons:
-      //
-      // 1. Content growth (virtualizer item measurement, streaming token,
-      //    code highlight re-tokenization, composer chip): `scrollHeight`
-      //    jumped → the browser emits an interim `scroll` event whose
-      //    `scrollTop` is smaller than the previous frame's because the
-      //    content grew. This fire before the rAF-scheduled `pinToBottom`
-      //    runs, so `programmaticScrollPendingRef` is 0. Treating that as a
-      //    user scroll permanently disarmed sticky-bottom and produced the
-      //    visible at-rest backward jump (#37997).
-      //
-      // 2. Viewport resize (composer expands/collapses, window resize):
-      //    `clientHeight` shrinks → the browser adjusts `scrollTop` down to
-      //    keep the same content visible. Without checking `clientHeight`,
-      //    the handler misreads this as the user scrolling up and disarms
-      //    sticky-bottom — the view then lurches because the user didn't
-      //    actually scroll.
-      //
-      // Gating on stable `scrollHeight` and `clientHeight` keeps real
-      // user-driven upward intent — scrollbar drag, keyboard PgUp,
-      // programmatic scrollIntoView — covered without false positives.
-      // Wheel-up and touchmove still disarm via their own listeners below.
+      // Disarm only when `scrollTop` decreases AND `scrollHeight` did NOT
+      // grow this frame. A bare `top < lastTopRef.current` check is unsafe:
+      // when content grows (virtualizer item measurement, streaming token,
+      // code highlight re-tokenization, composer chip), the browser emits
+      // an interim `scroll` event whose `scrollTop` is smaller than the
+      // previous frame's because `scrollHeight` jumped — this fires before
+      // the rAF-scheduled `pinToBottom` runs, so `programmaticScrollPendingRef`
+      // is 0. Treating that as a user scroll permanently disarmed sticky-bottom
+      // and produced the visible at-rest backward jump (#37997). Gating on a
+      // stable `scrollHeight` keeps real user-driven upward intent — scrollbar
+      // drag, keyboard PgUp, programmatic scrollIntoView — covered without
+      // the false positive. Wheel-up and touchmove still disarm via their
+      // own listeners below.
       const heightGrew = el.scrollHeight > lastHeightRef.current
-      const clientHeightGrew = el.clientHeight > lastClientHeightRef.current
-      if (!heightGrew && !clientHeightGrew && top + 1 < lastTopRef.current) {
-        armedRef.current = false
+      if (!heightGrew && top + 1 < lastTopRef.current) {
+        stickyBottomRef.current = false
       }
 
       lastTopRef.current = top
       lastHeightRef.current = el.scrollHeight
-      lastClientHeightRef.current = el.clientHeight
 
       const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
 
       if (atBottom) {
-        armedRef.current = true
+        stickyBottomRef.current = true
       }
 
       setThreadScrolledUp(!atBottom)
@@ -344,13 +358,13 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
 
     let pinRafScheduled = false
     const schedulePin = () => {
-      if (pinRafScheduled || !armedRef.current) {
+      if (pinRafScheduled || !stickyBottomRef.current) {
         return
       }
       pinRafScheduled = true
       requestAnimationFrame(() => {
         pinRafScheduled = false
-        if (armedRef.current) {
+        if (stickyBottomRef.current) {
           pinToBottom()
         }
       })
@@ -403,10 +417,10 @@ function useThreadScrollAnchor({ enabled, groupCount, scrollerRef, sessionKey, v
     if (!enabled) {
       return
     }
-    if (groupCount > prevGroupCountForLayoutRef.current && armedRef.current) {
+    if (groupCount > prevGroupCountForLayoutRef.current && stickyBottomRef.current) {
       pinToBottom()
       requestAnimationFrame(() => {
-        if (armedRef.current) {
+        if (stickyBottomRef.current) {
           pinToBottom()
         }
       })

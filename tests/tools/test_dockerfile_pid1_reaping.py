@@ -49,7 +49,7 @@ _KNOWN_INIT_TOKENS: tuple[str, ...] = (
 def dockerfile_text() -> str:
     if not DOCKERFILE.exists():
         pytest.skip("Dockerfile not present in this checkout")
-    return DOCKERFILE.read_text()
+    return DOCKERFILE.read_text(encoding="utf-8")
 
 
 def _dockerfile_instructions(dockerfile_text: str) -> list[str]:
@@ -147,11 +147,13 @@ def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     # because it's referenced as a ``file:`` workspace dependency from
     # ``ui-tui/package.json`` — copying the tree avoids npm stopping at a
     # bare ``package.json`` shell.
+    # With a single workspace root lockfile, only the root package-lock.json
+    # is copied; per-workspace lockfiles no longer exist.
     assert "ui-tui/package.json" in dockerfile_text
-    assert "ui-tui/package-lock.json" in dockerfile_text
     assert "ui-tui/packages/hermes-ink/" in dockerfile_text
+    assert "package-lock.json" in dockerfile_text
     assert any(
-        "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
+        "npm" in step and (" install" in step or " ci" in step)
         for step in _run_steps(dockerfile_text)
     )
 

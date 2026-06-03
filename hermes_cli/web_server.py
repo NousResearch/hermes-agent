@@ -9,6 +9,8 @@ Usage:
     python -m hermes_cli.main web --port 8080
 """
 
+from contextlib import asynccontextmanager
+
 import asyncio
 import base64
 import binascii
@@ -84,7 +86,43 @@ except ImportError:
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
-app = FastAPI(title="Hermes Agent", version=__version__)
+# ---------------------------------------------------------------------------
+# Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
+# and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
+# the chat tab generates on mount; entries auto-evict when the last subscriber
+# drops AND the publisher has disconnected.
+#
+# State lives on app.state (not module-level globals) so that asyncio.Lock is
+# created on the running event loop during lifespan startup.  A module-level
+# asyncio.Lock() binds to whatever loop was active at import time, which breaks
+# when the same module is used across TestClient instances or uvicorn reloads.
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def _lifespan(app: "FastAPI"):
+    app.state.event_channels = {}  # dict[str, set]
+    app.state.event_lock = asyncio.Lock()
+    yield
+
+
+def _get_event_state(app: "FastAPI"):
+    """Return (event_channels, event_lock) from app.state.
+
+    Lazily initialises the state if the lifespan hasn't run (e.g. when
+    TestClient is constructed without a ``with`` block).  The lifespan
+    path is preferred because it guarantees the Lock is created on the
+    correct event loop, but the lazy path lets existing non-``with``
+    TestClient usages keep working.
+    """
+    try:
+        return app.state.event_channels, app.state.event_lock
+    except AttributeError:
+        app.state.event_channels = {}
+        app.state.event_lock = asyncio.Lock()
+        return app.state.event_channels, app.state.event_lock
+
+
+app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -1377,6 +1415,7 @@ async def get_sessions(
     offset: int = 0,
     min_messages: int = 0,
     archived: str = "exclude",
+    order: str = "created",
 ):
     """List sessions.
 
@@ -1384,11 +1423,21 @@ async def get_sessions(
     ``exclude`` (default) hides them, ``only`` returns just the archived ones
     (used by the desktop "Archived sessions" settings panel), and ``include``
     returns both.
+
+    ``order`` controls pagination order: ``created`` (default, by original
+    start time) or ``recent`` (by latest activity across the compression
+    chain). ``recent`` keeps a long-running conversation on the first page
+    after it auto-compresses into a fresh continuation id.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
             status_code=400,
             detail="archived must be one of: exclude, only, include",
+        )
+    if order not in ("created", "recent"):
+        raise HTTPException(
+            status_code=400,
+            detail="order must be one of: created, recent",
         )
     try:
         from hermes_state import SessionDB
@@ -1403,6 +1452,7 @@ async def get_sessions(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
+                order_by_last_active=order == "recent",
             )
             total = db.session_count(
                 min_message_count=min_message_count,
@@ -1629,7 +1679,9 @@ def get_model_options():
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        return build_models_payload(load_picker_context(), max_models=50, pricing=True)
+        return build_models_payload(
+            load_picker_context(), max_models=50, pricing=True, capabilities=True
+        )
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
@@ -2937,6 +2989,17 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://www.minimax.io",
         "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
     },
+    {
+        "id": "xai-oauth",
+        "name": "xAI Grok OAuth (SuperGrok / Premium+)",
+        # Loopback PKCE: the desktop's local backend binds a 127.0.0.1
+        # callback server, the client opens the browser, and the redirect
+        # lands back on the loopback listener — no code to copy/paste.
+        "flow": "loopback",
+        "cli_command": "hermes auth add xai-oauth",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
+        "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
+    },
 )
 
 
@@ -2990,6 +3053,20 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "expires_at": raw.get("expires_at"),
                 "has_refresh_token": True,
             }
+        if provider_id == "xai-oauth":
+            raw = hauth.get_xai_oauth_auth_status()
+            # source_label is meant to be a human-readable origin (auth-store
+            # path / credential source), not the internal auth_mode string
+            # ("oauth_pkce"). Prefer the store path, then the source slug.
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": raw.get("source") or "xai_oauth",
+                "source_label": raw.get("auth_store") or raw.get("source") or "xAI Grok OAuth",
+                "token_preview": _truncate_token(raw.get("api_key")),
+                "expires_at": None,
+                "has_refresh_token": True,
+                "last_refresh": raw.get("last_refresh"),
+            }
     except Exception as e:
         return {"logged_in": False, "error": str(e)}
     return {"logged_in": False}
@@ -3002,7 +3079,7 @@ async def list_oauth_providers():
     Response shape (per provider):
         id              stable identifier (used in DELETE path)
         name            human label
-        flow            "pkce" | "device_code" | "external"
+        flow            "pkce" | "device_code" | "external" | "loopback"
         cli_command     fallback CLI command for users to run manually
         docs_url        external docs/portal link for the "Learn more" link
         status:
@@ -3101,6 +3178,19 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
 #          every 2s until status != "pending".
 #     4. On "approved" the background thread has already saved creds; UI
 #        refreshes the providers list.
+#
+#   Loopback PKCE (xAI Grok):
+#     1. POST /api/providers/oauth/xai-oauth/start
+#          → server binds a 127.0.0.1 callback listener, builds the xAI
+#            authorize URL, spawns a background worker waiting on the redirect
+#          → returns { session_id, flow: "loopback", auth_url, expires_in }
+#     2. UI opens auth_url in the browser. There is NO user_code/code to
+#        paste — the redirect lands back on the loopback listener.
+#     3. UI polls GET /api/providers/oauth/{provider}/poll/{session_id}
+#          (same endpoint as device_code) until status != "pending".
+#     4. The worker exchanges the code, persists creds, sets "approved".
+#        DELETE /sessions/{id} cancels: the worker bails before persisting
+#        and the callback server is shut down to free the port immediately.
 #
 # Sessions are kept in-memory only (single-process FastAPI) and time out
 # after 15 minutes. A periodic cleanup runs on each /start call to GC
@@ -3485,6 +3575,220 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     raise HTTPException(status_code=400, detail=f"Provider {provider_id} does not support device-code flow")
 
 
+# xAI Grok OAuth uses a loopback-redirect PKCE flow (RFC 8252). Unlike the
+# device-code providers there is no user_code to display: the local backend
+# binds a 127.0.0.1 callback server, the client opens the authorize URL in
+# the browser, and the redirect lands back on the loopback listener. The
+# background worker waits for that callback, exchanges the code, and persists
+# the tokens exactly like `hermes auth add xai-oauth`.
+_XAI_LOOPBACK_TIMEOUT_SECONDS = 300.0
+
+
+def _start_xai_loopback_flow() -> Dict[str, Any]:
+    """Begin the xAI loopback PKCE flow.
+
+    Binds the local callback server, builds the authorize URL, and spawns a
+    background worker that waits for the redirect and finishes the exchange.
+    Returns the authorize URL for the client to open in the browser.
+    """
+    from hermes_cli import auth as hauth
+
+    discovery = hauth._xai_oauth_discovery()
+    server, thread, callback_result, redirect_uri = hauth._xai_start_callback_server()
+    try:
+        hauth._xai_validate_loopback_redirect_uri(redirect_uri)
+        verifier = hauth._oauth_pkce_code_verifier()
+        challenge = hauth._oauth_pkce_code_challenge(verifier)
+        state = secrets.token_hex(16)
+        nonce = secrets.token_hex(16)
+        authorize_url = hauth._xai_oauth_build_authorize_url(
+            authorization_endpoint=discovery["authorization_endpoint"],
+            redirect_uri=redirect_uri,
+            code_challenge=challenge,
+            state=state,
+            nonce=nonce,
+        )
+    except Exception:
+        # Binding succeeded but URL construction failed — release the socket
+        # and join the serving thread so we don't leak a listener (or a
+        # lingering daemon thread) on the loopback port.
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:
+            pass
+        try:
+            thread.join(timeout=1.0)
+        except Exception:
+            pass
+        raise
+
+    sid, sess = _new_oauth_session("xai-oauth", "loopback")
+    sess["server"] = server
+    sess["thread"] = thread
+    sess["callback_result"] = callback_result
+    sess["redirect_uri"] = redirect_uri
+    sess["verifier"] = verifier
+    sess["challenge"] = challenge
+    sess["state"] = state
+    sess["token_endpoint"] = discovery["token_endpoint"]
+    sess["discovery"] = discovery
+    sess["expires_at"] = time.time() + _XAI_LOOPBACK_TIMEOUT_SECONDS
+    threading.Thread(
+        target=_xai_loopback_worker, args=(sid,), daemon=True,
+        name=f"oauth-xai-{sid[:6]}",
+    ).start()
+    return {
+        "session_id": sid,
+        "flow": "loopback",
+        "auth_url": authorize_url,
+        "expires_in": int(_XAI_LOOPBACK_TIMEOUT_SECONDS),
+    }
+
+
+def _xai_loopback_worker(session_id: str) -> None:
+    """Wait for the xAI loopback callback, exchange the code, persist tokens."""
+    from datetime import datetime, timezone
+
+    from hermes_cli import auth as hauth
+
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess:
+        return
+
+    def _fail(message: str) -> None:
+        with _oauth_sessions_lock:
+            s = _oauth_sessions.get(session_id)
+            if s is not None:
+                s["status"] = "error"
+                s["error_message"] = message
+
+    def _cancelled() -> bool:
+        # The session is removed from the registry when the user cancels
+        # (DELETE /sessions/{id}). If that happened while we were blocked on
+        # the callback or token exchange, abort instead of persisting tokens
+        # the user no longer wants.
+        with _oauth_sessions_lock:
+            return session_id not in _oauth_sessions
+
+    try:
+        callback = hauth._xai_wait_for_callback(
+            sess["server"],
+            sess["thread"],
+            sess["callback_result"],
+            timeout_seconds=_XAI_LOOPBACK_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        _fail(f"xAI authorization timed out: {exc}")
+        return
+
+    if _cancelled():
+        return
+
+    if callback.get("error"):
+        detail = callback.get("error_description") or callback["error"]
+        _fail(f"xAI authorization failed: {detail}")
+        return
+    if callback.get("state") != sess["state"]:
+        _fail("xAI authorization failed: state mismatch.")
+        return
+    code = str(callback.get("code") or "").strip()
+    if not code:
+        _fail("xAI authorization failed: missing authorization code.")
+        return
+
+    try:
+        payload = hauth._xai_oauth_exchange_code_for_tokens(
+            token_endpoint=sess["token_endpoint"],
+            code=code,
+            redirect_uri=sess["redirect_uri"],
+            code_verifier=sess["verifier"],
+            code_challenge=sess["challenge"],
+        )
+        access_token = str(payload.get("access_token", "") or "").strip()
+        refresh_token = str(payload.get("refresh_token", "") or "").strip()
+        if not access_token or not refresh_token:
+            _fail("xAI token exchange did not return the expected tokens.")
+            return
+        base_url = hauth._xai_validate_inference_base_url(
+            os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+            or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
+            fallback=hauth.DEFAULT_XAI_OAUTH_BASE_URL,
+        )
+        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        tokens = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": str(payload.get("id_token", "") or "").strip(),
+            "expires_in": payload.get("expires_in"),
+            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+        }
+        if _cancelled():
+            return
+        hauth._save_xai_oauth_tokens(
+            tokens,
+            discovery=sess.get("discovery"),
+            redirect_uri=sess["redirect_uri"],
+            last_refresh=last_refresh,
+        )
+        _add_xai_oauth_pool_entry(access_token, refresh_token, base_url, last_refresh)
+    except Exception as exc:
+        _fail(f"xAI token exchange failed: {exc}")
+        return
+
+    with _oauth_sessions_lock:
+        s = _oauth_sessions.get(session_id)
+        if s is not None:
+            s["status"] = "approved"
+    _log.info("oauth/loopback: xai-oauth login completed (session=%s)", session_id)
+
+
+def _add_xai_oauth_pool_entry(
+    access_token: str, refresh_token: str, base_url: str, last_refresh: str
+) -> None:
+    """Mirror `hermes auth add xai-oauth`'s credential-pool insert.
+
+    Best-effort: the auth-store write in _save_xai_oauth_tokens is the source
+    of truth for runtime resolution; the pool entry only matters for the
+    rotation strategy.
+    """
+    try:
+        import uuid
+
+        from agent.credential_pool import (
+            PooledCredential,
+            load_pool,
+            AUTH_TYPE_OAUTH,
+            SOURCE_MANUAL,
+        )
+        pool = load_pool("xai-oauth")
+        existing = [
+            e for e in pool.entries()
+            if getattr(e, "source", "").startswith(f"{SOURCE_MANUAL}:dashboard_xai_pkce")
+        ]
+        for e in existing:
+            try:
+                pool.remove_entry(getattr(e, "id", ""))
+            except Exception:
+                pass
+        entry = PooledCredential(
+            provider="xai-oauth",
+            id=uuid.uuid4().hex[:6],
+            label="dashboard PKCE",
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:dashboard_xai_pkce",
+            access_token=access_token,
+            refresh_token=refresh_token,
+            base_url=base_url,
+            last_refresh=last_refresh,
+        )
+        pool.add_entry(entry)
+    except Exception as e:
+        _log.warning("xai-oauth pool add (dashboard) failed: %s", e)
+
+
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
     from hermes_cli.auth import (
@@ -3731,31 +4035,12 @@ def _codex_full_login_worker(session_id: str) -> None:
         if not access_token:
             raise RuntimeError("token exchange did not return access_token")
 
-        # Persist via credential pool — same shape as auth_commands.add_command
-        from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
-            AUTH_TYPE_OAUTH,
-            SOURCE_MANUAL,
-        )
-        import uuid as _uuid
-        pool = load_pool("openai-codex")
-        base_url = (
-            os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
-            or DEFAULT_CODEX_BASE_URL
-        )
-        entry = PooledCredential(
-            provider="openai-codex",
-            id=_uuid.uuid4().hex[:6],
-            label="dashboard device_code",
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:dashboard_device_code",
-            access_token=access_token,
-            refresh_token=refresh_token,
-            base_url=base_url,
-        )
-        pool.add_entry(entry)
+        from hermes_cli.auth import _save_codex_tokens
+
+        _save_codex_tokens({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        })
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
@@ -3793,6 +4078,10 @@ async def start_oauth_login(provider_id: str, request: Request):
             return _start_anthropic_pkce()
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id)
+        if catalog_entry["flow"] == "loopback" and provider_id == "xai-oauth":
+            return await asyncio.get_running_loop().run_in_executor(
+                None, _start_xai_loopback_flow
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -3819,7 +4108,13 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
 
 @app.get("/api/providers/oauth/{provider_id}/poll/{session_id}")
 async def poll_oauth_session(provider_id: str, session_id: str):
-    """Poll a device-code session's status (no auth — read-only state)."""
+    """Poll a session's status (no auth — read-only state).
+
+    Shared by the device-code flows (Nous, OpenAI Codex, MiniMax) and the
+    loopback flow (xAI Grok). Both surface progress through the same
+    background-worker-updated ``status`` field, so a single poll endpoint
+    serves them all.
+    """
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if not sess:
@@ -3842,6 +4137,33 @@ async def cancel_oauth_session(session_id: str, request: Request):
         sess = _oauth_sessions.pop(session_id, None)
     if sess is None:
         return {"ok": False, "message": "session not found"}
+    # Loopback sessions own a bound 127.0.0.1 callback server. Without an
+    # explicit shutdown the worker would keep that port held until
+    # _xai_wait_for_callback times out (up to 5 min). Free it immediately so
+    # an orphaned listener can't block a subsequent sign-in attempt.
+    if sess.get("flow") == "loopback":
+        # The worker is blocked in _xai_wait_for_callback, which polls
+        # callback_result rather than the server state. Flag the result as
+        # cancelled so that loop returns on its next tick instead of spinning
+        # until the timeout — otherwise repeated cancel/retry piles up daemon
+        # threads. (_cancelled() in the worker then short-circuits before any
+        # persist.)
+        result = sess.get("callback_result")
+        if isinstance(result, dict):
+            result["error"] = result.get("error") or "cancelled"
+        server = sess.get("server")
+        thread = sess.get("thread")
+        try:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+        except Exception:
+            pass
+        try:
+            if thread is not None:
+                thread.join(timeout=1.0)
+        except Exception:
+            pass
     return {"ok": True, "session_id": session_id}
 
 
@@ -3927,6 +4249,117 @@ def _session_latest_descendant(session_id: str):
     finally:
         db.close()
 
+
+# CRITICAL — every literal-path route below MUST be declared BEFORE the
+# templated ``/api/sessions/{session_id}`` family that follows. FastAPI/
+# Starlette match routes in registration order, and the ``{session_id}``
+# pattern is unconstrained — it would otherwise swallow e.g.
+# ``DELETE /api/sessions/empty``, ``POST /api/sessions/bulk-delete``, or
+# ``GET /api/sessions/stats`` as "operate on the session with id
+# 'empty'" / "'bulk-delete'" / "'stats'", which would 404 (or worse,
+# succeed and delete the wrong row). Same story as the older
+# ``/api/sessions/search`` endpoint up at line ~1191. If you split or
+# reorder this block, move every route in it together.
+class BulkDeleteSessions(BaseModel):
+    ids: List[str]
+
+
+@app.post("/api/sessions/bulk-delete")
+async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+    """Delete every session in ``body.ids`` in a single DB transaction.
+
+    Backs the dashboard's bulk-select-and-delete flow on the sessions
+    page. POST (not DELETE) because most HTTP clients refuse to send a
+    request body on DELETE and a body is the natural shape for a list
+    of IDs — Starlette accepts both, but POSTing a list keeps proxies,
+    curl, and the browser ``fetch`` API consistent.
+
+    Per-row contract matches :meth:`SessionDB.delete_sessions`:
+
+    * Unknown IDs are silently skipped (the response ``deleted`` count
+      reflects what really happened, not the input length). This is
+      deliberate — UI selection state can race against another tab's
+      delete, and we'd rather succeed-on-the-rest than fail-the-whole-
+      batch.
+    * Children of every deleted parent are orphaned, not cascade-
+      deleted.
+    * Active and archived sessions ARE deleted when explicitly
+      selected — unlike ``DELETE /api/sessions/empty``, the user
+      hand-picked the rows so we trust the selection.
+    * Like the other session-delete endpoints, this does NOT pass a
+      ``sessions_dir`` through; on-disk transcript / request-dump
+      cleanup runs at the CLI/agent layer on the next prune pass.
+
+    The response carries the actual deleted count, so the dashboard
+    can surface it in a toast. The IDs that were removed are not
+    echoed back because the client already knows what it asked to
+    delete (unknown IDs are silently skipped — see contract above)
+    and can prune its in-memory list directly from the request.
+    """
+    # Enforce a hard cap so a runaway/typo'd selection can't lock the
+    # DB writer for an extended window. The dashboard pages 20 rows
+    # at a time; 500 covers a "select all on every page in a
+    # reasonable scrollback" worst case without opening the door to
+    # multi-thousand-row transactions.
+    if len(body.ids) > 500:
+        raise HTTPException(
+            status_code=400,
+            detail="ids must contain at most 500 entries",
+        )
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        deleted = db.delete_sessions(body.ids)
+        return {"ok": True, "deleted": deleted}
+    finally:
+        db.close()
+
+
+@app.get("/api/sessions/empty/count")
+async def count_empty_sessions_endpoint():
+    """Return the number of empty, ended, non-archived sessions.
+
+    Drives the dashboard's "Delete empty (N)" button — when N is 0 the
+    UI hides the affordance so users aren't presented with a button
+    that does nothing. Cheap, single-COUNT query.
+    """
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        return {"count": db.count_empty_sessions()}
+    finally:
+        db.close()
+
+
+@app.delete("/api/sessions/empty")
+async def delete_empty_sessions_endpoint():
+    """Delete every empty (``message_count == 0``), ended,
+    non-archived session in a single transaction.
+
+    Safety contract mirrors :meth:`SessionDB.delete_empty_sessions`:
+
+    * Active sessions are skipped (``ended_at IS NULL``) so a live
+      agent isn't yanked mid-handshake.
+    * Archived sessions are skipped — the user explicitly chose to
+      keep those rows.
+    * Children of deleted parents are orphaned, not cascade-deleted.
+
+    Like the single-session ``DELETE /api/sessions/{id}`` endpoint
+    below, this doesn't pass a ``sessions_dir`` through — the on-disk
+    transcript / request-dump cleanup is wired at the CLI/agent layer
+    but the web server historically leaves file cleanup to the next
+    prune-on-startup pass. Matching that pre-existing trade-off keeps
+    the two delete endpoints' DB-vs-disk behaviour consistent.
+    """
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        deleted = db.delete_empty_sessions()
+        return {"ok": True, "deleted": deleted}
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions/stats")
 async def get_session_stats():
     """Session-store statistics for the Sessions page (mirrors `hermes sessions stats`).
@@ -3958,6 +4391,7 @@ async def get_session_stats():
         }
     finally:
         db.close()
+
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str):
@@ -6185,13 +6619,16 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
 
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
-        # Packaged Electron loads the desktop renderer over file://, so its
-        # WebSocket handshake carries a non-web Origin such as file:// or null.
-        # DNS-rebinding attacks originate from an http(s) site; they cannot
-        # forge a file:// origin and still hold the loopback session token.
-        # Public/gated binds have no legitimate non-web client, so keep
-        # rejecting these origins there.
-        return bound_host.lower() in _LOOPBACK_HOST_VALUES
+        # Packaged Electron loads the desktop renderer over a non-web origin
+        # such as file:// or null. This helper is called only after _ws_auth_ok
+        # has accepted the WS credential; in non-gated mode that credential is
+        # the legacy dashboard session token, including for explicit Tailscale /
+        # LAN binds opened with --insecure. Real DNS-rebinding attacks arrive
+        # from http(s) origins and still have to match the bound host below.
+        #
+        # OAuth-gated public dashboards authenticate with cookies/tickets and
+        # have no legitimate file:// client, so keep them strict.
+        return not getattr(app.state, "auth_required", False)
 
     if not parsed.netloc:
         return False
@@ -6251,8 +6688,7 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
-_event_channels: dict[str, set] = {}
-_event_lock = asyncio.Lock()
+# (State is initialised in _lifespan on app startup — see above.)
 
 
 def _resolve_chat_argv(
@@ -6361,10 +6797,11 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     return f"ws://{netloc}/api/pub?{qs}"
 
 
-async def _broadcast_event(channel: str, payload: str) -> None:
+async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
     """Fan out one publisher frame to every subscriber on `channel`."""
-    async with _event_lock:
-        subs = list(_event_channels.get(channel, ()))
+    event_channels, event_lock = _get_event_state(app)
+    async with event_lock:
+        subs = list(event_channels.get(channel, ()))
 
     for sub in subs:
         try:
@@ -6555,7 +6992,7 @@ async def pub_ws(ws: WebSocket) -> None:
 
     try:
         while True:
-            await _broadcast_event(channel, await ws.receive_text())
+            await _broadcast_event(ws.app, channel, await ws.receive_text())
     except WebSocketDisconnect:
         pass
 
@@ -6581,8 +7018,9 @@ async def events_ws(ws: WebSocket) -> None:
 
     await ws.accept()
 
-    async with _event_lock:
-        _event_channels.setdefault(channel, set()).add(ws)
+    event_channels, event_lock = _get_event_state(ws.app)
+    async with event_lock:
+        event_channels.setdefault(channel, set()).add(ws)
 
     try:
         while True:
@@ -6593,14 +7031,14 @@ async def events_ws(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        async with _event_lock:
-            subs = _event_channels.get(channel)
+        async with event_lock:
+            subs = event_channels.get(channel)
 
             if subs is not None:
                 subs.discard(ws)
 
                 if not subs:
-                    _event_channels.pop(channel, None)
+                    event_channels.pop(channel, None)
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:
@@ -6747,6 +7185,7 @@ def mount_spa(application: FastAPI):
 _BUILTIN_DASHBOARD_THEMES = [
     {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
     {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "nous-blue",     "label": "Nous Blue",           "description": "Light mode — vivid Nous-blue accents on cream canvas"},
     {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},

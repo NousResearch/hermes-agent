@@ -15,6 +15,7 @@ import {
   $currentCwd,
   $messages,
   $sessions,
+  getRememberedWorkspaceCwd,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -32,6 +33,7 @@ import {
   setMessages,
   setSelectedStoredSessionId,
   setSessions,
+  setSessionsTotal,
   setSessionStartedAt,
   setTurnStartedAt
 } from '@/store/session'
@@ -291,7 +293,8 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      setCurrentCwd('')
+      // New chats inherit the current workspace.
+      setCurrentCwd(getRememberedWorkspaceCwd())
       setCurrentBranch('')
       clearComposerDraft()
       clearComposerAttachments()
@@ -308,7 +311,7 @@ export function useSessionActions({
     creatingSessionRef.current = true
 
     try {
-      const cwd = $currentCwd.get().trim()
+      const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
       const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
       const stored = created.stored_session_id ?? null
 
@@ -687,6 +690,9 @@ export function useSessionActions({
       const previousPinned = $pinnedSessionIds.get()
 
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+      // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
+      // doesn't keep claiming the removed row is still on the server.
+      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -709,6 +715,7 @@ export function useSessionActions({
       } catch (err) {
         if (removed) {
           setSessions(prev => [removed, ...prev])
+          setSessionsTotal(prev => prev + 1)
         }
 
         $pinnedSessionIds.set(previousPinned)
@@ -761,6 +768,10 @@ export function useSessionActions({
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(s => s.id !== storedSessionId))
+      // Archived sessions are hidden by the listSessions(min_messages=1) query
+      // on the next refresh, so they count as "removed" for the load-more
+      // footer math.
+      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId))
 
       if (wasSelected) {
@@ -773,6 +784,7 @@ export function useSessionActions({
       } catch (err) {
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
+          setSessionsTotal(prev => prev + 1)
         }
 
         $pinnedSessionIds.set(previousPinned)

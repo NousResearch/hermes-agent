@@ -1,7 +1,7 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Thread } from './thread'
 
@@ -263,6 +263,28 @@ function StreamingHarness() {
   )
 }
 
+function ManualStreamingHarness({
+  isRunning,
+  loading,
+  messages
+}: {
+  isRunning: boolean
+  loading?: 'response'
+  messages: ThreadMessage[]
+}) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages,
+    isRunning,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread loading={loading} />
+    </AssistantRuntimeProvider>
+  )
+}
+
 function TodoHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -338,12 +360,23 @@ describe('assistant-ui streaming renderer', () => {
     resizeObservers.clear()
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('renders assistant text incrementally before completion', async () => {
-    const { container } = render(<StreamingHarness />)
+    const { container, rerender } = render(
+      <ManualStreamingHarness isRunning={true} loading="response" messages={[userMessage()]} />
+    )
 
     expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
 
-    await wait(80)
+    rerender(
+      <ManualStreamingHarness
+        isRunning={true}
+        messages={[userMessage(), assistantMessage('first chunk')]}
+      />
+    )
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk')
@@ -351,13 +384,23 @@ describe('assistant-ui streaming renderer', () => {
     expect(container.textContent).not.toContain('second chunk')
     expect(screen.queryByRole('status', { name: 'Hermes is loading a response' })).toBeNull()
 
-    await wait(500)
+    rerender(
+      <ManualStreamingHarness
+        isRunning={true}
+        messages={[userMessage(), assistantMessage('first chunk second chunk')]}
+      />
+    )
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk second chunk')
     })
 
-    await wait(250)
+    rerender(
+      <ManualStreamingHarness
+        isRunning={false}
+        messages={[userMessage(), assistantMessage('first chunk second chunk', false)]}
+      />
+    )
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk second chunk')

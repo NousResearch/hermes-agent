@@ -26,6 +26,7 @@ export interface StatusbarItem {
   disabled?: boolean
   hidden?: boolean
   href?: string
+  menuAlign?: 'center' | 'end' | 'start'
   menuClassName?: string
   menuContent?: ReactNode
   menuItems?: readonly StatusbarMenuItem[]
@@ -54,14 +55,18 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
       )}
       {...props}
     >
-      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto">
+      {/* `overflow-x-clip` (not `overflow-x-auto`) so a wide status item — for
+          example "Connecting…" on a fresh/untitled session — can't paint a
+          horizontal scrollbar across the bottom of the window. Items already
+          `truncate` their labels, so clipping is the right behavior. */}
+      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
         {leftItems
           .filter(item => !item.hidden)
           .map(item => (
             <StatusbarItemView item={item} key={`left:${item.id}`} navigate={navigate} />
           ))}
       </div>
-      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto">
+      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
         {items
           .filter(item => !item.hidden)
           .map(item => (
@@ -100,7 +105,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          align="start"
+          align={item.menuAlign ?? 'start'}
           className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
           side="top"
           sideOffset={8}

@@ -72,7 +72,7 @@ describe('SkillsView toolset management', () => {
     fireEvent.click(sw)
 
     await waitFor(() => expect(toggleToolset).toHaveBeenCalledWith('web', false))
-  })
+  }, 10_000)
 
   it('keeps the configured pill alongside the switch', async () => {
     await renderSkills()

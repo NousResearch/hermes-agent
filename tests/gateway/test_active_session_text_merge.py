@@ -104,6 +104,9 @@ def _make_adapter() -> BasePlatformAdapter:
     adapter._busy_text_debounce_seconds = 0.1
     adapter._busy_text_hard_cap_seconds = 1.0
     adapter._text_debounce = {}
+    adapter._ingress_batch_seconds = 0.0
+    adapter._ingress_batch_hard_cap_seconds = 0.0
+    adapter._ingress_batches = {}
     adapter._auto_tts_default = False
     adapter._auto_tts_enabled_chats = set()
     adapter._auto_tts_disabled_chats = set()
@@ -113,6 +116,319 @@ def _make_adapter() -> BasePlatformAdapter:
 
 def _debounced_event(adapter: BasePlatformAdapter, session_key: str) -> MessageEvent:
     return adapter._text_debounce[session_key].event
+
+
+def _make_media_event(
+    text: str,
+    path: str,
+    media_type: str,
+    *,
+    message_type: MessageType = MessageType.DOCUMENT,
+    chat_id: str = "12345",
+    user_id: str = "u1",
+    thread_id: str | None = None,
+) -> MessageEvent:
+    event = _make_event(
+        text,
+        chat_id=chat_id,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+    event.message_type = message_type
+    event.media_urls = [path]
+    event.media_types = [media_type]
+    return event
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_batches_three_text_messages_before_starting_turn():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.05
+    adapter._ingress_batch_hard_cap_seconds = 0.5
+    started: list[MessageEvent] = []
+
+    def _fake_start(event, session_key, *, interrupt_event=None):
+        started.append(event)
+        return True
+
+    adapter._start_session_processing = _fake_start  # type: ignore[method-assign]
+
+    await adapter.handle_message(_make_event("one"))
+    await adapter.handle_message(_make_event("two"))
+    await adapter.handle_message(_make_event("three"))
+
+    assert started == []
+    await asyncio.sleep(0.12)
+
+    assert len(started) == 1
+    assert started[0].text == "one\ntwo\nthree"
+    assert started[0].media_urls == []
+    assert adapter._ingress_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_batches_text_and_file_into_one_turn():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.05
+    started: list[MessageEvent] = []
+    adapter._start_session_processing = lambda event, session_key, *, interrupt_event=None: started.append(event) or True  # type: ignore[method-assign]
+
+    await adapter.handle_message(_make_event("task text"))
+    await adapter.handle_message(_make_media_event("file caption", "/tmp/a.pdf", "application/pdf"))
+
+    await asyncio.sleep(0.12)
+
+    assert len(started) == 1
+    assert started[0].text == "task text\nfile caption"
+    assert started[0].media_urls == ["/tmp/a.pdf"]
+    assert started[0].media_types == ["application/pdf"]
+    assert started[0].message_type == MessageType.DOCUMENT
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_batches_text_and_image_into_one_turn():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.05
+    started: list[MessageEvent] = []
+    adapter._start_session_processing = lambda event, session_key, *, interrupt_event=None: started.append(event) or True  # type: ignore[method-assign]
+
+    await adapter.handle_message(_make_event("look at this"))
+    await adapter.handle_message(
+        _make_media_event(
+            "image caption",
+            "/tmp/image.jpg",
+            "image/jpeg",
+            message_type=MessageType.PHOTO,
+        )
+    )
+
+    await asyncio.sleep(0.12)
+
+    assert len(started) == 1
+    assert started[0].text == "look at this\nimage caption"
+    assert started[0].media_urls == ["/tmp/image.jpg"]
+    assert started[0].media_types == ["image/jpeg"]
+    assert started[0].message_type == MessageType.PHOTO
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_batch_keys_include_user_and_thread():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.05
+    started: list[MessageEvent] = []
+    adapter._start_session_processing = lambda event, session_key, *, interrupt_event=None: started.append(event) or True  # type: ignore[method-assign]
+
+    await adapter.handle_message(_make_event("alice t1", chat_type="group", user_id="alice", thread_id="topic-1"))
+    await adapter.handle_message(_make_event("bob t1", chat_type="group", user_id="bob", thread_id="topic-1"))
+    await adapter.handle_message(_make_event("alice t2", chat_type="group", user_id="alice", thread_id="topic-2"))
+
+    await asyncio.sleep(0.12)
+
+    assert sorted(event.text for event in started) == ["alice t1", "alice t2", "bob t1"]
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_discards_pending_batch_when_reset_command_arrives():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.05
+    started: list[MessageEvent] = []
+    adapter._start_session_processing = lambda event, session_key, *, interrupt_event=None: started.append(event) or True  # type: ignore[method-assign]
+
+    await adapter.handle_message(_make_event("stale task text"))
+    await adapter.handle_message(_make_event("/new"))
+
+    await asyncio.sleep(0.12)
+
+    assert [event.text for event in started] == ["/new"]
+    assert adapter._ingress_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_preserves_order_when_session_becomes_busy_before_next_event():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.2
+    adapter._busy_text_mode = ""  # expose direct active-session pending merge order
+    first = _make_event("first")
+    session_key = build_session_key(first.source)
+
+    await adapter.handle_message(first)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    await adapter.handle_message(_make_event("second"))
+
+    await asyncio.sleep(0.25)
+
+    assert adapter._pending_messages[session_key].text == "first\nsecond"
+    assert adapter._ingress_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_ingress_batch_cleanup_in_cancel_background_tasks():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 1.0
+    started: list[MessageEvent] = []
+    adapter._start_session_processing = lambda event, session_key, *, interrupt_event=None: started.append(event) or True  # type: ignore[method-assign]
+
+    await adapter.handle_message(_make_event("cleanup ingress"))
+    assert adapter._ingress_batches
+
+    await adapter.cancel_background_tasks()
+    await asyncio.sleep(0.05)
+
+    assert adapter._ingress_batches == {}
+    assert started == []
+
+
+def test_ingress_batch_config_ignores_malformed_values():
+    adapter = _DummyAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={
+                "ingress_batch_seconds": "not-a-float",
+                "ingress_batch_hard_cap_seconds": "also-bad",
+            },
+        ),
+        Platform.TELEGRAM,
+    )
+
+    assert adapter._ingress_batch_seconds == 0.0
+    assert adapter._ingress_batch_hard_cap_seconds == 0.0
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_flush_queues_if_session_becomes_busy():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.05
+    event = _make_event("queued after busy")
+    session_key = build_session_key(event.source)
+
+    await adapter.handle_message(event)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await asyncio.sleep(0.12)
+
+    assert session_key in adapter._pending_messages
+    assert adapter._pending_messages[session_key].text == "queued after busy"
+    assert adapter._ingress_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_batch_hard_cap_splits_late_message():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.2
+    adapter._ingress_batch_hard_cap_seconds = 0.05
+    started: list[MessageEvent] = []
+
+    def _fake_start(event, session_key, *, interrupt_event=None):
+        started.append(event)
+        adapter._active_sessions[session_key] = interrupt_event or asyncio.Event()
+        return True
+
+    adapter._start_session_processing = _fake_start  # type: ignore[method-assign]
+
+    await adapter.handle_message(_make_event("first"))
+    await asyncio.sleep(0.08)
+    await adapter.handle_message(_make_event("late"))
+    await asyncio.sleep(0.12)
+
+    assert [event.text for event in started] == ["first"]
+    # The second event arrived after the first batch's hard cap and is queued
+    # behind the now-active session instead of being merged into the first turn.
+    assert build_session_key(_make_event("late").source) in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_preserves_order_for_distinct_users_in_shared_thread_session():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.2
+    started: list[str] = []
+
+    def _fake_start(event, session_key, *, interrupt_event=None):
+        started.append(event.text)
+        adapter._active_sessions[session_key] = interrupt_event or asyncio.Event()
+        return True
+
+    adapter._start_session_processing = _fake_start  # type: ignore[method-assign]
+
+    alice = _make_event(
+        "alice first",
+        chat_id="group-1",
+        chat_type="group",
+        user_id="alice",
+        thread_id="topic-1",
+    )
+    bob = _make_event(
+        "bob second",
+        chat_id="group-1",
+        chat_type="group",
+        user_id="bob",
+        thread_id="topic-1",
+    )
+    session_key = build_session_key(alice.source)
+    assert session_key == build_session_key(bob.source)
+    assert adapter._build_ingress_batch_key(alice) != adapter._build_ingress_batch_key(bob)
+
+    await adapter.handle_message(alice)
+    await adapter.handle_message(bob)
+
+    assert started == ["alice first"]
+    assert adapter._pending_messages[session_key].text == "bob second"
+    assert adapter._ingress_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_preserves_order_for_distinct_users_when_group_sessions_shared():
+    adapter = _make_adapter()
+    adapter.config.extra["group_sessions_per_user"] = False
+    adapter._ingress_batch_seconds = 0.2
+    started: list[str] = []
+
+    def _fake_start(event, session_key, *, interrupt_event=None):
+        started.append(event.text)
+        adapter._active_sessions[session_key] = interrupt_event or asyncio.Event()
+        return True
+
+    adapter._start_session_processing = _fake_start  # type: ignore[method-assign]
+
+    alice = _make_event("alice first", chat_id="group-1", chat_type="group", user_id="alice")
+    bob = _make_event("bob second", chat_id="group-1", chat_type="group", user_id="bob")
+    session_key = build_session_key(alice.source, group_sessions_per_user=False)
+    assert session_key == build_session_key(bob.source, group_sessions_per_user=False)
+    assert adapter._build_ingress_batch_key(alice) != adapter._build_ingress_batch_key(bob)
+
+    await adapter.handle_message(alice)
+    await adapter.handle_message(bob)
+
+    assert started == ["alice first"]
+    assert adapter._pending_messages[session_key].text == "bob second"
+    assert adapter._ingress_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_ingress_key_includes_session_key_to_prevent_cross_session_merge():
+    adapter = _make_adapter()
+    adapter._ingress_batch_seconds = 0.05
+    started: list[tuple[str, str]] = []
+
+    def _fake_start(event, session_key, *, interrupt_event=None):
+        started.append((session_key, event.text))
+        return True
+
+    adapter._start_session_processing = _fake_start  # type: ignore[method-assign]
+
+    dm_event = _make_event("dm text", chat_id="same", chat_type="dm", user_id="u1")
+    group_event = _make_event("group text", chat_id="same", chat_type="group", user_id="u1")
+    dm_session = build_session_key(dm_event.source)
+    group_session = build_session_key(group_event.source)
+    assert dm_session != group_session
+    assert adapter._build_ingress_batch_key(dm_event, dm_session) != adapter._build_ingress_batch_key(group_event, group_session)
+
+    await adapter.handle_message(dm_event)
+    await adapter.handle_message(group_event)
+    await asyncio.sleep(0.12)
+
+    assert started == [(dm_session, "dm text"), (group_session, "group text")]
+    assert adapter._ingress_batches == {}
 
 
 @pytest.mark.asyncio

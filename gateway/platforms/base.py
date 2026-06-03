@@ -51,6 +51,17 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _coerce_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_seconds(value: float, *, minimum: float = 0.0, maximum: float = 5.0) -> float:
+    return max(minimum, min(value, maximum))
+
+
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
@@ -1481,6 +1492,16 @@ class TextDebounceState:
     last_ts: float
 
 
+@dataclass
+class IngressBatchState:
+    event: MessageEvent
+    session_key: str
+    task: asyncio.Task | None
+    first_ts: float
+    last_ts: float
+    item_count: int = 1
+
+
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
     re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
@@ -1807,6 +1828,43 @@ class BasePlatformAdapter(ABC):
             "HERMES_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", 1.0
         )
         self._text_debounce: dict[str, TextDebounceState] = {}
+        config_extra = getattr(self.config, "extra", {})
+        if not isinstance(config_extra, dict):
+            config_extra = {}
+        ingress_window_default = _float_env("HERMES_GATEWAY_INGRESS_BATCH_SECONDS", 0.0)
+        ingress_hard_cap_default = _float_env(
+            "HERMES_GATEWAY_INGRESS_BATCH_HARD_CAP_SECONDS",
+            max(ingress_window_default, 0.0),
+        )
+        ingress_window_config = _coerce_float(
+            config_extra.get("ingress_batch_seconds", ingress_window_default),
+            ingress_window_default,
+        )
+        ingress_hard_cap_config = _coerce_float(
+            config_extra.get(
+                "ingress_batch_hard_cap_seconds",
+                ingress_hard_cap_default,
+            ),
+            ingress_hard_cap_default,
+        )
+        self._ingress_batch_seconds = _clamp_seconds(
+            _float_env(
+                "HERMES_GATEWAY_INGRESS_BATCH_SECONDS",
+                ingress_window_config,
+            )
+        )
+        self._ingress_batch_hard_cap_seconds = _clamp_seconds(
+            _float_env(
+                "HERMES_GATEWAY_INGRESS_BATCH_HARD_CAP_SECONDS",
+                ingress_hard_cap_config,
+            )
+        )
+        if (
+            self._ingress_batch_seconds > 0
+            and self._ingress_batch_hard_cap_seconds <= 0
+        ):
+            self._ingress_batch_hard_cap_seconds = self._ingress_batch_seconds
+        self._ingress_batches: dict[str, IngressBatchState] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -3519,6 +3577,229 @@ class BasePlatformAdapter(ABC):
         if state is not None and state.task is not None and not state.task.done():
             state.task.cancel()
 
+    def _ingress_batch_store(self) -> dict[str, IngressBatchState]:
+        store = getattr(self, "_ingress_batches", None)
+        if store is None:
+            store = {}
+            self._ingress_batches = store
+        return store
+
+    def _active_profile_for_ingress_key(self) -> str:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_ACTIVE_PROFILE") or "default"
+
+    def _build_ingress_batch_key(self, event: MessageEvent, session_key: str | None = None) -> str:
+        source = getattr(event, "source", None)
+        platform = _platform_name(getattr(source, "platform", self.platform))
+        profile = self._active_profile_for_ingress_key()
+        if session_key is None and source is not None:
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+        chat_id = getattr(source, "chat_id", None) or getattr(source, "chat_id_alt", None) or ""
+        thread_id = getattr(source, "thread_id", None) or ""
+        user_id = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None) or ""
+        return ":".join(str(part) for part in (platform, profile, session_key or "", chat_id, thread_id, user_id))
+
+    def _is_ingress_batch_candidate(self, event: MessageEvent) -> bool:
+        if getattr(event, "internal", False):
+            return False
+        if self._ingress_batch_seconds <= 0:
+            return False
+        if event.is_command() or event.message_type == MessageType.COMMAND:
+            return False
+        return bool((event.text or "").strip() or event.media_urls)
+
+    def _merge_ingress_batch_event(self, existing: MessageEvent, event: MessageEvent) -> None:
+        if event.text:
+            existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+        if event.media_urls:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+        if event.message_type != MessageType.TEXT:
+            existing.message_type = event.message_type
+        latest_message_id = getattr(event, "message_id", None)
+        latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
+        if latest_message_id is not None:
+            existing.message_id = str(latest_message_id)
+        if latest_anchor is not None:
+            existing.reply_to_message_id = str(latest_anchor)
+
+    def _ingress_batch_delay(self, batch_key: str) -> float:
+        state = self._ingress_batch_store().get(batch_key)
+        if state is None:
+            return 0.0
+        now = time.monotonic()
+        window_deadline = state.last_ts + self._ingress_batch_seconds
+        hard_cap = self._ingress_batch_hard_cap_seconds or self._ingress_batch_seconds
+        hard_cap_deadline = state.first_ts + hard_cap
+        return max(0.0, min(window_deadline, hard_cap_deadline) - now)
+
+    async def _queue_ingress_batch(self, batch_key: str, session_key: str, event: MessageEvent) -> None:
+        store = self._ingress_batch_store()
+        state = store.get(batch_key)
+        if state is not None and state.session_key != session_key:
+            await self._flush_ingress_batch_now(batch_key)
+            state = None
+        now = time.monotonic()
+        if state is not None:
+            hard_cap = self._ingress_batch_hard_cap_seconds or self._ingress_batch_seconds
+            if hard_cap > 0 and now >= state.first_ts + hard_cap:
+                await self._flush_ingress_batch_now(batch_key)
+                state = None
+
+        if session_key in self._active_sessions:
+            await self._flush_ingress_batches_for_session(
+                session_key,
+                exclude_batch_key=batch_key,
+            )
+            merge_pending_message_event(
+                self._pending_messages,
+                session_key,
+                event,
+                merge_text=event.message_type == MessageType.TEXT,
+            )
+            logger.info(
+                "ingress_batch_add type=%s session=%s queued=busy",
+                event.message_type.value,
+                session_key,
+            )
+            return
+
+        if state is None:
+            await self._flush_ingress_batches_for_session(
+                session_key,
+                exclude_batch_key=batch_key,
+            )
+            if session_key in self._active_sessions:
+                merge_pending_message_event(
+                    self._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=event.message_type == MessageType.TEXT,
+                )
+                logger.info(
+                    "ingress_batch_add type=%s session=%s queued=busy",
+                    event.message_type.value,
+                    session_key,
+                )
+                return
+            state = IngressBatchState(
+                event=event,
+                session_key=session_key,
+                task=None,
+                first_ts=now,
+                last_ts=now,
+                item_count=1,
+            )
+            store[batch_key] = state
+        else:
+            self._merge_ingress_batch_event(state.event, event)
+            state.last_ts = now
+            state.item_count += 1
+
+        if state.task is not None and not state.task.done():
+            state.task.cancel()
+        delay = self._ingress_batch_delay(batch_key)
+        state.task = asyncio.create_task(self._flush_ingress_batch(batch_key, delay))
+        logger.info(
+            "ingress_batch_add type=%s session=%s items=%d",
+            event.message_type.value,
+            session_key,
+            state.item_count,
+        )
+
+    async def _flush_ingress_batch(self, batch_key: str, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            await self._flush_ingress_batch_now(batch_key)
+        except asyncio.CancelledError:
+            return
+        finally:
+            current = asyncio.current_task()
+            state = self._ingress_batch_store().get(batch_key)
+            if state is not None and state.task is current:
+                state.task = None
+
+    async def _flush_ingress_batch_now(self, batch_key: str) -> bool:
+        store = self._ingress_batch_store()
+        state = store.pop(batch_key, None)
+        if state is None:
+            return False
+        current = asyncio.current_task()
+        if state.task is not None and state.task is not current and not state.task.done():
+            state.task.cancel()
+        state.task = None
+
+        event = state.event
+        session_key = state.session_key
+        text_parts = len([p for p in (event.text or "").split("\n") if p.strip()])
+        image_count = sum(1 for t in event.media_types if str(t).startswith("image/"))
+        file_count = len(event.media_urls) - image_count
+        logger.info(
+            "ingress_batch_flush session=%s items=%d text_parts=%d attachments=%d images=%d",
+            session_key,
+            state.item_count,
+            text_parts,
+            file_count,
+            image_count,
+        )
+        if session_key in self._active_sessions:
+            merge_pending_message_event(
+                self._pending_messages,
+                session_key,
+                event,
+                merge_text=event.message_type == MessageType.TEXT,
+            )
+            return True
+        if self._start_session_processing(event, session_key):
+            logger.info("agent_turn_created source=batch session=%s", session_key)
+        return True
+
+    async def _flush_ingress_batches_for_session(
+        self,
+        session_key: str,
+        *,
+        exclude_batch_key: str | None = None,
+    ) -> int:
+        flushed = 0
+        for batch_key, state in list(self._ingress_batch_store().items()):
+            if batch_key == exclude_batch_key or state.session_key != session_key:
+                continue
+            if await self._flush_ingress_batch_now(batch_key):
+                flushed += 1
+        return flushed
+
+    def _discard_ingress_batches_for_session(self, session_key: str, *, reason: str) -> int:
+        discarded = 0
+        store = self._ingress_batch_store()
+        for batch_key, state in list(store.items()):
+            if state.session_key != session_key:
+                continue
+            if state.task is not None and not state.task.done():
+                state.task.cancel()
+            store.pop(batch_key, None)
+            discarded += 1
+        if discarded:
+            logger.info(
+                "ingress_batch_discard session=%s batches=%d reason=%s",
+                session_key,
+                discarded,
+                reason,
+            )
+        return discarded
+
+    def _discard_ingress_batches(self) -> None:
+        for state in list(self._ingress_batch_store().values()):
+            if state.task is not None and not state.task.done():
+                state.task.cancel()
+        self._ingress_batch_store().clear()
+
     # ------------------------------------------------------------------
     # Session task + guard ownership helpers
     # ------------------------------------------------------------------
@@ -3792,6 +4073,12 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+        incoming_cmd = event.get_command()
+        if incoming_cmd:
+            self._discard_ingress_batches_for_session(
+                session_key,
+                reason=f"command:{incoming_cmd}",
+            )
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -3813,7 +4100,7 @@ class BasePlatformAdapter(ABC):
             # response.  Do NOT use _process_message_background — it manages
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
-            cmd = event.get_command()
+            cmd = incoming_cmd
             from hermes_cli.commands import should_bypass_active_session
 
             if should_bypass_active_session(cmd):
@@ -3913,6 +4200,15 @@ class BasePlatformAdapter(ABC):
                         )
                     return
 
+            if not cmd:
+                batch_key = self._build_ingress_batch_key(event, session_key)
+                await self._flush_ingress_batches_for_session(
+                    session_key,
+                    exclude_batch_key=batch_key,
+                )
+                if batch_key in self._ingress_batch_store():
+                    await self._flush_ingress_batch_now(batch_key)
+
             if self._busy_session_handler is not None:
                 try:
                     if await self._busy_session_handler(event, session_key):
@@ -3952,6 +4248,14 @@ class BasePlatformAdapter(ABC):
                 )
             return  # Don't process now - will be handled after current task finishes
         
+        # Short ingress debounce for idle sessions: messages from the same
+        # platform/profile/chat/thread/user that arrive almost together become
+        # one agent turn. Active sessions still use the busy queue above.
+        if self._is_ingress_batch_candidate(event):
+            batch_key = self._build_ingress_batch_key(event, session_key)
+            await self._queue_ingress_batch(batch_key, session_key, event)
+            return
+
         # Mark session as active BEFORE spawning background task to close
         # the race window where a second message arriving before the task
         # starts would also pass the _active_sessions check and spawn a
@@ -4580,6 +4884,7 @@ class BasePlatformAdapter(ABC):
             if state.task is not None and not state.task.done():
                 state.task.cancel()
         self._text_debounce_store().clear()
+        self._discard_ingress_batches()
 
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""

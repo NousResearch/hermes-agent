@@ -376,3 +376,25 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+approval_delegation:
+  waiting_for_admin: '⏳ 操作需管理员审批，已通知管理员，请稍候…
+
+    > {desc}'
+  approval_request: '🔐 审批委派 — 危险命令需管理员批准
+
+    发起人: {user} (来自{platform})
+
+    原因: {desc}
+
+    ```
+
+    {cmd}
+
+    ```
+
+    回复 /approve 批准 | /deny 拒绝'
+  no_admin_reachable: ⚠️ 无法联系到管理员，审批请求将在你的会话中继续。
+  approval_expired: 该审批请求已过期。
+  admin_approved: ✅ 管理员已批准该操作，正在执行...
+  admin_denied: ❌ 管理员已拒绝该操作。
+  denied_request: 已拒绝审批请求。

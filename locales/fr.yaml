@@ -376,3 +376,25 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found:           "Session introuvable dans la base de données."
     warn_passthrough:            "⚠️ {error}"
+approval_delegation:
+  waiting_for_admin: '⏳ Approval required. Notifying admin...
+
+    > {desc}'
+  approval_request: '🔐 Approval Delegation — Dangerous command requires admin approval
+
+    User: {user} (from {platform})
+
+    Reason: {desc}
+
+    ```
+
+    {cmd}
+
+    ```
+
+    Reply /approve to approve | /deny to reject'
+  no_admin_reachable: ⚠️ Could not reach admin. Approval request will continue in your session.
+  approval_expired: This approval request has expired.
+  admin_approved: ✅ Admin approved. Executing...
+  admin_denied: ❌ Admin denied the operation.
+  denied_request: Approval request denied.

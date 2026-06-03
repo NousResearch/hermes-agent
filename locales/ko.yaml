@@ -376,3 +376,25 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
     warn_passthrough:            "⚠️ {error}"
+approval_delegation:
+  waiting_for_admin: '⏳ 승인이 필요합니다. 관리자에게 알림 중...
+
+    > {desc}'
+  approval_request: '🔐 승인 위임 — 위험한 명령어에 관리자 승인이 필요합니다
+
+    사용자: {user} ({platform}에서)
+
+    이유: {desc}
+
+    ```
+
+    {cmd}
+
+    ```
+
+    /approve로 승인 | /deny로 거부'
+  no_admin_reachable: ⚠️ 관리자에게 도달할 수 없습니다. 승인 요청이 세션에서 계속됩니다.
+  approval_expired: 이 승인 요청은 만료되었습니다.
+  admin_approved: ✅ 관리자가 승인했습니다. 실행 중...
+  admin_denied: ❌ 관리자가 작업을 거부했습니다.
+  denied_request: 승인 요청이 거부되었습니다.

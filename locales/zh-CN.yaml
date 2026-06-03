@@ -1,0 +1,196 @@
+cmd:
+  start: 确认平台启动 ping 但不回复
+  new: 开始新会话（新的会话 ID + 历史记录）
+  topic: 启用或查看 Telegram DM 话题会话
+  clear: 清屏并开始新会话
+  redraw: 强制重新绘制 UI（修复终端显示异常）
+  history: 查看对话历史
+  save: 保存当前对话
+  retry: 重试上一条消息（重新发送给代理）
+  undo: 撤销上一轮用户/助手交互
+  title: 为当前会话设置标题
+  handoff: 将会话移交给消息平台（Telegram、Discord 等）
+  branch: 分支当前会话（探索不同的路径）
+  compress: 手动压缩对话上下文
+  rollback: 列出或恢复文件系统检查点
+  snapshot: 创建或恢复 Hermes 配置/状态快照
+  stop: 终止所有正在运行的后台进程
+  approve: 批准待执行的危险命令
+  deny: 拒绝待执行的危险命令
+  background: 在后台运行任务
+  agents: 显示活跃的代理和正在运行的任务
+  queue: 将提示排队到下一轮（不中断当前操作）
+  steer: 在下一次工具调用后插入消息（不中断当前任务）
+  goal: 设置一个跨轮次的长期目标，Hermes 会持续执行直到完成
+  subgoal: 在当前目标上添加或管理额外条件
+  status: 显示会话信息
+  whoami: 显示你的斜杠命令访问权限（管理员/用户）
+  profile: 显示当前配置文件名称和主目录
+  sethome: 将此聊天设为主频道
+  resume: 恢复之前命名的会话
+  sessions: 浏览和恢复历史会话
+  config: 显示当前配置
+  model: 切换当前会话的模型
+  codex-runtime: 切换 OpenAI/Codex 模型的 codex app-server 运行时
+  gquota: 显示 Google Gemini Code Assist 配额使用情况
+  personality: 设置预定义的人格
+  statusbar: 切换上下文/模型状态栏
+  verbose: 切换工具进度显示：关 -> 新 -> 全部 -> 详细
+  footer: 切换网关运行时元数据页脚
+  yolo: 切换 YOLO 模式（跳过所有危险命令审批）
+  reasoning: 管理推理强度和显示
+  fast: 切换快速模式 — OpenAI 优先处理 / Anthropic 快速模式
+  skin: 显示或切换显示皮肤/主题
+  indicator: 选择 TUI 忙碌指示器样式
+  voice: 切换语音模式
+  busy: 控制 Hermes 工作时回车键的行为
+  tools: 管理工具：/tools [list|disable|enable] [名称...]
+  toolsets: 列出可用的工具集
+  skills: 搜索、安装、查看或管理技能
+  bundles: 列出技能包（别名 /<名称> 代表多个技能）
+  cron: 管理定时任务
+  curator: 后台技能维护（状态、运行、固定、归档、列出已归档）
+  kanban: 多配置文件协作看板（任务、链接、评论）
+  reload: 将 .env 变量重新加载到运行中的会话
+  reload-mcp: 从配置重新加载 MCP 服务器
+  reload-skills: 重新扫描 ~/.hermes/skills/ 中新增或移除的技能
+  browser: 通过 CDP 连接浏览器工具到你的 Chromium 系浏览器
+  plugins: 列出已安装的插件及其状态
+  commands: 浏览所有命令和技能（分页）
+  help: 显示可用命令
+  restart: 在排空活跃运行后优雅地重启网关
+  usage: 显示当前会话的 token 使用量和速率限制
+  insights: 显示使用洞察和分析
+  platforms: 显示网关/消息平台状态
+  platform: 暂停、恢复或列出失败的网关平台
+  copy: 复制上一条助手回复到剪贴板
+  paste: 粘贴剪贴板中的图片
+  image: 附加本地图片文件到下一条提示
+  update: 将 Hermes Agent 更新到最新版本
+  debug: 上传调试报告（系统信息 + 日志）并获取可分享的链接
+  quit: 退出 CLI（使用 --delete 同时删除会话历史）
+cat:
+  Session: 会话
+  Configuration: 配置
+  Tools: 工具
+  Gateway: 网关
+  Utility: 实用工具
+  Info: 信息
+ui:
+  help_header: (^_^)? 可用命令
+  tip: 提示：直接输入消息即可与 Hermes 对话！
+  multiline: 多行输入：Alt+Enter 换行
+  draft_editor: 草稿编辑器：Ctrl+G（VSCode/Cursor 中为 Alt+G）
+  skill_commands: 技能命令
+  skill_bundles: 技能包
+  installed: 已安装
+  skills_suffix: 个技能
+  load_skills: 加载 {count} 个技能
+  unknown_command: 未知命令：{cmd}
+  type_help: 输入 /help 查看可用命令
+  session_title_applied: 会话标题已设置：{title}
+  no_description: 无描述
+  attach_image: 附加图片：/image 路径 或直接在提示开头输入本地图片路径
+  paste_image: 粘贴图片：Alt+V（或 /paste）
+  resume_hint: 使用上一次 CLI 运行的会话 ID（hermes sessions list）
+  session_not_found: 未找到会话：{session_id}
+  no_tools: (;_;) 没有可用的工具
+  tools_header: (^_^)/ 可用工具
+  tools_total: 总计：{count} 个工具
+tool:
+  terminal: 执行 shell 命令
+  read_file: 读取文件内容
+  write_file: 写入文件内容
+  search_files: 搜索文件内容或按名称查找文件
+  patch: 在文件中进行精确的查找替换编辑
+  browser_navigate: 在浏览器中导航到指定 URL
+  browser_click: 点击页面上的元素
+  browser_snapshot: 获取当前页面的文本快照
+  web_search: 搜索网络
+  web_extract: 提取网页内容
+  memory: 保存持久化信息到跨会话记忆
+  session_search: 搜索历史会话
+  skill_view: 查看技能的完整内容
+  skill_manage: 管理技能（创建、更新、删除）
+  todo: 管理当前会话的任务列表
+  delegate_task: 生成子代理处理子任务
+  cronjob: 管理定时任务
+  send_message: 向消息平台发送消息
+  text_to_speech: 将文本转换为语音
+  vision_analyze: 分析图片内容
+  execute_code: 执行 Python 脚本
+gateway:
+  error:
+    auth_failed: ⚠️ 提供商认证失败。请检查配置的凭据；原始提供商详情请查看网关日志。
+    policy_rejected: ⚠️ 模型提供商拒绝了请求。原始错误已隐藏；详情请查看网关日志或尝试换个说法。
+    rate_limited: ⏱️ 模型提供商正在限流。请稍等片刻后重试。
+    provider_failed: ⚠️ 模型提供商在重试后仍然失败。原始详情已隐藏；诊断信息请查看网关日志。
+    context_too_large: '⚠️ 会话内容超出了模型的上下文窗口。
+
+      使用 /compact 压缩对话，或 /reset 重新开始。'
+    request_failed: 请求失败：{error} 请重试或使用 /reset 开始新会话。
+    processing_stopped: ⚠️ 处理已停止：{error}。请重试。
+    no_response: ⚠️ 处理完成但未生成回复。这可能是临时错误 — 请尝试重新发送消息。
+  busy:
+    queued_during_drain: ⏳ 网关正在{action} — 已排队等待下一轮。
+    not_accepting: ⏳ 网关正在{action}，暂时不接受新的请求。
+    steered: ⏩ 已注入当前运行{detail}。你的消息将在下一次工具调用后到达。
+    subagent_queued: ⏳ 子代理正在工作{detail} — 你的消息已排队等待完成（使用 /stop 取消所有操作）。
+    queued: ⏳ 已排队等待下一轮{detail}。当前任务完成后我会回复你。
+    interrupting: ⚡ 正在中断当前任务{detail}。我会尽快回复你。
+  unknown_command: 未知命令 `/{command}`。输入 /commands 查看可用命令，或去掉前缀 / 直接发送普通消息。
+  queue_usage: 用法：/queue <提示内容>
+  queued_simple: 已排队等待下一轮。
+  queue_queued: 已排队等待下一轮。（{depth} 条排队中）
+  steer_usage: 用法：/steer <提示内容>
+  steer_accepted: ⏩ 已排队 — 将在下一次工具调用后到达：'{preview}'
+  agent_starting: 代理正在启动 — /steer 已排队等待下一轮。
+  steer_empty: Steer 已拒绝（空内容）。
+  no_active_agent: 没有活跃代理 — /steer 已排队等待下一轮。
+  agent_running_model: 代理正在运行 — 请等待或先 /stop，然后再切换模型。
+  quick_cmd_timeout: 快速命令超时（30秒）。
+  confirm:
+    title: ⚠️ **确认 /{command}**
+    choose: 请选择：
+    once: • **批准一次** — 仅此次执行
+    always: • **始终批准** — 执行并不再提示
+    cancel: • **取消** — 保留当前对话
+    fallback: _文本回复：发送 `/approve`、`/always` 或 `/cancel`。_
+    detail_new: 这将开始一个新会话并丢弃当前对话历史。
+    detail_undo: 这将从历史记录中移除最后一轮用户/助手交互。
+    cancelled: 🟡 /{command} 已取消。对话未改变。
+    always_note: 'ℹ️ 未来的 /clear、/new、/reset 和 /undo 将不再确认。如需重新启用，在 config.yaml 中设置 `approvals.destructive_slash_confirm: true`。'
+  reset:
+    header_default: ✨ 新会话已开始
+    model: ◆ 模型：`{model}`
+    provider: ◆ 提供商：{provider}
+    context: ◆ 上下文：{ctx_display} tokens ({ctx_source})
+  endpoint: ◆ 端点：{base_url}
+  shutdown:
+    restarting: 正在重启
+    shutting_down: 正在关闭
+    message: ⚠️ 网关{action} — {hint}
+    restart_hint: 你当前的任务将被中断。重启后发送任意消息，我会尝试从上次中断的地方继续。
+    stop_hint: 你当前的任务将被中断。
+approval_delegation:
+  waiting_for_admin: '⏳ Approval required. Notifying admin...
+
+    > {desc}'
+  approval_request: '🔐 Approval Delegation — Dangerous command requires admin approval
+
+    User: {user} (from {platform})
+
+    Reason: {desc}
+
+    ```
+
+    {cmd}
+
+    ```
+
+    Reply /approve to approve | /deny to reject'
+  no_admin_reachable: ⚠️ Could not reach admin. Approval request will continue in your session.
+  approval_expired: This approval request has expired.
+  admin_approved: ✅ Admin approved. Executing...
+  admin_denied: ❌ Admin denied the operation.
+  denied_request: Approval request denied.

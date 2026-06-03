@@ -376,3 +376,11 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de datos de sesiones no disponible"
     session_not_found:           "Sesión no encontrada en la base de datos."
     warn_passthrough:            "⚠️ {error}"
+
+approval_delegation:
+  waiting_for_admin: "⏳ Approval required. Notifying admin..."
+  approval_request: "🔐 Approval Delegation — Dangerous command requires admin approval\n\nInitiator: {user} (from {platform})\n\nReason: {desc}\n\n```\n\n{cmd}\n\n```\n\nReply /approve to approve | /deny to deny"
+  no_admin_reachable: "⚠️ Could not reach admin. Approval request will continue in your session."
+  approval_expired: "This approval request has expired."
+  admin_approved: "✅ Admin approved. Executing..."
+  admin_denied: "❌ Admin denied the operation."

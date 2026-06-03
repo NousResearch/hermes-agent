@@ -376,3 +376,25 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found:           "資料庫中找不到此工作階段。"
     warn_passthrough:            "⚠️ {error}"
+approval_delegation:
+  waiting_for_admin: '⏳ 操作需管理員審批，已通知管理員，請稍候…
+
+    > {desc}'
+  approval_request: '🔐 審批委派 — 危險命令需管理員批准
+
+    發起人: {user} (來自{platform})
+
+    原因: {desc}
+
+    ```
+
+    {cmd}
+
+    ```
+
+    回覆 /approve 批准 | /deny 拒絕'
+  no_admin_reachable: ⚠️ 無法聯繫到管理員，審批請求將在你的會話中繼續。
+  approval_expired: 該審批請求已過期。
+  admin_approved: ✅ 管理員已批准該操作，正在執行...
+  admin_denied: ❌ 管理員已拒絕該操作。
+  denied_request: 已拒絕審批請求。

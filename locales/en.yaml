@@ -388,3 +388,11 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+approval_delegation:
+  waiting_for_admin: "⏳ Approval required. Notifying admin..."
+  approval_request: "🔐 Approval Delegation — Dangerous command requires admin approval\n\nInitiator: {user} (from {platform})\n\nReason: {desc}\n\n```\n\n{cmd}\n\n```\n\nReply /approve to approve | /deny to deny"
+  no_admin_reachable: "⚠️ Could not reach admin. Approval request will continue in your session."
+  approval_expired: "This approval request has expired."
+  admin_approved: "✅ Admin approved. Executing..."
+  admin_denied: "❌ Admin denied the operation."

@@ -376,3 +376,25 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "セッションデータベースが利用できません"
     session_not_found:           "データベースにセッションが見つかりません。"
     warn_passthrough:            "⚠️ {error}"
+approval_delegation:
+  waiting_for_admin: '⏳ 承認が必要です。管理者に通知中...
+
+    > {desc}'
+  approval_request: '🔐 承認委譲 — 危険なコマンドには管理者の承認が必要です
+
+    ユーザー: {user} ({platform}から)
+
+    理由: {desc}
+
+    ```
+
+    {cmd}
+
+    ```
+
+    /approve で承認 | /deny で拒否'
+  no_admin_reachable: ⚠️ 管理者に到達できませんでした。承認リクエストはあなたのセッションで続行されます。
+  approval_expired: この承認リクエストは期限切れです。
+  admin_approved: ✅ 管理者が承認しました。実行中...
+  admin_denied: ❌ 管理者が操作を拒否しました。
+  denied_request: 承認リクエストが拒否されました。

@@ -142,9 +142,24 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
         check=False,
     )
     if result.returncode == 0:
+        venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
+        # uv can exit 0 yet leave no usable interpreter (e.g. a half-written
+        # venv). Don't report success on a venv that has no python — and restore
+        # the moved-aside copy so the caller can abort without losing a working
+        # environment.
+        if not venv_python.exists():
+            logger.warning("venv rebuild reported success but %s is missing", venv_python)
+            print(f"  ✗ venv rebuild failed: Python interpreter missing at {venv_python}")
+            if backup is not None:
+                shutil.rmtree(venv_dir, ignore_errors=True)
+                try:
+                    os.replace(backup, venv_dir)
+                    print("  ↩ Restored previous venv.")
+                except OSError:
+                    pass
+            return False
         if backup is not None:
             shutil.rmtree(backup, ignore_errors=True)
-        venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
         py_ver = subprocess.run(
             [str(venv_python), "--version"],
             capture_output=True,

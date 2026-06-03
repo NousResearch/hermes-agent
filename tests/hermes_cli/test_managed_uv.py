@@ -198,6 +198,21 @@ class TestRebuildVenv:
             result = rebuild_venv(uv_bin, venv_dir)
             assert result is False
 
+    def test_rebuild_success_without_python_returns_false(self, tmp_path):
+        """uv can exit 0 yet leave no interpreter; that must not count as success
+        (guard adapted from #38511)."""
+        venv_dir = tmp_path / "venv"
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv.shutil.rmtree"):
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+            assert result is False
+            # Returned before the `python --version` probe ran.
+            assert mock_run.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # update_managed_uv

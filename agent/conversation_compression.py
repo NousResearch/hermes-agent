@@ -668,33 +668,55 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
         # unavailable the dimension decode fails and we fall back to
         # the byte-only gate (the existing pre-fix behaviour, which
         # is at least no worse than the regression we're fixing).
-        decode_error: Exception | None = None
+        #
+        # Performance: the dimension decode (base64 → bytes → PIL
+        # open) is non-trivial CPU. We split the two cases:
+        #   1. ``len(url) <= target_bytes`` (tiny-but-tall case):
+        #      byte gate says "not oversized" but dimensions may
+        #      still exceed 7900px. This is the only case where
+        #      byte-only gating misses the violation, so we MUST
+        #      dimension-decode. (#37701 Copilot #5)
+        #   2. ``len(url) > target_bytes`` (already oversized):
+        #      the byte gate alone forces a resize. The dimension
+        #      decode adds no information. Skip it. (#37701 Copilot
+        #      #5: "short-circuit by checking the byte condition
+        #      first and only performing the dimension decode when
+        #      the URL is within target_bytes")
         dim_exceeds = False
-        try:
-            from tools.vision_tools import _image_exceeds_dimension as _dim_check
-        except ImportError:
-            _dim_check = None  # type: ignore
-        if _dim_check is not None:
+        if len(url) <= target_bytes:
+            # Tiny-but-tall case: byte gate says "fine" but
+            # dimensions might still violate. Decode and check.
             try:
+                from tools.vision_tools import _image_exceeds_dimension as _dim_check
                 import base64 as _b64_dim
-                _header, _, _data = url.partition(",")
-                _raw = _b64_dim.b64decode(_data)
                 import io as _io
                 from PIL import Image as _PILImage  # type: ignore
+                _header, _, _data = url.partition(",")
+                _raw = _b64_dim.b64decode(_data)
                 with _PILImage.open(_io.BytesIO(_raw)) as _img:
                     _w, _h = _img.size
                 if _dim_check(_w, _h):
                     dim_exceeds = True
             except ImportError:
-                # No Pillow: dimension check isn't possible, but
-                # _resize_image_for_vision also depends on Pillow so
-                # the resize itself will be a no-op below. Defer to
-                # the byte-only gate in that case.
+                # Pillow not installed: dimension check is
+                # unavailable. _resize_image_for_vision is also
+                # Pillow-dependent so the resize below will be a
+                # no-op — fall through to the byte-only gate.
                 pass
             except Exception as exc:
-                # Corrupt image or decode failure: record it but
-                # don't bail; the byte check below is the fallback.
-                decode_error = exc
+                # Corrupt image or decode failure. Log at debug so
+                # the operator has a breadcrumb but don't fail the
+                # whole shrink pass. (#37701 Copilot #3/#4:
+                # decode_error was previously assigned-but-unused.)
+                logger.debug(
+                    "image-shrink: dimension decode failed for "
+                    "image, falling back to byte-only gate: %s", exc,
+                )
+        # If len(url) > target_bytes, the byte gate below forces
+        # the resize regardless of dimensions — skip the decode
+        # entirely (the dimension was unobservable in the
+        # pre-fix byte-only gate, and the byte gate still
+        # triggers here).
         if not dim_exceeds and len(url) <= target_bytes:
             # Neither ceiling was tripped (or dimension check was
             # unavailable and bytes are fine). This specific image

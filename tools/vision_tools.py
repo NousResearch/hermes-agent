@@ -29,6 +29,7 @@ Usage:
 """
 
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -333,7 +334,7 @@ _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 # Anthropic also enforces a per-image **pixel-dimension** ceiling of 8000
 # on the longest side. A tall full-page screenshot (e.g. 1200×12000) can
 # be well under 5 MB yet vastly over 8000px, and once baked into history
-# it brick the session on every subsequent replay (the 400 is
+# it bricks the session on every subsequent replay (the 400 is
 # non-retryable and history is immutable). Pre-fix, every guard in
 # ``vision_tools.py`` and ``conversation_compression.py`` reasoned about
 # bytes only — the 8000px message was never classified as
@@ -404,7 +405,23 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     # recovery in conversation_compression.try_shrink_image_parts_in_messages
     # (and the embed-time dimension check added in the matching fix in
     # this PR) is the safety net for that case.
+    #
+    # Implementation notes (Copilot review on #37701):
+    #   * Use ``tempfile.mkstemp`` (not ``NamedTemporaryFile(...).name``)
+    #     so the OS file handle is closed immediately — the discarded
+    #     ``NamedTemporaryFile`` path leaks a handle on Windows and
+    #     can race with PIL's ``save()`` opening the path for write.
+    #   * Pick the suffix from the actual format we save (not a hard-
+    #     coded ``.png``), so downstream MIME detection that reads
+    #     the file extension doesn't get lied to.
+    #   * The cleanup of this tempfile is handled at the bottom of
+    #     this function via the ``_precap_cleanup`` callable below
+    #     that we register as soon as we create the file. That way
+    #     every return path (early fast-path, Pillow-resize loop,
+    #     exception, fall-through) gets a single-shot cleanup without
+    #     scattering ``if _precap_path: unlink()`` everywhere.
     _precap_path: Optional[Path] = None
+    _precap_stack: contextlib.ExitStack = contextlib.ExitStack()
     try:
         from PIL import Image as _PILImage_pre  # type: ignore
         with _PILImage_pre.open(image_path) as _dim_probe:
@@ -419,13 +436,39 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 _w, _h, _MAX_IMAGE_DIMENSION, new_w, new_h,
             )
             import tempfile as _tf
-            _precap_path = Path(_tf.NamedTemporaryFile(
-                prefix="hermes_precap_", suffix=".png", delete=False,
-            ).name)
+            # Choose the suffix from the format we'll actually save,
+            # not a hard-coded ".png" — downstream MIME detection may
+            # read the file extension and we'd lie to it otherwise.
+            _fmt = "PNG" if (mime_type or "").endswith("png") else "JPEG"
+            _suffix = ".png" if _fmt == "PNG" else ".jpg"
+            _precap_fd, _precap_name = _tf.mkstemp(
+                prefix="hermes_precap_", suffix=_suffix,
+            )
+            # mkstemp returns an open OS file descriptor; close it
+            # before PIL reopens the path for write. Without this,
+            # on Windows the open fd from mkstemp can hold an exclusive
+            # lock and PIL's _img.save() will PermissionError.
+            import os as _os
+            try:
+                _os.close(_precap_fd)
+            except Exception:
+                pass
+            _precap_path = Path(_precap_name)
+            # Register a single cleanup callback with the ExitStack.
+            # ``ExitStack.pop_all()`` isn't called here — the
+            # function-level ``finally`` block below invokes the
+            # stack's __exit__ which runs every registered callback
+            # exactly once, regardless of which ``return`` path
+            # was taken (Copilot review on #37701).
+            def _cleanup_precap() -> None:
+                try:
+                    _precap_path.unlink(missing_ok=True)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+            _precap_stack.callback(_cleanup_precap)
             with _PILImage_pre.open(image_path) as _img:
                 _img = _img.resize((new_w, new_h), _PILImage_pre.LANCZOS)
                 # Preserve mime if it was PNG; otherwise convert to RGB JPEG.
-                _fmt = "PNG" if (mime_type or "").endswith("png") else "JPEG"
                 if _fmt == "JPEG" and _img.mode in {"RGBA", "P"}:
                     _img = _img.convert("RGB")
                 _img.save(str(_precap_path), format=_fmt)
@@ -434,126 +477,133 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         pass
     except Exception as _exc:
         logger.debug("pre-cap decode failed for %s: %s", image_path, _exc)
-
-    # Quick file-size estimate: base64 expands by ~4/3, plus data URL header.
-    # Skip the expensive full-read + encode if Pillow can resize directly.
-    file_size = image_path.stat().st_size
-    estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
-    if estimated_b64 <= max_base64_bytes:
-        # Small enough — just encode directly.
-        data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        if len(data_url) <= max_base64_bytes:
-            if _precap_path is not None:
-                try:
-                    Path(_precap_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return data_url
-    else:
-        data_url = None  # defer full encode; try Pillow resize first
-
-    # Attempt auto-resize with Pillow (soft dependency)
-    try:
-        from PIL import Image
-        import io as _io
-    except ImportError:
-        logger.info("Pillow not installed — cannot auto-resize oversized image")
-        if data_url is None:
-            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # caller will raise the size error
-
-    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
-                file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
-                max_base64_bytes / (1024 * 1024))
-
-    mime = mime_type or _determine_mime_type(image_path)
-    # Choose output format: JPEG for photos (smaller), PNG for transparency
-    pil_format = "PNG" if mime == "image/png" else "JPEG"
-    out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
+        # On any decode failure, pop the pre-cap callback from the
+        # stack so the function-level finally doesn't try to delete
+        # a half-decoded or non-existent file.
+        _precap_stack.pop_all()
 
     try:
-        img = Image.open(image_path)
-    except Exception as exc:
-        logger.info("Pillow cannot open image for resizing: %s", exc)
-        if data_url is None:
+        # Quick file-size estimate: base64 expands by ~4/3, plus data URL header.
+        # Skip the expensive full-read + encode if Pillow can resize directly.
+        file_size = image_path.stat().st_size
+        estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
+        if estimated_b64 <= max_base64_bytes:
+            # Small enough — just encode directly.
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
-        img = img.convert("RGB")
+            if len(data_url) <= max_base64_bytes:
+                return data_url
+        else:
+            data_url = None  # defer full encode; try Pillow resize first
 
-    # Pre-cap pixel dimensions BEFORE the byte-sizing loop. Anthropic
-    # rejects any image with longest side > 8000 px with a non-retryable
-    # 400, regardless of base64 byte size — a 1200×12000 PNG at 0.06 MB
-    # passes the byte check but is unrecoverable once baked into
-    # history (#25837, #37677). Scale the longest side to
-    # ``_MAX_IMAGE_DIMENSION`` (7900, with 100px headroom under
-    # Anthropic's hard 8000 cap) and the shorter side proportionally,
-    # preserving aspect ratio. Only fires when the image is actually
-    # over the cap, so normal small images are untouched.
-    if _image_exceeds_dimension(img.width, img.height):
-        scale = _MAX_IMAGE_DIMENSION / max(img.width, img.height)
-        new_w = max(int(img.width * scale), 1)
-        new_h = max(int(img.height * scale), 1)
-        logger.info(
-            "Image %dx%d exceeds %dpx cap, pre-resizing to %dx%d before "
-            "byte-sizing pass",
-            img.width, img.height, _MAX_IMAGE_DIMENSION, new_w, new_h,
-        )
-        img = img.resize((new_w, new_h), Image.LANCZOS)
+        # Attempt auto-resize with Pillow (soft dependency)
+        try:
+            from PIL import Image
+            import io as _io
+        except ImportError:
+            logger.info("Pillow not installed — cannot auto-resize oversized image")
+            if data_url is None:
+                data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+            return data_url  # caller will raise the size error
 
-    # Strategy: halve dimensions until base64 fits, up to 4 rounds.
-    # For JPEG, also try reducing quality at each size step.
-    # For PNG, quality is irrelevant — only dimension reduction helps.
-    quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
-    prev_dims = (img.width, img.height)
-    candidate = None  # will be set on first loop iteration
+        logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
+                    file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
+                    max_base64_bytes / (1024 * 1024))
 
-    for attempt in range(5):
-        if attempt > 0:
-            # Proportional scaling: halve the longer side and scale the
-            # shorter side to preserve aspect ratio (min dimension 64).
-            scale = 0.5
-            new_w = max(int(img.width * scale), 64)
-            new_h = max(int(img.height * scale), 64)
-            # Re-derive the scale from whichever dimension hit the floor
-            # so both axes shrink by the same factor.
-            if new_w == 64 and img.width > 0:
-                effective_scale = 64 / img.width
-                new_h = max(int(img.height * effective_scale), 64)
-            elif new_h == 64 and img.height > 0:
-                effective_scale = 64 / img.height
-                new_w = max(int(img.width * effective_scale), 64)
-            # Stop if dimensions can't shrink further
-            if (new_w, new_h) == prev_dims:
-                break
+        mime = mime_type or _determine_mime_type(image_path)
+        # Choose output format: JPEG for photos (smaller), PNG for transparency
+        pil_format = "PNG" if mime == "image/png" else "JPEG"
+        out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
+
+        try:
+            img = Image.open(image_path)
+        except Exception as exc:
+            logger.info("Pillow cannot open image for resizing: %s", exc)
+            if data_url is None:
+                data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+            return data_url  # fall through to size-check in caller
+        # Convert RGBA to RGB for JPEG output
+        if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
+            img = img.convert("RGB")
+
+        # Pre-cap pixel dimensions BEFORE the byte-sizing loop. Anthropic
+        # rejects any image with longest side > 8000 px with a non-retryable
+        # 400, regardless of base64 byte size — a 1200×12000 PNG at 0.06 MB
+        # passes the byte check but is unrecoverable once baked into
+        # history (#25837, #37677). Scale the longest side to
+        # ``_MAX_IMAGE_DIMENSION`` (7900, with 100px headroom under
+        # Anthropic's hard 8000 cap) and the shorter side proportionally,
+        # preserving aspect ratio. Only fires when the image is actually
+        # over the cap, so normal small images are untouched.
+        if _image_exceeds_dimension(img.width, img.height):
+            scale = _MAX_IMAGE_DIMENSION / max(img.width, img.height)
+            new_w = max(int(img.width * scale), 1)
+            new_h = max(int(img.height * scale), 1)
+            logger.info(
+                "Image %dx%d exceeds %dpx cap, pre-resizing to %dx%d before "
+                "byte-sizing pass",
+                img.width, img.height, _MAX_IMAGE_DIMENSION, new_w, new_h,
+            )
             img = img.resize((new_w, new_h), Image.LANCZOS)
-            prev_dims = (new_w, new_h)
-            logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
 
-        for q in quality_steps:
-            buf = _io.BytesIO()
-            save_kwargs = {"format": pil_format}
-            if q is not None:
-                save_kwargs["quality"] = q
-            img.save(buf, **save_kwargs)
-            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-            candidate = f"data:{out_mime};base64,{encoded}"
-            if len(candidate) <= max_base64_bytes:
-                logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
-                            len(candidate) / (1024 * 1024), q,
-                            img.width, img.height)
-                return candidate
+        # Strategy: halve dimensions until base64 fits, up to 4 rounds.
+        # For JPEG, also try reducing quality at each size step.
+        # For PNG, quality is irrelevant — only dimension reduction helps.
+        quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
+        prev_dims = (img.width, img.height)
+        candidate = None  # will be set on first loop iteration
 
-    # If we still can't get it small enough, return the best attempt
-    # and let the caller decide
-    if candidate is not None:
-        logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
-                       max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
-        return candidate
+        for attempt in range(5):
+            if attempt > 0:
+                # Proportional scaling: halve the longer side and scale the
+                # shorter side to preserve aspect ratio (min dimension 64).
+                scale = 0.5
+                new_w = max(int(img.width * scale), 64)
+                new_h = max(int(img.height * scale), 64)
+                # Re-derive the scale from whichever dimension hit the floor
+                # so both axes shrink by the same factor.
+                if new_w == 64 and img.width > 0:
+                    effective_scale = 64 / img.width
+                    new_h = max(int(img.height * effective_scale), 64)
+                elif new_h == 64 and img.height > 0:
+                    effective_scale = 64 / img.height
+                    new_w = max(int(img.width * effective_scale), 64)
+                # Stop if dimensions can't shrink further
+                if (new_w, new_h) == prev_dims:
+                    break
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                prev_dims = (new_w, new_h)
+                logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
 
-    # Shouldn't reach here, but fall back to full encode
-    return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+            for q in quality_steps:
+                buf = _io.BytesIO()
+                save_kwargs = {"format": pil_format}
+                if q is not None:
+                    save_kwargs["quality"] = q
+                img.save(buf, **save_kwargs)
+                encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+                candidate = f"data:{out_mime};base64,{encoded}"
+                if len(candidate) <= max_base64_bytes:
+                    logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
+                                len(candidate) / (1024 * 1024), q,
+                                img.width, img.height)
+                    return candidate
+
+        # If we still can't get it small enough, return the best attempt
+        # and let the caller decide
+        if candidate is not None:
+            logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
+                           max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
+            return candidate
+
+        # Shouldn't reach here, but fall back to full encode
+        return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+    finally:
+        # Single cleanup call. ``_precap_stack.__exit__`` runs every
+        # callback registered via ``.callback()`` in LIFO order. The
+        # only callback currently registered is the tempfile unlink
+        # (registered when the pre-cap actually creates a file). If
+        # no pre-cap ran, the stack is empty and this is a no-op.
+        _precap_stack.__exit__(None, None, None)
 
 
 # ---------------------------------------------------------------------------

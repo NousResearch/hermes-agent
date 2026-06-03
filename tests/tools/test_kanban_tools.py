@@ -768,6 +768,30 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_persists_model_override_and_skills(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "routed child",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "model_override": "openrouter/qwen3",
+        "skills": ["github-code-review"],
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child is not None
+        assert child.model_override == "openrouter/qwen3"
+        assert child.skills == ["github-code-review"]
+    finally:
+        conn.close()
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen
@@ -1552,6 +1576,41 @@ def test_board_param_routes_create_to_alt_board(multi_board_env):
     # Does NOT land on default board.
     with kb.connect() as conn:
         assert kb.get_task(conn, new_tid) is None
+
+
+def test_board_param_create_uses_target_board_assignee_defaults(multi_board_env):
+    """A board-routed create must read defaults from the target board metadata."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    meta_path = kb.board_metadata_path("alt")
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(
+        json.dumps({
+            "assignee_defaults": {
+                "worker": {
+                    "model_override": "openrouter/alt-default",
+                    "skills": ["github-pr-workflow"],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    out = kt._handle_create({
+        "title": "alt-defaulted",
+        "assignee": "worker",
+        "board": "alt",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, d
+
+    with kb.connect(board="alt") as conn:
+        child = kb.get_task(conn, d["task_id"])
+
+    assert child is not None
+    assert child.model_override == "openrouter/alt-default"
+    assert child.skills == ["github-pr-workflow"]
 
 
 def test_board_param_routes_list_to_alt_board(multi_board_env):

@@ -166,6 +166,16 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_create_json_includes_model_override(kanban_home):
+    out = kc.run_slash(
+        "create 'routed task' --assignee builder "
+        "--model openrouter/qwen3 --skill github-pr-workflow --json"
+    )
+    payload = json.loads(out)
+    assert payload["model_override"] == "openrouter/qwen3"
+    assert payload["skills"] == ["github-pr-workflow"]
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

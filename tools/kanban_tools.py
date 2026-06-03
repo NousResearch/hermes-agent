@@ -769,6 +769,7 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    model_override = args.get("model_override") or args.get("model")
     goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
     if goal_bool_error:
         return tool_error(goal_bool_error)
@@ -809,6 +810,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=model_override,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -816,6 +818,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                board=board,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -1276,6 +1279,19 @@ KANBAN_CREATE_SCHEMA = {
                     "The names must match skills installed on the "
                     "assignee's profile."
                 ),
+            },
+            "model_override": {
+                "type": "string",
+                "description": (
+                    "Optional per-task model override. The dispatcher "
+                    "passes this to the worker as hermes -m/--model. "
+                    "Omit to use the assignee profile default or board "
+                    "assignee_defaults metadata."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": "Alias for model_override.",
             },
             "goal_mode": {
                 "type": "boolean",

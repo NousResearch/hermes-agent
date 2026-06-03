@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import sys
@@ -202,6 +203,133 @@ def test_create_task_no_parents_is_ready(kanban_home):
     assert t.status == "ready"
     assert t.assignee == "alice"
     assert t.workspace_kind == "scratch"
+
+
+def test_create_task_persists_explicit_model_override(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="route to qwen",
+            assignee="builder",
+            model_override="openrouter/qwen3",
+        )
+        t = kb.get_task(conn, tid)
+
+    assert t is not None
+    assert t.model_override == "openrouter/qwen3"
+
+
+def test_create_task_inherits_board_assignee_defaults(kanban_home):
+    meta_path = kb.board_metadata_path("default")
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(
+        json.dumps({
+            "assignee_defaults": {
+                "builder": {
+                    "model_override": "openrouter/qwen3-default",
+                    "skills": ["kanban-builder", "github-pr-workflow"],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="inherit routing",
+            assignee="builder",
+            skills=["test-driven-development", "kanban-builder"],
+        )
+        t = kb.get_task(conn, tid)
+
+    assert t is not None
+    assert t.model_override == "openrouter/qwen3-default"
+    assert t.skills == [
+        "test-driven-development",
+        "kanban-builder",
+        "github-pr-workflow",
+    ]
+
+
+def test_create_task_explicit_model_overrides_board_default(kanban_home):
+    meta_path = kb.board_metadata_path("default")
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(
+        json.dumps({
+            "assignee_defaults": {
+                "builder": {"model_override": "openrouter/qwen3-default"},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="explicit route",
+            assignee="builder",
+            model_override="openrouter/qwen3-explicit",
+        )
+        t = kb.get_task(conn, tid)
+
+    assert t is not None
+    assert t.model_override == "openrouter/qwen3-explicit"
+
+
+def test_create_task_blank_model_falls_back_to_board_default(kanban_home):
+    meta_path = kb.board_metadata_path("default")
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(
+        json.dumps({
+            "assignee_defaults": {
+                "builder": {"model_override": "openrouter/qwen3-default"},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="blank route",
+            assignee="builder",
+            model_override="   ",
+        )
+        t = kb.get_task(conn, tid)
+
+    assert t is not None
+    assert t.model_override == "openrouter/qwen3-default"
+
+
+def test_create_task_idempotency_fast_path_skips_new_default_validation(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="first routed task",
+            assignee="builder",
+            idempotency_key="same-task",
+        )
+
+        meta_path = kb.board_metadata_path("default")
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(
+            json.dumps({
+                "assignee_defaults": {
+                    "builder": {"skills": ["web"]},
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        retry_tid = kb.create_task(
+            conn,
+            title="retry routed task",
+            assignee="builder",
+            idempotency_key="same-task",
+        )
+
+    assert retry_tid == tid
 
 
 def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):

@@ -1992,6 +1992,89 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+
+
+def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Normalize, validate, and dedupe task skill names preserving order."""
+    if skills is None:
+        return None
+    if isinstance(skills, str):
+        values: Iterable[str] = [skills]
+    else:
+        values = skills
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    # Collect all toolset-name confusions up front so the user sees the
+    # whole list at once. Agents that confuse skills with toolsets usually
+    # pass several at once (`skills=["web", "browser", "terminal"]`).
+    toolset_typos: list[str] = []
+    for s in values:
+        if not s:
+            continue
+        name = str(s).strip()
+        if not name:
+            continue
+        if "," in name:
+            raise ValueError(
+                f"skill name cannot contain comma: {name!r} "
+                f"(pass a list of separate names instead of a comma-joined string)"
+            )
+        if name.casefold() in KNOWN_TOOLSET_NAMES:
+            toolset_typos.append(name)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    if toolset_typos:
+        quoted = ", ".join(repr(n) for n in toolset_typos)
+        noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
+        raise ValueError(
+            f"{quoted} {noun}, not skill name(s). "
+            "Put toolsets in the assignee profile's `toolsets:` config "
+            "instead of per-task skills. Skills are named skill bundles "
+            "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
+            "capabilities (e.g. `web`, `browser`, `terminal`)."
+        )
+    return cleaned
+
+
+def _merge_task_skills(
+    explicit: Optional[list[str]],
+    defaults: Optional[list[str]],
+) -> Optional[list[str]]:
+    if explicit is None and defaults is None:
+        return None
+    merged: list[str] = []
+    seen: set[str] = set()
+    for source in (explicit or []) + (defaults or []):
+        if source and source not in seen:
+            seen.add(source)
+            merged.append(source)
+    return merged
+
+
+def _board_assignee_defaults(
+    board_meta: dict[str, Any],
+    assignee: Optional[str],
+) -> dict[str, Any]:
+    if not assignee:
+        return {}
+    raw = board_meta.get("assignee_defaults")
+    if not isinstance(raw, dict):
+        return {}
+    direct = raw.get(assignee)
+    if isinstance(direct, dict):
+        return direct
+    for key, value in raw.items():
+        try:
+            normalized = _canonical_assignee(str(key))
+        except Exception:
+            continue
+        if normalized == assignee and isinstance(value, dict):
+            return value
+    return {}
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2009,6 +2092,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    model_override: Optional[str] = None,
     max_retries: Optional[int] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
@@ -2039,6 +2123,10 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``model_override`` is an optional per-task model route. If omitted,
+    board metadata may provide an assignee default via
+    ``assignee_defaults.<assignee>.model_override`` or ``.model``.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2058,51 +2146,6 @@ def create_task(
         raise ValueError("branch_name is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
 
-    # Normalise + validate skills: strip whitespace, drop empties, dedupe
-    # (preserving order). Refuse commas inside a single name so we don't
-    # invisibly splatter a comma-joined string into one argv slot — the
-    # `hermes --skills X,Y` comma syntax is handled in the dispatcher,
-    # not here.
-    skills_list: Optional[list[str]] = None
-    if skills is not None:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        # Collect all toolset-name confusions up front so the user sees the
-        # whole list at once. Raising on the first hit is friendly when the
-        # input has one mistake, but agents that confuse skills with toolsets
-        # usually pass several at once (`skills=["web", "browser", "terminal"]`)
-        # and serial-correcting one per failure round-trips wastes tokens.
-        toolset_typos: list[str] = []
-        for s in skills:
-            if not s:
-                continue
-            name = str(s).strip()
-            if not name:
-                continue
-            if "," in name:
-                raise ValueError(
-                    f"skill name cannot contain comma: {name!r} "
-                    f"(pass a list of separate names instead of a comma-joined string)"
-                )
-            if name.casefold() in KNOWN_TOOLSET_NAMES:
-                toolset_typos.append(name)
-                continue
-            if name in seen:
-                continue
-            seen.add(name)
-            cleaned.append(name)
-        if toolset_typos:
-            quoted = ", ".join(repr(n) for n in toolset_typos)
-            noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
-            raise ValueError(
-                f"{quoted} {noun}, not skill name(s). "
-                "Put toolsets in the assignee profile's `toolsets:` config "
-                "instead of per-task skills. Skills are named skill bundles "
-                "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
-                "capabilities (e.g. `web`, `browser`, `terminal`)."
-            )
-        skills_list = cleaned
-
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -2118,6 +2161,26 @@ def create_task(
         if row:
             return row["id"]
 
+    board_slug = board if board else get_current_board()
+    board_meta = read_board_metadata(board_slug)
+    assignee_defaults = _board_assignee_defaults(board_meta, assignee)
+
+    default_model = (
+        assignee_defaults.get("model_override")
+        or assignee_defaults.get("model")
+    )
+    model_override = (
+        str(model_override).strip() or None
+        if model_override is not None
+        else None
+    )
+    if model_override is None and default_model:
+        model_override = str(default_model).strip() or None
+
+    explicit_skills = _normalize_task_skills(skills)
+    default_skills = _normalize_task_skills(assignee_defaults.get("skills"))
+    skills_list = _merge_task_skills(explicit_skills, default_skills)
+
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -2130,8 +2193,6 @@ def create_task(
     # containment guard in ``_cleanup_workspace`` is the safety rail, but
     # we also stop the bad state from being created in the first place.
     if workspace_path is None and workspace_kind in {"dir", "worktree"}:
-        board_slug = board if board else get_current_board()
-        board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
@@ -2179,8 +2240,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, model_override, max_retries, goal_mode, goal_max_turns, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2198,6 +2259,7 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        model_override,
                         int(max_retries) if max_retries is not None else None,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
@@ -2220,6 +2282,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "model_override": model_override,
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )

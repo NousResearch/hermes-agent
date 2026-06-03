@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
@@ -59,10 +59,11 @@ import { ChatSidebar } from './chat/sidebar'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { ModelPickerOverlay } from './model-picker-overlay'
+import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from './routes'
+import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -77,6 +78,7 @@ import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
 import { useStatusSnapshot } from './shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from './shell/hooks/use-statusbar-items'
+import { ModelMenuPanel } from './shell/model-menu-panel'
 import type { StatusbarItem } from './shell/statusbar-controls'
 import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
@@ -273,6 +275,22 @@ export function DesktopController() {
     queryClient,
     requestGateway
   })
+
+  const openProviderSettings = useCallback(() => {
+    navigate(`${SETTINGS_ROUTE}?tab=keys`)
+  }, [navigate])
+
+  const modelMenuContent = useMemo(
+    () =>
+      gatewayState === 'open' ? (
+        <ModelMenuPanel
+          gateway={gatewayRef.current || undefined}
+          onSelectModel={selectModel}
+          requestGateway={requestGateway}
+        />
+      ) : null,
+    [gatewayRef, gatewayState, requestGateway, selectModel]
+  )
 
   useContextSuggestions({
     activeSessionId,
@@ -497,6 +515,7 @@ export function DesktopController() {
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
+    modelMenuContent,
     openAgents,
     openCommandCenterSection,
     statusSnapshot,
@@ -531,6 +550,7 @@ export function DesktopController() {
         requestGateway={requestGateway}
       />
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
+      <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />

@@ -7696,6 +7696,20 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            # /fragmentation finalize-reset is an explicit session-boundary
+            # operation. Like /new, it must interrupt old work, finalize the
+            # recovery marker, then rotate the live room/session mapping.
+            if _cmd_def_inner and _cmd_def_inner.name == "fragmentation":
+                _frag_args = (event.get_command_args() or "").strip().split(maxsplit=1)
+                if _frag_args and _frag_args[0] in {"finalize-reset", "live-reset"}:
+                    await self._interrupt_and_clear_session(
+                        _quick_key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_RESET,
+                        invalidation_reason="fragmentation_finalize_reset",
+                    )
+                    return await self._handle_fragmentation_command(event)
+
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -8039,6 +8053,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "fragmentation":
+            return await self._handle_fragmentation_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -9856,6 +9873,231 @@ class GatewayRunner:
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+    def _fragmentation_finalizer_path(self) -> Optional[Path]:
+        """Return the installed context-fragmentation finalizer script, if any."""
+        candidates: List[Path] = []
+        env_path = os.environ.get("HERMES_FRAGMENTATION_FINALIZER")
+        if env_path:
+            candidates.append(Path(env_path).expanduser())
+
+        coord_dir = os.environ.get("HERMES_COORDINATION_DIR")
+        if coord_dir:
+            candidates.append(Path(coord_dir).expanduser() / "scripts" / "fragmentation_finalize.py")
+
+        hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
+        candidates.append(hermes_home / "coordination" / "scripts" / "fragmentation_finalize.py")
+        # Profile homes look like ~/.hermes/profiles/<name>; the coordination
+        # toolkit lives under the root ~/.hermes directory.
+        try:
+            if hermes_home.name and hermes_home.parent.name == "profiles":
+                candidates.append(hermes_home.parent.parent / "coordination" / "scripts" / "fragmentation_finalize.py")
+        except Exception:
+            pass
+        candidates.append(Path.home() / ".hermes" / "coordination" / "scripts" / "fragmentation_finalize.py")
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    def _verify_fragmentation_finalizer_result(
+        self,
+        result: Dict[str, Any],
+        *,
+        profile: str,
+        old_session_id: str,
+    ) -> None:
+        """Verify recovery + pending marker before live session rotation."""
+        import hashlib
+
+        if result.get("profile") not in (None, profile):
+            raise RuntimeError(
+                f"finalizer profile mismatch: expected {profile}, got {result.get('profile')}"
+            )
+
+        recovery_path_raw = str(result.get("recovery_path") or "").strip()
+        marker_path_raw = str(result.get("pending_marker") or "").strip()
+        if not recovery_path_raw:
+            raise RuntimeError("finalizer result missing recovery_path")
+        if not marker_path_raw:
+            raise RuntimeError("finalizer result missing pending_marker")
+
+        recovery_path = Path(recovery_path_raw).expanduser()
+        marker_path = Path(marker_path_raw).expanduser()
+        if not recovery_path.exists() or not recovery_path.is_file():
+            raise RuntimeError(f"recovery file does not exist: {recovery_path}")
+        recovery_size = recovery_path.stat().st_size
+        if recovery_size <= 0:
+            raise RuntimeError(f"recovery file is empty: {recovery_path}")
+        recovery_text = recovery_path.read_text(encoding="utf-8", errors="replace")
+        for pattern in _GATEWAY_SECRET_PATTERNS:
+            if pattern.search(recovery_text):
+                raise RuntimeError("recovery file failed secret-pattern guard")
+        digest = hashlib.sha256(recovery_path.read_bytes()).hexdigest()
+
+        if not marker_path.exists() or not marker_path.is_file():
+            raise RuntimeError(f"pending marker does not exist: {marker_path}")
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"pending marker is not valid JSON: {marker_path}") from exc
+        if not isinstance(marker, dict):
+            raise RuntimeError("pending marker JSON is not an object")
+
+        expected = {
+            "recovery_path": str(recovery_path),
+            "recovery_size_bytes": recovery_size,
+            "recovery_sha256": digest,
+            "old_session_id": old_session_id,
+            "reset_required": True,
+        }
+        for key, value in expected.items():
+            if marker.get(key) != value:
+                raise RuntimeError(
+                    f"pending marker verification failed for {key}: expected {value!r}, got {marker.get(key)!r}"
+                )
+        if result.get("recovery_size_bytes") != recovery_size:
+            raise RuntimeError("finalizer result recovery_size_bytes does not match recovery file")
+        if result.get("recovery_sha256") != digest:
+            raise RuntimeError("finalizer result recovery_sha256 does not match recovery file")
+        if result.get("reset_required") is not True:
+            raise RuntimeError("finalizer result reset_required must be true for live finalize-reset")
+
+    async def _run_fragmentation_finalizer(
+        self,
+        *,
+        profile: str,
+        old_session_id: str,
+        source: Optional[str] = None,
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """Run the deterministic finalizer and return its JSON result."""
+        script = self._fragmentation_finalizer_path()
+        if script is None:
+            raise RuntimeError(
+                "context-fragmentation finalizer not found; expected "
+                "$HERMES_FRAGMENTATION_FINALIZER or ~/.hermes/coordination/scripts/fragmentation_finalize.py"
+            )
+
+        argv = [
+            sys.executable,
+            str(script),
+            "finalize",
+            "--profile",
+            profile,
+            "--old-session-id",
+            old_session_id,
+            "--install-hook",
+        ]
+        if source:
+            argv.extend(["--source", source])
+        if note:
+            argv.extend(["--note", note])
+
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        out = (stdout or b"").decode("utf-8", errors="replace").strip()
+        err = (stderr or b"").decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(err or out or f"finalizer exited with status {proc.returncode}")
+        try:
+            parsed = json.loads(out)
+        except Exception as exc:
+            raise RuntimeError(f"finalizer returned non-JSON output: {out[:500]}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError("finalizer returned JSON that was not an object")
+        return parsed
+
+    async def _handle_fragmentation_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /fragmentation finalize-reset for gateway-native cleanup."""
+        raw_args = event.get_command_args().strip()
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError as exc:
+            return f"Usage: /fragmentation finalize-reset [--source PATH] [--note TEXT]\nArgument parse error: {exc}"
+        if not parts or parts[0] not in {"finalize-reset", "live-reset"}:
+            return (
+                "Usage: `/fragmentation finalize-reset [--source PATH] [--note TEXT]`\n"
+                "Creates a verified recovery document, arms re-entry, resets this live session, "
+                "and lets the pre-LLM hook inject recovery on the next turn."
+            )
+
+        requested_profile: Optional[str] = None
+        source_path: Optional[str] = None
+        note = ""
+        idx = 1
+        while idx < len(parts):
+            token = parts[idx]
+            if token == "--profile" and idx + 1 < len(parts):
+                requested_profile = parts[idx + 1]
+                idx += 2
+            elif token == "--source" and idx + 1 < len(parts):
+                source_path = parts[idx + 1]
+                idx += 2
+            elif token == "--note" and idx + 1 < len(parts):
+                note = parts[idx + 1]
+                idx += 2
+            else:
+                return f"Unknown or incomplete option `{token}`. Usage: /fragmentation finalize-reset [--source PATH] [--note TEXT]"
+
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            active_profile = get_active_profile_name()
+        except Exception:
+            active_profile = os.environ.get("HERMES_PROFILE") or "default"
+        profile = requested_profile or active_profile
+        if requested_profile and requested_profile != active_profile:
+            return (
+                "Refusing live fragmentation reset for another profile. "
+                f"This gateway is running current live profile `{active_profile}`; "
+                f"requested `{requested_profile}`. Send the command in that profile's own room."
+            )
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        old_entry = getattr(self.session_store, "_entries", {}).get(session_key)
+        old_session_id = getattr(old_entry, "session_id", "") or ""
+        if not old_session_id:
+            return (
+                "No live gateway session is bound to this room yet; send a normal message first "
+                "or use the offline fallback `fragmentation_finalize.py offline-reset-session` for stopped sessions."
+            )
+
+        try:
+            finalizer_result = await self._run_fragmentation_finalizer(
+                profile=profile,
+                old_session_id=old_session_id,
+                source=source_path,
+                note=note,
+            )
+            self._verify_fragmentation_finalizer_result(
+                finalizer_result,
+                profile=profile,
+                old_session_id=old_session_id,
+            )
+        except Exception as exc:
+            logger.warning("Fragmentation finalize-reset failed: %s", exc, exc_info=True)
+            return f"✗ Fragmentation cleanup failed before reset: {exc}"
+
+        reset_event = dataclasses.replace(event, text="/new")
+        reset_result = await self._handle_reset_command(reset_event)
+        reset_text = getattr(reset_result, "content", None) or str(reset_result)
+        recovery_path = finalizer_result.get("recovery_path", "unknown")
+        marker = finalizer_result.get("pending_marker", "unknown")
+        sha = finalizer_result.get("recovery_sha256", "unknown")
+        return EphemeralReply(
+            "✓ Fragmentation cleanup finalized and this live session was reset.\n\n"
+            f"Recovery: `{recovery_path}`\n"
+            f"Pending marker: `{marker}`\n"
+            f"SHA-256: `{sha}`\n\n"
+            "The next LLM turn in this fresh session will receive the recovery document via the pre-LLM hook.\n\n"
+            f"Reset result:\n{reset_text}"
+        )
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""

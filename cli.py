@@ -8472,6 +8472,25 @@ class HermesCLI:
         if output:
             print(output)
 
+    def _handle_fragmentation_command(self, cmd: str):
+        """Explain the live gateway-only /fragmentation finalize-reset path."""
+        rest = cmd.strip()
+        if rest.startswith("/"):
+            rest = rest.lstrip("/")
+        if rest.startswith("fragmentation"):
+            rest = rest[len("fragmentation"):].lstrip()
+        if not rest or rest.split(maxsplit=1)[0] not in {"finalize-reset", "live-reset"}:
+            print("Usage: /fragmentation finalize-reset [--source PATH] [--note TEXT]")
+            return
+        print(
+            "/fragmentation finalize-reset is a live gateway/Matrix session-boundary command.\n"
+            "Run it in the target profile's live gateway room so Hermes can read the current room "
+            "session id, verify the recovery marker, and rotate that room via the /new reset path.\n\n"
+            "Offline fallback for stopped sessions:\n"
+            "  fragmentation_finalize.py finalize --profile <profile> --old-session-id <session_id> --install-hook [--source PATH] [--note TEXT]\n"
+            "  fragmentation_finalize.py offline-reset-session --profile <profile> --session-key <session_key>"
+        )
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -8786,6 +8805,8 @@ class HermesCLI:
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "fragmentation":
+            self._handle_fragmentation_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

@@ -498,7 +498,7 @@ def test_run_conversation_codex_responses_does_not_use_websocket_without_provide
     assert http_calls[0]["stream"] is True
 
 
-def test_run_conversation_codex_responses_websocket_connect_failure_falls_back_to_http_same_provider(
+def test_run_conversation_codex_responses_websocket_connect_failure_retries_then_falls_back_to_http_same_provider(
     monkeypatch,
     caplog,
 ):
@@ -541,6 +541,7 @@ def test_run_conversation_codex_responses_websocket_connect_failure_falls_back_t
             pass
 
     agent = _make_codex_responses_ws_agent("codex-responses-ws-http-fallback")
+    agent._api_max_retries = 2
     agent._create_request_openai_client = lambda *args, **kwargs: _HTTPOpenAIClient()
 
     with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
@@ -548,13 +549,14 @@ def test_run_conversation_codex_responses_websocket_connect_failure_falls_back_t
 
     assert result["completed"] is True
     assert result["final_response"] == "http-ok"
-    assert len(ws_attempts) == 1
+    assert len(ws_attempts) == 2
     assert len(http_calls) == 1
     assert http_calls[0]["stream"] is True
     assert "previous_response_id" not in http_calls[0]
     request_input = json.dumps(http_calls[0]["input"], ensure_ascii=False)
     assert "Reply http-ok" in request_input
-    assert "Codex Responses WebSocket disabled for current turn" in caplog.text
+    assert "codex_responses_websocket_event=retry_transport_error" in caplog.text
+    assert "Codex Responses WebSocket disabled for this session" in caplog.text
     assert "codex_responses_websocket_event=http_fallback" in caplog.text
     assert "falling back to HTTP" in caplog.text
     assert "websocket_transport_error" in caplog.text
@@ -641,6 +643,7 @@ def test_run_conversation_codex_responses_websocket_fallback_keeps_remaining_tur
         max_iterations=3,
         disabled_toolsets=[],
     )
+    agent._api_max_retries = 2
     agent._create_request_openai_client = lambda *args, **kwargs: _HTTPOpenAIClient()
 
     def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
@@ -659,7 +662,7 @@ def test_run_conversation_codex_responses_websocket_fallback_keeps_remaining_tur
 
     assert result["completed"] is True
     assert result["final_response"] == "done"
-    assert len(ws_attempts) == 1
+    assert len(ws_attempts) == 2
     assert len(http_calls) == 2
     assert all("previous_response_id" not in call for call in http_calls)
 
@@ -782,7 +785,7 @@ class _RestoredResponsesWebSocket:
         return json.dumps(self.events.pop(0))
 
 
-def test_run_conversation_codex_responses_websocket_restores_with_full_input_after_http_fallback(
+def test_run_conversation_codex_responses_websocket_http_fallback_is_session_scoped(
     monkeypatch,
     caplog,
 ):
@@ -808,16 +811,17 @@ def test_run_conversation_codex_responses_websocket_restores_with_full_input_aft
     class _HTTPResponses:
         def create(self, **kwargs):
             http_calls.append(kwargs)
+            text = "http-first" if len(http_calls) == 1 else "http-second"
             return _FakeCreateStream(
                 [
-                    {"type": "response.output_text.delta", "delta": "http-first"},
+                    {"type": "response.output_text.delta", "delta": text},
                     {
                         "type": "response.output_item.done",
                         "item": {
                             "type": "message",
                             "role": "assistant",
                             "status": "completed",
-                            "content": [{"type": "output_text", "text": "http-first"}],
+                            "content": [{"type": "output_text", "text": text}],
                         },
                     },
                     {
@@ -836,50 +840,25 @@ def test_run_conversation_codex_responses_websocket_restores_with_full_input_aft
     agent = _make_codex_responses_ws_agent("codex-responses-ws-restore-after-http", max_iterations=2)
     agent._create_request_openai_client = lambda *args, **kwargs: _HTTPOpenAIClient()
 
-    with caplog.at_level(logging.INFO, logger="agent.codex_runtime"):
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
         first = agent.run_conversation("Initial turn. Reply http-first.")
         assert first["completed"] is True
         assert first["final_response"] == "http-first"
+        assert codex_runtime.codex_responses_websocket_enabled(agent) is False
 
         second = agent.run_conversation(
-            "Second turn. Reply ws-restored.",
+            "Second turn. Reply http-second.",
             conversation_history=first["messages"],
         )
         assert second["completed"] is True
-        assert second["final_response"] == "ws-restored"
+        assert second["final_response"] == "http-second"
+        assert codex_runtime.codex_responses_websocket_enabled(agent) is False
 
-    third = agent.run_conversation(
-        "Third turn. Reply ws-third.",
-        conversation_history=second["messages"],
-    )
-    assert third["completed"] is True
-    assert third["final_response"] == "ws-third"
-
-    assert len(http_calls) == 1
-    assert len(ws_connect_attempts) == 2
-    assert len(connections) == 1
-    sends = connections[0]["sends"]
-    assert len(sends) == 2
-
-    restored_payload = sends[0]["sent"]
-    restored_input = json.dumps(restored_payload["input"], ensure_ascii=False)
-    assert "previous_response_id" not in restored_payload
-    assert "Initial turn" in restored_input
-    assert "http-first" in restored_input
-    assert "Second turn" in restored_input
-
-    incremental_payload = sends[1]["sent"]
-    incremental_input = json.dumps(incremental_payload["input"], ensure_ascii=False)
-    assert incremental_payload["previous_response_id"] == "resp_ws_restored_1"
-    assert "Third turn" in incremental_input
-    assert "Initial turn" not in incremental_input
-    assert "http-first" not in incremental_input
-    assert "Second turn" not in incremental_input
-    assert "chain invalidated" in caplog.text
-    assert "codex_responses_websocket_event=restore_full_input" in caplog.text
-    assert "codex_responses_websocket_event=restore_full_input_completed" in caplog.text
-    assert "reopening with full input" in caplog.text
-    assert "full-input request completed" in caplog.text
+    assert len(http_calls) == 2
+    assert len(ws_connect_attempts) == 1
+    assert connections == []
+    assert "codex_responses_websocket_event=http_fallback" in caplog.text
+    assert "Codex Responses WebSocket disabled for this session" in caplog.text
 
 
 class _RecoveringResponsesWebSocket:
@@ -1010,6 +989,156 @@ def test_run_conversation_codex_responses_websocket_recovers_with_full_input_whe
     assert "Second turn" in recovered_input
 
 
+class _ConnectionLimitThenOkResponsesWebSocket:
+    def __init__(self, connection):
+        self.connection = connection
+        self.events = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.connection["closed"] = True
+        return False
+
+    def close(self):
+        self.connection["closed"] = True
+
+    def send(self, payload):
+        sent = json.loads(payload)
+        self.connection["sends"].append({"sent": sent})
+        if self.connection["limit_error"]:
+            self.events = [
+                {
+                    "type": "error",
+                    "error": {
+                        "code": "websocket_connection_limit_reached",
+                        "message": "websocket connection limit reached",
+                    },
+                }
+            ]
+            return
+        self.events = [
+            {"type": "response.created", "response": {"id": "resp_after_limit", "status": "in_progress"}},
+            {"type": "response.output_text.delta", "delta": "limit-recovered"},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "limit-recovered"}],
+                },
+            },
+            {"type": "response.completed", "response": {"id": "resp_after_limit", "status": "completed"}},
+        ]
+
+    def recv(self, timeout=None):
+        if not self.events:
+            raise AssertionError("Hermes consumed past terminal WebSocket event")
+        return json.dumps(self.events.pop(0))
+
+
+def test_run_conversation_codex_responses_websocket_connection_limit_retries_websocket(
+    monkeypatch,
+    caplog,
+):
+    connections = []
+
+    def fake_connect(uri, **kwargs):
+        connection = {
+            "uri": uri,
+            "headers": kwargs.get("additional_headers") or {},
+            "sends": [],
+            "limit_error": not connections,
+        }
+        connections.append(connection)
+        return _ConnectionLimitThenOkResponsesWebSocket(connection)
+
+    monkeypatch.setattr(codex_runtime, "_connect_responses_websocket", fake_connect)
+
+    agent = _make_codex_responses_ws_agent("codex-responses-ws-connection-limit")
+    agent._api_max_retries = 2
+    agent._create_request_openai_client = (
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("connection-limit recovery should retry WebSocket, not HTTP fallback")
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        result = agent.run_conversation("Reply limit-recovered.")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "limit-recovered"
+    assert len(connections) == 2
+    assert connections[0].get("closed") is True
+    assert len(connections[0]["sends"]) == 1
+    assert len(connections[1]["sends"]) == 1
+    assert "codex_responses_websocket_event=retry_transport_error" in caplog.text
+    assert "websocket_connection_limit_reached" in caplog.text
+
+
+def test_run_conversation_codex_responses_websocket_upgrade_required_immediately_falls_back_to_http(
+    monkeypatch,
+    caplog,
+):
+    class _UpgradeRequiredError(ConnectionError):
+        status_code = 426
+
+    ws_attempts = []
+
+    def fake_connect(uri, **kwargs):
+        ws_attempts.append(uri)
+        raise _UpgradeRequiredError("426 Upgrade Required")
+
+    monkeypatch.setattr(codex_runtime, "_connect_responses_websocket", fake_connect)
+
+    http_calls = []
+
+    class _HTTPResponses:
+        def create(self, **kwargs):
+            http_calls.append(kwargs)
+            return _FakeCreateStream(
+                [
+                    {"type": "response.output_text.delta", "delta": "http-426"},
+                    {
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [{"type": "output_text", "text": "http-426"}],
+                        },
+                    },
+                    {
+                        "type": "response.completed",
+                        "response": {"id": "resp_http_426", "status": "completed"},
+                    },
+                ]
+            )
+
+    class _HTTPOpenAIClient:
+        responses = _HTTPResponses()
+
+        def close(self):
+            pass
+
+    agent = _make_codex_responses_ws_agent("codex-responses-ws-upgrade-required")
+    agent._api_max_retries = 3
+    agent._create_request_openai_client = lambda *args, **kwargs: _HTTPOpenAIClient()
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        result = agent.run_conversation("Reply http-426.")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "http-426"
+    assert len(ws_attempts) == 1
+    assert len(http_calls) == 1
+    assert codex_runtime.codex_responses_websocket_enabled(agent) is False
+    assert "codex_responses_websocket_event=http_fallback" in caplog.text
+    assert "websocket_upgrade_required" in caplog.text
+
+
 class _StaleThenReopenedResponsesWebSocket:
     def __init__(self, connection):
         self.connection = connection
@@ -1089,6 +1218,7 @@ def test_run_conversation_codex_responses_websocket_reopens_stale_socket_before_
             pass
 
     agent = _make_codex_responses_ws_agent("codex-responses-ws-stale-reopen", max_iterations=2)
+    agent._api_max_retries = 2
     agent._create_request_openai_client = lambda *args, **kwargs: _HTTPOpenAIClient()
 
     first = agent.run_conversation("First turn. Reply first-ok.")
@@ -1099,7 +1229,7 @@ def test_run_conversation_codex_responses_websocket_reopens_stale_socket_before_
     # first request. The next turn should reopen WebSocket and retry full input.
     connections[0]["fail_send"] = True
 
-    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+    with caplog.at_level(logging.INFO, logger="agent.codex_runtime"):
         second = agent.run_conversation(
             "Second turn. Reply second-ok.",
             conversation_history=first["messages"],
@@ -1121,7 +1251,7 @@ def test_run_conversation_codex_responses_websocket_reopens_stale_socket_before_
     assert "First turn" in reopened_input
     assert "first-ok" in reopened_input
     assert "Second turn" in reopened_input
-    assert "continuation failed before output" in caplog.text
-    assert "codex_responses_websocket_event=continuation_reopen_before_http_fallback" in caplog.text
-    assert "reopening with full input before HTTP fallback" in caplog.text
+    assert "codex_responses_websocket_event=retry_transport_error" in caplog.text
+    assert "codex_responses_websocket_event=restore_full_input" in caplog.text
+    assert "continuation_reopen_before_http_fallback" not in caplog.text
     assert "stale websocket send failed" in caplog.text

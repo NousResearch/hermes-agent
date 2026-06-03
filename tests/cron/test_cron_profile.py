@@ -466,6 +466,7 @@ class TestProfileScopedSessionWritesToRoot:
         resolve JOBS_FILE to the gateway-shared root jobs.json, not the
         profile-local one."""
         import importlib
+        from pathlib import Path as _Path
 
         root = tmp_path / "hermes-root"
         profile_home = root / "profiles" / "support"
@@ -473,7 +474,7 @@ class TestProfileScopedSessionWritesToRoot:
 
         # Pretend the agent session is profile-scoped: HERMES_HOME = profile dir.
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
         import cron.jobs as cron_jobs
 
@@ -498,6 +499,7 @@ class TestProfileScopedSessionWritesToRoot:
         """An agent session running under -p <profile> creates a cron job;
         the job must land in the root jobs.json that the gateway reads."""
         import importlib
+        from pathlib import Path as _Path
 
         root = tmp_path / "hermes-root"
         profile_home = root / "profiles" / "support"
@@ -505,7 +507,7 @@ class TestProfileScopedSessionWritesToRoot:
 
         # Profile session: HERMES_HOME points at the profile, not the root.
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
         # Reload cron.jobs so the module-level CRON_DIR/JOBS_FILE recompute
         # against the patched environment.
@@ -548,12 +550,13 @@ class TestProfileScopedSessionWritesToRoot:
         """In a default (non-profile) session, create_job must not stamp a
         profile field on jobs that don't request one."""
         import importlib
+        from pathlib import Path as _Path
 
         root = tmp_path / "hermes-root"
         root.mkdir(parents=True)
 
         monkeypatch.setenv("HERMES_HOME", str(root))
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
         import cron.jobs as cron_jobs
 

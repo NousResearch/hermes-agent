@@ -81,11 +81,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "label_he", "category",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 label_he=None, category=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -104,6 +106,15 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # Optional Hebrew display label for surfaces that render tool names to
+        # native (RTL) operators — e.g. agente-desktop's tool-picker.  English
+        # ``name`` remains the canonical identifier used by the LLM and tests.
+        self.label_he = label_he
+        # Optional logical grouping (e.g. "automation", "filesystem",
+        # "messaging") used to organize tools in operator-facing UIs without
+        # coupling to the internal ``toolset`` field, which is reserved for
+        # runtime enable/disable + check_fn gating.
+        self.category = category
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +255,17 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
+        label_he: str = None,
+        category: str = None,
     ):
-        """Register a tool.  Called at module-import time by each tool file."""
+        """Register a tool.  Called at module-import time by each tool file.
+
+        ``label_he`` (optional Hebrew display name) and ``category`` (optional
+        operator-facing grouping like "automation", "filesystem") are surfaced
+        to UIs that render tools to native users; they don't affect runtime
+        gating or LLM-visible schema. Default ``None`` keeps existing tool
+        registrations untouched.
+        """
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
@@ -282,6 +302,8 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                label_he=label_he,
+                category=category,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn

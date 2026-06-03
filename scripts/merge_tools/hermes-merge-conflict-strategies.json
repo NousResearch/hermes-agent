@@ -24,6 +24,11 @@
       "note": "Official lockfile carries dependency and vulnerability fixes."
     },
     {
+      "pattern": "**/package-lock.json",
+      "action": "upstream",
+      "note": "Official npm lockfiles carry dependency and vulnerability fixes."
+    },
+    {
       "pattern": "pyproject.toml",
       "action": "official_with_overlay",
       "note": "Take official deps; re-apply fork-only optional extras after merge."

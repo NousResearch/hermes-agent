@@ -2105,8 +2105,20 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
-        val = env_file.get(key) or _get_secret(key, "") or ""
-        return val.strip()
+        raw = env_file.get(key, "").strip()
+        env_val = os.environ.get(key, "").strip()
+        # If .env contains an unresolved op:// reference, prefer the
+        # already-resolved value from os.environ (set by
+        # load_hermes_dotenv() -> apply_onepassword_secrets()).  The raw
+        # "op://Vault/Item/field" string would otherwise win and every
+        # provider auth attempt would receive a URL instead of a key.  This
+        # happens during a partial migration, or when the user wrote op://
+        # references straight into .env rather than the secrets.onepassword
+        # config block.  For every non-op:// value the original
+        # .env-takes-precedence behaviour is preserved unchanged.
+        if raw.startswith("op://") and env_val:
+            return env_val
+        return raw or _get_secret(key, "") or env_val
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an
     # env-seeded credential marks the env:<VAR> source as suppressed so it

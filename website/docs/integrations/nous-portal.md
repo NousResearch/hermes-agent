@@ -136,7 +136,7 @@ hermes portal tools      # detailed Tool Gateway catalog with per-tool routing
 hermes portal open       # open the subscription management page in your browser
 ```
 
-`hermes portal` (with no subcommand) is the human-readable alias for `hermes auth add nous --type oauth` — it logs you in, sets Nous as your inference provider, and offers the Tool Gateway opt-in (identical to `hermes setup --portal`).
+`hermes portal` (with no subcommand) is the human-readable alias for `hermes auth add nous --type oauth` — it logs you in, lets you pick a Nous model, sets Nous as your inference provider, and offers the Tool Gateway opt-in (identical to `hermes setup --portal`, and the same Nous flow as the first-time quick setup).
 
 `hermes portal info` gives you the high-level overview:
 

@@ -132,7 +132,7 @@ hermes portal tools      # 详细的 Tool Gateway 目录及每个工具的路由
 hermes portal open       # 在浏览器中打开订阅管理页面
 ```
 
-`hermes portal`（不带子命令）是 `hermes auth add nous --type oauth` 的易记别名——它会登录、把 Nous 设为推理服务商，并提供 Tool Gateway 启用选项（与 `hermes setup --portal` 等价）。
+`hermes portal`（不带子命令）是 `hermes auth add nous --type oauth` 的易记别名——它会登录、让你选择 Nous 模型、把 Nous 设为推理服务商，并提供 Tool Gateway 启用选项（与 `hermes setup --portal` 等价，与首次快速设置走的是同一套 Nous 流程）。
 
 `hermes portal info` 给出高层概览：
 

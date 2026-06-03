@@ -23,11 +23,14 @@ const WHEEL_ACCEL_STEP = 0.3
 const WHEEL_ACCEL_MAX = 6
 
 // ── Encoder bounce / wheel-mode (mechanical wheels) ────────────────────
-const WHEEL_BOUNCE_GAP_MAX_MS = 200
-const WHEEL_MODE_STEP = 15
-const WHEEL_MODE_CAP = 15
-const WHEEL_MODE_RAMP = 3
-const WHEEL_MODE_IDLE_DISENGAGE_MS = 1500
+// Gap tightened from 200→60ms: Windows focus/blur and ConPTY glitches
+// produce phantom wheel events that pair with real events within 200ms,
+// falsely engaging wheelMode and causing sudden 15-row jumps.
+const WHEEL_BOUNCE_GAP_MAX_MS = 60
+const WHEEL_MODE_STEP = 8
+const WHEEL_MODE_CAP = 8
+const WHEEL_MODE_RAMP = 1
+const WHEEL_MODE_IDLE_DISENGAGE_MS = 1000
 
 // ── xterm.js (VS Code / Cursor / browser terminals) ────────────────────
 const WHEEL_DECAY_HALFLIFE_MS = 150
@@ -50,18 +53,30 @@ export type WheelAccelState = {
   /** Native baseline rows/event. Reset on idle/reversal; ramp builds on
    *  top. xterm.js path ignores. */
   base: number
-  /** Deferred direction flip (native): bounce vs reversal — next event
-   *  decides. */
-  pendingFlip: boolean
   /** Sticky once a flip-then-flip-back fires within the bounce window.
    *  Cleared by idle disengage or trackpad burst. */
   wheelMode: boolean
-  /** Consecutive <5ms events. ≥5 → trackpad flick → disengage. */
+  /** Consecutive <5ms events.  Trackpad flick ≥5 → disengage wheelMode. */
   burstCount: number
+  /**
+   * Direction-change debounce.  A single spurious event (common on Windows
+   * when focus changes or mouse-tracking glitches fire a lone wheel event)
+   * should not trigger a pending-flip → wheelMode chain.  Two consecutive
+   * events in the new direction are required to confirm a real reversal.
+   */
+  pendingDir: 0 | 1 | -1
+  /** Consecutive events seen in `pendingDir`. Confirmed at ≥2. */
+  pendingCount: number
+  /** Saved direction *before* the pending reversal started — used for
+   *  bounce-back detection (encoder-bounce → wheelMode). */
+  savedDir: 0 | 1 | -1
+  /** Timestamp when `savedDir` was first established.  Bounce-back must
+   *  occur within WHEEL_BOUNCE_GAP_MAX_MS of this time, not the last event. */
+  savedTime: number
 }
 
 export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
-  return { burstCount: 0, base, dir: 0, frac: 0, mult: base, pendingFlip: false, time: 0, wheelMode: false, xtermJs }
+  return { burstCount: 0, base, dir: 0, frac: 0, mult: base, pendingCount: 0, pendingDir: 0, savedDir: 0, savedTime: 0, time: 0, wheelMode: false, xtermJs }
 }
 
 /** HERMES_TUI_SCROLL_SPEED (or CLAUDE_CODE_SCROLL_SPEED for portability).
@@ -92,29 +107,59 @@ function nativeStep(state: WheelAccelState, dir: -1 | 1, now: number): number {
     state.mult = state.base
   }
 
-  if (state.pendingFlip) {
-    state.pendingFlip = false
-
-    if (dir !== state.dir || now - state.time > WHEEL_BOUNCE_GAP_MAX_MS) {
-      // Real reversal (flip persisted OR flip-back too late). Commit.
-      // The deferred event's 1 row is lost — acceptable latency.
-      state.dir = dir
-      state.time = now
-      state.mult = state.base
-
-      return Math.floor(state.mult)
-    }
-
-    state.wheelMode = true
-  }
-
   const gap = now - state.time
 
+  // ── Direction-change debounce ──────────────────────────────────────
+  // Single spurious events (common on Windows focus changes, mouse-tracking
+  // glitches) must not trigger a pending-flip → wheelMode chain.  Require
+  // 2+ consecutive events in the new direction to confirm a real reversal.
   if (dir !== state.dir && state.dir !== 0) {
-    state.pendingFlip = true
-    state.time = now
+    if (dir === state.pendingDir) {
+      // Another event in the pending direction — confirm.
+      state.pendingCount++
+      if (state.pendingCount >= 2) {
+        // Confirmed reversal.  Did we bounce back to the ORIGINAL direction
+        // (the one saved when the first direction-change occurred) within
+        // the bounce window?  If so it's encoder bounce → wheelMode.
+        // Use savedTime (anchored at first direction change) rather than
+        // state.time (which advances with every pending event).
+        if (dir === state.savedDir && now - state.savedTime <= WHEEL_BOUNCE_GAP_MAX_MS) {
+          state.wheelMode = true
+        } else {
+          // Genuine sustained reversal — full reset.
+          state.mult = state.base
+        }
+        state.dir = dir
+        state.time = now
+        state.pendingDir = 0
+        state.pendingCount = 0
+        // Keep savedDir — it anchors the original direction for
+        // multi-hop bounce detection (down→up→down within window).
+        return Math.floor(state.mult)
+      }
+      // Still collecting — no-scroll, but update time so the gap tracks.
+      state.time = now
+      return 0
+    }
 
+    // First event in a new direction (or a third direction).
+    // Only set savedDir/savedTime on the VERY first direction change.
+    if (state.savedDir === 0) {
+      state.savedDir = state.dir         // remember where we came from
+      state.savedTime = now              // anchor the bounce window start
+    }
+    state.pendingDir = dir               // track the new candidate direction
+    state.pendingCount = 1
+    state.time = now
     return 0
+  }
+
+  // Same direction — clear pending state and reset bounce anchor.
+  if (state.pendingCount > 0) {
+    state.pendingDir = 0
+    state.pendingCount = 0
+    state.savedDir = 0
+    state.savedTime = 0
   }
 
   state.dir = dir

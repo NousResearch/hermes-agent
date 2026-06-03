@@ -68,20 +68,18 @@ def _check_ws_token(provided: Optional[str]) -> bool:
 
     Imported lazily so the plugin still loads in test contexts where the
     dashboard web_server module isn't importable (e.g. the bare-FastAPI
-    test harness).
+    test harness), but authentication still fails closed if the dashboard
+    token source is unavailable.
     """
     if not provided:
         return False
     try:
         from hermes_cli import web_server as _ws
     except Exception:
-        # No dashboard context (tests). Accept so the tail loop is still
-        # testable; in production the dashboard module always imports
-        # cleanly because it's the caller.
-        return True
+        return False
     expected = getattr(_ws, "_SESSION_TOKEN", None)
     if not expected:
-        return True
+        return False
     return hmac.compare_digest(str(provided), str(expected))
 
 

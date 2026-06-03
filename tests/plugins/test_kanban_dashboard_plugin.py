@@ -25,8 +25,8 @@ from hermes_cli import kanban_db as kb
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -38,7 +38,12 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    return _load_plugin_module().router
 
 
 @pytest.fixture
@@ -772,6 +777,36 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         "/api/plugins/kanban/events?token=secret-xyz"
     ) as ws:
         assert ws is not None  # handshake succeeded
+
+
+def test_ws_token_fails_closed_when_dashboard_module_unavailable(monkeypatch):
+    """If the dashboard token source cannot be imported, auth must not accept callers."""
+    import builtins
+
+    mod = _load_plugin_module()
+    original_import = builtins.__import__
+
+    def fail_web_server_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "hermes_cli" and "web_server" in fromlist:
+            raise RuntimeError("dashboard module unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fail_web_server_import)
+
+    assert mod._check_ws_token("anything") is False
+
+
+def test_ws_token_fails_closed_when_dashboard_session_token_missing(monkeypatch):
+    """A missing dashboard session token is an auth setup failure, not public access."""
+    import hermes_cli
+    import types
+
+    mod = _load_plugin_module()
+    stub = types.SimpleNamespace(_SESSION_TOKEN=None)
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    assert mod._check_ws_token("anything") is False
 
 
 def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp_path, monkeypatch):

@@ -121,9 +121,12 @@ small, guarded, and a no-op when the mode is off.
 
 ## Docs
 
-[`docs/caduceus/`](docs/caduceus/) — [install](docs/caduceus/INSTALL.md) ·
-[user guide](docs/caduceus/USER_GUIDE.md) · [design](docs/caduceus/DESIGN.md) ·
-[parity](docs/caduceus/PARITY.md) · [contribution summary](docs/caduceus/PR_DESCRIPTION.md)
+[`docs/caduceus/`](https://github.com/OnlyTerp/Hermes-caduceus/tree/caduceus/docs/caduceus) —
+[install](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/INSTALL.md) ·
+[user guide](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/USER_GUIDE.md) ·
+[design](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/DESIGN.md) ·
+[parity](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/PARITY.md) ·
+[contribution summary](https://github.com/OnlyTerp/Hermes-caduceus/blob/caduceus/docs/caduceus/PR_DESCRIPTION.md)
 
 ## Verify locally
 

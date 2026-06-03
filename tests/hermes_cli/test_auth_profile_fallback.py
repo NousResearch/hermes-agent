@@ -319,6 +319,54 @@ def test_load_provider_state_profile_wins_over_global(profile_env):
     assert state["access_token"] == "profile-token"
 
 
+def test_load_provider_state_codex_empty_tokens_falls_back_to_global(profile_env):
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {
+            "tokens": {
+                "access_token": "global-codex-token",
+                "refresh_token": "global-refresh",
+            },
+            "last_refresh": "2026-06-03T00:00:00Z",
+        },
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {"tokens": {}},
+    }))
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "openai-codex")
+    assert state is not None
+    assert state["tokens"]["access_token"] == "global-codex-token"
+
+
+def test_load_provider_state_codex_profile_valid_tokens_shadow_global(profile_env):
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {
+            "tokens": {
+                "access_token": "global-codex-token",
+                "refresh_token": "global-refresh",
+            },
+        },
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {
+            "tokens": {
+                "access_token": "profile-codex-token",
+                "refresh_token": "profile-refresh",
+            },
+        },
+    }))
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "openai-codex")
+    assert state is not None
+    assert state["tokens"]["access_token"] == "profile-codex-token"
+
+
 def test_load_provider_state_returns_none_when_neither_has_it(profile_env):
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 
@@ -350,6 +398,28 @@ def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
     assert state["access_token"] == "classic-token"
     # Absent providers still return None.
     assert _load_provider_state(auth_store, "anthropic") is None
+
+
+def test_resolve_codex_runtime_credentials_profile_empty_provider_uses_global_pool(profile_env):
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [
+            {
+                "source": "device_code",
+                "access_token": "global-pool-token",
+                "refresh_token": "global-pool-refresh",
+                "auth_type": "oauth",
+            },
+        ],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": {"tokens": {}},
+    }, pool={}))
+
+    resolved = resolve_codex_runtime_credentials()
+    assert resolved["api_key"] == "global-pool-token"
+    assert resolved["source"] == "credential_pool"
 
 
 def test_load_provider_state_malformed_global_does_not_break_profile(profile_env):

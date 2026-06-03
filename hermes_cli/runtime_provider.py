@@ -307,7 +307,7 @@ def _resolve_runtime_from_pool_entry(
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
     if provider == "openai-codex":
-        api_mode = "codex_responses"
+        api_mode = model_cfg.get("api_mode", "codex_responses")
         base_url = base_url or DEFAULT_CODEX_BASE_URL
     elif provider == "xai-oauth":
         api_mode = "codex_responses"

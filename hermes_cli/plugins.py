@@ -44,8 +44,8 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
-
+from typing import (Any, Callable, Dict, Iterable, List, Optional, Set, Tuple,
+                    Type, Union)
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 from hermes_cli.config import cfg_get
@@ -1681,10 +1681,37 @@ def get_pre_tool_call_block_message(
     directive wins.  Invalid or irrelevant hook return values are
     silently ignored so existing observer-only hooks are unaffected.
     """
+    block_msg, _ = _dispatch_pre_tool_call_hooks(
+        tool_name, args,
+        task_id=task_id, session_id=session_id, tool_call_id=tool_call_id,
+    )
+    return block_msg
+
+
+def _dispatch_pre_tool_call_hooks(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Invoke ``pre_tool_call`` hooks once and process all response types.
+
+    Returns a ``(block_message, modified_args)`` tuple:
+    - ``block_message`` — the first block directive's reason (or ``None``).
+    - ``modified_args`` — merged args from the first ``modify`` directive
+      (or ``None`` when no hook requested modification).
+
+    This is the single invocation point for ``pre_tool_call`` hooks.
+    Callers that only need block detection should keep using
+    :func:`get_pre_tool_call_block_message` for backward compat.
+    Callers that also need input transformation should call this
+    function and apply ``modified_args`` if not ``None``.
+    """
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return fmt.format(tool_name=tool_name)
+        return (fmt.format(tool_name=tool_name), None)
 
     hook_results = invoke_hook(
         "pre_tool_call",
@@ -1695,16 +1722,30 @@ def get_pre_tool_call_block_message(
         tool_call_id=tool_call_id,
     )
 
+    block_msg: Optional[str] = None
+    modified_args: Optional[Dict[str, Any]] = None
+
     for result in hook_results:
         if not isinstance(result, dict):
             continue
-        if result.get("action") != "block":
-            continue
-        message = result.get("message")
-        if isinstance(message, str) and message:
-            return message
 
-    return None
+        # Block directive — first one wins.
+        if result.get("action") == "block":
+            message = result.get("message")
+            if isinstance(message, str) and message:
+                block_msg = message
+                break  # block takes precedence over modify
+
+        # Modify directive — first one wins (shallow merge).
+        if result.get("action") == "modify":
+            partial = result.get("args")
+            if isinstance(partial, dict) and partial:
+                merged = dict(args) if isinstance(args, dict) else {}
+                merged.update(partial)
+                modified_args = merged
+                # Don't break — keep scanning for block directives.
+
+    return (block_msg, modified_args)
 
 
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:

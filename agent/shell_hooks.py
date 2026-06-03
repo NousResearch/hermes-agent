@@ -47,6 +47,12 @@ Wire protocol
     # Inject context for pre_llm_call:
     {"context": "Today is Friday"}
 
+    # Modify tool input for pre_tool_call (Hermes-canonical):
+    {"action": "modify", "args": {"new_string": "fixed content"}}
+
+    # Modify tool input for pre_tool_call (Claude-Code-style):
+    {"decision": "modify", "tool_input": {"new_string": "fixed content"}}
+
     # Silent no-op:
     <empty or any non-matching JSON object>
 """
@@ -504,6 +510,12 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     skipping the translation silently breaks every ``pre_tool_call``
     block directive.
 
+    For ``pre_tool_call`` the ``modify`` action (canonical: ``{"action":
+    "modify", "args": {...}}``, Claude-Code-style: ``{"decision":
+    "modify", "tool_input": {...}}``) is translated to
+    ``{"action": "modify", "args": {...}}`` so callers can merge the
+    returned fields into the tool's ``args`` before dispatch.
+
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
     unchanged to match the existing plugin-hook contract.
 
@@ -530,6 +542,15 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
         if data.get("decision") == "block":
             return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
+        # "modify" action — transform tool_input before dispatch
+        if data.get("action") == "modify":
+            new_args = data.get("args")
+            if isinstance(new_args, dict):
+                return {"action": "modify", "args": new_args}
+        if data.get("decision") == "modify":
+            new_args = data.get("tool_input")
+            if isinstance(new_args, dict):
+                return {"action": "modify", "args": new_args}
         return None
 
     context = data.get("context")

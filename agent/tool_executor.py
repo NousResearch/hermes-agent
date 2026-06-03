@@ -190,10 +190,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             block_result = _ts_scope_block
         else:
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+                block_message, modified_args = _dispatch_pre_tool_call_hooks(
                     function_name, function_args, task_id=effective_task_id or "",
                 )
+                if modified_args is not None:
+                    function_args = modified_args
             except Exception:
                 block_message = None
 
@@ -590,26 +592,27 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        # Check plugin hooks for a block directive before executing.
+        # Check plugin hooks for block/modify directives before executing.
         _block_msg: Optional[str] = None
-        if _ts_scope_block is not None:
-            _block_msg = _ts_scope_block
-        else:
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                _block_msg = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
-                )
-            except Exception:
-                pass
+        try:
+            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+            _block_msg, _modified_args = _dispatch_pre_tool_call_hooks(
+                function_name, function_args, task_id=effective_task_id or "",
+            )
+            if _modified_args is not None:
+                function_args = _modified_args
+        except Exception:
+            pass
+
+        _effective_block = _ts_scope_block or _block_msg
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if _effective_block is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = _effective_block is not None or _guardrail_block_decision is not None
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -683,9 +686,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if _block_msg is not None:
-            # Tool blocked by plugin policy — return error without executing.
-            function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+        if _effective_block is not None:
+            # Tool blocked by plugin policy or out-of-scope tool_search — return error without executing.
+            function_result = json.dumps({"error": _effective_block}, ensure_ascii=False)
             tool_duration = 0.0
         elif _guardrail_block_decision is not None:
             # Tool blocked by tool-loop guardrail — synthesize exactly one

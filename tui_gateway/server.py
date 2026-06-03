@@ -2320,6 +2320,16 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         pass
 
     cfg = _load_cfg()
+    # Register shell hooks so pre/post_tool_call hooks are wired into the
+    # plugin manager before the agent is created.  Uses accept_hooks=False —
+    # register_from_config resolves the effective value from HERMES_ACCEPT_HOOKS
+    # env var and hooks_auto_accept in config, matching gateway/run.py behaviour.
+    try:
+        from agent.shell_hooks import register_from_config
+        register_from_config(cfg, accept_hooks=False)
+    except Exception:
+        logger.debug("shell-hook registration failed at TUI agent startup", exc_info=True)
+
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()

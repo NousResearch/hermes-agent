@@ -23,7 +23,7 @@ const net = require('node:net')
 const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
-const { isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
+const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const {
@@ -73,6 +73,25 @@ const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
 const APP_ROOT = app.getAppPath()
+
+// Remote displays (SSH X11 forwarding, VNC, RDP, WSLg) make Chromium's GPU
+// compositor flicker — accelerated layers can't be presented cleanly over the
+// wire, so the window flashes during scroll/streaming/animation. Local
+// Windows/macOS composite on the GPU and never see it. Fall back to software
+// rendering when a remote display is detected; it's rock-steady over the wire
+// and the CPU cost is negligible next to the connection's latency. Must run
+// before app `ready` — these switches only apply pre-launch. Override with
+// HERMES_DESKTOP_DISABLE_GPU (1/true → always disable, 0/false → keep GPU on).
+const REMOTE_DISPLAY_REASON = detectRemoteDisplay({ isWsl: IS_WSL })
+if (REMOTE_DISPLAY_REASON) {
+  app.disableHardwareAcceleration()
+  // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
+  // with only --disable-gpu: force compositing onto the CPU too.
+  app.commandLine.appendSwitch('disable-gpu-compositing')
+  console.log(
+    `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
+  )
+}
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
 // Build-time install stamp -- the git ref this .exe was built against.

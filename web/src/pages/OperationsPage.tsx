@@ -31,6 +31,7 @@ import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { AdapterHealthCard } from "@/components/AdapterHealthCard";
 import { isoTimeAgo, timeAgo } from "@/lib/utils";
 
 type KnownState = "healthy" | "degraded" | "critical";
@@ -1058,6 +1059,7 @@ export default function OperationsPage() {
         </Card>
 
         <div className="space-y-4">
+          <AdapterHealthCard />
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">

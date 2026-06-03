@@ -49,6 +49,7 @@ import { useToast } from "@/hooks/useToast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { V210WorkspaceContext } from "@/components/V210WorkspaceContext";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
@@ -688,6 +689,7 @@ export default function SessionsPage() {
   return (
     <div className="flex flex-col gap-4">
       <PluginSlot name="sessions:top" />
+      <V210WorkspaceContext />
       <Toast toast={toast} />
 
       <DeleteConfirmDialog

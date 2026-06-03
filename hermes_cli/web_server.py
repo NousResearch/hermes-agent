@@ -8095,6 +8095,105 @@ async def post_plugin_visibility(request: Request, name: str, body: _PluginVisib
     return {"ok": True, "name": name, "hidden": body.hidden}
 
 
+# ---------------------------------------------------------------------------
+# v2.10 Multi-Entry Session Binding API endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v2.10/workspaces")
+async def v2_10_list_workspaces():
+    """List all v2.10 workspaces."""
+    try:
+        from agent.managed_agents.workspace import load_workspaces
+        workspaces = load_workspaces()
+        return {
+            "workspaces": [w.to_dict() for w in workspaces.values()],
+            "total": len(workspaces),
+        }
+    except Exception:
+        _log.exception("GET /api/v2.10/workspaces failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/v2.10/workspaces/{workspace_id}")
+async def v2_10_get_workspace(workspace_id: str):
+    """Get a single v2.10 workspace by ID."""
+    try:
+        from agent.managed_agents.workspace import get_workspace
+        ws = get_workspace(workspace_id)
+        if not ws:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        return ws.to_dict()
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception(f"GET /api/v2.10/workspaces/{workspace_id} failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/v2.10/sessions")
+async def v2_10_list_sessions(workspace_id: str | None = None):
+    """List v2.10 sessions, optionally filtered by workspace."""
+    try:
+        from agent.managed_agents.session import load_sessions
+        sessions = load_sessions()
+        if workspace_id:
+            sessions = {
+                k: s for k, s in sessions.items()
+                if s.workspace_id == workspace_id
+            }
+        return {
+            "sessions": [s.to_dict() for s in sessions.values()],
+            "total": len(sessions),
+        }
+    except Exception:
+        _log.exception("GET /api/v2.10/sessions failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/v2.10/sessions/{session_id}")
+async def v2_10_get_session(session_id: str):
+    """Get a single v2.10 session by ID."""
+    try:
+        from agent.managed_agents.session import get_session
+        sess = get_session(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return sess.to_dict()
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception(f"GET /api/v2.10/sessions/{session_id} failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/v2.10/adapters/health")
+async def v2_10_adapters_health():
+    """Aggregate health status from all registered EntryAdapters.
+
+    Returns each adapter's health snapshot. If no adapters are registered,
+    returns a minimal structure showing the system is in CLI-only legacy mode.
+    """
+    try:
+        from agent.managed_agents.entry_adapter import EntryAdapterRegistry
+        _registry = EntryAdapterRegistry()
+        health = _registry.health()
+        if not health:
+            return {
+                "adapters": {},
+                "registered_entrypoints": [],
+                "mode": "cli_legacy",
+                "note": "No adapters registered; system is in CLI-only legacy mode.",
+            }
+        return {
+            "adapters": health,
+            "registered_entrypoints": sorted(health.keys()),
+            "mode": "multi_entry",
+        }
+    except Exception:
+        _log.exception("GET /api/v2.10/adapters/health failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
 async def serve_plugin_asset(plugin_name: str, file_path: str):
     """Serve static assets from a dashboard plugin directory.

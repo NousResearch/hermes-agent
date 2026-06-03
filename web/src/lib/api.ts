@@ -646,6 +646,25 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+
+  // -- v2.10 Multi-Entry Session Binding ---------------------------------
+
+  v210ListWorkspaces: () =>
+    fetchJSON<V210WorkspacesResponse>("/api/v2.10/workspaces"),
+
+  v210GetWorkspace: (workspaceId: string) =>
+    fetchJSON<V210Workspace>(`/api/v2.10/workspaces/${encodeURIComponent(workspaceId)}`),
+
+  v210ListSessions: (workspaceId?: string) => {
+    const params = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return fetchJSON<V210SessionsResponse>(`/api/v2.10/sessions${params}`);
+  },
+
+  v210GetSession: (sessionId: string) =>
+    fetchJSON<V210Session>(`/api/v2.10/sessions/${encodeURIComponent(sessionId)}`),
+
+  v210AdaptersHealth: () =>
+    fetchJSON<V210AdaptersHealthResponse>("/api/v2.10/adapters/health"),
 };
 
 // ── Run ledger types ──────────────────────────────────────────────────
@@ -1716,3 +1735,53 @@ export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
 }
+
+// ---------------------------------------------------------------------------
+// v2.10 Multi-Entry Session Binding types and API
+// ---------------------------------------------------------------------------
+
+export type Entrypoint = "feishu" | "discord" | "web" | "cli" | "mac_app";
+
+export interface V210Workspace {
+  workspace_id: string;
+  name: string;
+  entrypoint: Entrypoint;
+  external_source_id: string | null;
+  created_at: string;
+}
+
+export interface V210Session {
+  session_id: string;
+  workspace_id: string;
+  name: string;
+  entrypoint: Entrypoint;
+  external_channel_id: string | null;
+  external_thread_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface V210WorkspacesResponse {
+  workspaces: V210Workspace[];
+  total: number;
+}
+
+export interface V210SessionsResponse {
+  sessions: V210Session[];
+  total: number;
+}
+
+export interface AdapterHealth {
+  entrypoint: string;
+  status: "connected" | "disconnected" | "unknown" | "error" | "unregistered";
+  [key: string]: unknown;
+}
+
+export interface V210AdaptersHealthResponse {
+  adapters: Record<string, AdapterHealth>;
+  registered_entrypoints: string[];
+  mode: "cli_legacy" | "multi_entry";
+  note?: string;
+}
+
+// v2.10 API methods (added to api object below)

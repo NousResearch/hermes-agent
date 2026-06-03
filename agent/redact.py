@@ -108,8 +108,13 @@ _PREFIX_PATTERNS = [
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+# Git identity vars (GIT_AUTHOR_*/GIT_COMMITTER_*) contain the substring
+# "AUTH" (in "AUTHOR") and so falsely match the secret-name pattern below.
+# They are never secrets -- exempt them with a leading word-boundary +
+# negative lookahead so commit-authoring commands aren't mangled in output.
+_GIT_IDENTITY_ALLOWLIST = r"\b(?!GIT_AUTHOR_NAME=)(?!GIT_AUTHOR_EMAIL=)(?!GIT_COMMITTER_NAME=)(?!GIT_COMMITTER_EMAIL=)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
+    rf"{_GIT_IDENTITY_ALLOWLIST}([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.

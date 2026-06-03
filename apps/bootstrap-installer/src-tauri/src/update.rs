@@ -62,6 +62,27 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
+        // Already running: re-emit the manifest so a duplicate startUpdate()
+        // call (which resets the frontend store) can recover its stage list.
+        let target_app = if cfg!(target_os = "macos") {
+            target_app_from_args(std::env::args().skip(1))
+        } else {
+            None
+        };
+        let mut stages = vec![
+            stage_info("update", "Updating Hermes"),
+            stage_info("rebuild", "Rebuilding the desktop app"),
+        ];
+        if cfg!(target_os = "macos") && target_app.is_some() {
+            stages.push(stage_info("install", "Installing the updated app"));
+        }
+        emit(
+            &app,
+            BootstrapEvent::Manifest {
+                stages,
+                protocol_version: None,
+            },
+        );
         return Ok(());
     }
     tokio::spawn(async move {

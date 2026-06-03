@@ -2126,7 +2126,7 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
-    
+
     # Validate target_node
     if target_node is not None:
         target_node = target_node.strip().lower() if target_node else None
@@ -2135,7 +2135,7 @@ def create_task(
                 f"target_node must be one of {sorted(VALID_TARGET_NODES)}, "
                 f"got {target_node!r}"
             )
-    
+
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe

@@ -1165,6 +1165,72 @@ async def update_hermes():
     }
 
 
+@app.get("/api/hermes/update/check")
+async def check_hermes_update(force: bool = False):
+    """Report whether a Hermes update is available, without applying it.
+
+    Powers the dashboard's "check before you update" flow: the System page
+    shows the commit-behind count and asks the user to confirm before
+    ``POST /api/hermes/update`` actually runs ``hermes update``.
+
+    Returns:
+        install_method: 'git' | 'pip' | 'docker' | 'nixos' | 'homebrew' | ...
+        current_version: installed Hermes version string
+        behind: commits behind upstream (>=1), 0 if up to date,
+                -1 if behind by an unknown count (nix/pypi), or null if the
+                check could not run (offline, no remote, etc.)
+        update_available: convenience bool (behind is non-zero and not null)
+        can_apply: True when the dashboard's update button can apply it
+                   in place (git/pip); False for docker/nix/homebrew where the
+                   user must update out-of-band
+        update_command: the recommended command for this install method
+        message: human-readable guidance for non-applyable methods
+    """
+    install_method = detect_install_method(PROJECT_ROOT)
+    update_command = recommended_update_command_for_method(install_method)
+
+    payload: Dict[str, Any] = {
+        "install_method": install_method,
+        "current_version": __version__,
+        "behind": None,
+        "update_available": False,
+        "can_apply": install_method in ("git", "pip"),
+        "update_command": update_command,
+        "message": None,
+    }
+
+    if install_method == "docker":
+        payload["message"] = format_docker_update_message()
+        return payload
+
+    # banner.check_for_updates() handles git / pypi / nix-revision paths and
+    # caches the result for 6h. ``force`` busts the cache so the "Check now"
+    # button reflects reality immediately.
+    try:
+        from hermes_cli.banner import check_for_updates
+
+        if force:
+            try:
+                (get_hermes_home() / ".update_check").unlink()
+            except OSError:
+                pass
+
+        behind = await asyncio.to_thread(check_for_updates)
+    except Exception:
+        _log.exception("Update check failed")
+        behind = None
+
+    payload["behind"] = behind
+    if behind is None:
+        payload["message"] = "Couldn't reach the update source — try again later."
+    elif behind == 0:
+        payload["message"] = "You're on the latest version."
+    else:
+        payload["update_available"] = True
+
+    return payload
+
+
 @app.post("/api/audio/transcribe")
 async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     data_url = (payload.data_url or "").strip()

@@ -5708,7 +5708,12 @@ class TestRetryExhaustion:
         return mock_time
 
     def test_invalid_response_returns_error_not_crash(self, agent):
-        """Exhausted retries on invalid (empty choices) response must not IndexError."""
+        """Exhausted retries on invalid (empty choices) response must not IndexError.
+
+        Also guards #38445: the optimistic ``api_call_count`` increment is
+        refunded on this terminal "no usable response" path, so the returned and
+        persisted count reflects only successful calls.
+        """
         self._setup_agent(agent)
         # Return response with empty choices every time
         bad_resp = SimpleNamespace(
@@ -5717,12 +5722,19 @@ class TestRetryExhaustion:
             usage=None,
         )
         agent.client.chat.completions.create.return_value = bad_resp
+        # Capture agent._api_call_count at the moment persistence runs, to prove
+        # the corrected value is what gets persisted — not just the final field
+        # (#38445 reports the count is wrong before it is logged/persisted).
+        persisted_counts = []
         # The conversation loop was extracted out of run_agent.py and pulls
         # in time/jittered_backoff at module level — patch BOTH so the
         # retry waits don't burn 18+ seconds of real wall-clock time here.
         from agent import conversation_loop as _conv_loop
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
@@ -5737,6 +5749,12 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
         assert result.get("final_response") == result["error"]
+        # #38445: a failed iteration must not inflate the successful-call count.
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert persisted_counts and persisted_counts[-1] == 0, persisted_counts
+        # 0 means "refunded", not "never attempted".
+        assert agent.client.chat.completions.create.call_count >= 1
 
     def test_content_filter_refusal_surfaced_not_retried(self, agent):
         """A model refusal must be surfaced immediately, NOT laundered into
@@ -5780,12 +5798,21 @@ class TestRetryExhaustion:
         assert agent.client.chat.completions.create.call_count == 1
 
     def test_api_error_returns_gracefully_after_retries(self, agent):
-        """Exhausted retries on API errors must return error result, not crash."""
+        """Exhausted retries on API errors must return error result, not crash.
+
+        Also guards #38445: the optimistic ``api_call_count`` increment is
+        refunded on this terminal "no usable response" path.
+        """
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        # See sibling test: capture the count seen at persistence time (#38445).
+        persisted_counts = []
         from agent import conversation_loop as _conv_loop
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda *a, **k: persisted_counts.append(agent._api_call_count),
+            ),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
@@ -5797,6 +5824,12 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+        # #38445: a failed iteration must not inflate the successful-call count.
+        assert result["api_calls"] == 0, result["api_calls"]
+        assert agent._api_call_count == 0
+        assert persisted_counts and persisted_counts[-1] == 0, persisted_counts
+        # 0 means "refunded", not "never attempted".
+        assert agent.client.chat.completions.create.call_count >= 1
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.

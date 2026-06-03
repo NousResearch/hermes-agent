@@ -1564,6 +1564,13 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
+                        # All retries exhausted: this iteration produced no
+                        # successful API call, so refund the optimistic
+                        # increment from the top of the loop before the count is
+                        # persisted/returned (#38445). Mirrors the early-exit
+                        # decrements above (ollama-context, compression-restart).
+                        api_call_count -= 1
+                        agent._api_call_count = api_call_count
                         agent._persist_session(messages, conversation_history)
                         _final_response = f"Invalid API response after {max_retries} retries: {_failure_hint}"
                         return {
@@ -4100,6 +4107,13 @@ def run_conversation(
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
+                    # All retries exhausted: this iteration produced no
+                    # successful API call, so refund the optimistic increment
+                    # from the top of the loop before the count is
+                    # persisted/returned (#38445). Mirrors the early-exit
+                    # decrements above (ollama-context, compression-restart).
+                    api_call_count -= 1
+                    agent._api_call_count = api_call_count
                     agent._persist_session(messages, conversation_history)
                     if classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"

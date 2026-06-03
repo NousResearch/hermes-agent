@@ -9715,6 +9715,26 @@ class GatewayRunner:
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
+            # Transport-only bot handoffs can ask for no visible final ACK.
+            # Preserve transcript/tool side effects above, but do not emit the
+            # model's closing "Done"/"Acknowledged" response back to Discord.
+            try:
+                _inbound_adapter = self.adapters.get(source.platform)
+                if (
+                    _inbound_adapter is not None
+                    and hasattr(_inbound_adapter, "_event_requests_no_visible_ack")
+                    and _inbound_adapter._event_requests_no_visible_ack(event)
+                ):
+                    logger.info(
+                        "Suppressing visible final response for ack_policy:none event: platform=%s chat=%s message_id=%s",
+                        _platform_name,
+                        source.chat_id or "unknown",
+                        event.message_id or "?",
+                    )
+                    return None
+            except Exception as _no_ack_err:
+                logger.debug("ack_policy:none final-response gate failed: %s", _no_ack_err)
+
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):

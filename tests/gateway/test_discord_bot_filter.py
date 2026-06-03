@@ -2,7 +2,12 @@
 
 import os
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+from gateway.platforms.bot_terminal_filter import (
+    should_suppress_terminal_bot_message,
+    terminal_bot_suppression_enabled,
+)
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -99,7 +104,8 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
+        with patch.dict(os.environ, {}, clear=True):
+            default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
 
     def test_case_insensitive(self):
@@ -110,6 +116,54 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "All"))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
+
+
+class TestDiscordTerminalBotMessageClassifier(unittest.TestCase):
+    """Test deterministic suppression of non-actionable bot chatter."""
+
+    def test_terminal_chatter_suppressed(self):
+        for text in [
+            "Done.",
+            "Acknowledged.",
+            "kind: ack correlation: abc123",
+            "kind: final\nstatus: closed",
+            "No further action.",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(should_suppress_terminal_bot_message(text))
+
+    def test_actionable_markers_preserved(self):
+        for text in [
+            "kind: request requires_ack: yes please inspect logs",
+            "handoff: please continue the RCA",
+            "operator-gated: credential needed",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(should_suppress_terminal_bot_message(text))
+
+    def test_transport_receipt_no_ack_suppressed(self):
+        for text in [
+            "kind: transport_receipt ack_policy: none correlation: abc123",
+            "<@bot> kind: transport_receipt ack-policy=none correlation=abc123",
+            "kind=receipt ack_policy=none correlation=abc123",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(should_suppress_terminal_bot_message(text))
+
+    def test_transport_test_with_embedded_receipt_instruction_preserved(self):
+        text = (
+            "<@wintermute> kind: transport_test ack_policy: none correlation: abc123\n\n"
+            "Perform exactly one visible Discord action: send one message in #galiana "
+            "containing only this text:\n"
+            "`<@galiana> kind: transport_receipt ack_policy: none correlation: abc123`"
+        )
+        self.assertFalse(should_suppress_terminal_bot_message(text))
+
+    def test_suppression_default_enabled_explicit_false_disables(self):
+        self.assertTrue(terminal_bot_suppression_enabled({}))
+        self.assertFalse(
+            terminal_bot_suppression_enabled({"DISCORD_SUPPRESS_TERMINAL_BOT_MESSAGES": "false"})
+        )
 
 
 if __name__ == "__main__":

@@ -51,6 +51,11 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.platforms.bot_terminal_filter import (
+    message_requests_no_visible_ack,
+    should_suppress_terminal_bot_message,
+    terminal_bot_suppression_enabled,
+)
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -788,6 +793,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
+                    if adapter_self._should_suppress_bot_message(message.content or ""):
+                        logger.info(
+                            "Discord: suppressed terminal bot message id=%s from %s (%s)",
+                            getattr(message, "id", "?"),
+                            getattr(message.author, "display_name", None)
+                            or getattr(message.author, "name", "unknown"),
+                            "DISCORD_SUPPRESS_TERMINAL_BOT_MESSAGES",
+                        )
+                        return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
@@ -4365,6 +4379,18 @@ class DiscordAdapter(BasePlatformAdapter):
         if parent_name:
             return f"{parent_name} / {thread_name}"
         return thread_name
+
+    def _should_suppress_bot_message(self, text: str) -> bool:
+        """Return True if bot-authored text is terminal/no-work chatter to drop."""
+
+        if not terminal_bot_suppression_enabled():
+            return False
+        return should_suppress_terminal_bot_message(text)
+
+    def _event_requests_no_visible_ack(self, event: MessageEvent) -> bool:
+        """Return True when an inbound event asks for no visible final/ACK."""
+
+        return message_requests_no_visible_ack(event.text or "")
 
     # ------------------------------------------------------------------
     # Attachment download helpers

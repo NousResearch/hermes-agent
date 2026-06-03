@@ -263,3 +263,51 @@ class TestSecureParentDir:
         assert called_with[0] == (str(real_dir), 0o700)
 
 
+class TestSafeExpandvars:
+    """Tests for safe_expandvars() — env-var expansion that won't corrupt API keys."""
+
+    def test_expands_full_env_var_reference(self, monkeypatch):
+        """Full ${VAR} match: expand."""
+        monkeypatch.setenv("TEST_API_KEY", "sk-secret-123")
+        result = hermes_constants.safe_expandvars("${TEST_API_KEY}")
+        assert result == "sk-secret-123"
+
+    def test_expands_with_whitespace(self, monkeypatch):
+        """Whitespace-padded ${VAR}: still expand."""
+        monkeypatch.setenv("TEST_API_KEY", "sk-secret-123")
+        result = hermes_constants.safe_expandvars("  ${TEST_API_KEY}  ")
+        assert result == "sk-secret-123"
+
+    def test_partial_match_no_expand(self, monkeypatch):
+        """Partial ${VAR} inside a larger string: do NOT expand."""
+        monkeypatch.setenv("MODEL", "gpt4")
+        result = hermes_constants.safe_expandvars("sk-${MODEL}-v1")
+        assert result == "sk-${MODEL}-v1"
+
+    def test_literal_dollar_in_key_preserved(self, monkeypatch):
+        """API key with literal $ (bcrypt hash style): preserved."""
+        monkeypatch.setenv("2y", "CORRUPTED")
+        result = hermes_constants.safe_expandvars("$2y$10$hashvalue")
+        assert result == "$2y$10$hashvalue"
+
+    def test_bare_dollar_not_expanded(self, monkeypatch):
+        """Bare $HOME without braces: NOT expanded (only ${} supported)."""
+        monkeypatch.setenv("HOME", "/fake/home")
+        result = hermes_constants.safe_expandvars("$HOME")
+        assert result == "$HOME"
+
+    def test_plain_text_passes_through(self):
+        """Plain text with no dollar sign: pass through unchanged."""
+        result = hermes_constants.safe_expandvars("sk-abc123")
+        assert result == "sk-abc123"
+
+    def test_empty_string(self):
+        """Empty string: pass through."""
+        result = hermes_constants.safe_expandvars("")
+        assert result == ""
+
+    def test_nonexistent_var_unchanged(self):
+        """Full ${NONEXISTENT} match: expandvars leaves it unchanged (no env var)."""
+        result = hermes_constants.safe_expandvars("${NO_SUCH_VAR_XYZ}")
+        assert result == "${NO_SUCH_VAR_XYZ}"
+

@@ -461,3 +461,22 @@ FINISH_REASON_LENGTH = "length"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+
+def safe_expandvars(value: str) -> str:
+    """Only expand env vars when the ENTIRE value is a single ${VAR} reference.
+
+    Unlike os.path.expandvars() which expands any $SUBSTRING anywhere in
+    the value, this function requires the full value to match ``${VAR}``.
+    This prevents silent corruption of API keys that legitimately contain
+    ``$`` characters (e.g. ``sk-$model-v1``, bcrypt ``$2y$...`` hashes).
+
+    Returns the expanded value when the pattern matches, or the original
+    string unchanged otherwise.
+    """
+    import re
+
+    stripped = value.strip()
+    if re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", stripped):
+        return os.path.expandvars(stripped)
+    return value

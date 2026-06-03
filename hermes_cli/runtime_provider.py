@@ -30,7 +30,7 @@ from hermes_cli.auth import (
     has_usable_secret,
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, safe_expandvars
 from utils import base_url_host_matches, base_url_hostname
 
 
@@ -595,7 +595,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
+            "api_key": safe_expandvars(str(entry.get("api_key", "") or "").strip()),
         }
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:

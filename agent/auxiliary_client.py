@@ -101,7 +101,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, safe_expandvars
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
@@ -3015,7 +3015,7 @@ def _try_configured_fallback_chain(
             continue
         fb_model = str(entry.get("model", "")).strip() or None
         fb_base_url = str(entry.get("base_url", "")).strip() or None
-        fb_api_key = str(entry.get("api_key", "")).strip() or None
+        fb_api_key = safe_expandvars(str(entry.get("api_key", "")).strip()) or None
 
         label = f"fallback_chain[{i}]({fb_provider})"
 
@@ -4616,7 +4616,8 @@ def _resolve_task_provider_model(
         cfg_provider = str(task_config.get("provider", "")).strip() or None
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        raw_api_key = str(task_config.get("api_key", "")).strip()
+        cfg_api_key = safe_expandvars(raw_api_key) if raw_api_key else None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     resolved_model = model or cfg_model

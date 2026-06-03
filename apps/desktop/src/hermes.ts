@@ -15,9 +15,8 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
-  HindsightConfig,
-  HindsightConfigUpdate,
   LogsResponse,
+  MemoryProviderConfig,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -68,9 +67,8 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
-  HindsightConfig,
-  HindsightConfigUpdate,
   LogsResponse,
+  MemoryProviderConfig,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
   MessagingPlatformInfo,
@@ -242,17 +240,20 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
   })
 }
 
-export function getHindsightConfig(): Promise<HindsightConfig> {
-  return window.hermesDesktop.api<HindsightConfig>({
-    path: '/api/memory/hindsight/config'
+export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
+  return window.hermesDesktop.api<MemoryProviderConfig>({
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`
   })
 }
 
-export function saveHindsightConfig(config: HindsightConfigUpdate): Promise<{ ok: boolean }> {
+export function saveMemoryProviderConfig(
+  provider: string,
+  values: Record<string, string>
+): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    path: '/api/memory/hindsight/config',
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',
-    body: config
+    body: { values }
   })
 }
 

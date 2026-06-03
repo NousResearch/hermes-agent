@@ -98,23 +98,29 @@ export interface EnvVarInfo {
   url: null | string
 }
 
-export type HindsightMode = 'cloud' | 'local_external'
-export type HindsightRecallBudget = 'high' | 'low' | 'mid'
+export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
 
-export interface HindsightConfig {
-  api_key_set: boolean
-  api_url: string
-  bank_id: string
-  mode: HindsightMode
-  recall_budget: HindsightRecallBudget
+export interface MemoryProviderFieldOption {
+  description: string
+  label: string
+  value: string
 }
 
-export interface HindsightConfigUpdate {
-  api_key?: string
-  api_url: string
-  bank_id: string
-  mode: HindsightMode
-  recall_budget: HindsightRecallBudget
+export interface MemoryProviderField {
+  description: string
+  is_set: boolean
+  key: string
+  kind: MemoryProviderFieldKind
+  label: string
+  options: MemoryProviderFieldOption[]
+  placeholder: string
+  value: string
+}
+
+export interface MemoryProviderConfig {
+  fields: MemoryProviderField[]
+  label: string
+  name: string
 }
 
 export interface MessagingEnvVarInfo {

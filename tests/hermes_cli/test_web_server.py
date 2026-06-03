@@ -243,31 +243,42 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
-    def test_get_hindsight_config_returns_safe_defaults(self):
-        resp = self.client.get("/api/memory/hindsight/config")
+    @staticmethod
+    def _provider_field_map(payload):
+        return {field["key"]: field for field in payload["fields"]}
+
+    def test_get_memory_provider_config_returns_safe_defaults(self):
+        resp = self.client.get("/api/memory/providers/hindsight/config")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data == {
-            "mode": "cloud",
-            "api_url": "https://api.hindsight.vectorize.io",
-            "bank_id": "hermes",
-            "recall_budget": "mid",
-            "api_key_set": False,
-        }
+        assert data["name"] == "hindsight"
+        assert data["label"] == "Hindsight"
 
-    def test_put_hindsight_config_writes_provider_config_and_secret(self):
+        fields = self._provider_field_map(data)
+        assert fields["mode"]["kind"] == "select"
+        assert fields["mode"]["value"] == "cloud"
+        assert {opt["value"] for opt in fields["mode"]["options"]} == {"cloud", "local_external"}
+        assert fields["api_url"]["value"] == "https://api.hindsight.vectorize.io"
+        assert fields["bank_id"]["value"] == "hermes"
+        assert fields["recall_budget"]["value"] == "mid"
+        assert fields["api_key"]["kind"] == "secret"
+        assert fields["api_key"]["is_set"] is False
+
+    def test_put_memory_provider_config_writes_config_and_secret(self):
         from hermes_constants import get_hermes_home
         from hermes_cli.config import load_config, load_env
 
         resp = self.client.put(
-            "/api/memory/hindsight/config",
+            "/api/memory/providers/hindsight/config",
             json={
-                "mode": "local_external",
-                "api_url": "http://localhost:8888",
-                "api_key": "hs-test-key",
-                "bank_id": "ben-bank",
-                "recall_budget": "high",
+                "values": {
+                    "mode": "local_external",
+                    "api_url": "http://localhost:8888",
+                    "api_key": "hs-test-key",
+                    "bank_id": "ben-bank",
+                    "recall_budget": "high",
+                }
             },
         )
 
@@ -285,37 +296,55 @@ class TestWebServerEndpoints:
             "recall_budget": "high",
         }
 
-    def test_put_hindsight_config_rejects_unsupported_modes(self):
+    def test_put_memory_provider_config_rejects_unsupported_select_value(self):
         resp = self.client.put(
-            "/api/memory/hindsight/config",
+            "/api/memory/providers/hindsight/config",
             json={
-                "mode": "local_embedded",
-                "api_url": "http://localhost:8888",
-                "bank_id": "hermes",
-                "recall_budget": "mid",
+                "values": {
+                    "mode": "local_embedded",
+                    "api_url": "http://localhost:8888",
+                    "bank_id": "hermes",
+                    "recall_budget": "mid",
+                }
             },
         )
 
         assert resp.status_code == 400
 
-    def test_get_hindsight_config_does_not_return_api_key(self):
+    def test_put_unknown_memory_provider_returns_404(self):
+        resp = self.client.put(
+            "/api/memory/providers/nope/config", json={"values": {}}
+        )
+
+        assert resp.status_code == 404
+
+    def test_get_unknown_memory_provider_returns_empty_schema(self):
+        resp = self.client.get("/api/memory/providers/builtin/config")
+
+        assert resp.status_code == 200
+        assert resp.json()["fields"] == []
+
+    def test_get_memory_provider_config_does_not_return_secret(self):
         self.client.put(
-            "/api/memory/hindsight/config",
+            "/api/memory/providers/hindsight/config",
             json={
-                "mode": "cloud",
-                "api_url": "https://api.hindsight.vectorize.io",
-                "api_key": "secret-value",
-                "bank_id": "hermes",
-                "recall_budget": "mid",
+                "values": {
+                    "mode": "cloud",
+                    "api_url": "https://api.hindsight.vectorize.io",
+                    "api_key": "secret-value",
+                    "bank_id": "hermes",
+                    "recall_budget": "mid",
+                }
             },
         )
 
-        resp = self.client.get("/api/memory/hindsight/config")
+        resp = self.client.get("/api/memory/providers/hindsight/config")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["api_key_set"] is True
-        assert "api_key" not in data
+        fields = self._provider_field_map(data)
+        assert fields["api_key"]["is_set"] is True
+        assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
 
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):

@@ -19,9 +19,9 @@ import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { enumOptionsFor, getNested, includesQuery, prettyName, setNested } from './helpers'
-import { HindsightSettings } from './hindsight-settings'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
+import { ProviderConfigPanel } from './provider-config-panel'
 import type { SearchProps } from './types'
 
 function ConfigField({
@@ -355,7 +355,9 @@ export function ConfigSettings({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
-              {key === 'memory.provider' && getNested(config, key) === 'hindsight' && !query.trim() && <HindsightSettings />}
+              {key === 'memory.provider' && !query.trim() && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
+                <ProviderConfigPanel provider={String(getNested(config, key))} />
+              ) : null}
             </Fragment>
           ))}
         </div>

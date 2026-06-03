@@ -1105,7 +1105,7 @@ function Install-Repository {
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlSsh $InstallDir
+            git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlSsh $InstallDir
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
@@ -1114,7 +1114,7 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             try {
-                git -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrlHttps $InstallDir
+                git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlHttps $InstallDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1209,16 +1209,6 @@ function Install-Repository {
             $ErrorActionPreference = $prevEAP
         }
     }
-
-    # Ensure submodules are initialized and updated
-    Write-Info "Initializing submodules..."
-    git -c windows.appendAtomically=false submodule update --init --recursive 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Submodule init failed (terminal/RL tools may need manual setup)"
-    } else {
-        Write-Success "Submodules ready"
-    }
-    Pop-Location
 
     Write-Success "Repository ready"
 }

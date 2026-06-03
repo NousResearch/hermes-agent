@@ -14,12 +14,15 @@ Usage:
     python3 install_caduceus.py [TARGET]        # install onto TARGET (auto-detect if omitted)
     python3 install_caduceus.py --dry-run       # show what would change, do nothing
     python3 install_caduceus.py --with-desktop  # also rebuild the Electron desktop (needs node/npm)
+    python3 install_caduceus.py --repack-only   # repack a prebuilt renderer into app.asar (no node)
+    python3 install_caduceus.py --verify        # health-check an existing install and exit
     python3 install_caduceus.py --uninstall     # restore the most recent backup
     python3 install_caduceus.py --list-targets  # show detected Hermes installs
 
 The CLI/TUI backend works immediately after install + a Hermes restart. The
 desktop UI (status-bar toggle + Orchestration Theater) only changes after a
-desktop rebuild (`--with-desktop`, or rebuild manually).
+desktop rebuild (`--with-desktop`, or rebuild manually). The asar repack itself
+is stdlib-only (no node/npx); only the renderer build step needs node/npm.
 """
 from __future__ import annotations
 
@@ -88,6 +91,7 @@ MANIFEST = [
     # Docs + tests (harmless; nice to ship with the feature)
     "docs/caduceus/README.md",
     "docs/caduceus/INSTALL.md",
+    "docs/caduceus/RELEASE_NOTES.md",
     "docs/caduceus/PR_DESCRIPTION.md",
     "docs/caduceus/USER_GUIDE.md",
     "docs/caduceus/DESIGN.md",
@@ -206,6 +210,23 @@ def _ts() -> str:
     return _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def _valid_backups(target: str) -> list[str]:
+    """Backup snapshot names (sorted oldest→newest) that have a restore manifest."""
+    root = os.path.join(target, BACKUP_ROOT)
+    if not os.path.isdir(root):
+        return []
+    return sorted(d for d in os.listdir(root)
+                  if os.path.exists(os.path.join(root, d, RESTORE_MANIFEST)))
+
+
+def _files_differ(a: str, b: str) -> bool:
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() != fb.read()
+    except OSError:
+        return True
+
+
 def do_install(target: str, dry_run: bool, force: bool) -> int:
     if HERE == os.path.abspath(target):
         err("Source and target are the same directory. Run the installer from a "
@@ -225,6 +246,33 @@ def do_install(target: str, dry_run: bool, force: bool) -> int:
              "(everything is backed up and reversible with --uninstall).")
         return 3
 
+    missing_src = [p for p in MANIFEST if not os.path.exists(os.path.join(HERE, p))]
+    if missing_src:
+        err(f"Source checkout is missing {len(missing_src)} Caduceus file(s); "
+            f"is this a complete Caduceus checkout? e.g. {missing_src[0]}")
+        return 2
+
+    # Idempotent re-install: if a prior backup exists, the OLDEST one holds the
+    # true originals. Re-installing must NOT create a second backup (that would
+    # capture already-Caduceus files as "originals" and break --uninstall).
+    # Instead refresh changed files in place and keep the original backup.
+    existing = _valid_backups(target)
+    if existing and not dry_run:
+        orig = os.path.join(target, BACKUP_ROOT, existing[0])
+        info(f"Caduceus already installed (originals preserved at {orig}).")
+        n = 0
+        for rel in MANIFEST:
+            src, dst = os.path.join(HERE, rel), os.path.join(target, rel)
+            if os.path.exists(dst) and not _files_differ(src, dst):
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            n += 1
+        print()
+        ok(f"Refreshed Caduceus: {n} file(s) updated, {len(MANIFEST) - n} already current "
+           "(no new backup — the original is kept for a clean --uninstall).")
+        return 0
+
     backup_dir = os.path.join(target, BACKUP_ROOT, _ts())
     restore = {"created": _ts(), "built_for": BUILT_FOR_VERSION, "entries": []}
 
@@ -232,12 +280,6 @@ def do_install(target: str, dry_run: bool, force: bool) -> int:
     info(f"Source:  {HERE}")
     info(f"Backup:  {backup_dir}" + (" (dry-run, not created)" if dry_run else ""))
     print()
-
-    missing_src = [p for p in MANIFEST if not os.path.exists(os.path.join(HERE, p))]
-    if missing_src:
-        err(f"Source checkout is missing {len(missing_src)} Caduceus file(s); "
-            f"is this a complete Caduceus checkout? e.g. {missing_src[0]}")
-        return 2
 
     n_new = n_mod = 0
     for rel in MANIFEST:
@@ -281,23 +323,21 @@ def do_uninstall(target: str) -> int:
     if not os.path.isdir(root):
         err(f"No Caduceus backups found under {root}; nothing to uninstall.")
         return 2
-    backups = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
+    backups = _valid_backups(target)
     if not backups:
-        err("No backup snapshots found.")
+        err(f"No valid backup snapshots (with {RESTORE_MANIFEST}) under {root}.")
         return 2
-    latest = os.path.join(root, backups[-1])
-    mf = os.path.join(latest, RESTORE_MANIFEST)
-    if not os.path.exists(mf):
-        err(f"Backup {latest} has no {RESTORE_MANIFEST}; cannot safely restore.")
-        return 2
-    restore = json.load(open(mf, encoding="utf-8"))
-    info(f"Restoring from {latest}")
+    # The OLDEST snapshot holds the true pre-Caduceus originals (a re-install
+    # never shadows it), so restoring from it reverts cleanly to stock.
+    oldest = os.path.join(root, backups[0])
+    restore = json.load(open(os.path.join(oldest, RESTORE_MANIFEST), encoding="utf-8"))
+    info(f"Restoring from {oldest}")
     restored = removed = 0
     for e in restore["entries"]:
         rel, existed = e["path"], e["existed"]
         dst = os.path.join(target, rel)
         if existed:
-            bpath = os.path.join(latest, rel)
+            bpath = os.path.join(oldest, rel)
             if os.path.exists(bpath):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(bpath, dst)
@@ -500,35 +540,167 @@ def _repack_asar(asar: str, built_dist: str) -> bool:
         return False
 
 
-def rebuild_desktop(target: str) -> int:
+def _node_is_windows_exe() -> bool:
+    """Detect the WSL trap where `node` resolves to a Windows node.exe — its
+    Linux-path npm/npx shims can't load, so `npm run build` won't run. The
+    pure-Python repack still works, so we route around it when a build exists."""
+    node = shutil.which("node")
+    if not node:
+        return False
+    try:
+        return os.path.realpath(node).lower().endswith(".exe")
+    except OSError:
+        return node.lower().endswith(".exe")
+
+
+def _dist_has_caduceus(built_dist: str) -> bool:
+    """True iff the built renderer bundle actually contains the Caduceus UI.
+
+    Guards against repacking a *stock* dist/ (built before the source overlay),
+    which would silently pack a Caduceus-free UI and look like success."""
+    assets = os.path.join(built_dist, "assets")
+    if not os.path.isdir(assets):
+        return False
+    needles = (b"Orchestration Theater", b"Caduceus")
+    for name in os.listdir(assets):
+        if not name.endswith(".js"):
+            continue
+        try:
+            with open(os.path.join(assets, name), "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        if any(n in data for n in needles):
+            return True
+    return False
+
+
+def _repack_existing(desktop: str, *, require_marker: bool = True) -> int:
+    """Repack the already-built dist/ into the packaged app.asar (no node)."""
+    asar = _find_packaged_asar(desktop)
+    built_dist = os.path.join(desktop, "dist")
+    if not os.path.exists(os.path.join(built_dist, "index.html")):
+        err(f"No built renderer at {built_dist}. Build apps/desktop first "
+            "(npm run build), or run --with-desktop.")
+        return 1
+    if require_marker and not _dist_has_caduceus(built_dist):
+        err(f"The build at {built_dist} does not contain the Caduceus UI — it looks "
+            "like a stock renderer. Rebuild from the overlaid source (--with-desktop) "
+            "before repacking, so you don't pack a Caduceus-free UI.")
+        return 1
+    if not asar:
+        warn("No packaged app.asar found (source checkout?). The renderer is built "
+             f"at {built_dist}; nothing to repack.")
+        return 0
+    info("Repacking app.asar with the built renderer (stdlib-only, no node)…")
+    info("(close the Hermes desktop first — a running app locks app.asar.)")
+    if _repack_asar(asar, built_dist):
+        ok("Repacked app.asar (original saved to app.asar.precaduceus.bak).")
+        return 0
+    warn("Could not repack — close the Hermes desktop and retry, or repack manually.")
+    return 1
+
+
+def rebuild_desktop(target: str, repack_only: bool = False) -> int:
     desktop = os.path.join(target, "apps", "desktop")
     if not os.path.isdir(desktop):
         warn("No apps/desktop in target; skipping desktop rebuild (backend-only install).")
         return 0
+    if repack_only:
+        return _repack_existing(desktop)
+
     npm = shutil.which("npm")
-    if not npm:
-        warn("npm not found on PATH; skipping desktop rebuild. The CLI/TUI works "
-             "now; rebuild the desktop manually to get the status-bar toggle + Theater.")
+    built_dist = os.path.join(desktop, "dist")
+    if not npm or _node_is_windows_exe():
+        why = ("npm not found on PATH" if not npm
+               else "`node` resolves to a Windows binary (its WSL npm shim can't build)")
+        if _dist_has_caduceus(built_dist):
+            warn(f"Skipping the renderer build ({why}); the existing build already "
+                 "contains the Caduceus UI — repacking it (node-free).")
+            return _repack_existing(desktop)
+        warn(f"Can't build the desktop renderer here ({why}). The CLI/TUI works now. "
+             "Build apps/desktop where Node works (npm run build), then re-run this "
+             "installer with --repack-only.")
         return 0
+
     info("Rebuilding the Electron desktop renderer (npm run build)…")
     try:
         subprocess.run([npm, "run", "build"], cwd=desktop, check=True)
     except subprocess.CalledProcessError as e:
+        if _dist_has_caduceus(built_dist):
+            warn(f"Desktop build failed ({e}); repacking the existing Caduceus build instead.")
+            return _repack_existing(desktop)
         err(f"Desktop build failed ({e}). The backend still works; see "
             "docs/caduceus/IMPLEMENTATION.md to finish the desktop manually.")
         return 1
     ok("Desktop renderer built.")
+    return _repack_existing(desktop)
 
-    asar = _find_packaged_asar(desktop)
-    built_dist = os.path.join(desktop, "dist")
-    if asar and os.path.isdir(built_dist):
-        info("Packaged app detected — repacking app.asar with the new UI…")
-        info("(close the Hermes desktop first; a running app locks app.asar.)")
-        if _repack_asar(asar, built_dist):
-            ok("Repacked app.asar (original saved to app.asar.precaduceus.bak).")
-        else:
-            warn("Could not repack automatically — the built renderer is at "
-                 f"{built_dist}. Close Hermes and re-run --with-desktop, or repack manually.")
+
+def do_verify(target: str) -> int:
+    """Post-install health check: files present, modules compile, wiring in
+    place, and (if packaged) the desktop asar carries the Caduceus UI."""
+    import py_compile
+    if not is_hermes_install(target):
+        err(f"Not a Hermes install (missing run_agent.py/cli.py/toolsets.py): {target}")
+        return 2
+    info(f"Verifying Caduceus at {target}\n")
+    problems = 0
+
+    missing = [p for p in MANIFEST if not os.path.exists(os.path.join(target, p))]
+    if missing:
+        problems += 1
+        err(f"{len(missing)} Caduceus file(s) missing (e.g. {missing[0]}). Re-run the installer.")
+    else:
+        ok(f"All {len(MANIFEST)} Caduceus files present.")
+
+    py_files = [p for p in MANIFEST if p.endswith(".py") and os.path.exists(os.path.join(target, p))]
+    bad = []
+    for rel in py_files:
+        try:
+            py_compile.compile(os.path.join(target, rel), doraise=True)
+        except py_compile.PyCompileError:
+            bad.append(rel)
+    if bad:
+        problems += 1
+        err(f"{len(bad)} Python module(s) failed to compile (e.g. {bad[0]}).")
+    else:
+        ok(f"All {len(py_files)} Caduceus Python modules compile.")
+
+    def _contains(rel, needle):
+        try:
+            with open(os.path.join(target, rel), encoding="utf-8", errors="ignore") as f:
+                return needle in f.read()
+        except OSError:
+            return False
+    if _contains("hermes_cli/commands.py", "caduceus") and _contains("toolsets.py", "Workflow"):
+        ok("Wiring present (/caduceus command + Workflow toolset).")
+    else:
+        problems += 1
+        err("Caduceus wiring missing in hermes_cli/commands.py or toolsets.py.")
+
+    desktop = os.path.join(target, "apps", "desktop")
+    asar = _find_packaged_asar(desktop) if os.path.isdir(desktop) else None
+    if asar:
+        try:
+            with open(asar, "rb") as f:
+                blob = f.read()
+            if b"Orchestration Theater" in blob or b"Caduceus" in blob:
+                ok("Packaged app.asar contains the Caduceus desktop UI.")
+            else:
+                problems += 1
+                warn("Packaged app.asar does NOT contain the Caduceus UI. Close Hermes "
+                     "and run --with-desktop (or --repack-only after building).")
+        except OSError as e:
+            warn(f"Could not read {asar}: {e}")
+    else:
+        info("No packaged desktop app found (CLI/TUI install) — skipping the desktop check.")
+
+    print()
+    if problems:
+        err(f"Verify found {problems} problem(s) — see above.")
+        return 1
+    ok("Caduceus verify passed. Restart Hermes and run /caduceus on.")
     return 0
 
 
@@ -537,6 +709,9 @@ def main() -> int:
     ap.add_argument("target", nargs="?", help="path to the hermes-agent install (auto-detected if omitted)")
     ap.add_argument("--dry-run", action="store_true", help="show changes, write nothing")
     ap.add_argument("--with-desktop", action="store_true", help="also rebuild the Electron desktop")
+    ap.add_argument("--repack-only", action="store_true",
+                    help="skip the overlay+build; just repack the already-built renderer into app.asar (node-free)")
+    ap.add_argument("--verify", action="store_true", help="check an existing Caduceus install is healthy and exit")
     ap.add_argument("--uninstall", action="store_true", help="restore the most recent backup")
     ap.add_argument("--list-targets", action="store_true", help="list detected Hermes installs and exit")
     ap.add_argument("--force", action="store_true", help="proceed despite a version mismatch")
@@ -564,6 +739,10 @@ def main() -> int:
 
     if args.uninstall:
         return do_uninstall(target)
+    if args.verify:
+        return do_verify(target)
+    if args.repack_only:
+        return rebuild_desktop(target, repack_only=True)
 
     rc = do_install(target, args.dry_run, args.force)
     if rc != 0 or args.dry_run:

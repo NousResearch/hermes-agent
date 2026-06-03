@@ -72,14 +72,13 @@ def test_detect_service_manager_returns_known_value() -> None:
 def test_detect_service_manager_s6_keys_off_s6_running_not_is_container(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: Fly runs s6-overlay as PID 1 in a Firecracker microVM, which
-    is not a Docker/Podman container. Gating s6 detection on is_container() made
-    the dispatch path inert on Fly, so `hermes gateway restart` spawned a
-    foreground gateway that fought the supervised one. Detection must key off
-    s6 being PID 1 (`_s6_running`) alone."""
+    """s6 detection must key off s6 being PID 1 alone, not container markers:
+    s6-overlay images can run outside Docker/Podman (e.g. microVMs), where
+    is_container() is False but the gateway is still s6-supervised."""
     monkeypatch.setattr(
         "hermes_cli.service_manager._s6_running", lambda: True,
     )
+    monkeypatch.setattr("hermes_constants._container_detected", False)  # defeat cache
     assert detect_service_manager() == "s6"
 
 

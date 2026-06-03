@@ -86,8 +86,8 @@ def detect_service_manager() -> ServiceManagerKind:
     """Detect which service manager is available in this environment.
 
     Returns:
-        "s6" — s6-svscan is PID 1 (s6-overlay image; Docker, Podman, or a
-               Fly Firecracker microVM)
+        "s6" — s6-svscan is PID 1 (s6-overlay image, regardless of how
+               it's run: container runtime, microVM, etc.)
         "windows" — native Windows host
         "launchd" — macOS host
         "systemd" — Linux host with a working user/system bus
@@ -107,13 +107,6 @@ def detect_service_manager() -> ServiceManagerKind:
         supports_systemd_services,
     )
 
-    # Gate on _s6_running() alone (PID 1 comm == s6-svscan AND /run/s6/basedir),
-    # NOT is_container(): the latter only detects Docker/Podman/lxc, so it is
-    # False on Fly's Firecracker microVMs even though s6-overlay is PID 1 there.
-    # That false negative made the whole s6 dispatch path inert on Fly, so
-    # `hermes gateway start/stop/restart` fell through to host code that spawns
-    # a foreground gateway competing with the supervised one. _s6_running() is
-    # already an s6-overlay-specific signal, so the container gate was redundant.
     if _s6_running():
         return "s6"
     if is_windows():

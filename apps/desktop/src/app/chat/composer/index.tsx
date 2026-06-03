@@ -575,6 +575,13 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // IME composition: Enter confirms composed text, not a message submission.
+    // Without this guard, pressing Enter to finalise a Korean/Japanese/Chinese
+    // IME preedit fires submitDraft() and splits the message mid-word.
+    if (event.nativeEvent.isComposing) {
+      return
+    }
+
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
       event.preventDefault()
 
@@ -1090,8 +1097,8 @@ export function ChatBar({
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
         aria-label="Message"
-        autoCorrect="off"
         autoCapitalize="off"
+        autoCorrect="off"
         className={cn(
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
@@ -1131,7 +1138,7 @@ export function ChatBar({
 
         `asChild` swaps TextareaAutosize for a Radix Slot wrapping our
         plain <textarea>, which carries the binding but skips autosize. */}
-      <ComposerPrimitive.Input asChild tabIndex={-1} unstable_focusOnScrollToBottom={false}>
+      <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
         <textarea aria-hidden className="sr-only" tabIndex={-1} />
       </ComposerPrimitive.Input>
     </div>

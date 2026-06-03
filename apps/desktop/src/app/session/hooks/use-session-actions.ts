@@ -6,6 +6,7 @@ import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { setSessionYolo } from '@/lib/yolo-session'
 import { clearComposerAttachments, clearComposerDraft } from '@/store/composer'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -15,6 +16,7 @@ import {
   $currentCwd,
   $messages,
   $sessions,
+  $yoloActive,
   getRememberedWorkspaceCwd,
   sessionPinId,
   setActiveSessionId,
@@ -36,7 +38,8 @@ import {
   setSessions,
   setSessionsTotal,
   setSessionStartedAt,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setYoloActive
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -248,6 +251,10 @@ function applyRuntimeInfo(
     setCurrentFastMode(info.fast)
   }
 
+  if (typeof info.yolo === 'boolean') {
+    setYoloActive(info.yolo)
+  }
+
   if (info.usage) {
     setCurrentUsage(current => ({ ...current, ...info.usage }))
   }
@@ -343,10 +350,17 @@ export function useSessionActions({
       setActiveSessionId(created.session_id)
       setSelectedStoredSessionId(stored)
       setSessionStartedAt(Date.now())
+      const yoloArmed = $yoloActive.get()
       const runtimeInfo = applyRuntimeInfo(created.info)
 
       if (runtimeInfo) {
         updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
+      }
+
+      // User may have armed YOLO on the new-chat draft before the runtime
+      // session existed — apply it to the freshly created session.
+      if (yoloArmed) {
+        await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
       }
 
       return created.session_id

@@ -19,6 +19,7 @@ import {
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { setSessionYolo } from '@/lib/yolo-session'
 import {
   $composerAttachments,
   addComposerAttachment,
@@ -28,7 +29,15 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $busy, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import {
+  $busy,
+  $messages,
+  $yoloActive,
+  setAwaitingResponse,
+  setBusy,
+  setMessages,
+  setYoloActive
+} from '@/store/session'
 
 import type { ClientSessionState, ImageAttachResponse, SlashExecResponse } from '../../types'
 
@@ -396,6 +405,30 @@ export function usePromptActions({
 
         if (normalizedName === 'branch' || normalizedName === 'fork') {
           await branchCurrentSession()
+
+          return
+        }
+
+        // /yolo maps to the status-bar YOLO control — a per-session approval
+        // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
+        // it locally; the session-create path applies it on the first message.
+        if (normalizedName === 'yolo') {
+          const sid = sessionHint || activeSessionIdRef.current
+          const next = !$yoloActive.get()
+
+          if (!sid) {
+            setYoloActive(next)
+            notify({ kind: 'success', message: next ? 'YOLO armed for this chat' : 'YOLO off' })
+
+            return
+          }
+
+          try {
+            const active = await setSessionYolo(requestGateway, sid, next)
+            appendSessionTextMessage(sid, 'system', `YOLO ${active ? 'on' : 'off'} for this session`)
+          } catch {
+            notify({ kind: 'error', title: 'YOLO', message: 'Could not toggle YOLO' })
+          }
 
           return
         }

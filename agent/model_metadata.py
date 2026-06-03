@@ -1551,15 +1551,14 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
-            # Invalidate stale ≤204,800 cache entries for MiniMax-M3.  Pre-catalog
-            # builds resolved M3 via the generic ``minimax`` catch-all (204,800)
-            # and persisted it before the ``minimax-m3`` (1M) entry existed; that
-            # stale value would otherwise stick forever here at step 1.  M3 is 1M,
-            # so any sub-256K cached value for an M3 slug is a leftover — drop it
+            # Invalidate stale cache entries for MiniMax-M3.  M3 is officially
+            # 1,000,000 tokens, so any sub-1M cached value for an M3 slug is a
+            # leftover from before the ``minimax-m3`` (1M) hardcoded entry
+            # existed — and the 512K from models.dev is also stale.  Drop it
             # and fall through to the hardcoded default.
-            elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):
+            elif cached < 1_000_000 and _model_name_suggests_minimax_m3(model):
                 logger.info(
-                    "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-catalog value); "
+                    "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-1M-catalog value); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )
@@ -1722,6 +1721,19 @@ def get_model_context_length(
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
+            # Override underreports against authoritative hardcoded catalog.
+            # models.dev lags behind for newly released models (e.g. MiniMax-M3
+            # catalogued at 512K on 2026-06-01 but officially 1M); the hardcoded
+            # DEFAULT_CONTEXT_LENGTHS entry is the source of truth in that case.
+            # Same pattern as the Kimi-family 32k guard at step 6.
+            hardcoded = _hardcoded_context_length_for(model)
+            if hardcoded and hardcoded > ctx:
+                logger.info(
+                    "models.dev context=%s for %r underreports the hardcoded catalog value; "
+                    "using hardcoded %s",
+                    f"{ctx:,}", model, f"{hardcoded:,}",
+                )
+                return hardcoded
             return ctx
 
     # 6. OpenRouter live API metadata — provider-unaware fallback.
@@ -1765,6 +1777,23 @@ def get_model_context_length(
 
     # 10. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
+
+
+def _hardcoded_context_length_for(model: str) -> int:
+    """Return the hardcoded DEFAULT_CONTEXT_LENGTHS match for ``model``, or 0.
+
+    Mirrors the fuzzy-match logic at step 8 (longest key first, substring on
+    the lowercased model name) so step 5f's underreport guard uses the exact
+    same precedence rules as the hardcoded fallback. Returns 0 (falsy) if no
+    hardcoded entry matches — callers should treat that as "no override".
+    """
+    model_lower = model.lower()
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if default_model in model_lower:
+            return length
+    return 0
 
 
 def estimate_tokens_rough(text: str) -> int:

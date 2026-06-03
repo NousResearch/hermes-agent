@@ -1593,11 +1593,12 @@ async def get_memory_provider_config(name: str):
     """
     try:
         from plugins.memory import load_memory_provider
+        from hermes_cli.memory_provider_surface import build_surface
 
         provider = load_memory_provider(name)
         if provider is None:
             return {"name": name, "label": name, "fields": []}
-        return provider.desktop_config_surface(str(get_hermes_home()))
+        return build_surface(provider, str(get_hermes_home()))
     except Exception:
         _log.exception("GET /api/memory/providers/%s/config failed", name)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1615,7 +1616,7 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
     """
     try:
         from plugins.memory import load_memory_provider
-        from agent.memory_config_surface import (
+        from hermes_cli.memory_provider_surface import (
             KIND_SECRET,
             KIND_SELECT,
             enrich_schema,

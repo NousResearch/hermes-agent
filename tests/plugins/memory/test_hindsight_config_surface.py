@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.memory_config_surface import enrich_schema, field_visible
+from hermes_cli.memory_provider_surface import enrich_schema, field_visible
 
 
 def _hindsight_schema():

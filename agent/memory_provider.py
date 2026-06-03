@@ -286,37 +286,36 @@ class MemoryProvider(ABC):
         plus env vars for secrets, driven by ``get_config_schema()``. Providers
         with non-conventional storage (host-keyed files, camelCase keys,
         multi-file resolution — e.g. Honcho's ``honcho.json``) override this to
-        route through their own resolution logic. The Desktop HTTP layer never
-        needs to know how any provider stores config.
+        route through their own resolution logic.
         """
-        from agent.memory_config_surface import default_read_config
+        import json
+        import os
+        from pathlib import Path
 
-        return default_read_config(self.get_config_schema(), self.name, hermes_home)
+        path = Path(hermes_home) / self.name / "config.json"
+        data: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                logger.warning("Failed to read provider config from %s", path, exc_info=True)
 
-    def desktop_config_surface(self, hermes_home: str) -> Dict[str, Any]:
-        """Assemble the full Desktop config payload for this provider.
-
-        Generic — driven entirely by ``get_config_schema()`` + ``read_config()``.
-        Returns ``{name, label, fields}`` where each field carries display
-        metadata (label/kind/tier/placeholder/options) and current state
-        (value/is_set, secrets masked). Providers with no config surface return
-        an empty ``fields`` list, and the Desktop panel renders nothing.
-        """
-        from agent.memory_config_surface import enrich_schema
-
-        schema = self.get_config_schema() or []
-        fields = enrich_schema(schema)
-        if fields:
-            state = self.read_config(hermes_home)
-            for field in fields:
-                fs = state.get(field["key"], {})
-                field["value"] = "" if field["kind"] == "secret" else str(fs.get("value", ""))
-                field["is_set"] = bool(fs.get("is_set", False))
-        return {
-            "name": self.name,
-            "label": getattr(self, "display_label", None) or self.name.capitalize(),
-            "fields": fields,
-        }
+        state: Dict[str, Dict[str, Any]] = {}
+        for field in self.get_config_schema() or []:
+            key = field.get("key")
+            if not key:
+                continue
+            if field.get("secret"):
+                env_var = field.get("env_var")
+                state[key] = {"value": "", "is_set": bool(env_var and os.environ.get(env_var))}
+                continue
+            value = data.get(key)
+            if value in (None, ""):
+                value = field.get("default", "")
+            state[key] = {"value": str(value), "is_set": value not in (None, "")}
+        return state
 
     def on_memory_write(
         self,

@@ -68,7 +68,9 @@ def test_read_config_env_fallback_for_key(tmp_path, monkeypatch):
 def test_desktop_surface_masks_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HONCHO_API_KEY", "env-key")
-    surface = _load_honcho().desktop_config_surface(str(tmp_path))
+    from hermes_cli.memory_provider_surface import build_surface
+
+    surface = build_surface(_load_honcho(), str(tmp_path))
     assert surface["name"] == "honcho"
     assert "env-key" not in json.dumps(surface)
     fields = {f["key"]: f for f in surface["fields"]}

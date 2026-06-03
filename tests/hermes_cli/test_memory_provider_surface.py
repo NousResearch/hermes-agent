@@ -1,19 +1,19 @@
-"""Tests for the Desktop memory-provider config surface (ABC layer).
+"""Tests for the Desktop presentation layer (hermes_cli.memory_provider_surface).
 
 Covers field normalization/derivation (back-compat with legacy schemas),
-the default conventional reader, secret masking, and the assembled
-``desktop_config_surface`` payload.
+tier grouping, conditional ``when`` carry-through, and surface assembly with
+secret masking.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, List
 
 import pytest
 
-from agent.memory_config_surface import (
+from agent.memory_provider import MemoryProvider
+from hermes_cli.memory_provider_surface import (
     KIND_BOOL,
     KIND_NUMBER,
     KIND_SECRET,
@@ -21,23 +21,20 @@ from agent.memory_config_surface import (
     KIND_TEXT,
     TIER_ADVANCED,
     TIER_SAFE,
-    default_read_config,
+    build_surface,
     enrich_schema,
     field_visible,
     normalize_field,
 )
-from agent.memory_provider import MemoryProvider
 
 
 # --- field derivation / back-compat -----------------------------------------
 
 def test_secret_derives_kind_and_env_key():
-    f = normalize_field(
-        {"key": "api_key", "description": "X", "secret": True, "env_var": "FOO_KEY"}
-    )
+    f = normalize_field({"key": "api_key", "secret": True, "env_var": "FOO_KEY"})
     assert f["kind"] == KIND_SECRET
     assert f["env_key"] == "FOO_KEY"
-    assert f["tier"] == TIER_SAFE  # default
+    assert f["tier"] == TIER_SAFE
 
 
 def test_choices_derive_select_with_options():
@@ -74,29 +71,11 @@ def test_enrich_skips_keyless_fields():
     assert [f["key"] for f in out] == ["a", "b"]
 
 
-# --- conditional (when) fields ----------------------------------------------
+# --- conditional (when) carry-through ----------------------------------------
 
 def test_when_clause_carried_through():
     f = normalize_field({"key": "api_url", "when": {"mode": "cloud"}})
     assert f["when"] == {"mode": "cloud"}
-
-
-def test_field_without_when_always_visible():
-    assert field_visible(normalize_field({"key": "x"}), {}) is True
-    assert field_visible(normalize_field({"key": "x"}), {"mode": "cloud"}) is True
-
-
-def test_field_visible_matches_values():
-    f = normalize_field({"key": "api_url", "when": {"mode": "cloud"}})
-    assert field_visible(f, {"mode": "cloud"}) is True
-    assert field_visible(f, {"mode": "local_external"}) is False
-    assert field_visible(f, {}) is False
-
-
-def test_field_visible_requires_all_when_keys():
-    f = normalize_field({"key": "llm_base_url", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}})
-    assert field_visible(f, {"mode": "local_embedded", "llm_provider": "openai_compatible"}) is True
-    assert field_visible(f, {"mode": "local_embedded", "llm_provider": "openai"}) is False
 
 
 def test_duplicate_keys_with_different_when_both_enriched():
@@ -111,7 +90,7 @@ def test_duplicate_keys_with_different_when_both_enriched():
     assert {r["default"] for r in rows} == {"cloud-url", "local-url"}
 
 
-# --- default conventional reader ---------------------------------------------
+# --- build_surface assembly --------------------------------------------------
 
 def _write_provider_config(home, name, data):
     d = home / name
@@ -119,39 +98,7 @@ def _write_provider_config(home, name, data):
     (d / "config.json").write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_default_reader_returns_values_and_defaults(tmp_path):
-    schema = [
-        {"key": "api_url", "default": "https://default"},
-        {"key": "bank_id", "default": "hermes"},
-    ]
-    _write_provider_config(tmp_path, "demo", {"api_url": "https://custom"})
-    state = default_read_config(schema, "demo", str(tmp_path))
-    assert state["api_url"] == {"value": "https://custom", "is_set": True}
-    # falls back to schema default when not in file
-    assert state["bank_id"]["value"] == "hermes"
-
-
-def test_default_reader_never_returns_secret_value(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEMO_KEY", "super-secret")
-    schema = [{"key": "api_key", "secret": True, "env_var": "DEMO_KEY"}]
-    state = default_read_config(schema, "demo", str(tmp_path))
-    assert state["api_key"]["value"] == ""
-    assert state["api_key"]["is_set"] is True
-    assert "super-secret" not in json.dumps(state)
-
-
-def test_default_reader_secret_not_set(tmp_path, monkeypatch):
-    monkeypatch.delenv("DEMO_KEY", raising=False)
-    schema = [{"key": "api_key", "secret": True, "env_var": "DEMO_KEY"}]
-    state = default_read_config(schema, "demo", str(tmp_path))
-    assert state["api_key"] == {"value": "", "is_set": False}
-
-
-# --- desktop_config_surface assembly via the ABC -----------------------------
-
 class _FakeProvider(MemoryProvider):
-    """Minimal provider exercising the default surface path."""
-
     @property
     def name(self) -> str:
         return "demo"
@@ -188,10 +135,10 @@ class _NoConfigProvider(MemoryProvider):
         return []
 
 
-def test_desktop_surface_masks_secret_and_carries_state(tmp_path, monkeypatch):
+def test_build_surface_masks_secret_and_carries_state(tmp_path, monkeypatch):
     monkeypatch.setenv("DEMO_KEY", "abc123")
     _write_provider_config(tmp_path, "demo", {"api_url": "https://custom"})
-    surface = _FakeProvider().desktop_config_surface(str(tmp_path))
+    surface = build_surface(_FakeProvider(), str(tmp_path))
 
     assert surface["name"] == "demo"
     fields = {f["key"]: f for f in surface["fields"]}
@@ -204,6 +151,48 @@ def test_desktop_surface_masks_secret_and_carries_state(tmp_path, monkeypatch):
     assert "abc123" not in json.dumps(surface)
 
 
-def test_provider_without_schema_renders_empty(tmp_path):
-    surface = _NoConfigProvider().desktop_config_surface(str(tmp_path))
+def test_build_surface_empty_for_no_schema(tmp_path):
+    surface = build_surface(_NoConfigProvider(), str(tmp_path))
     assert surface["fields"] == []
+
+
+# --- field_visible (when gating) --------------------------------------------
+
+def test_field_visible_no_when_always_true():
+    assert field_visible({"key": "x"}, {}) is True
+    assert field_visible({"key": "x"}, {"mode": "cloud"}) is True
+
+
+def test_field_visible_matches_values():
+    f = {"key": "api_url", "when": {"mode": "cloud"}}
+    assert field_visible(f, {"mode": "cloud"}) is True
+    assert field_visible(f, {"mode": "local_external"}) is False
+    assert field_visible(f, {}) is False
+
+
+def test_field_visible_requires_all_when_keys():
+    f = {"key": "u", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}}
+    assert field_visible(f, {"mode": "local_embedded", "llm_provider": "openai_compatible"}) is True
+    assert field_visible(f, {"mode": "local_embedded", "llm_provider": "openai"}) is False
+
+
+# --- default ABC read_config -------------------------------------------------
+
+def test_default_read_config_values_and_defaults(tmp_path):
+    _write_provider_config(tmp_path, "demo", {"api_url": "https://custom"})
+    state = _FakeProvider().read_config(str(tmp_path))
+    assert state["api_url"] == {"value": "https://custom", "is_set": True}
+
+
+def test_default_read_config_masks_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEMO_KEY", "super-secret")
+    state = _FakeProvider().read_config(str(tmp_path))
+    assert state["api_key"]["value"] == ""
+    assert state["api_key"]["is_set"] is True
+    assert "super-secret" not in json.dumps(state)
+
+
+def test_default_read_config_secret_not_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEMO_KEY", raising=False)
+    state = _FakeProvider().read_config(str(tmp_path))
+    assert state["api_key"] == {"value": "", "is_set": False}

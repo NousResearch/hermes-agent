@@ -27,6 +27,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     LEGACY_SUMMARY_PREFIX,
     ContextCompressor,
+    _HISTORICAL_SUMMARY_PREFIXES,
 )
 
 
@@ -55,6 +56,45 @@ def test_latest_message_wins_over_inherited_active_task():
     # Conflict-resolution must be explicit, not implied.
     assert "wins" in lower or "supersede" in lower
     assert "discard" in lower
+
+
+def test_summary_prefix_requires_source_owner_lock_for_recovery():
+    """Generic recovery requests must not revive a compacted task whose
+    recorded source belongs to a different chat/thread/session/owner.
+
+    A latest message like "restore the interrupted work" is compatible with a
+    stale ``## Active Task`` unless the compaction handoff explicitly requires a
+    current-source check and an explicit handoff for mismatches.
+    """
+    lower = SUMMARY_PREFIX.lower()
+    assert "source/owner" in lower
+    assert "current session context" in lower
+    assert "different chat/thread/session" in lower
+    assert "explicit handoff" in lower
+    assert "generic recovery" in lower
+
+
+def test_pre_source_owner_lock_handoff_gets_renormalized():
+    """Handoffs persisted before the source-lock wording must be upgraded on
+    re-compaction, otherwise the old prompt can keep accepting generic recovery
+    as permission to resume another lane's Active Task."""
+    pre_lock_prefix = next(
+        prefix for prefix in _HISTORICAL_SUMMARY_PREFIXES
+        if "latest user message" in prefix.lower()
+        and "source/owner" not in prefix.lower()
+    )
+    stale_handoff = (
+        f"{pre_lock_prefix}\n"
+        "## Active Task\n"
+        "Restore work from source telegram:group:other-chat:topic:other-thread\n"
+    )
+
+    renormalized = ContextCompressor._with_summary_prefix(stale_handoff)
+
+    assert renormalized.startswith(SUMMARY_PREFIX)
+    assert "source/owner lock" in renormalized.lower()
+    assert "generic recovery" in renormalized.lower()
+    assert "other-thread" in renormalized
 
 
 def test_no_resume_exactly_directive_can_hijack():

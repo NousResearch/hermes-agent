@@ -6659,6 +6659,7 @@ def _(rid, params: dict) -> dict:
             picker_hints=True,
             canonical_order=True,
             pricing=True,
+            capabilities=True,
             max_models=50,
         )
         return _ok(rid, payload)

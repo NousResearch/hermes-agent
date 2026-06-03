@@ -3886,13 +3886,64 @@ def _pool_codex_access_token() -> str:
 # xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
 # =============================================================================
 
+def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return usable xAI OAuth state from provider state or credential pool."""
+    state = _load_provider_state(auth_store, "xai-oauth")
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    if isinstance(tokens, dict):
+        access_token = str(tokens.get("access_token", "") or "").strip()
+        refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+        if access_token and refresh_token:
+            return state
+
+    credential_pool = auth_store.get("credential_pool")
+    entries = (
+        credential_pool.get("xai-oauth")
+        if isinstance(credential_pool, dict)
+        else None
+    )
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            access_token = str(entry.get("access_token", "") or "").strip()
+            refresh_token = str(entry.get("refresh_token", "") or "").strip()
+            if not access_token or not refresh_token:
+                continue
+            merged = dict(state or {})
+            merged["tokens"] = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_type": str(entry.get("token_type") or "Bearer"),
+            }
+            if entry.get("last_refresh"):
+                merged["last_refresh"] = entry.get("last_refresh")
+            merged.setdefault("auth_mode", "oauth_pkce")
+            return merged
+
+    return state if isinstance(state, dict) else None
+
+
+def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    return (
+        isinstance(tokens, dict)
+        and bool(str(tokens.get("access_token", "") or "").strip())
+        and bool(str(tokens.get("refresh_token", "") or "").strip())
+    )
+
+
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     if _lock:
         with _auth_store_lock():
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "xai-oauth")
+    state = _xai_oauth_state_from_store(auth_store)
+    if not _xai_oauth_state_has_usable_tokens(state):
+        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
+        if _xai_oauth_state_has_usable_tokens(global_state):
+            state = global_state
     if not state:
         raise AuthError(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",

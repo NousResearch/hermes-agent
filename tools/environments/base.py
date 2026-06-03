@@ -147,6 +147,7 @@ def _popen_bash(
         stderr=subprocess.STDOUT,
         stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
         text=True,
+        encoding="utf-8",
         errors="replace",
         **kwargs,
     )

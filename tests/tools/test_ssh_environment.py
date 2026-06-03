@@ -311,6 +311,9 @@ class TestNonUTF8SubprocessOutput:
             assert kwargs.get("errors") == "replace", (
                 f"text-mode subprocess.run missing errors='replace': {kwargs}"
             )
+            assert kwargs.get("encoding") == "utf-8", (
+                f"text-mode subprocess.run missing encoding='utf-8': {kwargs}"
+            )
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):

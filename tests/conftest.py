@@ -250,6 +250,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SIGNAL_ALLOW_ALL_USERS",
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
+    # Platform allowlists/settings beyond user IDs. These are intentionally
+    # controllable by focused tests, but must not leak from a developer
+    # gateway shell into the default test environment.
+    "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_COMMAND_SYNC_POLICY",
+    "API_SERVER_ENABLED",
     # Gateway home channels are set by /sethome in real profiles. Tests that
     # exercise dashboard notification toggles must opt in explicitly or they
     # can accidentally subscribe against a developer's real home channel.

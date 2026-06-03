@@ -76,8 +76,7 @@
   --shadow-header:
     0 0.0625rem 0 color-mix(in srgb, var(--dt-foreground) 7%, transparent),
     0 0.625rem 1.5rem -1.25rem color-mix(in srgb, #000 16%, transparent);
-  --shadow-composer:
-    0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
+  --shadow-composer: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
   --shadow-composer-focus:
     0 0 0 0.125rem color-mix(in srgb, var(--dt-composer-ring) calc(10% * var(--composer-ring-strength)), transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-composer-ring) calc(22% * var(--composer-ring-strength)), transparent),
@@ -133,15 +132,23 @@
     --ui-cyan: #4c7f8c;
     --ui-blue: #0053fd;
     --ui-purple: #9e94d5;
-    --ui-bg-chrome: color-mix(in srgb, var(--theme-background-seed) var(--theme-mix-chrome), var(--theme-neutral-chrome));
-    --ui-bg-sidebar: color-mix(in srgb, var(--theme-sidebar-seed) var(--theme-mix-sidebar), var(--theme-neutral-sidebar));
-    --ui-bg-editor: color-mix(in srgb, var(--theme-card-seed) var(--theme-mix-card), var(--theme-neutral-card));
-    --ui-bg-elevated: color-mix(in srgb, var(--theme-elevated-seed) var(--theme-mix-elevated), var(--theme-neutral-card));
-    --ui-bg-card: color-mix(
+    --ui-bg-chrome: color-mix(
       in srgb,
-      var(--ui-accent) 4%,
-      color-mix(in srgb, var(--ui-base) 4%, transparent)
+      var(--theme-background-seed) var(--theme-mix-chrome),
+      var(--theme-neutral-chrome)
     );
+    --ui-bg-sidebar: color-mix(
+      in srgb,
+      var(--theme-sidebar-seed) var(--theme-mix-sidebar),
+      var(--theme-neutral-sidebar)
+    );
+    --ui-bg-editor: color-mix(in srgb, var(--theme-card-seed) var(--theme-mix-card), var(--theme-neutral-card));
+    --ui-bg-elevated: color-mix(
+      in srgb,
+      var(--theme-elevated-seed) var(--theme-mix-elevated),
+      var(--theme-neutral-card)
+    );
+    --ui-bg-card: color-mix(in srgb, var(--ui-accent) 4%, color-mix(in srgb, var(--ui-base) 4%, transparent));
     --ui-bg-input: #fcfcfc;
     --ui-bg-primary: color-mix(
       in srgb,
@@ -218,7 +225,11 @@
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
-    --ui-chat-bubble-background: color-mix(in srgb, var(--theme-bubble-seed) var(--theme-mix-bubble), var(--theme-neutral-card));
+    --ui-chat-bubble-background: color-mix(
+      in srgb,
+      var(--theme-bubble-seed) var(--theme-mix-bubble),
+      var(--theme-neutral-card)
+    );
     --ui-chat-bubble-opaque-background: var(--ui-bg-editor);
     --ui-inline-code-background: color-mix(in srgb, #141414 5%, transparent);
     --ui-inline-code-border: color-mix(in srgb, #141414 8%, transparent);
@@ -272,6 +283,7 @@
     --conversation-line-height: 1.125rem;
     --conversation-caption-line-height: 1rem;
     --conversation-turn-gap: 0.375rem;
+    --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
     --composer-width: 48.75rem;
@@ -626,7 +638,7 @@ canvas {
   .scrollbar-dt::-webkit-scrollbar-thumb,
   .scrollbar-dt *::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 18%, transparent);
-  border-radius: 9999rem;
+    border-radius: 9999rem;
     border: 0.125rem solid transparent;
     background-clip: padding-box;
   }
@@ -704,9 +716,38 @@ canvas {
   padding-inline-start: var(--md-text-indent, 0.5rem);
 }
 
+[data-slot='aui_user-message-root'] {
+  top: var(--sticky-human-top);
+}
+
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
   font-size: var(--conversation-text-font-size);
+}
+
+/* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
+   prompt doesn't dominate the viewport while you read the response stuck
+   beneath it. The clamp lifts on hover / focus (clicking the bubble opens the
+   edit composer, which already shows the full text). --human-msg-full is the
+   measured content height (set in UserMessage) so expand/collapse animates to
+   the real height instead of overshooting the cap. */
+.sticky-human-clamp {
+  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  overflow: hidden;
+  transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sticky-human-clamp[data-clamped='true'] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+
+.composer-human-message:hover .sticky-human-clamp,
+.composer-human-message:focus-within .sticky-human-clamp {
+  max-height: min(var(--human-msg-full, 24rem), 24rem);
+  overflow-y: auto;
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 /* The thread renders items in natural document flow (padding spacers, not
@@ -909,8 +950,7 @@ canvas {
   background: transparent !important;
 }
 
-[data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+[data-slot='aui_assistant-message-content'] > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -941,12 +981,8 @@ canvas {
   margin-top: 1rem;
 }
 
-[data-slot='aui_assistant-message-content']
-  [data-slot='aui_thinking-disclosure']
-  + [data-slot='tool-block'],
-[data-slot='aui_assistant-message-content']
-  [data-slot='tool-block']
-  + [data-slot='aui_thinking-disclosure'] {
+[data-slot='aui_assistant-message-content'] [data-slot='aui_thinking-disclosure'] + [data-slot='tool-block'],
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'] + [data-slot='aui_thinking-disclosure'] {
   margin-top: 0.75rem;
 }
 

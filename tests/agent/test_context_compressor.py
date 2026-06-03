@@ -82,6 +82,40 @@ class TestPreflightDeferral:
 
         assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
+    def test_defers_immediately_after_compression_before_real_usage_arrives(self, compressor):
+        """Regression: #36718 — compression fires twice on the same turn.
+
+        After compress(), last_prompt_tokens is set to -1 and
+        awaiting_real_usage_after_compression=True.  last_real_prompt_tokens
+        still holds the old pre-compression value (above threshold), so the
+        normal 'real_prompt < threshold' early-return did NOT fire, letting
+        the preflight estimate re-trigger a second compression immediately.
+        The fix: defer any preflight compression while the flag is set.
+        """
+        compressor.threshold_tokens = 85_000
+        # Simulate state right after compression:
+        compressor.last_prompt_tokens = -1
+        compressor.awaiting_real_usage_after_compression = True
+        # Old pre-compression value still in last_real_prompt_tokens (above threshold).
+        compressor.last_real_prompt_tokens = 180_000
+        compressor.last_compression_rough_tokens = 60_000
+
+        # Even though rough estimate exceeds threshold, must defer.
+        assert compressor.should_defer_preflight_to_real_usage(90_000) is True
+
+    def test_no_longer_defers_after_real_usage_clears_flag(self, compressor):
+        """After update_from_response() the flag is cleared; normal logic resumes."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_prompt_tokens = 50_000
+        compressor.awaiting_real_usage_after_compression = False
+        compressor.last_real_prompt_tokens = 50_000  # compressed fit under threshold
+        compressor.last_rough_tokens_when_real_prompt_fit = 60_000
+
+        # Modest growth → still deferred by the normal baseline mechanism.
+        assert compressor.should_defer_preflight_to_real_usage(62_000) is True
+        # Large growth → NOT deferred, compression should fire.
+        compressor.last_rough_tokens_when_real_prompt_fit = 60_000
+        assert compressor.should_defer_preflight_to_real_usage(120_000) is False
 
 
 class TestCompress:

@@ -708,6 +708,15 @@ class ContextCompressor(ContextEngine):
         """
         if rough_tokens < self.threshold_tokens:
             return False
+        # Guard against immediate re-compression on the turn right after a
+        # compress run.  last_prompt_tokens is parked at -1 and
+        # last_real_prompt_tokens still holds the old pre-compression value
+        # (which is >= threshold), so the check below would incorrectly allow
+        # a second compression before the API has reported real usage for the
+        # now-shorter conversation.  Defer until update_from_response() clears
+        # the flag with the real post-compression token count. (#36718)
+        if self.awaiting_real_usage_after_compression:
+            return True
         if self.last_real_prompt_tokens <= 0:
             return False
         if self.last_real_prompt_tokens >= self.threshold_tokens:

@@ -1412,6 +1412,18 @@ async function applyUpdatesPosixInApp(opts = {}) {
     PATH: [extraPath, process.env.PATH].filter(Boolean).join(path.delimiter)
   }
 
+  // `hermes update` reaps stale `hermes dashboard` backends (a code update
+  // leaves the running process serving old Python against the freshly-updated
+  // JS bundle). But OUR backend is one of those processes, and killing it
+  // mid-update produces the boot→kill→crash loop in #37532 — the desktop
+  // already restarts its own backend via the rebuild+relaunch below, so the
+  // reap must spare it. Hand the live backend's PID to the update process;
+  // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
+  // it while still reaping any genuinely-orphaned dashboards. (#37532)
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
+    env.HERMES_DESKTOP_CHILD_PID = String(hermesProcess.pid)
+  }
+
   // Branch-pin so a non-main checkout doesn't get switched to main (and self-heal
   // to main when the pinned branch no longer exists on origin).
   let branchArgs = []

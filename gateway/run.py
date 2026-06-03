@@ -11996,6 +11996,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
         ("model", "max_tokens"),
+        ("model", "compression"),
         ("compression", "enabled"),
         ("compression", "threshold"),
         ("compression", "target_ratio"),
@@ -12106,8 +12107,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``cache_keys`` is an optional flat dict of additional config values
         that should invalidate the cache when they change.  Callers pass
         the output of ``_extract_cache_busting_config(user_config)`` so
-        edits to model.context_length / compression.* in config.yaml are
-        picked up on the next gateway message without a manual restart.
+        edits to model.context_length / model.compression / compression.* in
+        config.yaml are picked up on the next gateway message without a manual
+        restart.
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
         carried by the current message's gateway source.  They participate

@@ -1698,9 +1698,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
                     agent.base_url, _stream_read_timeout,
                 )
-        # Cap connect/pool at 60s even when provider timeout is higher.
-        # connect/pool cover TCP handshake, not model inference.
-        _conn_cap = min(_base_timeout, 60.0) if _provider_timeout_cfg is not None else 30.0
+        # Connect/pool uses provider config first; falls back only when nothing defined elsewhere.
+        _provider_timeout_default = int(os.getenv("HERMES_API_TIMEOUT", str(30))) * float(".1")
+        if _provider_timeout_cfg is not None and _provider_timeout_cfg > 0:
+            _cap_val = max(int(float(str(_provider_timeout_cfg)) * .1), _provider_timeout_default)
+        else:
+            _cap_val = _provider_timeout_default
+        _conn_cap = round(_cap_val, 5)
         stream_kwargs = {
             **api_kwargs,
             "stream": True,

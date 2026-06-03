@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::events::{BootstrapEvent, Manifest, StageState};
+use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
 use crate::powershell::{self, StreamSink};
 use crate::AppState;
@@ -366,6 +366,7 @@ async fn run_bootstrap(
             BootstrapEvent::Log {
                 stage: None,
                 line: line.to_string(),
+                stream: LogStream::Stdout,
             },
         );
         // Bump to info-level so the line shows in bootstrap-installer.log
@@ -700,6 +701,7 @@ async fn run_install_script(
                 BootstrapEvent::Log {
                     stage: stage_for_stdout.clone(),
                     line: line.to_string(),
+                    stream: LogStream::Stdout,
                 },
             );
             // Tee to the rolling installer log so we have a persistent
@@ -718,7 +720,8 @@ async fn run_install_script(
                 &app_for_stderr,
                 BootstrapEvent::Log {
                     stage: stage_for_stderr.clone(),
-                    line: format!("stderr: {line}"),
+                    line: line.to_string(),
+                    stream: LogStream::Stderr,
                 },
             );
             // stderr-level lines get warn! so they're visually distinct

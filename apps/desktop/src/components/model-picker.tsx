@@ -24,6 +24,12 @@ interface ModelPickerDialogProps {
   currentProvider: string
   onSelect: (selection: { provider: string; model: string; persistGlobal: boolean }) => void
   /**
+   * Optional provider allow-list. Onboarding uses this after a freshly added
+   * provider so "Change" only shows models from that provider instead of
+   * leaking similarly named models from other authenticated providers.
+   */
+  allowedProviderSlugs?: string[]
+  /**
    * Optional class to apply to DialogContent. Use to override z-index when
    * stacking the picker on top of another fixed overlay (e.g. the desktop
    * onboarding overlay, which sits at z-1300; the default Dialog z-130 ends
@@ -40,6 +46,7 @@ export function ModelPickerDialog({
   currentModel,
   currentProvider,
   onSelect,
+  allowedProviderSlugs,
   contentClassName
 }: ModelPickerDialogProps) {
   const [persistGlobal, setPersistGlobal] = useState(!sessionId)
@@ -65,6 +72,9 @@ export function ModelPickerDialog({
   })
 
   const providers = modelOptions.data?.providers ?? []
+  const allowed = new Set((allowedProviderSlugs ?? []).map(slug => String(slug).toLowerCase()))
+  const visibleProviders =
+    allowed.size > 0 ? providers.filter(p => allowed.has(String(p.slug).toLowerCase())) : providers
   const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
   const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
   const loading = modelOptions.isPending && !modelOptions.data
@@ -119,7 +129,7 @@ export function ModelPickerDialog({
               error={error}
               loading={loading}
               onSelectModel={selectModel}
-              providers={providers}
+              providers={visibleProviders}
               search={search}
             />
           </CommandList>

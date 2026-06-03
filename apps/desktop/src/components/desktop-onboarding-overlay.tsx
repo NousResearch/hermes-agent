@@ -27,9 +27,9 @@ import {
   confirmOnboardingModel,
   copyDeviceCode,
   copyExternalCommand,
+  fetchOnboardingCustomProviderModels,
   type OnboardingContext,
   type OnboardingFlow,
-  fetchOnboardingCustomProviderModels,
   recheckExternalSignin,
   refreshOnboarding,
   saveOnboardingApiKey,
@@ -839,6 +839,7 @@ function ConfirmingModelPanel({
         the rest of the screen, so we don't want a second backdrop.
       */}
       <ModelPickerDialog
+        allowedProviderSlugs={[flow.providerSlug]}
         contentClassName="z-[1310]"
         currentModel={flow.currentModel}
         currentProvider={flow.providerSlug}

@@ -45,12 +45,36 @@ jobs:
           RG_VERSION=15.1.0
           RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
           RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
-          curl -sSfL -o "$RG_TARBALL" \
-            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
-          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
-          tar -xzf "$RG_TARBALL"
-          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
-          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+
+          # Download + checksum-verify the pinned release, retrying transient
+          # failures. GitHub release assets intermittently return 403/timeouts
+          # on runners (a flaky 403 here once failed the whole Tests workflow),
+          # so retry with backoff and fall back to apt if it stays unreachable.
+          install_from_release() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if curl -fL --retry 3 --retry-all-errors --retry-delay 2 \
+                   -o "$RG_TARBALL" "$RG_URL" \
+                 && echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -; then
+                tar -xzf "$RG_TARBALL"
+                sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+                rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+                return 0
+              fi
+              echo "ripgrep download attempt ${attempt} failed; retrying in $((attempt * 5))s..." >&2
+              rm -f "$RG_TARBALL"
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+
+          if ! install_from_release; then
+            echo "::warning::Pinned ripgrep ${RG_VERSION} release unreachable after retries; falling back to apt." >&2
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
           rg --version
 
       - name: Install uv
@@ -151,12 +175,36 @@ jobs:
           RG_VERSION=15.1.0
           RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
           RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
-          curl -sSfL -o "$RG_TARBALL" \
-            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
-          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
-          tar -xzf "$RG_TARBALL"
-          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
-          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+
+          # Download + checksum-verify the pinned release, retrying transient
+          # failures. GitHub release assets intermittently return 403/timeouts
+          # on runners (a flaky 403 here once failed the whole Tests workflow),
+          # so retry with backoff and fall back to apt if it stays unreachable.
+          install_from_release() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if curl -fL --retry 3 --retry-all-errors --retry-delay 2 \
+                   -o "$RG_TARBALL" "$RG_URL" \
+                 && echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -; then
+                tar -xzf "$RG_TARBALL"
+                sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+                rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+                return 0
+              fi
+              echo "ripgrep download attempt ${attempt} failed; retrying in $((attempt * 5))s..." >&2
+              rm -f "$RG_TARBALL"
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+
+          if ! install_from_release; then
+            echo "::warning::Pinned ripgrep ${RG_VERSION} release unreachable after retries; falling back to apt." >&2
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
           rg --version
 
       - name: Install uv

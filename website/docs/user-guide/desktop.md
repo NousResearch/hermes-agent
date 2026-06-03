@@ -104,6 +104,21 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 
 The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. The React renderer talks to a `hermes dashboard --tui` backend over the standard gateway APIs and reuses the agent rather than reimplementing it. Install, backend-resolution, and self-update logic live in the Electron main process.
 
+## Connecting to a remote backend
+
+By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale — under **Settings → Gateway → Remote gateway**. It asks for two things:
+
+- **Remote URL** — the backend's dashboard URL, e.g. `http://<host>:9119`
+- **Session token** — the backend's dashboard session token
+
+The session token is the part that trips people up. **Hermes does not print it for you to copy** — by default the backend mints a fresh random token on every boot and injects it straight into the served HTML, so there is nothing in `config.yaml`, in `/gateway`, or in the logs to grab. For a remote connection you pin the token yourself on the backend (via `HERMES_DASHBOARD_SESSION_TOKEN`), run the backend with `--insecure`, then paste that same value into the app.
+
+The full backend setup — minting the token, the `--insecure`-vs-OAuth-gate detail, the `HERMES_DESKTOP_REMOTE_URL` / `HERMES_DESKTOP_REMOTE_TOKEN` environment-variable override, Tailscale guidance, and a troubleshooting list — lives on the dashboard page, since the desktop app talks to the same backend the web dashboard does:
+
+➜ **[Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend)**
+
+The relevant environment variables are also catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](../reference/environment-variables.md#web-dashboard--hermes-desktop).
+
 ## Troubleshooting
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure. You can also tail it from the CLI:

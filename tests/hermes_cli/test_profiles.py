@@ -30,6 +30,7 @@ from hermes_cli.profiles import (
     import_profile,
     _get_profiles_root,
     _get_default_hermes_home,
+    _safe_profile_config_relpath,
     seed_profile_skills,
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
@@ -201,6 +202,63 @@ class TestCreateProfile:
             / "installed-skill"
             / "SKILL.md"
         ).read_text() == "---\nname: installed-skill\n---\n"
+
+    def test_clone_config_copies_memory_provider_config_paths(
+        self, profile_env, monkeypatch
+    ):
+        import plugins.memory as memory_plugins
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "memory:\n  provider: hindsight\n"
+        )
+        (default_home / "hindsight").mkdir()
+        (default_home / "hindsight" / "config.json").write_text(
+            '{"mode": "local_embedded", "bank_id": "hermes"}'
+        )
+        (default_home / "mem0.json").write_text('{"agent_id": "hermes"}')
+
+        class FakeProvider:
+            def __init__(self, paths):
+                self._paths = paths
+
+            def get_profile_config_paths(self):
+                return self._paths
+
+        providers = {
+            "hindsight": FakeProvider(["hindsight/config.json"]),
+            "mem0": FakeProvider(["mem0.json"]),
+            "honcho": FakeProvider(["honcho.json"]),
+        }
+        monkeypatch.setattr(
+            memory_plugins,
+            "discover_memory_providers",
+            lambda: [(name, "", True) for name in providers],
+        )
+        monkeypatch.setattr(
+            memory_plugins,
+            "load_memory_provider",
+            lambda name: providers[name],
+        )
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir / "hindsight" / "config.json"
+        ).read_text() == '{"mode": "local_embedded", "bank_id": "hermes"}'
+        assert (profile_dir / "mem0.json").read_text() == '{"agent_id": "hermes"}'
+        assert not (profile_dir / "honcho.json").exists()
+
+    def test_memory_provider_config_paths_must_be_profile_relative(self):
+        assert _safe_profile_config_relpath("hindsight/config.json") == Path(
+            "hindsight/config.json"
+        )
+
+        unsafe_paths = ["", ".", "..", "../outside.json", "/tmp/config.json"]
+        unsafe_paths.append(r"C:\tmp\config.json")
+        for raw_path in unsafe_paths:
+            assert _safe_profile_config_relpath(raw_path) is None
 
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env

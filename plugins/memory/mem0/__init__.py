@@ -139,6 +139,9 @@ class Mem0MemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "mem0"
 
+    def get_profile_config_paths(self) -> List[str]:
+        return ["mem0.json"]
+
     def is_available(self) -> bool:
         cfg = _load_config()
         return bool(cfg.get("api_key"))

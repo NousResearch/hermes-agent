@@ -854,6 +854,10 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     job = resolve_job_ref(job_id)
     if not job:
         return None
+    # Compute the real next scheduled time for display, so the user sees the
+    # correct future fire time instead of the internal "now" value used to
+    # force immediate execution.  See issue #38281.
+    real_next_run = compute_next_run(job["schedule"])
     return update_job(
         job["id"],
         {
@@ -862,6 +866,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_at": None,
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
+            "_next_scheduled_run_at": real_next_run,
         },
     )
 
@@ -926,6 +931,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
 
+                # Clear the forced-trigger display override now that the real
+                # next_run_at has been recomputed.  See issue #38281.
+                job.pop("_next_scheduled_run_at", None)
+
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
                 # compute — e.g. 'croniter' missing from the runtime env).
@@ -984,6 +993,8 @@ def advance_next_run(job_id: str) -> bool:
                 new_next = compute_next_run(job["schedule"], now)
                 if new_next and new_next != job.get("next_run_at"):
                     job["next_run_at"] = new_next
+                    # Clear forced-trigger display override (issue #38281).
+                    job.pop("_next_scheduled_run_at", None)
                     save_jobs(jobs)
                     return True
                 return False

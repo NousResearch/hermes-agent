@@ -60,7 +60,7 @@ def cron_list(show_all: bool = False):
         name = job.get("name", "(unnamed)")
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
-        next_run = job.get("next_run_at", "?")
+        next_run = job.get("_next_scheduled_run_at") or job.get("next_run_at", "?")
 
         repeat_info = job.get("repeat", {})
         repeat_times = repeat_info.get("times")
@@ -155,7 +155,7 @@ def cron_status():
 
     jobs = list_jobs(include_disabled=False)
     if jobs:
-        next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
+        next_runs = [j.get("_next_scheduled_run_at") or j.get("next_run_at") for j in jobs if j.get("_next_scheduled_run_at") or j.get("next_run_at")]
         print(f"  {len(jobs)} active job(s)")
         if next_runs:
             print(f"  Next run: {min(next_runs)}")

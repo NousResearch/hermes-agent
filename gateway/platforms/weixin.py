@@ -1810,10 +1810,47 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
 
+    async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
+        """Return a valid typing ticket, refreshing from getConfig if expired.
+
+        The iLink typing ticket has a 600-second TTL.  When a long-running
+        session exceeds that window the cached ticket evicts, and both
+        ``send_typing`` and ``stop_typing`` silently no-op — leaving the
+        WeChat client stuck showing the typing indicator forever.  This
+        method transparently refreshes the ticket so the stop signal can
+        always be delivered.
+        """
+        ticket = self._typing_cache.get(chat_id)
+        if ticket:
+            return ticket
+        if not self._send_session or not self._token:
+            return None
+        # Ticket expired or never fetched — refresh via getConfig.
+        # Use the most recent context_token for this peer if available.
+        context_token = self._token_store.get(self._account_id, chat_id)
+        try:
+            response = await _get_config(
+                self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                user_id=chat_id,
+                context_token=context_token,
+            )
+            typing_ticket = str(response.get("typing_ticket") or "")
+            if typing_ticket:
+                self._typing_cache.set(chat_id, typing_ticket)
+                return typing_ticket
+        except Exception as exc:
+            logger.debug(
+                "[%s] typing ticket refresh failed for %s: %s",
+                self.name, _safe_id(chat_id), exc,
+            )
+        return None
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
             return
         try:
@@ -1831,7 +1868,7 @@ class WeixinAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
             return
         try:

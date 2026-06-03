@@ -198,45 +198,86 @@ class TestPullOnce(unittest.TestCase):
     def test_skips_when_not_on_main(self):
         with (
             patch("gateway.hermes_home_puller._current_branch", return_value="feature"),
-            patch("gateway.hermes_home_puller._is_clean") as mock_clean,
-        ):
-            _pull_once(Path("/fake"))
-            mock_clean.assert_not_called()
-
-    def test_skips_when_dirty(self):
-        with (
-            patch("gateway.hermes_home_puller._current_branch", return_value="main"),
-            patch("gateway.hermes_home_puller._is_clean", return_value=False),
             patch("gateway.hermes_home_puller._commits_behind") as mock_behind,
         ):
             _pull_once(Path("/fake"))
             mock_behind.assert_not_called()
 
     def test_skips_when_up_to_date(self):
+        # behind is now counted before the clean check, so up-to-date short
+        # circuits without ever touching _is_clean or _fast_forward.
         with (
             patch("gateway.hermes_home_puller._current_branch", return_value="main"),
-            patch("gateway.hermes_home_puller._is_clean", return_value=True),
             patch("gateway.hermes_home_puller._commits_behind", return_value=0),
+            patch("gateway.hermes_home_puller._is_clean") as mock_clean,
             patch("gateway.hermes_home_puller._fast_forward") as mock_ff,
         ):
             _pull_once(Path("/fake"))
+            mock_clean.assert_not_called()
             mock_ff.assert_not_called()
 
-    def test_pulls_when_behind(self):
+    def test_pulls_when_clean_and_behind(self):
         with (
             patch("gateway.hermes_home_puller._current_branch", return_value="main"),
-            patch("gateway.hermes_home_puller._is_clean", return_value=True),
             patch("gateway.hermes_home_puller._commits_behind", return_value=2),
+            patch("gateway.hermes_home_puller._is_clean", return_value=True),
             patch("gateway.hermes_home_puller._fast_forward") as mock_ff,
         ):
             _pull_once(Path("/fake"))
             mock_ff.assert_called_once_with(Path("/fake"))
 
+    def test_dirty_and_behind_is_wedged_and_notifies(self):
+        # main + behind>0 + dirty = WEDGED: no fast-forward, notify fires.
+        notify = MagicMock()
+        with (
+            patch("gateway.hermes_home_puller._current_branch", return_value="main"),
+            patch("gateway.hermes_home_puller._commits_behind", return_value=5),
+            patch("gateway.hermes_home_puller._is_clean", return_value=False),
+            patch("gateway.hermes_home_puller._fast_forward") as mock_ff,
+        ):
+            _pull_once(Path("/fake"), notify=notify)
+            mock_ff.assert_not_called()
+            notify.assert_called_once_with(5)
+
+    def test_dirty_and_up_to_date_does_not_notify(self):
+        # Dirty but behind==0 is NOT wedged — short-circuits at the behind
+        # check before clean/notify are ever reached.
+        notify = MagicMock()
+        with (
+            patch("gateway.hermes_home_puller._current_branch", return_value="main"),
+            patch("gateway.hermes_home_puller._commits_behind", return_value=0),
+            patch("gateway.hermes_home_puller._is_clean") as mock_clean,
+            patch("gateway.hermes_home_puller._fast_forward") as mock_ff,
+        ):
+            _pull_once(Path("/fake"), notify=notify)
+            notify.assert_not_called()
+            mock_ff.assert_not_called()
+            mock_clean.assert_not_called()
+
+    def test_wedged_without_notify_callback_is_non_fatal(self):
+        # No notify callback supplied — wedged state just logs, no crash.
+        with (
+            patch("gateway.hermes_home_puller._current_branch", return_value="main"),
+            patch("gateway.hermes_home_puller._commits_behind", return_value=3),
+            patch("gateway.hermes_home_puller._is_clean", return_value=False),
+        ):
+            _pull_once(Path("/fake"))  # should not raise
+
+    def test_notify_callback_exception_is_non_fatal(self):
+        notify = MagicMock(side_effect=RuntimeError("boom"))
+        with (
+            patch("gateway.hermes_home_puller._current_branch", return_value="main"),
+            patch("gateway.hermes_home_puller._commits_behind", return_value=3),
+            patch("gateway.hermes_home_puller._is_clean", return_value=False),
+        ):
+            _pull_once(Path("/fake"), notify=notify)  # should not raise
+            notify.assert_called_once_with(3)
+
     def test_pull_failure_is_non_fatal(self):
         with (
             patch("gateway.hermes_home_puller._current_branch", return_value="main"),
-            patch("gateway.hermes_home_puller._is_clean", return_value=True),
             patch("gateway.hermes_home_puller._commits_behind", return_value=1),
+            patch("gateway.hermes_home_puller._is_clean", return_value=True),
             patch("gateway.hermes_home_puller._fast_forward", return_value=False),
         ):
             # Should not raise
@@ -293,6 +334,95 @@ class TestStartHermesHomePuller(unittest.TestCase):
             ):
                 result = start_hermes_home_puller(hermes_home=Path(tmpdir))
         self.assertIsInstance(result, HermesHomePuller)
+
+
+class TestWedgedAlertThrottle(unittest.TestCase):
+    """Exercises HermesHomePuller._on_wedged throttle semantics directly,
+    using a fake monotonic clock so we don't sleep through a 6h window."""
+
+    def _make_puller(self, notifier, throttle=3600.0):
+        return HermesHomePuller(
+            hermes_home=Path("/fake"),
+            interval=9999,
+            notifier=notifier,
+            alert_throttle_secs=throttle,
+        )
+
+    def test_first_wedged_alert_fires(self):
+        notifier = MagicMock()
+        puller = self._make_puller(notifier)
+        puller._now = lambda: 1000.0
+        puller._on_wedged(4)
+        notifier.assert_called_once()
+        # Message carries the behind count and actionable guidance.
+        (msg,), _ = notifier.call_args
+        self.assertIn("4", msg)
+        self.assertIn("WEDGED", msg)
+
+    def test_second_alert_within_window_is_suppressed(self):
+        notifier = MagicMock()
+        puller = self._make_puller(notifier, throttle=3600.0)
+        clock = {"t": 1000.0}
+        puller._now = lambda: clock["t"]
+
+        puller._on_wedged(4)
+        self.assertEqual(notifier.call_count, 1)
+
+        # 30 min later — inside the 1h window → suppressed.
+        clock["t"] = 1000.0 + 1800.0
+        puller._on_wedged(5)
+        self.assertEqual(notifier.call_count, 1)
+
+    def test_alert_fires_again_after_window_elapses(self):
+        notifier = MagicMock()
+        puller = self._make_puller(notifier, throttle=3600.0)
+        clock = {"t": 1000.0}
+        puller._now = lambda: clock["t"]
+
+        puller._on_wedged(4)
+        self.assertEqual(notifier.call_count, 1)
+
+        # 2h later — past the 1h window → fires again.
+        clock["t"] = 1000.0 + 7200.0
+        puller._on_wedged(6)
+        self.assertEqual(notifier.call_count, 2)
+
+    def test_no_notifier_is_noop(self):
+        puller = self._make_puller(notifier=None)
+        puller._now = lambda: 1000.0
+        # Should not raise and should not advance the throttle clock.
+        puller._on_wedged(4)
+        self.assertIsNone(puller._last_alert_ts)
+
+    def test_notifier_exception_does_not_advance_throttle(self):
+        # If the notifier raises, the alert wasn't delivered — the throttle
+        # clock must NOT advance, so the next tick retries.
+        notifier = MagicMock(side_effect=RuntimeError("send failed"))
+        puller = self._make_puller(notifier)
+        puller._now = lambda: 1000.0
+        puller._on_wedged(4)
+        self.assertIsNone(puller._last_alert_ts)
+        self.assertEqual(notifier.call_count, 1)
+
+
+class TestStartPullerThreadsNotifier(unittest.TestCase):
+    def test_notifier_is_passed_to_puller(self):
+        import tempfile
+        notifier = MagicMock()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            git_dir = Path(tmpdir) / ".git"
+            git_dir.mkdir()
+            env = {k: v for k, v in __import__("os").environ.items()
+                   if k != "HERMES_GATEWAY_NO_AUTO_PULL"}
+            with (
+                patch.dict("os.environ", env, clear=True),
+                patch.object(HermesHomePuller, "start"),
+            ):
+                puller = start_hermes_home_puller(
+                    hermes_home=Path(tmpdir), notifier=notifier
+                )
+        self.assertIsInstance(puller, HermesHomePuller)
+        self.assertIs(puller._notifier, notifier)
 
 
 class TestHermesHomePullerLifecycle(unittest.TestCase):

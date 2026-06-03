@@ -43,7 +43,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Callable, Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -12683,6 +12683,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return delivered
 
+    async def _send_operator_alert(self, message: str) -> int:
+        """Push an operator-facing alert to every connected home channel.
+
+        Reuses the same home-channel delivery surface as the
+        shutdown/startup notifications (``adapter.send`` to the configured
+        home channel with thread-aware metadata). Best-effort: per-platform
+        send failures are logged and swallowed so one dead channel never
+        blocks delivery to the others. Returns the number of channels the
+        alert reached.
+
+        Used by the hermes-home puller to page the operator when the
+        ~/.hermes auto-pull is wedged (dirty tree + behind on main).
+        """
+        delivered = 0
+        # Snapshot adapters up front — a send() that hits a fatal path can
+        # mutate self.adapters mid-iteration (see _gateway_shutdown_notify).
+        for platform, adapter in list(self.adapters.items()):
+            home = self.config.get_home_channel(platform)
+            if not home or not home.chat_id:
+                continue
+            try:
+                metadata = self._thread_metadata_for_target(
+                    platform,
+                    home.chat_id,
+                    home.thread_id,
+                    adapter=adapter,
+                )
+                if metadata:
+                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                else:
+                    result = await adapter.send(str(home.chat_id), message)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.warning(
+                        "operator alert: send failed for home channel %s:%s: %s",
+                        platform.value,
+                        home.chat_id,
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    continue
+                delivered += 1
+                logger.info(
+                    "operator alert: delivered to home channel %s:%s",
+                    platform.value,
+                    home.chat_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "operator alert: send raised for home channel %s:%s: %s",
+                    platform.value,
+                    home.chat_id,
+                    exc,
+                )
+        return delivered
+
+    def make_operator_alert_callback(
+        self, loop: "asyncio.AbstractEventLoop"
+    ) -> Callable[[str], None]:
+        """Return a thread-safe ``Callable[[str], None]`` operator-alert sink.
+
+        Background watchers (e.g. the hermes-home puller) run in daemon
+        threads and cannot await coroutines directly. This returns a sync
+        callback they can invoke from their thread; it schedules
+        :meth:`_send_operator_alert` onto the gateway event loop via
+        ``safe_schedule_threadsafe`` (leak-safe if the loop is closing).
+        """
+        from agent.async_utils import safe_schedule_threadsafe
+
+        def _alert(message: str) -> None:
+            safe_schedule_threadsafe(
+                self._send_operator_alert(message),
+                loop,
+                logger=logger,
+                log_message="operator alert: failed to schedule home-channel send",
+            )
+
+        return _alert
+
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.
 
@@ -17731,12 +17808,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # origin/main (fast-forward only, once per hour, skips dirty trees and
     # non-main branches).  Opt out via HERMES_GATEWAY_NO_AUTO_PULL=1 or
     # gateway.hermes_home_auto_pull: false in config.yaml.
+    #
+    # The live ~/.hermes tree is almost always dirty (continuous skill-edit
+    # churn), so a dirty tree blocks the fast-forward and incoming merges
+    # pile up undelivered. Thread an operator-alert callback through so the
+    # puller pages the home channel(s) when it detects the wedged state
+    # (dirty + behind on main), throttled to once per 6h. The callback reuses
+    # the same home-channel send surface as the shutdown/startup notifications.
     from gateway.hermes_home_puller import (
         start_hermes_home_puller as _start_hermes_home_puller,
     )
 
     _hermes_home_puller = _start_hermes_home_puller(
-        cfg=config.to_dict() if config is not None else None
+        cfg=config.to_dict() if config is not None else None,
+        notifier=runner.make_operator_alert_callback(asyncio.get_running_loop()),
     )
 
     # Wait for shutdown

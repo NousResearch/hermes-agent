@@ -113,6 +113,8 @@ By default the app starts and manages its own **local** backend. You can instead
 
 The session token is the part that trips people up. **Hermes does not print it for you to copy** — by default the backend mints a fresh random token on every boot and injects it straight into the served HTML, so there is nothing in `config.yaml`, in `/gateway`, or in the logs to grab. For a remote connection you pin the token yourself on the backend, then paste that same value into the app.
 
+The backend also has to be started with **`--tui`** (or `HERMES_DASHBOARD_TUI=1`). The desktop's chat runs over the dashboard's `/api/ws` + `/api/pty` WebSockets, and those endpoints are refused unless the embedded-chat surface is enabled. Without `--tui` the connection still passes the `/api/status` health check and the app reports "Remote Hermes backend is ready" — but chat never works because the WebSocket is closed immediately. A plain `hermes dashboard` or `hermes gateway` is not enough.
+
 ### On the backend (the remote machine)
 
 ```bash
@@ -125,10 +127,12 @@ chmod 600 ~/.hermes/.env
 echo "$TOKEN"   # copy this value into the desktop app
 
 # 2. Run the dashboard bound to a reachable address.
+#    --tui enables the embedded chat (the /api/ws + /api/pty WebSockets the
+#    desktop drives) — without it the app connects but chat stays dead.
 #    --insecure is required for any non-loopback bind and keeps the legacy
 #    session-token auth path (a non-loopback bind WITHOUT --insecure engages
 #    the OAuth gate, which ignores the session token).
-hermes dashboard --no-open --insecure --host 0.0.0.0 --port 9119
+hermes dashboard --tui --no-open --insecure --host 0.0.0.0 --port 9119
 ```
 
 Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the token is in the environment at boot.
@@ -151,6 +155,7 @@ The token is stored encrypted in the app's local config; leave the field blank o
 ### Troubleshooting
 
 - **Test fails with 401** — the token doesn't match the backend's `HERMES_DASHBOARD_SESSION_TOKEN`, or the backend is bound non-loopback *without* `--insecure` (OAuth gate is on, ignoring the token). Verify with `curl -s -H "X-Hermes-Session-Token: $TOKEN" http://<host>:9119/api/status` — that should return JSON, not a 401.
+- **App says "Remote Hermes backend is ready" but chat does nothing** — the backend was started without `--tui` (or `HERMES_DASHBOARD_TUI=1`). The status probe passes, but the chat WebSocket (`/api/ws` / `/api/pty`) is refused. Restart the backend with `--tui`.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 - **No token to copy** — expected. You mint it yourself; Hermes never surfaces the default ephemeral one.
 

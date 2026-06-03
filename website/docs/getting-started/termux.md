@@ -66,14 +66,14 @@ If you want the explicit commands or need to debug a failed install, use the man
 
 ```bash
 pkg update
-pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgrep ffmpeg
+pkg install -y git python clang rust make pkg-config libffi openssl nodejs-lts ripgrep ffmpeg
 ```
 
 Why these packages?
 - `python` — runtime + venv support
 - `git` — clone/update the repo
 - `clang`, `rust`, `make`, `pkg-config`, `libffi`, `openssl` — needed to build a few Python dependencies on Android
-- `nodejs` — optional Node runtime for experiments beyond the tested core path
+- `nodejs-lts` — optional Node.js LTS runtime for experiments beyond the tested core path
 - `ripgrep` — fast file search
 - `ffmpeg` — media / TTS conversions
 
@@ -202,7 +202,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 Install them with Termux packages:
 
 ```bash
-pkg install ripgrep nodejs
+pkg install ripgrep nodejs-lts
 ```
 
 ### Build failures while installing Python packages

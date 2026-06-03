@@ -722,7 +722,7 @@ check_node() {
     fi
 
     if [ "$DISTRO" = "termux" ]; then
-        log_info "Node.js not found — installing Node.js via pkg..."
+        log_info "Node.js not found — installing Node.js LTS via pkg..."
     else
         log_info "Node.js not found — installing Node.js $NODE_VERSION LTS..."
     fi
@@ -731,14 +731,14 @@ check_node() {
 
 install_node() {
     if [ "$DISTRO" = "termux" ]; then
-        log_info "Installing Node.js via pkg..."
-        if pkg install -y nodejs >/dev/null; then
+        log_info "Installing Node.js LTS via pkg..."
+        if pkg install -y nodejs-lts >/dev/null; then
             local installed_ver
             installed_ver=$(node --version 2>/dev/null)
             log_success "Node.js $installed_ver installed via pkg"
             HAS_NODE=true
         else
-            log_warn "Failed to install Node.js via pkg"
+            log_warn "Failed to install Node.js LTS via pkg"
             HAS_NODE=false
         fi
         return 0
@@ -2073,7 +2073,7 @@ print_success() {
         echo "Note: Node.js could not be installed automatically."
         echo "Browser tools need Node.js. Install manually:"
         if [ "$DISTRO" = "termux" ]; then
-            echo "  pkg install nodejs"
+            echo "  pkg install nodejs-lts"
         else
             echo "  https://nodejs.org/en/download/"
         fi

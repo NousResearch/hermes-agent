@@ -1146,6 +1146,52 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
+    def test_help_guidance_skipped_when_skill_view_not_loaded(self, agent, monkeypatch):
+        """Default agent has no skill_view tool; the skill-call directive must not be injected."""
+        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+        monkeypatch.delenv("HERMES_AGENT_HELP_GUIDANCE", raising=False)
+        assert "skill_view" not in agent.valid_tool_names
+        prompt = agent._build_system_prompt()
+        assert HERMES_AGENT_HELP_GUIDANCE not in prompt
+
+    def test_help_guidance_included_when_skill_view_loaded(self, monkeypatch):
+        """When skill_view is in the toolset, the directive is injected."""
+        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+        monkeypatch.delenv("HERMES_AGENT_HELP_GUIDANCE", raising=False)
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "skill_view"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            prompt = a._build_system_prompt()
+        assert HERMES_AGENT_HELP_GUIDANCE in prompt
+
+    def test_help_guidance_env_var_appended(self, agent, monkeypatch):
+        """The documented HERMES_AGENT_HELP_GUIDANCE env var appends custom guidance."""
+        monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "Custom deployment guidance line.")
+        prompt = agent._build_system_prompt()
+        assert "Custom deployment guidance line." in prompt
+
+    def test_help_guidance_env_var_blank_ignored(self, agent, monkeypatch):
+        """Blank/whitespace env var must not append an empty section to the prompt."""
+        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE
+        monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "   \n  ")
+        prompt = agent._build_system_prompt()
+        # Default agent has no skill_view, so neither the default nor the (blank) override should appear.
+        assert HERMES_AGENT_HELP_GUIDANCE not in prompt
+        # And the prompt must not contain a stray blank "  \n  " section.
+        assert "   \n  " not in prompt
+
 
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""

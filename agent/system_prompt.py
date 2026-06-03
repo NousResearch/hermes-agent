@@ -24,6 +24,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -99,7 +100,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    # Only inject when skill_view is loaded; otherwise the directive tells the agent
+    # to call a tool that doesn't exist. The HERMES_AGENT_HELP_GUIDANCE env var
+    # appends additional guidance text for custom deployments (documented in
+    # website/docs/reference/environment-variables.md).
+    if "skill_view" in agent.valid_tool_names:
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    _help_guidance_extra = os.environ.get("HERMES_AGENT_HELP_GUIDANCE", "").strip()
+    if _help_guidance_extra:
+        stable_parts.append(_help_guidance_extra)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

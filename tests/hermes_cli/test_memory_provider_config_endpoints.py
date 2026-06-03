@@ -154,3 +154,49 @@ class TestMemoryProviderConfigEndpoints:
         )
         # blank secret left the existing env value untouched
         assert load_env()["DEMO_KEY"] == "existing"
+
+    @staticmethod
+    def _mode_gated_provider():
+        """Provider with the same when-gated shape as Hindsight (api_url 2x)."""
+        from typing import Any, Dict, List
+        from agent.memory_provider import MemoryProvider
+
+        class _Gated(MemoryProvider):
+            def __init__(self):
+                self.saved = None
+
+            @property
+            def name(self) -> str:
+                return "gated"
+
+            def is_available(self) -> bool:
+                return True
+
+            def initialize(self, session_id: str, **kwargs) -> None:
+                pass
+
+            def get_tool_schemas(self) -> List[Dict[str, Any]]:
+                return []
+
+            def get_config_schema(self) -> List[Dict[str, Any]]:
+                return [
+                    {"key": "mode", "choices": ["cloud", "local_external"], "default": "cloud"},
+                    {"key": "api_url", "default": "https://cloud", "when": {"mode": "cloud"}},
+                    {"key": "api_url", "default": "http://local", "when": {"mode": "local_external"}},
+                ]
+
+            def save_config(self, values, hermes_home):
+                self.saved = dict(values)
+
+        return _Gated()
+
+    def test_put_when_gating_persists_only_matching_field(self):
+        provider = self._mode_gated_provider()
+        self._install_provider(provider)
+        # mode=cloud -> only the cloud api_url applies; local row is skipped
+        resp = self.client.put(
+            "/api/memory/providers/gated/config",
+            json={"values": {"mode": "cloud", "api_url": "https://my-cloud"}},
+        )
+        assert resp.status_code == 200
+        assert provider.saved == {"mode": "cloud", "api_url": "https://my-cloud"}

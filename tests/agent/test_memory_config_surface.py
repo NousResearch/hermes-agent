@@ -23,6 +23,7 @@ from agent.memory_config_surface import (
     TIER_SAFE,
     default_read_config,
     enrich_schema,
+    field_visible,
     normalize_field,
 )
 from agent.memory_provider import MemoryProvider
@@ -71,6 +72,43 @@ def test_tier_advanced_passthrough_and_invalid_falls_back_safe():
 def test_enrich_skips_keyless_fields():
     out = enrich_schema([{"key": "a"}, {"description": "no key"}, {"key": "b"}])
     assert [f["key"] for f in out] == ["a", "b"]
+
+
+# --- conditional (when) fields ----------------------------------------------
+
+def test_when_clause_carried_through():
+    f = normalize_field({"key": "api_url", "when": {"mode": "cloud"}})
+    assert f["when"] == {"mode": "cloud"}
+
+
+def test_field_without_when_always_visible():
+    assert field_visible(normalize_field({"key": "x"}), {}) is True
+    assert field_visible(normalize_field({"key": "x"}), {"mode": "cloud"}) is True
+
+
+def test_field_visible_matches_values():
+    f = normalize_field({"key": "api_url", "when": {"mode": "cloud"}})
+    assert field_visible(f, {"mode": "cloud"}) is True
+    assert field_visible(f, {"mode": "local_external"}) is False
+    assert field_visible(f, {}) is False
+
+
+def test_field_visible_requires_all_when_keys():
+    f = normalize_field({"key": "llm_base_url", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}})
+    assert field_visible(f, {"mode": "local_embedded", "llm_provider": "openai_compatible"}) is True
+    assert field_visible(f, {"mode": "local_embedded", "llm_provider": "openai"}) is False
+
+
+def test_duplicate_keys_with_different_when_both_enriched():
+    # Hindsight declares api_url 3x, gated by mode — enrich keeps all rows so
+    # the renderer can show the matching one.
+    schema = [
+        {"key": "api_url", "default": "cloud-url", "when": {"mode": "cloud"}},
+        {"key": "api_url", "default": "local-url", "when": {"mode": "local_external"}},
+    ]
+    rows = enrich_schema(schema)
+    assert len(rows) == 2
+    assert {r["default"] for r in rows} == {"cloud-url", "local-url"}
 
 
 # --- default conventional reader ---------------------------------------------

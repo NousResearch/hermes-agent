@@ -109,7 +109,7 @@ def normalize_field(field: Dict[str, Any]) -> Dict[str, Any]:
         for choice in field.get("choices") or []:
             options.append({"value": str(choice), "label": str(choice), "description": ""})
 
-    return {
+    enriched = {
         "key": key,
         "label": str(field.get("label") or _prettify(key)),
         "kind": kind,
@@ -122,6 +122,34 @@ def normalize_field(field: Dict[str, Any]) -> Dict[str, Any]:
         # non-secret fields. Not a value, just the env var name.
         "env_key": field.get("env_var") if kind == KIND_SECRET else None,
     }
+
+    # Conditional visibility: a field may be gated on the current value of
+    # other fields (e.g. Hindsight's api_url is shown only when mode==cloud).
+    # The clause is carried through verbatim; the renderer evaluates it live
+    # against the in-progress form values, and the write path skips fields
+    # whose ``when`` doesn't match the submitted values. ``default`` is carried
+    # so a select that resets can fall back sensibly.
+    when = field.get("when")
+    if isinstance(when, dict) and when:
+        enriched["when"] = {str(k): str(v) for k, v in when.items()}
+    if "default" in field:
+        enriched["default"] = str(field.get("default", ""))
+    return enriched
+
+
+def field_visible(field: Dict[str, Any], values: Dict[str, str]) -> bool:
+    """True if a field's ``when`` clause matches the given form values.
+
+    A field with no ``when`` is always visible. Otherwise every key/value pair
+    in ``when`` must equal the corresponding submitted value. This is the same
+    gating the CLI wizard applies, made available to the Desktop write path and
+    renderer so conditional fields (e.g. mode-gated Hindsight fields) behave
+    identically across surfaces.
+    """
+    when = field.get("when")
+    if not isinstance(when, dict) or not when:
+        return True
+    return all(str(values.get(k, "")) == str(v) for k, v in when.items())
 
 
 def enrich_schema(schema: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

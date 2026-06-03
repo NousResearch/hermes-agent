@@ -1615,7 +1615,12 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
     """
     try:
         from plugins.memory import load_memory_provider
-        from agent.memory_config_surface import KIND_SECRET, KIND_SELECT, enrich_schema
+        from agent.memory_config_surface import (
+            KIND_SECRET,
+            KIND_SELECT,
+            enrich_schema,
+            field_visible,
+        )
 
         provider = load_memory_provider(name)
         if provider is None:
@@ -1632,6 +1637,12 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
 
         for field in fields:
             key = field["key"]
+            # Conditional fields gated by ``when`` only apply when their clause
+            # matches the submitted values — mirrors the CLI wizard so e.g. the
+            # local_external api_url isn't persisted while mode==cloud.
+            if not field_visible(field, values):
+                continue
+
             if field["kind"] == KIND_SECRET:
                 submitted = (values.get(key) or "").strip()
                 if submitted and field.get("env_key"):

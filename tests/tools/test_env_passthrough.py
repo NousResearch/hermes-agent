@@ -244,14 +244,17 @@ class TestTerminalIntegration:
         monkeypatch.setattr(builtins, "__import__", fail_local_environment_import)
 
         assert _ep_mod._is_hermes_provider_credential("OPENAI_API_KEY")
+        assert _ep_mod._is_hermes_provider_credential("ANTHROPIC_API_KEY")
 
-        register_env_passthrough(["OPENAI_API_KEY", "TENOR_API_KEY"])
+        register_env_passthrough(["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "TENOR_API_KEY"])
         assert not is_env_passthrough("OPENAI_API_KEY")
+        assert not is_env_passthrough("ANTHROPIC_API_KEY")
         assert is_env_passthrough("TENOR_API_KEY")
 
         child_env = _scrub_child_env(
             {
                 "OPENAI_API_KEY": "synthetic-provider-secret",
+                "ANTHROPIC_API_KEY": "synthetic-anthropic-secret",
                 "TENOR_API_KEY": "synthetic-skill-secret",
                 "PATH": "/usr/bin",
             },
@@ -259,5 +262,6 @@ class TestTerminalIntegration:
             is_windows=False,
         )
         assert "OPENAI_API_KEY" not in child_env
+        assert "ANTHROPIC_API_KEY" not in child_env
         assert child_env["TENOR_API_KEY"] == "synthetic-skill-secret"
         assert child_env["PATH"] == "/usr/bin"

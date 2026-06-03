@@ -53,6 +53,7 @@ _MINIMUM_HERMES_PROVIDER_ENV_BLOCKLIST = frozenset({
     "OPENAI_ORGANIZATION",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_KEY",
     "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "LLM_MODEL",
@@ -184,4 +185,3 @@ def get_all_passthrough() -> frozenset[str]:
 def clear_env_passthrough() -> None:
     """Reset the skill-scoped allowlist (e.g. on session reset)."""
     _get_allowed().clear()
-

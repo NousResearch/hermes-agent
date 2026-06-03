@@ -2731,9 +2731,31 @@ function buildApplicationMenu() {
       { role: 'forceReload' },
       { role: 'toggleDevTools' },
       { type: 'separator' },
-      { role: 'resetZoom' },
-      { role: 'zoomIn' },
-      { role: 'zoomOut' },
+      {
+        label: 'Actual Size',
+        accelerator: 'CommandOrControl+0',
+        click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0) }
+      },
+      {
+        label: 'Zoom In',
+        accelerator: 'CommandOrControl+Plus',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            const next = Math.min(mainWindow.webContents.getZoomLevel() + 0.1, 9)
+            mainWindow.webContents.setZoomLevel(next)
+          }
+        }
+      },
+      {
+        label: 'Zoom Out',
+        accelerator: 'CommandOrControl+-',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            const next = Math.max(mainWindow.webContents.getZoomLevel() - 0.1, -9)
+            mainWindow.webContents.setZoomLevel(next)
+          }
+        }
+      },
       { type: 'separator' },
       { role: 'togglefullscreen' }
     ]
@@ -2789,6 +2811,32 @@ function installPreviewShortcut(window) {
 
     event.preventDefault()
     sendClosePreviewRequested()
+  })
+}
+
+function installZoomShortcuts(window) {
+  // Override Ctrl/Cmd + +/-/0 with half the default zoom step (0.1 vs 0.2).
+  // The menu items handle this on macOS (where the menu is always present),
+  // but on Linux/Windows the menu is null and Chromium's default handler
+  // would use the full 0.2 step, so we intercept here for consistency.
+  const ZOOM_STEP = 0.1
+  window.webContents.on('before-input-event', (event, input) => {
+    const mod = IS_MAC ? input.meta : input.control
+    if (!mod || input.alt || input.shift) return
+
+    const key = input.key
+    if (key === '0') {
+      event.preventDefault()
+      window.webContents.setZoomLevel(0)
+    } else if (key === '=' || key === '+') {
+      event.preventDefault()
+      const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
+      window.webContents.setZoomLevel(next)
+    } else if (key === '-') {
+      event.preventDefault()
+      const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
+      window.webContents.setZoomLevel(next)
+    }
   })
 }
 
@@ -3378,6 +3426,7 @@ function createWindow() {
 
   installPreviewShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
+  installZoomShortcuts(mainWindow)
   installContextMenu(mainWindow)
   mainWindow.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)

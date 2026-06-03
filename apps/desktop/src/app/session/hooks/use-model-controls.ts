@@ -3,7 +3,7 @@ import { useCallback } from 'react'
 
 import { getGlobalModelInfo, setGlobalModel } from '@/hermes'
 import { notifyError } from '@/store/notifications'
-import { setCurrentModel, setCurrentProvider } from '@/store/session'
+import { $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -53,9 +53,16 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   // on the right active model — bail rather than write to the previous one).
   const selectModel = useCallback(
     async (selection: ModelSelection): Promise<boolean> => {
+      const includeGlobal = selection.persistGlobal || !activeSessionId
+      // Snapshot for rollback: the switch is applied optimistically, so a
+      // failure must restore the prior model/provider (store + query cache)
+      // rather than leave the UI showing a model the backend never selected.
+      const prevModel = $currentModel.get()
+      const prevProvider = $currentProvider.get()
+
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
-      updateModelOptionsCache(selection.provider, selection.model, selection.persistGlobal || !activeSessionId)
+      updateModelOptionsCache(selection.provider, selection.model, includeGlobal)
 
       try {
         if (activeSessionId) {
@@ -81,6 +88,9 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
         return true
       } catch (err) {
+        setCurrentModel(prevModel)
+        setCurrentProvider(prevProvider)
+        updateModelOptionsCache(prevProvider, prevModel, includeGlobal)
         notifyError(err, 'Model switch failed')
 
         return false

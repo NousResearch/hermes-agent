@@ -3500,6 +3500,28 @@ def run_conversation(
                 else:
                     assistant_message.content = str(raw)
 
+            # Fallback: recover tool calls models emitted in `content`
+            # (Ollama / Kimi / MiniMax / Gemma) — see
+            # agent/transports/content_tool_calls.py. Ported from
+            # upstream Hermes PR #35129. Runs before the post_api_request
+            # hook so plugins observe the promoted state. No-op when
+            # structured tool_calls already exist.
+            try:
+                if not getattr(assistant_message, "tool_calls", None):
+                    from agent.transports.content_tool_calls import (
+                        extract_content_tool_calls,
+                    )
+                    valid = getattr(agent, "valid_tool_names", None) or set()
+                    promoted, residual = extract_content_tool_calls(
+                        assistant_message.content, valid
+                    )
+                    if promoted:
+                        assistant_message.tool_calls = promoted
+                        assistant_message.content = residual
+                        finish_reason = "tool_calls"
+            except Exception:
+                logger.exception("content_tool_calls promotion failed")
+
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []

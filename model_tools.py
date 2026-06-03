@@ -772,7 +772,32 @@ def _coerce_json(value: str, expected_python_type: type):
 
 
 def _coerce_number(value: str, integer_only: bool = False):
-    """Try to parse *value* as a number.  Returns original string on failure."""
+    """Try to parse *value* as a number.  Returns original string on failure.
+
+    Two important guards vs. a naive ``float(value)`` round-trip:
+
+    1. **Integer overflow / precision loss** — ``float()`` is IEEE-754 double,
+       so anything beyond ~15-17 significant digits is silently rounded to
+       the nearest representable double.  ``int(float("99999999999999999999"))``
+       gives ``100000000000000000000`` (wrong by ~9 orders of magnitude).
+       For integer-typed fields, try ``int(value)`` first; ``int()`` has
+       arbitrary precision in Python so the only failure mode is a non-numeric
+       string, which we then fall back to the float path to handle decimal
+       representations like ``"3.0"``.
+    2. **NaN / Infinity** — kept as the original string so the caller can
+       decide (numeric coercion would lose information; downstream schema
+       validation will reject them anyway).
+    """
+    # Integer-typed fields: try arbitrary-precision int first. int() rejects
+    # "3.0" (ValueError) and rejects "99999999999999999999.5" but accepts
+    # "99999999999999999999" exactly. For decimal strings, fall through to
+    # the float path which can detect the ".0" case.
+    if integer_only:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+
     try:
         f = float(value)
     except (ValueError, OverflowError):
@@ -784,17 +809,25 @@ def _coerce_number(value: str, integer_only: bool = False):
     if f == int(f):
         return int(f)
     if integer_only:
-        # Schema wants an integer but value has decimals — keep as string
+        # Schema wants an integer but value has a non-zero fractional part —
+        # keep as string (the float path already accepted it, but we shouldn't
+        # silently truncate)
         return value
     return f
 
 
 def _coerce_boolean(value: str):
-    """Try to parse *value* as a boolean.  Returns original string on failure."""
+    """Try to parse *value* as a boolean.  Returns original string on failure.
+
+    Accepts the obvious ``"true"`` / ``"false"`` (case-insensitive) plus the
+    common CSV / shell-script conventions ``"1"`` / ``"0"``, ``"yes"`` /
+    ``"no"``, and ``"on"`` / ``"off"``.  This matches what open-weight
+    models emit when they're trying to be helpful across script contexts.
+    """
     low = value.strip().lower()
-    if low == "true":
+    if low in ("true", "1", "yes", "on"):
         return True
-    if low == "false":
+    if low in ("false", "0", "no", "off"):
         return False
     return value
 

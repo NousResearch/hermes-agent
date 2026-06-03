@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +182,100 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _split_concatenated_tool_call_arguments(raw_args: str) -> Optional[List[str]]:
+    """Split ``{"…"}{"…"}`` tool-call payloads into separate JSON objects.
+
+    Some providers (including gemini-3-flash-preview and certain Ollama
+    routes) concatenate multiple complete top-level argument objects
+    without delimiters when emitting parallel tool calls in a single
+    streaming chunk. Only return a split when the entire payload can be
+    losslessly decoded as 2+ complete dict objects; otherwise return
+    ``None`` so the existing repair pipeline stays in control.  Names
+    match the upstream Hermes PR #25346 / #36039 implementation so
+    future merges stay clean.
+    """
+    if not isinstance(raw_args, str):
+        return None
+
+    raw_stripped = raw_args.strip()
+    if not raw_stripped:
+        return None
+
+    decoder = json.JSONDecoder()
+    pos = 0
+    decoded: List[str] = []
+    while pos < len(raw_stripped):
+        while pos < len(raw_stripped) and raw_stripped[pos].isspace():
+            pos += 1
+        if pos >= len(raw_stripped):
+            break
+        try:
+            parsed, end = decoder.raw_decode(raw_stripped, pos)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        decoded.append(json.dumps(parsed, separators=(",", ":")))
+        pos = end
+
+    return decoded if len(decoded) > 1 else None
+
+
+def _extract_first_json_object(raw_args: str) -> Optional[str]:
+    """Extract the first complete top-level JSON value from surrounding noise.
+
+    Some Anthropic-compatible providers and reasoning models occasionally
+    return a tool-call payload with leading or trailing garbage — model
+    preamble, postscript text, U+2028 line separators, BOM markers, null
+    bytes, etc. — wrapping a perfectly valid JSON object.  ``json.loads``
+    rejects these outright, so the repair pipeline falls through to the
+    ``"{}"`` last resort and the call is lost.
+
+    This helper uses :py:meth:`json.JSONDecoder.raw_decode` to peel off
+    the *first* complete top-level value at any position in the string.
+    Returns the re-serialised value, or ``None`` if the first value
+    doesn't parse as a JSON object (we intentionally only rescue dicts —
+    bare scalars are almost always model noise).
+    """
+    if not isinstance(raw_args, str):
+        return None
+
+    decoder = json.JSONDecoder()
+    for pos in range(len(raw_args)):
+        ch = raw_args[pos]
+        # Skip characters that can't legally start a JSON object
+        if ch != "{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(raw_args, pos)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return json.dumps(parsed, separators=(",", ":"))
+    return None
+
+
+def _scrub_nonfinite_numbers(obj: Any) -> Any:
+    """Replace NaN/Infinity floats with ``None`` recursively.
+
+    Python's ``json.loads(strict=False)`` accepts the literal tokens
+    ``NaN``, ``Infinity``, and ``-Infinity`` (per the spec of the
+    underlying _json scanner, not per RFC 8259). Re-serialising produces
+    ``NaN``/``Infinity`` literals that strict-validating providers
+    (Anthropic, AWS Bedrock, Google Vertex) reject with HTTP 400.
+    Walks dicts and lists in place, leaving all other types untouched.
+    """
+    if isinstance(obj, dict):
+        return {k: _scrub_nonfinite_numbers(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_nonfinite_numbers(v) for v in obj]
+    if isinstance(obj, float):
+        import math
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+    return obj
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -202,6 +296,39 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
+
+    # Concatenated top-level objects: ``{"a":1}{"b":2}`` — recover each
+    # by string so the caller can split into parallel tool calls.
+    split = _split_concatenated_tool_call_arguments(raw_args)
+    if split is not None:
+        # Pick the first one for single-tool repair; the upstream
+        # streaming path uses the full list to fan out into multiple
+        # tool calls. Returning a comma-joined marker here would
+        # confuse downstream coercion, so just return the first dict
+        # and rely on the caller's split-aware path for the rest.
+        logger.warning(
+            "Concatenated tool_call arguments for %s — keeping first of %d",
+            tool_name, len(split),
+        )
+        return split[0]
+
+    # Garbage around a valid object: ``\ufeff{"a":1}``,
+    # ``{"a":1}\u2028trailing``, ``<reasoning>{"a":1}</tool_call>``,
+    # etc.  Recover the first complete dict buried in the noise.
+    extracted = _extract_first_json_object(raw_args)
+    if extracted is not None:
+        try:
+            parsed = json.loads(extracted)
+            scrubbed = _scrub_nonfinite_numbers(parsed)
+            reserialised = json.dumps(scrubbed, separators=(",", ":"))
+            if reserialised != raw_stripped:
+                logger.warning(
+                    "Extracted JSON object from noisy tool_call arguments for %s",
+                    tool_name,
+                )
+            return reserialised
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
 
     # Repair pass 0: llama.cpp backends sometimes emit literal control
     # characters (tabs, newlines) inside JSON string values. json.loads

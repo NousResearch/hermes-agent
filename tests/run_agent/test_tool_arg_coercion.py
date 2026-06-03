@@ -85,6 +85,69 @@ class TestCoerceNumber:
         assert _coerce_number("-2.5") == -2.5
 
 
+class TestIntegerOverflowPrecision:
+    """Regression for the silent corruption caused by routing integer-typed
+    fields through the IEEE-754 ``float()`` round-trip.
+
+    Python's ``int()`` has arbitrary precision, so ``int("99999999999999999999")``
+    is exact.  ``float()`` is double-precision, so any string beyond ~15-17
+    significant digits gets rounded to the nearest representable double.
+    ``int(float("99999999999999999999"))`` gives ``100000000000000000000`` —
+    wrong by ~9 orders of magnitude.  The fix in ``_coerce_number`` tries
+    ``int(value)`` first when ``integer_only=True``.
+    """
+
+    def test_huge_integer_exact(self):
+        """19-digit integer preserved exactly via int() path."""
+        big = "99999999999999999999"
+        result = _coerce_number(big, integer_only=True)
+        assert result == 99999999999999999999
+        assert isinstance(result, int)
+
+    def test_negative_huge_integer_exact(self):
+        big = "-99999999999999999999"
+        result = _coerce_number(big, integer_only=True)
+        assert result == -99999999999999999999
+
+    def test_30_digit_integer_exact(self):
+        """30 digits — way beyond float precision."""
+        big = "123456789012345678901234567890"
+        result = _coerce_number(big, integer_only=True)
+        assert result == 123456789012345678901234567890
+        assert isinstance(result, int)
+
+    def test_huge_integer_preserved_in_coerce_value(self):
+        """End-to-end via _coerce_value with integer schema."""
+        from model_tools import _coerce_value
+        result = _coerce_value(
+            "99999999999999999999", "integer", schema={"type": "integer"}
+        )
+        assert result == 99999999999999999999
+
+    def test_decimal_string_still_works_in_integer_only(self):
+        """3.0 in an integer-only field should still coerce to int 3."""
+        result = _coerce_number("3.0", integer_only=True)
+        assert result == 3
+        assert isinstance(result, int)
+
+    def test_non_integer_decimal_in_integer_only_stays_string(self):
+        """3.14 in an integer-only field stays as a string (we don't
+        silently truncate)."""
+        result = _coerce_number("3.14", integer_only=True)
+        assert result == "3.14"
+        assert isinstance(result, str)
+
+    def test_non_numeric_stays_string(self):
+        result = _coerce_number("hello", integer_only=True)
+        assert result == "hello"
+        assert isinstance(result, str)
+
+    def test_empty_string_stays_string(self):
+        result = _coerce_number("", integer_only=True)
+        assert result == ""
+        assert isinstance(result, str)
+
+
 class TestCoerceBoolean:
     """Unit tests for _coerce_boolean."""
 
@@ -104,12 +167,32 @@ class TestCoerceBoolean:
         assert _coerce_boolean("  true  ") is True
 
     def test_not_a_boolean(self):
-        assert _coerce_boolean("yes") == "yes"
+        """Genuinely non-boolean strings should be preserved as-is."""
+        assert _coerce_boolean("maybe") == "maybe"
+        assert _coerce_boolean("perhaps") == "perhaps"
 
-    def test_one_zero_not_coerced(self):
-        """'1' and '0' are not boolean values."""
-        assert _coerce_boolean("1") == "1"
-        assert _coerce_boolean("0") == "0"
+    def test_one_zero_coerced(self):
+        """'1' and '0' are the standard CSV / shell-script booleans
+        and should be coerced.  Open-weight models (DeepSeek, Qwen, GLM)
+        routinely emit these when the schema is ``"type": "boolean"``."""
+        assert _coerce_boolean("1") is True
+        assert _coerce_boolean("0") is False
+
+    def test_yes_no_coerced(self):
+        """``yes`` / ``no`` are also standard boolean expressions and should
+        be coerced.  See test_one_zero_coerced for rationale."""
+        assert _coerce_boolean("yes") is True
+        assert _coerce_boolean("no") is False
+        assert _coerce_boolean("YES") is True
+        assert _coerce_boolean("No") is False
+
+    def test_on_off_coerced(self):
+        """``on`` / ``off`` are the third common boolean convention
+        (sysadmin, ini files, HTML form values)."""
+        assert _coerce_boolean("on") is True
+        assert _coerce_boolean("off") is False
+        assert _coerce_boolean("ON") is True
+        assert _coerce_boolean("Off") is False
 
     def test_empty_string(self):
         assert _coerce_boolean("") == ""

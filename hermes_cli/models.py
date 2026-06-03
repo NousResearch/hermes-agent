@@ -1719,11 +1719,37 @@ def detect_static_provider_for_model(
         return None
 
     # --- Step 1: check static provider catalogs for a direct match ---
+    #
+    # NOTE: "minimax" is the international /global minimax API endpoint,
+    # while "minimax-cn" is the CN/domestic endpoint. For users in China,
+    # the CN endpoint is the correct/working one. Since "minimax" appears
+    # earlier in the dict and would win on a simple first-match scan, we
+    # special-case it below: if the same model exists in "minimax-cn", that
+    # one wins.
+    #
+    first_match: Optional[tuple[str, str]] = None
     for pid, models in _PROVIDER_MODELS.items():
         if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
             continue
         if any(name_lower == m.lower() for m in models):
+            # If we hit "minimax" first, remember it but keep scanning
+            # for a higher-priority match.
+            if pid == "minimax" and "minimax-cn" in _PROVIDER_MODELS:
+                for cm in _PROVIDER_MODELS["minimax-cn"]:
+                    if name_lower == cm.lower():
+                        first_match = (pid, name)
+                        break
+                else:
+                    # Model exists in "minimax" but NOT in "minimax-cn" —
+                    # don't skip it; return the minimax match directly.
+                    return (pid, name)
+                continue
             return (pid, name)
+
+    if first_match:
+        # If minimax matched but minimax-cn exists for the same model,
+        # prefer minimax-cn.
+        return ("minimax-cn", name)
 
     return None
 

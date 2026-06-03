@@ -365,6 +365,11 @@ _VALUE_CATEGORY_REMEDIATION = {
         "identify the behavior, tool, workflow, config, schema, or test capability changed"
     ),
 }
+_CODEX_BACKFILL_EVIDENCE_FIELDS = (
+    "operatorDecisionSupport or nextDecision",
+    "changedFiles, tests, commitShas, pullRequests, or artifactPaths",
+    "controlOwnershipPreserved, incidentRiskReduced, or systemCapabilityChanged when applicable",
+)
 _STATUS_ONLY_PATTERNS = (
     re.compile(r"\bactionable\b", re.IGNORECASE),
     re.compile(r"\bactive work\b", re.IGNORECASE),
@@ -385,12 +390,25 @@ _DURABLE_TEXT_PATTERNS = (
     (
         "verification",
         re.compile(
-            r"\b(?:pytest|npm test|uv run pytest|ruff|mypy|git diff --check|GitHub Actions|CI)\b"
+            r"\b(?:pytest|uv run pytest|ruff|mypy|git diff --check|GitHub Actions|CI|"
+            r"npm(?:\s+run)?\s+(?:test|lint|build|type-check|typecheck)|"
+            r"pnpm\s+(?:test|lint|build|type-check|typecheck)|"
+            r"yarn\s+(?:test|lint|build|type-check|typecheck))\b"
             r"[^.\n]{0,160}\b(?:passed|pass|success|succeeded|green|\d+\s+passed|0\s+failed)\b",
             re.IGNORECASE,
         ),
     ),
-    ("changed_files", re.compile(r"\bCHANGED_FILES\b|\bchanged files?\b", re.IGNORECASE)),
+    (
+        "changed_files",
+        re.compile(
+            r"\bCHANGED_FILES\b|\bchanged files?\b|"
+            r"(?:^|[\s(])(?:\[[^\]\n]+\."
+            r"(?:py|md|mdx|ts|tsx|js|jsx|json|ya?ml|toml|css|html|sh|sql|txt)"
+            r"\]\([^)]+\)|(?:[\w.-]+/)+[\w.-]+\."
+            r"(?:py|md|mdx|ts|tsx|js|jsx|json|ya?ml|toml|css|html|sh|sql|txt))",
+            re.IGNORECASE,
+        ),
+    ),
     (
         "artifact",
         re.compile(
@@ -2039,14 +2057,27 @@ def _allowed_value_category_guidance() -> list[dict[str, str]]:
     ]
 
 
-def _make_work_remediation(categories: list[str]) -> Optional[str]:
+def _make_work_remediation(
+    categories: list[str],
+    *,
+    source: Optional[str] = None,
+    record_id: Any = None,
+) -> Optional[str]:
     if categories:
         return None
     guidance = "; ".join(
         f"{label}: {_VALUE_CATEGORY_REMEDIATION[category]}"
         for category, label in _ALLOWED_VALUE_CATEGORIES
     )
-    return f"Add evidence for at least one allowed value category: {guidance}."
+    remediation = f"Add evidence for at least one allowed value category: {guidance}."
+    if source == "codex_runs":
+        identifier = str(record_id or "unknown").strip() or "unknown"
+        fields = "; ".join(_CODEX_BACKFILL_EVIDENCE_FIELDS)
+        remediation += (
+            f" Backfill completed Codex run {identifier} with structured evidence fields: "
+            f"{fields}."
+        )
+    return remediation
 
 
 def _record_claimed_timestamp(record: dict[str, Any]) -> Optional[datetime]:
@@ -2957,7 +2988,14 @@ def _assess_make_work_item(item: dict[str, Any]) -> dict[str, Any]:
         "value_category_labels": category_labels,
         "status_language": bool(status_markers),
         "issue": issue,
-        "remediation": _make_work_remediation(value_categories),
+        "backfill_fields": list(_CODEX_BACKFILL_EVIDENCE_FIELDS)
+        if item.get("source") == "codex_runs" and not value_categories
+        else [],
+        "remediation": _make_work_remediation(
+            value_categories,
+            source=item.get("source"),
+            record_id=item.get("id"),
+        ),
     }
 
 
@@ -3032,6 +3070,7 @@ def _evaluate_anti_make_work_check(
     durable_count = sum(1 for item in assessments if item["durable"])
     shallow_items = [item for item in assessments if not item["durable"]]
     status_only_count = sum(1 for item in shallow_items if item["status_language"])
+    shallow_codex_count = sum(1 for item in shallow_items if item.get("source") == "codex_runs")
     value_category_counts = {
         category: sum(
             1
@@ -3069,6 +3108,12 @@ def _evaluate_anti_make_work_check(
             + ", ".join(examples)
             + ". Remediation: add category evidence to each shallow claimed-work record."
         )
+        if shallow_codex_count:
+            detail += (
+                " For shallow completed Codex runs, backfill structured fields: "
+                + "; ".join(_CODEX_BACKFILL_EVIDENCE_FIELDS)
+                + "."
+            )
 
     return _build_benchmark_item(
         "anti_make_work_check",
@@ -3081,6 +3126,7 @@ def _evaluate_anti_make_work_check(
             "assessed_work_item_count": assessed_count,
             "durable_evidence_count": durable_count,
             "shallow_work_item_count": len(shallow_items),
+            "shallow_codex_work_item_count": shallow_codex_count,
             "status_language_only_count": status_only_count,
             "allowed_value_categories": _allowed_value_category_guidance(),
             "value_category_counts": value_category_counts,

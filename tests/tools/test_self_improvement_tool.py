@@ -568,7 +568,9 @@ def test_status_language_only_work_fails_anti_make_work_check(tmp_path):
     assert "incident risk reduced" in anti_make_work["detail"]
     assert "system capability changed" in anti_make_work["detail"]
     assert "Remediation" in anti_make_work["detail"]
+    assert "For shallow completed Codex runs, backfill structured fields" in anti_make_work["detail"]
     assert anti_make_work["metrics"]["assessed_work_item_count"] == 2
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 1
     assert anti_make_work["metrics"]["status_language_only_count"] == 2
     assert [
         item["label"]
@@ -591,6 +593,15 @@ def test_status_language_only_work_fails_anti_make_work_check(tmp_path):
         assert example["value_categories"] == []
         assert example["remediation"].startswith("Add evidence for at least one allowed value category")
         assert example["issue"] == "status_language_without_value_category_evidence"
+    codex_example = next(
+        item for item in anti_make_work["metrics"]["shallow_examples"] if item["source"] == "codex_runs"
+    )
+    assert codex_example["backfill_fields"] == [
+        "operatorDecisionSupport or nextDecision",
+        "changedFiles, tests, commitShas, pullRequests, or artifactPaths",
+        "controlOwnershipPreserved, incidentRiskReduced, or systemCapabilityChanged when applicable",
+    ]
+    assert "Backfill completed Codex run codex_status" in codex_example["remediation"]
     assert "anti_make_work_check" in benchmark["critical_failures"]
     assert "reliability_gate" not in benchmark["critical_failures"]
     assert benchmark["issue_selection"]["blocked_checks"] == [
@@ -655,6 +666,70 @@ def test_operator_decision_support_passes_anti_make_work_value_category(tmp_path
         "operator_decision_support"
     ]
     assert anti_make_work["metrics"]["durable_examples"][0]["remediation"] is None
+
+
+def test_codex_file_link_and_npm_verification_pass_anti_make_work_check(tmp_path):
+    now = datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(journal_path, {"entries": []})
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_publish": {
+                    "run_id": "codex_publish",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "exit_code": 0,
+                    "final_message": (
+                        "Created the publish candidate:\n\n"
+                        "[src/content/blog/2026-05-31-approval-starts-before-authorization.md]"
+                        "(/home/david/stacks/hadto.co/src/content/blog/"
+                        "2026-05-31-approval-starts-before-authorization.md)\n\n"
+                        "Verification passed:\n"
+                        "- `npm run lint`: passed\n"
+                        "- `npm run test`: passed, 70 tests\n"
+                        "- `npm run build`: passed, 125 pages built"
+                    ),
+                }
+            }
+        },
+    )
+    _write_json(
+        ctx_path,
+        {"sessions": {"ctx_1": {"session_id": "ctx_1", "active": False, "updated_at": recent}}},
+    )
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    anti_make_work = benchmark["checks"]["anti_make_work_check"]
+    assert anti_make_work["status"] == "pass"
+    assert anti_make_work["score"] == 1.0
+    assert anti_make_work["metrics"]["assessed_work_item_count"] == 1
+    assert anti_make_work["metrics"]["durable_evidence_count"] == 1
+    assert anti_make_work["metrics"]["shallow_work_item_count"] == 0
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 0
+    durable_example = anti_make_work["metrics"]["durable_examples"][0]
+    assert "changed_files" in durable_example["signals"]
+    assert "verification" in durable_example["signals"]
+    assert durable_example["value_categories"] == [
+        "durable_asset_created",
+        "system_capability_changed",
+    ]
 
 
 def test_durable_work_evidence_passes_anti_make_work_check(tmp_path):

@@ -30,6 +30,7 @@ class DurableContinuationPacket:
     verification_completed: Sequence[str] = field(default_factory=tuple)
     remaining_verification: Sequence[str] = field(default_factory=tuple)
     do_not_repeat: Sequence[str] = field(default_factory=tuple)
+    completion_allowed: bool = False
     last_updated: str | None = None
 
 
@@ -50,6 +51,7 @@ def render_job_ledger(packet: DurableContinuationPacket) -> str:
         f"Job name: {_required_text(packet.job_name, 'job_name')}",
         f"Current phase: `{_required_text(packet.current_phase, 'current_phase')}`",
         f"Last updated: {updated}",
+        f"Completion allowed: {_yes_no(packet.completion_allowed)}",
         "## Completed tasks",
         _bullet_list(packet.completed_tasks),
         "## Pending tasks",
@@ -80,6 +82,7 @@ def render_next_run(packet: DurableContinuationPacket) -> str:
         "## Status",
         f"Status: `{_required_text(packet.current_phase, 'current_phase')}`",
         f"Last updated: {updated}",
+        f"Completion allowed: {_yes_no(packet.completion_allowed)}",
         "## Completed",
         _bullet_list(packet.completed_tasks),
         "## Remaining work",
@@ -137,6 +140,7 @@ def build_durable_continuation_packet_from_todos(
     verification_completed: Sequence[str] = (),
     remaining_verification: Sequence[str] = (),
     do_not_repeat: Sequence[str] = (),
+    completion_allowed: object = False,
     last_updated: str | None = None,
 ) -> DurableContinuationPacket:
     """Build a continuation packet from a todo-store-like object.
@@ -165,6 +169,7 @@ def build_durable_continuation_packet_from_todos(
         verification_completed=tuple(verification_completed),
         remaining_verification=tuple(remaining_verification),
         do_not_repeat=tuple(do_not_repeat),
+        completion_allowed=_coerce_completion_allowed(completion_allowed),
         last_updated=last_updated,
     )
 
@@ -221,6 +226,24 @@ def _required_text(value: str, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} is required")
     return text
+
+
+def _yes_no(value: bool) -> str:
+    return "Yes" if value else "No"
+
+
+def _coerce_completion_allowed(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0", ""}:
+            return False
+    raise ValueError("completion_allowed must be a boolean")
 
 
 def _clean_items(items: Iterable[str]) -> list[str]:

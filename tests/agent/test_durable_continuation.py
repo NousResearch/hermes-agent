@@ -29,8 +29,9 @@ def _packet() -> DurableContinuationPacket:
         evidence_links=["[[Progress Log]]", "[[Job Ledger]]"],
         verification_completed=["Targeted tests passed"],
         remaining_verification=["Independent reviewer pass"],
-        exact_next_action="Run reviewer and update AR Beast docs with evidence.",
+        exact_next_action="Run reviewer and update project docs with evidence.",
         do_not_repeat=["Do not rerun the full suite unless targeted tests fail"],
+        completion_allowed=True,
         last_updated="2026-06-03",
     )
 
@@ -42,12 +43,13 @@ def test_render_job_ledger_contains_required_sections_and_values() -> None:
     assert "Job name: Hermes writer helper" in rendered
     assert "Current phase: `WRITER_IMPLEMENTATION_VERIFIED`" in rendered
     assert "Last updated: 2026-06-03" in rendered
+    assert "Completion allowed: Yes" in rendered
     assert "## Completed tasks" in rendered
     assert "- Added packet renderer" in rendered
     assert "## Pending tasks" in rendered
     assert "1. Update project docs" in rendered
     assert "## Exact next action" in rendered
-    assert "Run reviewer and update AR Beast docs with evidence." in rendered
+    assert "Run reviewer and update project docs with evidence." in rendered
 
 
 def test_render_next_run_is_compact_continuation_note() -> None:
@@ -55,12 +57,13 @@ def test_render_next_run_is_compact_continuation_note() -> None:
 
     assert rendered.startswith("# NEXT_RUN\n")
     assert "Status: `WRITER_IMPLEMENTATION_VERIFIED`" in rendered
+    assert "Completion allowed: Yes" in rendered
     assert "## Completed" in rendered
     assert "- Added atomic writer" in rendered
     assert "## Remaining work" in rendered
     assert "- Update project docs" in rendered
     assert "## Next action" in rendered
-    assert "Run reviewer and update AR Beast docs with evidence." in rendered
+    assert "Run reviewer and update project docs with evidence." in rendered
 
 
 def test_writer_creates_docs_atomically_and_returns_paths(tmp_path: Path) -> None:
@@ -218,6 +221,7 @@ def test_build_packet_from_todos_preserves_metadata() -> None:
         verification_completed=("Unit tests passed",),
         remaining_verification=("Run ruff",),
         do_not_repeat=("Do not re-open writer atomicity work",),
+        completion_allowed=True,
         last_updated="2026-06-03",
     )
 
@@ -230,7 +234,30 @@ def test_build_packet_from_todos_preserves_metadata() -> None:
     assert packet.verification_completed == ("Unit tests passed",)
     assert packet.remaining_verification == ("Run ruff",)
     assert packet.do_not_repeat == ("Do not re-open writer atomicity work",)
+    assert packet.completion_allowed is True
+    assert "Completion allowed: Yes" in render_job_ledger(packet)
+    assert "Completion allowed: Yes" in render_next_run(packet)
     assert packet.last_updated == "2026-06-03"
+
+
+def test_build_packet_from_todos_parses_string_completion_allowed_false() -> None:
+    packet = build_durable_continuation_packet_from_todos(
+        TodoStore(),
+        job_name="String boolean handoff",
+        completion_allowed="false",
+    )
+
+    assert packet.completion_allowed is False
+    assert "Completion allowed: No" in render_next_run(packet)
+
+
+def test_build_packet_from_todos_rejects_invalid_completion_allowed() -> None:
+    with pytest.raises(ValueError, match="completion_allowed must be a boolean"):
+        build_durable_continuation_packet_from_todos(
+            TodoStore(),
+            job_name="Invalid boolean handoff",
+            completion_allowed="sometimes",
+        )
 
 
 def test_build_packet_from_empty_todos_uses_safe_default_next_action() -> None:

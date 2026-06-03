@@ -251,6 +251,152 @@ def test_aiagent_persist_durable_continuation_accepts_custom_relative_docs_dir(a
     assert result.next_run_path == tmp_path / "handoffs" / "current" / "NEXT_RUN.md"
 
 
+def test_run_conversation_explicit_durable_continuation_writes_after_finalisation(
+    agent,
+    tmp_path,
+    monkeypatch,
+):
+    agent._todo_store.write(
+        [
+            {"id": "implement", "content": "Add explicit finalisation hook", "status": "in_progress"},
+            {"id": "verify", "content": "Run targeted finalisation tests", "status": "pending"},
+            {"id": "done", "content": "Inspect existing writer", "status": "completed"},
+        ]
+    )
+
+    def fake_run_conversation(*args, **kwargs):
+        return {
+            "final_response": "done",
+            "messages": [],
+            "completed": True,
+        }
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run_conversation)
+
+    result = agent.run_conversation(
+        "finish this turn",
+        durable_continuation={
+            "project_root": tmp_path,
+            "job_name": "Explicit finalisation hook",
+            "current_phase": "Phase 2A",
+            "status": "in_progress",
+            "exact_next_action": "Run reviewer and commit the slice.",
+            "completed_tasks": ["Inspect existing writer"],
+            "blockers": ["Reviewer not run yet"],
+            "changed_files": ["run_agent.py"],
+            "evidence_links": ["pytest tests/run_agent/test_run_agent.py -k finalisation"],
+            "completion_allowed": False,
+        },
+    )
+
+    assert result["final_response"] == "done"
+    write_result = result["durable_continuation"]
+    assert write_result["status"] == "written"
+    assert write_result["job_ledger_path"] == str(tmp_path / "docs" / "Job Ledger.md")
+    assert write_result["next_run_path"] == str(tmp_path / "docs" / "NEXT_RUN.md")
+
+    job_ledger = (tmp_path / "docs" / "Job Ledger.md").read_text()
+    next_run = (tmp_path / "docs" / "NEXT_RUN.md").read_text()
+    assert "Explicit finalisation hook" in job_ledger
+    assert "Add explicit finalisation hook" in job_ledger
+    assert "Run targeted finalisation tests" in job_ledger
+    assert "Reviewer not run yet" in job_ledger
+    assert "run_agent.py" in job_ledger
+    assert "Completion allowed: No" in job_ledger
+    assert "Completion allowed: No" in next_run
+    assert "Run reviewer and commit the slice." in next_run
+
+
+def test_run_conversation_without_durable_config_preserves_default_no_write(
+    agent,
+    tmp_path,
+    monkeypatch,
+):
+    def fake_run_conversation(*args, **kwargs):
+        return {"final_response": "done", "messages": [], "completed": True}
+
+    persist = MagicMock()
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run_conversation)
+    monkeypatch.setattr(agent, "persist_durable_continuation", persist)
+
+    result = agent.run_conversation("normal turn")
+
+    assert result["final_response"] == "done"
+    persist.assert_not_called()
+    assert "durable_continuation" not in result
+    assert not (tmp_path / "docs").exists()
+
+
+def test_run_conversation_explicit_durable_continuation_accepts_status_alias(
+    agent,
+    tmp_path,
+    monkeypatch,
+):
+    def fake_run_conversation(*args, **kwargs):
+        return {"final_response": "done", "messages": [], "completed": True}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run_conversation)
+
+    agent.run_conversation(
+        "finish this turn",
+        durable_continuation={
+            "project_root": tmp_path,
+            "job_name": "Status alias hook",
+            "status": "blocked",
+        },
+    )
+
+    next_run = (tmp_path / "docs" / "NEXT_RUN.md").read_text()
+    assert "Status: `blocked`" in next_run
+
+
+def test_run_conversation_explicit_durable_continuation_skips_without_project_root(
+    agent,
+    tmp_path,
+    monkeypatch,
+):
+    def fake_run_conversation(*args, **kwargs):
+        return {"final_response": "done", "messages": [], "completed": True}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run_conversation)
+
+    result = agent.run_conversation(
+        "finish this turn",
+        durable_continuation={"job_name": "Explicit finalisation hook"},
+    )
+
+    assert result["durable_continuation"] == {
+        "status": "skipped",
+        "reason": "project_root is required",
+    }
+    assert not (tmp_path / "docs").exists()
+
+
+def test_run_conversation_explicit_durable_continuation_rejects_docs_escape(
+    agent,
+    tmp_path,
+    monkeypatch,
+):
+    outside_docs = tmp_path.parent / "outside-finalisation-docs"
+
+    def fake_run_conversation(*args, **kwargs):
+        return {"final_response": "done", "messages": [], "completed": True}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run_conversation)
+
+    with pytest.raises(ValueError, match="docs_dir must stay inside project_root"):
+        agent.run_conversation(
+            "finish this turn",
+            durable_continuation={
+                "project_root": tmp_path,
+                "docs_dir": outside_docs,
+                "job_name": "Explicit finalisation hook",
+            },
+        )
+
+    assert not outside_docs.exists()
+
+
 
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""

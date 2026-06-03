@@ -45,7 +45,7 @@ import tempfile
 import time
 import threading
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Mapping, Optional
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -2768,6 +2768,7 @@ class AIAgent:
         verification_completed: List[str] | None = None,
         remaining_verification: List[str] | None = None,
         do_not_repeat: List[str] | None = None,
+        completion_allowed: object = False,
         last_updated: str | None = None,
     ) -> DurableContinuationPacket:
         """Build a durable continuation packet from this agent's todo lifecycle state.
@@ -2788,6 +2789,7 @@ class AIAgent:
             verification_completed=verification_completed or (),
             remaining_verification=remaining_verification or (),
             do_not_repeat=do_not_repeat or (),
+            completion_allowed=completion_allowed,
             last_updated=last_updated,
         )
 
@@ -2806,6 +2808,7 @@ class AIAgent:
         verification_completed: List[str] | None = None,
         remaining_verification: List[str] | None = None,
         do_not_repeat: List[str] | None = None,
+        completion_allowed: object = False,
         last_updated: str | None = None,
     ) -> DurableContinuationWriteResult:
         """Persist this agent's durable continuation packet to explicit project docs.
@@ -2835,6 +2838,7 @@ class AIAgent:
             verification_completed=verification_completed,
             remaining_verification=remaining_verification,
             do_not_repeat=do_not_repeat,
+            completion_allowed=completion_allowed,
             last_updated=last_updated,
         )
         return write_durable_continuation(root, packet, docs_dir=docs_dir)
@@ -4721,10 +4725,53 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        *,
+        durable_continuation: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        """Forwarder — see ``agent.conversation_loop.run_conversation``.
+
+        ``durable_continuation`` is an explicit, opt-in finalisation hook. When
+        provided, it is passed to :meth:`persist_durable_continuation` after the
+        conversation loop returns, so project docs are written only with a
+        caller-supplied safe project/docs root. The default ``None`` preserves
+        existing runtime behaviour and performs no persistence.
+        """
         from agent.conversation_loop import run_conversation
-        return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+
+        result = run_conversation(
+            self,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+        )
+        if durable_continuation is None:
+            return result
+
+        continuation_config = dict(durable_continuation)
+        project_root = str(continuation_config.get("project_root") or "").strip()
+        if not project_root:
+            result["durable_continuation"] = {
+                "status": "skipped",
+                "reason": "project_root is required",
+            }
+            return result
+        continuation_config["project_root"] = Path(project_root).expanduser()
+
+        if "status" in continuation_config and "current_phase" not in continuation_config:
+            continuation_config["current_phase"] = continuation_config.pop("status")
+        else:
+            continuation_config.pop("status", None)
+
+        write_result = self.persist_durable_continuation(**continuation_config)
+        result["durable_continuation"] = {
+            "status": "written",
+            "job_ledger_path": str(write_result.job_ledger_path),
+            "next_run_path": str(write_result.next_run_path),
+        }
+        return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

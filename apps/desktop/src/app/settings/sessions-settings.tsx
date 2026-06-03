@@ -5,6 +5,7 @@ import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { sessionMatchesSearch } from '@/lib/session-search'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
@@ -88,15 +89,11 @@ export function SessionsSettings({ query }: SearchProps) {
   }, [])
 
   const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-
-    if (!needle) {
+    if (!query.trim()) {
       return sessions
     }
 
-    return sessions.filter(session =>
-      [sessionTitle(session), session.preview ?? '', session.cwd ?? ''].join(' ').toLowerCase().includes(needle)
-    )
+    return sessions.filter(session => sessionMatchesSearch(session, query))
   }, [query, sessions])
 
   if (loading) {
@@ -192,7 +189,10 @@ function DefaultProjectDirSetting() {
     let alive = true
 
     void settings.getDefaultProjectDir().then(result => {
-      if (!alive) return
+      if (!alive) {
+        return
+      }
+
       setDir(result.dir)
       setFallback(result.defaultLabel)
     })
@@ -205,7 +205,9 @@ function DefaultProjectDirSetting() {
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 
@@ -229,7 +231,9 @@ function DefaultProjectDirSetting() {
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 

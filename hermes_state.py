@@ -3007,6 +3007,50 @@ class SessionDB:
 
         return matches
 
+    def search_sessions_by_id(
+        self,
+        query: str,
+        limit: int = 20,
+        include_archived: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Search surfaced sessions by exact/prefix/substring session id.
+
+        Desktop search uses this alongside FTS message search so users can paste
+        a session id from logs, CLI output, or another Hermes surface and jump
+        straight to that conversation.  Matching also checks ``_lineage_root_id``
+        for projected compression-chain tips, so an old root id still resolves to
+        the live continuation row.
+        """
+        needle = (query or "").strip().lower()
+        if not needle or limit <= 0:
+            return []
+
+        scan_limit = max(limit, 10_000)
+        sessions = self.list_sessions_rich(
+            limit=scan_limit,
+            offset=0,
+            include_archived=include_archived,
+            order_by_last_active=True,
+        )
+
+        def score(row: Dict[str, Any]) -> int:
+            ids = [str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")]
+            normalized = [value.lower() for value in ids if value]
+            if any(value == needle for value in normalized):
+                return 0
+            if any(value.startswith(needle) for value in normalized):
+                return 1
+            return 2
+
+        matches = [
+            (score(row), idx, row)
+            for idx, row in enumerate(sessions)
+            if needle in str(row.get("id") or "").lower()
+            or needle in str(row.get("_lineage_root_id") or "").lower()
+        ]
+        matches.sort(key=lambda item: (item[0], item[1]))
+        return [row for _, _, row in matches[:limit]]
+
     def search_sessions(
         self,
         source: str = None,

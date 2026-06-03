@@ -152,7 +152,7 @@ function formatTimestamp(value?: number | null): string {
 function splitSessionSearchResult(result: SessionSearchApiResult, sessionsById: Map<string, SessionInfo>) {
   const row = sessionsById.get(result.session_id)
   const title = row ? sessionTitle(row) : result.session_id
-  const detail = [result.model, result.source].filter(Boolean).join(' · ')
+  const detail = [result.model, result.source, result.session_id].filter(Boolean).join(' · ')
 
   return { detail, title }
 }

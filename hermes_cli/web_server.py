@@ -1463,13 +1463,39 @@ async def get_sessions(
 
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
-    """Full-text search across session message content using FTS5."""
+    """Search sessions by ID plus full-text message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
     try:
         from hermes_state import SessionDB
         db = SessionDB()
         try:
+            safe_limit = max(1, min(int(limit or 20), 100))
+            seen: dict = {}
+
+            def add_result(sid: str, payload: dict) -> None:
+                if sid and sid not in seen and len(seen) < safe_limit:
+                    seen[sid] = payload
+
+            # Direct ID matches first: users often paste a session id from CLI,
+            # logs, or another Hermes surface. FTS can't find those unless the
+            # id happens to appear in message text.
+            for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
+                sid = row.get("id")
+                preview = (row.get("preview") or "").strip()
+                snippet = preview or f"Session ID: {sid}"
+                add_result(
+                    sid,
+                    {
+                        "session_id": sid,
+                        "snippet": snippet,
+                        "role": None,
+                        "source": row.get("source"),
+                        "model": row.get("model"),
+                        "session_started": row.get("started_at"),
+                    },
+                )
+
             # Auto-add prefix wildcards so partial words match
             # e.g. "nimb" → "nimb*" matches "nimby"
             # Preserve quoted phrases and existing wildcards as-is
@@ -1481,20 +1507,21 @@ async def search_sessions(q: str = "", limit: int = 20):
                 else:
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
+            matches = db.search_messages(query=prefix_query, limit=safe_limit)
             # Group by session_id — return unique sessions with their best snippet
-            seen: dict = {}
             for m in matches:
                 sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
+                add_result(
+                    sid,
+                    {
                         "session_id": sid,
                         "snippet": m.get("snippet", ""),
                         "role": m.get("role"),
                         "source": m.get("source"),
                         "model": m.get("model"),
                         "session_started": m.get("session_started"),
-                    }
+                    },
+                )
             return {"results": list(seen.values())}
         finally:
             db.close()

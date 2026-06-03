@@ -58,7 +58,7 @@ sidebar_position: 1
 ```bash
 hermes setup --portal     # 全新安装——一条命令完成 OAuth + 提供商 + 网关配置
 hermes model              # 已有安装——从列表中选择"Nous Portal"
-hermes portal status      # 随时查看登录状态和路由信息
+hermes portal info        # 随时查看登录状态和路由信息
 ```
 
 还没有订阅？前往 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 购买。
@@ -77,7 +77,7 @@ OpenAI Codex 提供商通过设备码（device code）认证——打开一个 U
 :::
 
 :::tip Nous Tool Gateway
-付费 Nous Portal 订阅者还可访问 **[Tool Gateway](/user-guide/features/tool-gateway)**——网页搜索、图像生成、TTS 和浏览器自动化，均通过你的订阅路由。无需额外 API key。全新安装时，`hermes setup --portal` 一条命令即可完成登录、设置 Nous 为提供商并开启网关。现有用户可通过 `hermes model` 或 `hermes tools` 按工具启用。随时使用 `hermes portal status` 查看路由状态。
+付费 Nous Portal 订阅者还可访问 **[Tool Gateway](/user-guide/features/tool-gateway)**——网页搜索、图像生成、TTS 和浏览器自动化，均通过你的订阅路由。无需额外 API key。全新安装时，`hermes setup --portal` 一条命令即可完成登录、设置 Nous 为提供商并开启网关。现有用户可通过 `hermes model` 或 `hermes tools` 按工具启用。随时使用 `hermes portal info` 查看路由状态。
 :::
 
 ### 模型管理的两个命令

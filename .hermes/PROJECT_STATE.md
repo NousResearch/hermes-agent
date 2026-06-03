@@ -383,3 +383,50 @@ Committed: `24356edcd` | Tests: 80 passed
 - Reviewer verdict: PASS.
 - Guardrails: no commit, push, merge, deploy, production mutation, new dependency, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner call performed.
 - Next recommended bead: `UA-P5-007 - Runtime Gate Status Contract`.
+
+## UA Phase 5 Development Hardening — UA-P5-007 Start Checkpoint
+- Timestamp: 2026-06-03T03:43:57Z.
+- Bead: `UA-P5-007 - Runtime Gate Status Contract`.
+- Status: in progress, uncommitted.
+- Base: `65073bb6f` (`feat(code-scan): checkpoint UA phase 5 report boundaries`).
+- Scope: explicit runtime verification gate statuses in runtime-readiness artifact, runtime-readiness markdown, aggregate report data, and rendered REPORT.
+- Allowed statuses: `suggested_not_run`, `executed_passed`, `executed_failed`, `blocked_missing_tool`, `not_inferred`.
+- Guardrail: UA must not execute project gates (`npm test`, `pytest`, `go test`, etc.); it may only suggest or record externally supplied sidecar status if implemented.
+- Execution pattern: strict TDD via bounded coder prompt, Hermes-owned verification, reviewer PASS required.
+- Commit/push gate: no commit, push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls without separate JC approval.
+
+## UA Phase 5 Development Hardening — UA-P5-007 Completion Checkpoint
+- Timestamp: 2026-06-03T04:07:22Z.
+- Bead: `UA-P5-007 - Runtime Gate Status Contract`.
+- Status: accepted, reviewer PASS, uncommitted.
+- Base before bead: `65073bb6f` (`feat(code-scan): checkpoint UA phase 5 report boundaries`).
+- Diff artifact: `/tmp/ua-p5-007-diff.patch` (232 lines / 10784 bytes).
+- Handoff: `.hermes/handoffs/2026-06-03-0407-ua-p5-007-runtime-gate-status-contract.md`.
+- Implemented additive `verification_gates` in `runtime-readiness.json`.
+- Default inferred commands use `status: suggested_not_run`.
+- Allowed status contract: `suggested_not_run`, `executed_passed`, `executed_failed`, `blocked_missing_tool`, `not_inferred`.
+- Runtime-readiness Markdown now renders `## Verification Gates` with explicit non-execution wording.
+- Aggregate report data passes `verification_gates` through readiness.
+- Rendered REPORT readiness section now includes verification gate status and non-execution wording.
+- Sidecar ingestion: skipped intentionally; optional per bead and not needed for core contract.
+- RED evidence: focused test failed because `verification_gates` key was missing from runtime-readiness.json while `suggested_verification` included `go test -short ./...`.
+- Focused GREEN: `python -m pytest tests/code_scan/test_runtime_readiness.py tests/code_scan/test_report_data.py tests/code_scan/test_render_report.py -q` -> `147 passed in 20.33s`.
+- Required focused gate: `python -m pytest tests/code_scan/test_runtime_readiness.py tests/code_scan/test_run_ua.py tests/code_scan/test_report_data.py tests/code_scan/test_render_report.py -q` -> `206 passed in 38.33s`.
+- Runtime smoke: `P5_007_RUNTIME_GATE_SMOKE_PASS`.
+- Full verification: `python -m pytest tests/code_scan -q` -> `995 passed in 149.27s (0:02:29)`.
+- Hygiene: scoped py_compile + scoped `git diff --check` -> exit 0, no output.
+- Secret scan: `P5_007_SECRET_SCAN_PASS`.
+- Reviewer verdict: PASS.
+- Guardrails: no commit, push, merge, deploy, production mutation, new dependency, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner call performed.
+- Next recommended bead: `UA-P5-008 - Subagent Context Critic Packs`.
+
+## UA Phase 5 Development Hardening — UA-P5-007 Local Checkpoint Approval
+- Timestamp: 2026-06-03T04:07:22Z evidence remains current; local commit approval received after acceptance.
+- Bead: `UA-P5-007 - Runtime Gate Status Contract`.
+- Status before commit: accepted, reviewer PASS, approved for local checkpoint commit.
+- Approval quote: "I approve a local checkpoint commit for accepted UA-P5-007 on feat/ua-phase5-development-hardening. Scope includes only the P5-007 implementation, tests, handoff, and .hermes/PROJECT_STATE.md. No push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, or LLM/provider scanner calls are approved."
+- Approved scope: P5-007 implementation, tests, handoff, and `.hermes/PROJECT_STATE.md` only.
+- Still not approved: push, merge, deploy, production mutation, new dependencies, UI/dashboard, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls.
+- Pre-commit focused verification rerun: `python -m pytest tests/code_scan/test_runtime_readiness.py tests/code_scan/test_report_data.py tests/code_scan/test_render_report.py -q` -> `147 passed in 19.35s`.
+- Pre-commit hygiene rerun: py_compile for runtime/report modules plus `git diff --check` -> exit 0, no output.
+- Commit target: local branch `feat/ua-phase5-development-hardening`; no remote operation.

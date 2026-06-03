@@ -348,6 +348,7 @@ def _build_readiness_section(
         return {
             "detected_stacks": readiness.get("detected_stacks", []),
             "verification_status": readiness.get("verification_status", "unknown"),
+            "verification_gates": readiness.get("verification_gates", []),
             "blockers": readiness.get("blockers", []),
         }
     except Exception as exc:

@@ -496,6 +496,23 @@ def _render_readiness(readiness: Any) -> str:
         lines.append(f"Verification status: **{_safe_inline(status)}**")
         lines.append("")
 
+    gates = readiness.get("verification_gates", [])
+    if gates:
+        lines.append("### Verification gates")
+        lines.append("")
+        lines.append("UA records these gates as suggested or externally reported status only; it does not execute them.")
+        lines.append("")
+        lines.append("| Command | Status | Stack |")
+        lines.append("|---------|--------|-------|")
+        for gate in gates:
+            if not isinstance(gate, dict):
+                continue
+            command = _safe_inline(gate.get("command", ""))
+            gate_status = _safe_inline(gate.get("status", "not_inferred"))
+            stack = _safe_inline(gate.get("stack", ""))
+            lines.append(f"| `{command}` | `{gate_status}` | {stack} |")
+        lines.append("")
+
     blockers = readiness.get("blockers", [])
     if blockers:
         lines.append("### Blockers")

@@ -145,6 +145,21 @@ class TestGoFixtureReadiness:
         data = _load_readiness_json(out)
         assert any("go test" in s for s in data["suggested_verification"])
 
+        # UA-P5-007 RED: suggested commands currently lack explicit `verification_gates`
+        # entries with status: suggested_not_run (this assert will fail until GREEN impl)
+        assert "verification_gates" in data, (
+            "UA-P5-007 requires explicit `verification_gates` key in runtime-readiness.json"
+        )
+        gates = data.get("verification_gates", [])
+        assert isinstance(gates, list)
+        assert len(gates) > 0, "suggested/inferred commands must surface as verification_gates entries"
+        gate = gates[0]
+        assert "command" in gate
+        assert "status" in gate
+        assert gate["status"] == "suggested_not_run", (
+            "default for inferred verification gates must be 'suggested_not_run' (not silently executed)"
+        )
+
     def test_go_readiness_md_exists(self, tmp_path: Path):
         """run_ua must also emit runtime-readiness.md for Go fixture."""
         target = str(RUNTIME_FIXTURES / "go_project")
@@ -153,6 +168,10 @@ class TestGoFixtureReadiness:
         md = _load_readiness_md(out)
         assert len(md) > 0
         assert "go" in md.lower() or "Go" in md
+        assert "## Verification Gates" in md
+        assert "go test -short ./..." in md
+        assert "suggested_not_run" in md
+        assert "does not execute" in md
 
 
 # ── GREEN: Python fixture ────────────────────────────────────────────────

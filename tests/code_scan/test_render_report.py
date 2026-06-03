@@ -493,9 +493,16 @@ class TestReadinessRendering:
 
     def test_readiness_rendered(self):
         report = _make_full_report_data()
+        report["sections"]["readiness"]["verification_gates"] = [
+            {"command": "python -m pytest", "status": "suggested_not_run", "stack": "python"}
+        ]
         md = render_report.render_report_data(report)
         # The readiness section should appear somewhere
         assert "## Readiness" in md or "# Readiness" in md or "readiness" in md.lower()
+        assert "Verification gates" in md
+        assert "suggested_not_run" in md
+        assert "UA records these gates" in md
+        assert "does not execute" in md
 
 
 # ── Scan summary ──────────────────────────────────────────────────────────

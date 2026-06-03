@@ -295,6 +295,62 @@ def _suggest_verification(stack: str, target_dir: str) -> list[str]:
     return []
 
 
+def _build_verification_gates(
+    suggestions: list[str], all_commands: list[dict], stacks: list[str]
+) -> list[dict]:
+    """Map inferred suggested verification commands to explicit verification_gates entries.
+
+    UA-P5-007: All *inferred/suggested* become `status: "suggested_not_run"` by default.
+    Use `blocked_missing_tool` only for suggestions whose core required tool is already
+    known-missing (from readiness blockers/required_commands meta).
+    Never execute the gates/commands here — status is declarative only.
+    Empty if no suggestions inferred.
+    Each entry has at least: command, status. Optional deterministic context (e.g. stack hints) included
+    if clearly inferrable without broadening.
+    """
+    ALLOWED_STATUSES = {
+        "suggested_not_run",
+        "executed_passed",
+        "executed_failed",
+        "blocked_missing_tool",
+        "not_inferred",
+    }
+    gates: list[dict] = []
+    for raw in suggestions:
+        cmd_str = raw.strip() if isinstance(raw, str) else ""
+        if not cmd_str:
+            continue
+        # UA-P5-007: inferred commands are suggestions only. UA does not execute
+        # them and must not infer pass/fail from tool availability.
+        status = "suggested_not_run"
+        lead = cmd_str.split()[0].lower() if cmd_str else ""
+        # enough context: include 'stack' hint from first matching detected, if unambiguous
+        gate: dict = {"command": cmd_str, "status": status}
+        # attach optional stack if determinable for this suggestion context
+        if stacks and len(stacks) == 1:
+            gate["stack"] = stacks[0]
+        elif stacks:
+            # minimal, don't over-infer; if e.g. go test → go
+            if "go test" in cmd_str or lead == "go":
+                if "go" in stacks:
+                    gate["stack"] = "go"
+            elif any(x in cmd_str for x in ("pytest", "python -m")):
+                if "python" in stacks:
+                    gate["stack"] = "python"
+            # etc. keep other stacks simple
+            else:
+                for st in stacks:
+                    if st in ("node", "rust", "docker") and st in cmd_str.lower():
+                        gate["stack"] = st
+                        break
+        # name/tool optional would be redundant with command here; omit for minimal
+        if status not in ALLOWED_STATUSES:
+            status = "suggested_not_run"  # safety
+            gate["status"] = status
+        gates.append(gate)
+    return gates
+
+
 # ── Build completeness artifact ─────────────────────────────────────────
 
 def build_readiness_artifact(target_dir: str) -> dict:
@@ -334,12 +390,18 @@ def build_readiness_artifact(target_dir: str) -> dict:
         # Some optional_alternative commands missing but all required present
         verification_status = "verification_ready"
 
+    verification_gates = _build_verification_gates(
+        all_suggestions, all_commands, stacks
+    )
+
     return {
         "detected_stacks": stacks,
         "required_commands": all_commands,
         "suggested_verification": all_suggestions,
         "verification_status": verification_status,
         "blockers": blockers,
+        # UA-P5-007: explicit verification_gates for suggested commands (status contract only)
+        "verification_gates": verification_gates,
     }
 
 
@@ -397,6 +459,23 @@ def readiness_to_markdown(artifact: dict) -> str:
             lines.append(f"- `{s}`")
     else:
         lines.append("- *(none)*")
+    lines.append("")
+
+    lines.append("## Verification Gates")
+    lines.append("")
+    gates = artifact.get("verification_gates", [])
+    if gates:
+        lines.append("UA records these gates as suggested or externally reported status only; it does not execute them.")
+        lines.append("")
+        lines.append("| Command | Status | Stack |")
+        lines.append("|---------|--------|-------|")
+        for gate in gates:
+            command = gate.get("command", "")
+            status = gate.get("status", "not_inferred")
+            stack = gate.get("stack", "")
+            lines.append(f"| `{command}` | `{status}` | {stack or '—'} |")
+    else:
+        lines.append("- *(none inferred)*")
     lines.append("")
 
     # UA-P5-002: Blockers section only lists required-command failures.

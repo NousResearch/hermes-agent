@@ -246,11 +246,18 @@ class TestReadinessSection:
     def test_readiness_status(self):
         result = report_data.build_report_data(
             scan=_load_fixture("scan.json"),
-            readiness=_load_fixture("readiness.json"),
+            readiness={
+                **_load_fixture("readiness.json"),
+                "verification_gates": [
+                    {"command": "python -m pytest", "status": "suggested_not_run", "stack": "python"}
+                ],
+            },
         )
         r = result["sections"]["readiness"]
         assert r["verification_status"] == "verification_ready"
         assert r["detected_stacks"] == ["python"]
+        assert "verification_gates" in r
+        assert isinstance(r["verification_gates"], list)
 
     def test_readiness_not_available(self):
         result = report_data.build_report_data(scan=_load_fixture("scan.json"))

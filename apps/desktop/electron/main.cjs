@@ -472,7 +472,6 @@ let forceBootstrapRepair = false
 let connectionConfigCache = null
 const hermesLog = []
 const previewWatchers = new Map()
-let previewShortcutActive = false
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
@@ -2656,11 +2655,11 @@ function sendBackendExit(payload) {
   webContents.send('hermes:backend-exit', payload)
 }
 
-function sendClosePreviewRequested() {
+function sendCloseRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { webContents } = mainWindow
   if (!webContents || webContents.isDestroyed()) return
-  webContents.send('hermes:close-preview-requested')
+  webContents.send('hermes:close-requested')
 }
 
 function getAppIconPath() {
@@ -2719,13 +2718,7 @@ function buildApplicationMenu() {
       IS_MAC
         ? {
             accelerator: 'CommandOrControl+W',
-            click: () => {
-              if (previewShortcutActive) {
-                sendClosePreviewRequested()
-              } else {
-                mainWindow?.close()
-              }
-            },
+            click: () => sendCloseRequested(),
             label: 'Close'
           }
         : { role: 'quit' }
@@ -2822,15 +2815,19 @@ function installDevToolsShortcut(window) {
   })
 }
 
-function installPreviewShortcut(window) {
+function installCloseShortcut(window) {
+  // Cmd/Ctrl+W is always intercepted and forwarded to the renderer, which
+  // runs the cascade (overlay → right sidebar → preview rail → left sidebar
+  // → window close/minimize). This ensures the macOS menu accelerator and the
+  // before-input-event path both hit the same cascade logic.
   window.webContents.on('before-input-event', (event, input) => {
     const key = String(input.key || '').toLowerCase()
-    const isPreviewCloseShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
+    const isCloseShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
 
-    if (!isPreviewCloseShortcut || !previewShortcutActive) return
+    if (!isCloseShortcut) return
 
     event.preventDefault()
-    sendClosePreviewRequested()
+    sendCloseRequested()
   })
 }
 
@@ -3444,7 +3441,7 @@ function createWindow() {
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
 
-  installPreviewShortcut(mainWindow)
+  installCloseShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
   installZoomShortcuts(mainWindow)
   installContextMenu(mainWindow)
@@ -3592,8 +3589,12 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config)
 })
 
-ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
-  previewShortcutActive = Boolean(active)
+ipcMain.on('hermes:close-window', () => {
+  if (IS_MAC) {
+    mainWindow?.minimize()
+  } else {
+    mainWindow?.close()
+  }
 })
 
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {

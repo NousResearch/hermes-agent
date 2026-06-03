@@ -5,7 +5,7 @@ import { type CommandCenterSection } from '@/app/command-center'
 import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, NEW_CHAT_ROUTE } from '@/app/routes'
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
-const OVERLAY_VIEWS = new Set(['settings', 'command-center', 'agents'])
+export const OVERLAY_VIEWS = new Set(['settings', 'command-center', 'agents'])
 
 export function useOverlayRouting() {
   const location = useLocation()

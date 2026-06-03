@@ -28,7 +28,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   watchPreviewFile: url => ipcRenderer.invoke('hermes:watchPreviewFile', url),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
-  setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
+  closeWindow: () => ipcRenderer.send('hermes:close-window'),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
   settings: {
@@ -58,10 +58,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener(channel, listener)
     }
   },
-  onClosePreviewRequested: callback => {
+  onCloseRequested: callback => {
     const listener = () => callback()
-    ipcRenderer.on('hermes:close-preview-requested', listener)
-    return () => ipcRenderer.removeListener('hermes:close-preview-requested', listener)
+    ipcRenderer.on('hermes:close-requested', listener)
+    return () => ipcRenderer.removeListener('hermes:close-requested', listener)
   },
   onOpenUpdatesRequested: callback => {
     const listener = () => callback()

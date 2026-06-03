@@ -14,18 +14,23 @@ import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, listSessions } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
+  $fileBrowserOpen,
   $pinnedSessionIds,
+  $sidebarOpen,
   $sessionsLimit,
   bumpSessionsLimit,
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
   pinSession,
+  setSidebarOpen,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
+  toggleFileBrowserOpen,
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import { resolveCloseAction, setupCloseCascadeListener, setupShortcutListener } from './keyboard-shortcuts'
 import {
   $activeSessionId,
   $currentCwd,
@@ -77,7 +82,7 @@ import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
 import { AppShell } from './shell/app-shell'
-import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
+import { OVERLAY_VIEWS, useOverlayRouting } from './shell/hooks/use-overlay-routing'
 import { useStatusSnapshot } from './shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from './shell/hooks/use-statusbar-items'
 import { ModelMenuPanel } from './shell/model-menu-panel'
@@ -159,41 +164,82 @@ export function DesktopController() {
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
 
   useEffect(() => {
-    window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
-  }, [chatOpen, filePreviewTarget, previewTarget])
-
-  useEffect(() => {
     startUpdatePoller()
-    const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
+    const unsubscribeUpdates = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
 
     return () => {
-      unsubscribe?.()
+      unsubscribeUpdates?.()
       stopUpdatePoller()
     }
   }, [])
 
+  // Cmd/Ctrl+W cascade: overlay → right sidebar → preview rail → left sidebar → window close/minimize
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!$filePreviewTarget.get() && !$previewTarget.get()) {
-        return
-      }
+    const getCloseState = () => ({
+      overlayOpen: OVERLAY_VIEWS.has(currentView),
+      rightSidebarOpen: $fileBrowserOpen.get(),
+      previewRailOpen: Boolean($filePreviewTarget.get() || $previewTarget.get()),
+      leftSidebarOpen: $sidebarOpen.get()
+    })
 
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
-        event.preventDefault()
-        event.stopPropagation()
-        closeActiveRightRailTab()
+    const dispatchClose = (action: { type: string }) => {
+      switch (action.type) {
+        case 'close-overlay':
+          closeOverlayToPreviousRoute()
+          break
+        case 'close-right-sidebar':
+          toggleFileBrowserOpen()
+          break
+        case 'close-preview-rail':
+          closeActiveRightRailTab()
+          break
+        case 'close-left-sidebar':
+          setSidebarOpen(false)
+          break
+        case 'close-window':
+          window.hermesDesktop?.closeWindow?.()
+          break
       }
     }
 
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(closeActiveRightRailTab)
+    // Renderer-side keydown (works when no macOS menu accelerator intercepts)
+    const cleanupKeydown = setupCloseCascadeListener(getCloseState, dispatchClose)
 
-    window.addEventListener('keydown', onKeyDown, { capture: true })
+    // IPC path (macOS menu accelerator sends this before DOM sees the key)
+    const cleanupIpc = window.hermesDesktop?.onCloseRequested?.(() => {
+      dispatchClose(resolveCloseAction(getCloseState()))
+    })
 
     return () => {
-      unsubscribe?.()
-      window.removeEventListener('keydown', onKeyDown, { capture: true })
+      cleanupKeydown()
+      cleanupIpc?.()
     }
+  }, [currentView, closeOverlayToPreviousRoute])
+
+  // Cmd/Ctrl+, — toggle Settings
+  useEffect(() => {
+    return setupShortcutListener(',', () => {
+      if (settingsOpen) {
+        closeOverlayToPreviousRoute()
+      } else {
+        navigate(SETTINGS_ROUTE)
+      }
+    })
+  }, [settingsOpen, closeOverlayToPreviousRoute, navigate])
+
+  // Cmd/Ctrl+. — toggle right sidebar (file browser)
+  useEffect(() => {
+    return setupShortcutListener('.', () => {
+      toggleFileBrowserOpen()
+    })
   }, [])
+
+  // Cmd/Ctrl+K — toggle Command Center
+  useEffect(() => {
+    return setupShortcutListener('k', () => {
+      toggleCommandCenter()
+    })
+  }, [toggleCommandCenter])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1

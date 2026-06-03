@@ -24,7 +24,7 @@ declare global {
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
-      setPreviewShortcutActive?: (active: boolean) => void
+      closeWindow?: () => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       settings: {
@@ -44,7 +44,7 @@ declare global {
         start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
         write: (id: string, data: string) => Promise<boolean>
       }
-      onClosePreviewRequested?: (callback: () => void) => () => void
+      onCloseRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void

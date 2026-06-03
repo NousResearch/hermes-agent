@@ -265,6 +265,43 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
+def _collect_session_lineage(db, root_session_id: str) -> List[str]:
+    """Return [root, ...children] — all session IDs in the family tree.
+
+    Walks from *root_session_id* downward to find all child/descendant
+    sessions whose ``parent_session_id`` points to any session already in
+    the lineage.  Combined with the root-to-tip walk, this gives the full
+    message family for summarization.
+
+    Falls back to just [root_session_id] on any error.
+    """
+    collected = [root_session_id]
+    try:
+        frontier = [root_session_id]
+        seen = set(frontier)
+        while frontier:
+            sid = frontier.pop()
+            # Find all sessions whose parent_session_id == sid
+            try:
+                conn = getattr(db, "_conn", None)
+                if conn is None:
+                    break
+                cursor = conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ?",
+                    (sid,),
+                )
+                for (child_id,) in cursor:
+                    if child_id not in seen:
+                        seen.add(child_id)
+                        collected.append(child_id)
+                        frontier.append(child_id)
+            except Exception:
+                continue
+        return collected
+    except Exception:
+        return [root_session_id]
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
@@ -465,7 +502,20 @@ def session_search(
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                # Load messages from the full session lineage (root parent +
+                # all descendant/child sessions).  When an FTS5 match lives
+                # in a child session (created by compression or delegation),
+                # loading only the parent's messages would miss the matched
+                # content entirely, producing an empty or wrong window for
+                # _truncate_around_matches (#2874).
+                all_sids = _collect_session_lineage(db, session_id)
+                messages = []
+                for sid in all_sids:
+                    try:
+                        msgs = db.get_messages_as_conversation(sid)
+                        messages.extend(msgs)
+                    except Exception:
+                        continue
                 if not messages:
                     continue
                 session_meta = db.get_session(session_id) or {}

@@ -4,10 +4,12 @@ import builtins
 import importlib
 import sys
 
+from hermes_state import SessionDB
 from tools.registry import registry
 
 
 def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
+    """DB-backed MemoryStore doesn't need fcntl — confirm it works regardless."""
     original_import = builtins.__import__
 
     def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -20,12 +22,11 @@ def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
     memory_tool = importlib.import_module("tools.memory_tool")
-    monkeypatch.setattr(memory_tool, "get_memory_dir", lambda: tmp_path)
 
-    store = memory_tool.MemoryStore(memory_char_limit=200, user_char_limit=200)
-    store.load_from_disk()
+    db = SessionDB(db_path=tmp_path / "fallback_state.db")
+    store = memory_tool.MemoryStore(session_db=db, memory_char_limit=200, user_char_limit=200)
+    store.load_from_db()
     result = store.add("memory", "fact learned during import fallback test")
 
-    assert memory_tool.fcntl is None
     assert registry.get_entry("memory") is not None
     assert result["success"] is True

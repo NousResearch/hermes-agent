@@ -24,11 +24,12 @@ Design:
 
 import json
 import logging
-import re
 import threading
 import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
+
+from tools.threat_patterns import first_threat_message
 
 logger = logging.getLogger(__name__)
 
@@ -42,45 +43,6 @@ ENTRY_DELIMITER = "\n§\n"
 
 # Default category for entries (used for future multi-category queries)
 _DEFAULT_CATEGORY = "default"
-
-
-# -------------------------------------------------------------------------
-# Memory content scanning — lightweight check for injection/exfiltration
-# -------------------------------------------------------------------------
-
-_MEMORY_THREAT_PATTERNS = [
-    # Prompt injection
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'you\s+are\s+now\s+', "role_hijack"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    # Exfiltration via curl/wget with secrets
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
-    # Persistence via shell rc
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/.ssh', "ssh_access"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
-]
-
-_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
-
-
-def _scan_memory_content(content: str) -> Optional[str]:
-    """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
-    for pattern, pid in _MEMORY_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
-    return None
 
 
 class MemoryStore:
@@ -200,7 +162,7 @@ class MemoryStore:
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        scan_error = _scan_memory_content(content)
+        scan_error = first_threat_message(content, scope="strict")
         if scan_error:
             return {"success": False, "error": scan_error}
 
@@ -273,7 +235,7 @@ class MemoryStore:
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
-        scan_error = _scan_memory_content(new_content)
+        scan_error = first_threat_message(new_content, scope="strict")
         if scan_error:
             return {"success": False, "error": scan_error}
 
@@ -296,14 +258,8 @@ class MemoryStore:
         delta = new_chars - old_chars
 
         with self._db_lock():
-            # If replacing makes it bigger, evict if needed.
-            # Eviction removes LOWEST priority entries (access_count ASC, last_accessed ASC).
-            # The target entry's index is stable — eviction never removes entries
-            # with higher access_count than the target, so idx remains valid.
-            if delta > 0:
-                self._db.memory_evict_for_section(target, delta, limit)
-
-            # Find the DB row for the matching entry
+            # Find the DB row for the matching entry BEFORE eviction, so we
+            # have the row id to exclude from eviction.
             rows = self._db.memory_get_active(target)
             match_row = None
             for row in rows:
@@ -312,6 +268,16 @@ class MemoryStore:
                     break
             if not match_row:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
+
+            # If replacing makes it bigger, evict lowest-value entries.
+            # Use exclude_id=match_row["id"] to prevent the entry being
+            # replaced from evicting itself (it has a fresh access_count=0
+            # if never touched, which would rank lowest in the eviction
+            # score and get removed before the upsert completes).
+            if delta > 0:
+                self._db.memory_evict_for_section(
+                    target, delta, limit, exclude_id=match_row["id"],
+                )
 
             # Update in place (same id, same key)
             self._db.memory_upsert(
@@ -322,8 +288,12 @@ class MemoryStore:
                 value=new_content,
             )
 
-            # Update live state directly using stable idx.
-            self._live_entries[target][idx] = new_content
+            # Re-read live state from DB — eviction may have removed
+            # other entries, shifting indices.  Find the entry by value
+            # (stable identity) rather than assuming idx is still valid.
+            self._live_entries[target] = [
+                r["value"] for r in self._db.memory_get_active(target)
+            ]
 
         self._refresh_snapshot()
 

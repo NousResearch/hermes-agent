@@ -1704,6 +1704,10 @@ def detect_static_provider_for_model(
                     if name_lower == cm.lower():
                         first_match = (pid, name)
                         break
+                else:
+                    # Model exists in "minimax" but NOT in "minimax-cn" —
+                    # don't skip it; return the minimax match directly.
+                    return (pid, name)
                 continue
             return (pid, name)
 

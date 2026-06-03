@@ -64,7 +64,7 @@ def _windows_env(name: str) -> str:
 
 def _get_secret_env(names: tuple[str, ...]) -> tuple[str, str]:
     for name in names:
-        value = os.environ.get(name) or _windows_env(name)
+        value = (os.environ.get(name) or _windows_env(name)).strip()
         if value:
             return name, value
     return "", ""

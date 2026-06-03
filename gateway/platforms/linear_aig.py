@@ -62,6 +62,11 @@ def check_linear_aig_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _clean_secret_value(value: Any) -> str:
+    """Normalize env/config secrets without logging or otherwise exposing them."""
+    return str(value or "").strip()
+
+
 class LinearAIGAdapter(BasePlatformAdapter):
     """Receive Linear AgentSessionEvent webhooks and emit Agent Activities."""
 
@@ -88,12 +93,11 @@ class LinearAIGAdapter(BasePlatformAdapter):
         self._access_token_env = str(
             extra.get("access_token_env") or "LINEAR_ACCESS_TOKEN"
         )
-        self._webhook_secret = str(extra.get("webhook_secret") or "")
-        self._access_token = str(
+        self._webhook_secret = _clean_secret_value(extra.get("webhook_secret"))
+        self._access_token = _clean_secret_value(
             config.token
             or config.api_key
             or extra.get("access_token")
-            or ""
         )
         self._access_token_is_api_key = bool(
             (config.api_key and not config.token)
@@ -121,7 +125,7 @@ class LinearAIGAdapter(BasePlatformAdapter):
         if self._webhook_secret:
             return self._webhook_secret
         for env_name in (self._webhook_secret_env, *DEFAULT_WEBHOOK_SECRET_ENV_NAMES):
-            value = os.getenv(env_name, "")
+            value = _clean_secret_value(os.getenv(env_name, ""))
             if value:
                 return value
         return ""
@@ -134,7 +138,7 @@ class LinearAIGAdapter(BasePlatformAdapter):
             source = "config.api_key" if self._access_token_is_api_key else "config.token"
             return source, self._access_token
         for env_name in (self._access_token_env, *DEFAULT_ACCESS_TOKEN_ENV_NAMES):
-            value = os.getenv(env_name, "")
+            value = _clean_secret_value(os.getenv(env_name, ""))
             if value:
                 return env_name, value
         return "", ""

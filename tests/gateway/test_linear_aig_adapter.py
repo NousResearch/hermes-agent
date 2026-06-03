@@ -59,6 +59,17 @@ def test_hermes_env_token_takes_priority_over_user_api_key(monkeypatch):
     assert adapter._resolved_webhook_secret() == "hermes-secret"
 
 
+def test_env_token_and_secret_values_are_trimmed(monkeypatch):
+    monkeypatch.setenv("LINEAR_ACCESS_TOKEN", "  lin_oauth_trimmed  ")
+    monkeypatch.setenv("LINEAR_WEBHOOK_SECRET", "\tlinear-secret\n")
+
+    adapter = LinearAIGAdapter(PlatformConfig(enabled=True))
+
+    assert adapter._resolved_access_token() == "lin_oauth_trimmed"
+    assert adapter._authorization_header() == "Bearer lin_oauth_trimmed"
+    assert adapter._resolved_webhook_secret() == "linear-secret"
+
+
 def _app(adapter):
     app = web.Application()
     app.router.add_post("/linear/aig", adapter._handle_webhook)

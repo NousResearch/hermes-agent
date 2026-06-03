@@ -2077,6 +2077,47 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(sleeps, [1])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_survives_shutdown_default_executor(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"attempts": 0}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["attempts"] += 1
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_after_executor_shutdown"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _run():
+            await asyncio.get_running_loop().shutdown_default_executor()
+            return await adapter.send(chat_id="oc_chat", content="hello")
+
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(_run())
+        finally:
+            adapter._shutdown_blocking_executor()
+            loop.close()
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_after_executor_shutdown")
+        self.assertEqual(captured["attempts"], 1)
+        self.assertEqual(captured["request"].receive_id_type, "chat_id")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_does_not_retry_deterministic_api_failure(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

@@ -4307,7 +4307,44 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    @staticmethod
+    def _is_feishu_card_json(content: str) -> bool:
+        """Check if content is a Feishu interactive card JSON.
+
+        A valid Feishu card contains at least one of these key structures:
+        - "config" and "elements" (standard card)
+        - "header" and "elements" (card with header)
+        - "type": "template" (template card)
+        - "i18n" (internationalized card)
+
+        This allows agents to send card JSON directly, which will be
+        routed as msg_type="interactive" instead of being treated as text.
+        """
+        try:
+            parsed = json.loads(content.strip())
+            if not isinstance(parsed, dict):
+                return False
+
+            # Check for standard card structure keys
+            card_keys = {"config", "header", "elements", "i18n"}
+            # A valid card should have at least "elements" or "i18n"
+            has_card_structure = (
+                "elements" in parsed
+                or "i18n" in parsed
+                or ("type" in parsed and parsed["type"] == "template")
+            )
+            # And optionally "config" or "header"
+            has_optional_keys = any(key in parsed for key in ("config", "header"))
+
+            return has_card_structure and (has_optional_keys or "elements" in parsed)
+        except (json.JSONDecodeError, ValueError):
+            return False
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Check if content is a Feishu interactive card JSON
+        if self._is_feishu_card_json(content):
+            return "interactive", content
+
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.

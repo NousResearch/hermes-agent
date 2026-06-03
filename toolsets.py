@@ -255,6 +255,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "qq_voice": {
+        "description": (
+            "QQ voice messages - synthesize speech with the configured TTS "
+            "backend, or send an existing audio file, and deliver it as a "
+            "native QQ voice message through a running OneBot instance."
+        ),
+        "tools": ["qq_send_voice"],
+        "includes": []
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "

@@ -139,6 +139,73 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
     assert not any(t["id"] == task["id"] for t in columns["todo"])
 
 
+def test_duplicate_active_idempotency_keys_surface_on_board_task_and_diagnostics(client):
+    """Dashboard diagnostics must flag duplicate active idempotency keys.
+
+    ``create_task`` normally de-dupes duplicate keys, so the fixture creates two
+    regular tasks and updates both rows to the same key to mimic a concurrent
+    create/import race. This proves diagnostic behavior without adding schema
+    uniqueness.
+    """
+
+    first = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "duplicate origin A", "assignee": "gond"},
+    ).json()["task"]
+    second = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "duplicate origin B", "assignee": "gond"},
+    ).json()["task"]
+    key = "notion:page-123:fp-abc"
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET idempotency_key = ? WHERE id IN (?, ?)",
+                (key, first["id"], second["id"]),
+            )
+    finally:
+        conn.close()
+
+    board = client.get("/api/plugins/kanban/board").json()
+    cards = {
+        task["id"]: task
+        for column in board["columns"]
+        for task in column["tasks"]
+    }
+    for task_id in (first["id"], second["id"]):
+        diag = next(
+            d for d in cards[task_id]["diagnostics"]
+            if d["kind"] == "duplicate_active_idempotency_key"
+        )
+        assert diag["severity"] == "warning"
+        assert diag["data"]["idempotency_key"] == key
+        assert diag["data"]["origin"] == {
+            "raw": key,
+            "origin_kind": "notion",
+            "origin_id": "page-123",
+            "origin_fingerprint": "fp-abc",
+        }
+        assert set(diag["data"]["duplicate_task_ids"]) == {first["id"], second["id"]}
+        assert diag["data"]["duplicate_count"] == 2
+        assert cards[task_id]["warnings"]["kinds"]["duplicate_active_idempotency_key"] == 1
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{first['id']}").json()
+    detail_diag = next(
+        d for d in detail["task"]["diagnostics"]
+        if d["kind"] == "duplicate_active_idempotency_key"
+    )
+    assert detail_diag["data"]["sibling_task_ids"] == [second["id"]]
+
+    diagnostics = client.get("/api/plugins/kanban/diagnostics").json()
+    duplicate_rows = [
+        row for row in diagnostics["diagnostics"]
+        if any(d["kind"] == "duplicate_active_idempotency_key" for d in row["diagnostics"])
+    ]
+    assert {row["task_id"] for row in duplicate_rows} == {first["id"], second["id"]}
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})
@@ -280,6 +347,54 @@ def test_task_detail_includes_links_and_events(client):
 def test_task_detail_404_on_unknown(client):
     r = client.get("/api/plugins/kanban/tasks/does-not-exist")
     assert r.status_code == 404
+
+
+def test_task_detail_surfaces_proof_artifact_evidence(client, kanban_home):
+    """A completion carrying proofs/artifacts exposes a normalized
+    ``evidence`` block on both the completed run and the completed event."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="evidence", assignee="a")
+        kb.claim_task(conn, tid)
+        kb.complete_task(
+            conn, tid,
+            summary="done",
+            metadata={
+                "artifacts": ["/tmp/out.pdf"],
+                "proofs": [
+                    {"type": "test", "label": "suite", "value": "ok", "status": "pass"},
+                ],
+            },
+        )
+
+    data = client.get(f"/api/plugins/kanban/tasks/{tid}").json()
+
+    completed_runs = [r for r in data["runs"] if r["outcome"] == "completed"]
+    assert completed_runs, "expected a completed run"
+    ev = completed_runs[0]["evidence"]
+    assert ev["artifacts"] == ["/tmp/out.pdf"]
+    assert ev["proofs"] == [
+        {"type": "test", "label": "suite", "value": "ok", "status": "pass"},
+    ]
+
+    completed_events = [e for e in data["events"] if e["kind"] == "completed"]
+    assert completed_events, "expected a completed event"
+    ev2 = completed_events[0]["evidence"]
+    assert ev2["artifacts"] == ["/tmp/out.pdf"]
+    assert ev2["proofs"][0]["status"] == "pass"
+
+
+def test_task_detail_omits_evidence_when_none(client, kanban_home):
+    """Runs/events without proof/artifact evidence carry no ``evidence`` key."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="plain", assignee="a")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, summary="done", metadata={"tests_run": 1})
+
+    data = client.get(f"/api/plugins/kanban/tasks/{tid}").json()
+    for r in data["runs"]:
+        assert "evidence" not in r
+    for e in data["events"]:
+        assert "evidence" not in e
 
 
 # ---------------------------------------------------------------------------

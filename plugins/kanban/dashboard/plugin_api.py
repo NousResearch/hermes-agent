@@ -177,8 +177,30 @@ def _task_dict(
     return d
 
 
+def _evidence_from(source: Optional[dict]) -> Optional[dict]:
+    """Pull a normalized ``{proofs, artifacts}`` evidence block out of a
+    run's ``metadata`` or a completion event's ``payload``.
+
+    Gives the dashboard a single, stable shape to render the proof/artifact
+    convention without re-parsing free-form metadata. The kernel
+    (``kanban_db.normalize_evidence``) has already validated/capped/redacted
+    these on write; this is a read-side projection only. Returns ``None``
+    when neither channel carries evidence so callers can omit the key.
+    """
+    if not isinstance(source, dict):
+        return None
+    evidence: dict[str, Any] = {}
+    proofs = source.get("proofs")
+    if isinstance(proofs, list) and proofs:
+        evidence["proofs"] = proofs
+    artifacts = source.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        evidence["artifacts"] = artifacts
+    return evidence or None
+
+
 def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
-    return {
+    d: dict[str, Any] = {
         "id": event.id,
         "task_id": event.task_id,
         "kind": event.kind,
@@ -186,6 +208,10 @@ def _event_dict(event: kanban_db.Event) -> dict[str, Any]:
         "created_at": event.created_at,
         "run_id": event.run_id,
     }
+    evidence = _evidence_from(event.payload)
+    if evidence:
+        d["evidence"] = evidence
+    return d
 
 
 def _comment_dict(c: kanban_db.Comment) -> dict[str, Any]:
@@ -215,7 +241,7 @@ def _attachment_dict(a: kanban_db.Attachment) -> dict[str, Any]:
 
 def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
     """Serialise a Run for the drawer's Run history section."""
-    return {
+    d: dict[str, Any] = {
         "id": r.id,
         "task_id": r.task_id,
         "profile": r.profile,
@@ -233,6 +259,12 @@ def _run_dict(r: kanban_db.Run) -> dict[str, Any]:
         "metadata": r.metadata,
         "error": r.error,
     }
+    # Surface proof/artifact evidence in a stable shape so the drawer can
+    # render it directly instead of digging through free-form metadata.
+    evidence = _evidence_from(r.metadata)
+    if evidence:
+        d["evidence"] = evidence
+    return d
 
 
 # Hallucination-warning event kinds — see complete_task() in kanban_db.py.
@@ -311,6 +343,14 @@ def _compute_task_diagnostics(
         )
         if diags:
             out[tid] = [d.to_dict() for d in diags]
+
+    # Cross-task diagnostics cannot live in kanban_diagnostics.compute_task_diagnostics
+    # because they need a board-level view. Merge them into the same payload
+    # shape so board cards, task drawers, and /diagnostics all expose them.
+    for tid, diags in _compute_active_idempotency_key_diagnostics(
+        conn, task_ids=task_ids,
+    ).items():
+        out.setdefault(tid, []).extend(diags)
     return out
 
 
@@ -351,6 +391,173 @@ def _warnings_summary_from_diagnostics(
         "latest_at": latest,
         "highest_severity": highest_sev,
     }
+
+
+def _parse_idempotency_origin(idempotency_key: str) -> dict[str, Any]:
+    """Best-effort origin metadata extraction from an idempotency key.
+
+    The Kanban schema intentionally keeps ``idempotency_key`` as an opaque
+    string. Dashboard diagnostics still need to expose useful origin hints, so
+    this accepts a few common conventions without making any of them mandatory:
+    JSON objects, ``key=value`` segments separated by ``|``/``;``/``,`` and the
+    lightweight ``origin_kind:origin_id:origin_fingerprint`` convention from the
+    Paperclip recovery spike. Unknown formats round-trip as ``raw`` only.
+    """
+    raw = (idempotency_key or "").strip()
+    out: dict[str, Any] = {"raw": raw}
+    if not raw:
+        return out
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        out.update({str(k): v for k, v in parsed.items()})
+        aliases = {
+            "origin_kind": ("origin_kind", "originKind", "kind", "source"),
+            "origin_id": ("origin_id", "originId", "id"),
+            "origin_fingerprint": (
+                "origin_fingerprint",
+                "originFingerprint",
+                "fingerprint",
+            ),
+        }
+        for canonical, keys in aliases.items():
+            for key in keys:
+                if key in parsed and parsed[key] is not None:
+                    out[canonical] = parsed[key]
+                    break
+        return out
+
+    for delimiter in ("|", ";", ","):
+        if delimiter in raw and "=" in raw:
+            pieces = [p.strip() for p in raw.split(delimiter) if p.strip()]
+            pairs: dict[str, str] = {}
+            for piece in pieces:
+                if "=" not in piece:
+                    continue
+                key, value = piece.split("=", 1)
+                pairs[key.strip()] = value.strip()
+            if pairs:
+                out.update(pairs)
+                for canonical, keys in {
+                    "origin_kind": ("origin_kind", "originKind", "kind", "source"),
+                    "origin_id": ("origin_id", "originId", "id"),
+                    "origin_fingerprint": (
+                        "origin_fingerprint",
+                        "originFingerprint",
+                        "fingerprint",
+                    ),
+                }.items():
+                    for key in keys:
+                        if key in pairs:
+                            out[canonical] = pairs[key]
+                            break
+                return out
+
+    # Convention adopted by the Paperclip mapping spike. Limit splits so a
+    # fingerprint containing ':' still survives intact in the third slot.
+    colon_parts = raw.split(":", 2)
+    if len(colon_parts) == 3 and all(colon_parts[:2]):
+        out.update({
+            "origin_kind": colon_parts[0],
+            "origin_id": colon_parts[1],
+            "origin_fingerprint": colon_parts[2],
+        })
+    return out
+
+
+def _compute_active_idempotency_key_diagnostics(
+    conn: sqlite3.Connection,
+    task_ids: Optional[list[str]] = None,
+) -> dict[str, list[dict]]:
+    """Detect duplicate active idempotency keys without enforcing uniqueness.
+
+    ``create_task`` best-effort de-dupes by returning an existing active task,
+    but concurrent creators or imported rows can still leave multiple
+    non-archived tasks with the same key. This dashboard-only diagnostic makes
+    the ambiguity visible while deliberately avoiding a migration / unique
+    index.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, title, status, assignee, tenant, created_at, idempotency_key
+        FROM tasks
+        WHERE status != 'archived'
+          AND idempotency_key IS NOT NULL
+          AND TRIM(idempotency_key) != ''
+        ORDER BY idempotency_key ASC, created_at ASC, id ASC
+        """
+    ).fetchall()
+    if not rows:
+        return {}
+
+    by_key: dict[str, list[Any]] = {}
+    for row in rows:
+        by_key.setdefault(row["idempotency_key"], []).append(row)
+
+    requested = set(task_ids) if task_ids is not None else None
+    out: dict[str, list[dict]] = {}
+    for key, group in by_key.items():
+        if len(group) < 2:
+            continue
+        duplicate_tasks = [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "status": row["status"],
+                "assignee": row["assignee"],
+                "tenant": row["tenant"],
+                "created_at": row["created_at"],
+            }
+            for row in group
+        ]
+        duplicate_ids = [row["id"] for row in group]
+        first_seen_at = min(int(row["created_at"] or 0) for row in group)
+        last_seen_at = max(int(row["created_at"] or 0) for row in group)
+        origin = _parse_idempotency_origin(key)
+        for row in group:
+            task_id = row["id"]
+            if requested is not None and task_id not in requested:
+                continue
+            sibling_ids = [tid for tid in duplicate_ids if tid != task_id]
+            out.setdefault(task_id, []).append({
+                "kind": "duplicate_active_idempotency_key",
+                "severity": "warning",
+                "title": "Duplicate active idempotency key",
+                "detail": (
+                    "Multiple non-archived Kanban tasks share the same "
+                    "idempotency_key. This can happen after concurrent create "
+                    "races or imports; operators should inspect the duplicate "
+                    "origin before assuming either task is unique. No schema "
+                    "uniqueness is enforced by this diagnostic."
+                ),
+                "actions": [
+                    {
+                        "kind": "cli_hint",
+                        "label": "Inspect duplicate tasks",
+                        "payload": {
+                            "command": "hermes kanban show " + " ".join(duplicate_ids),
+                            "task_ids": duplicate_ids,
+                        },
+                        "suggested": True,
+                    },
+                ],
+                "first_seen_at": first_seen_at,
+                "last_seen_at": last_seen_at,
+                "count": 1,
+                "run_id": None,
+                "data": {
+                    "idempotency_key": key,
+                    "origin": origin,
+                    "duplicate_task_ids": duplicate_ids,
+                    "sibling_task_ids": sibling_ids,
+                    "duplicate_count": len(group),
+                    "duplicate_tasks": duplicate_tasks,
+                },
+            })
+    return out
 
 
 def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:

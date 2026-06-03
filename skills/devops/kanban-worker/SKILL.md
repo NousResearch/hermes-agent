@@ -99,6 +99,28 @@ kanban_complete(
 
 Shape `metadata` so downstream parsers (reviewers, aggregators, schedulers) can use it without re-reading your prose.
 
+## Proof / artifact evidence
+
+Two optional evidence channels back your handoff. Use them when the work produced something checkable:
+
+- **`proofs`** — a list of typed evidence records that justify the completion. Each is `{type, label, value, status?}` where `type` is one of `test | command | url | file | screenshot | metric | note` (anything else is coerced to `note`) and `status` is `pass | fail | info`. Proofs render as evidence on the dashboard and flow to downstream workers; they are **not** uploaded.
+- **`artifacts`** — a list of absolute paths to deliverable files (charts, PDFs, archives). The gateway notifier uploads these as native attachments to the subscriber's chat. Use this only for files that ARE the deliverable, not scratch.
+
+```python
+kanban_complete(
+    summary="shipped rate limiter — token bucket, 14 tests pass",
+    metadata={"changed_files": ["rate_limiter.py"], "tests_passed": 14},
+    proofs=[
+        {"type": "test", "label": "unit suite", "value": "14 passed in 2.1s", "status": "pass"},
+        {"type": "command", "label": "lint", "value": "ruff check . → clean", "status": "pass"},
+        {"type": "url", "label": "PR", "value": "https://github.com/org/repo/pull/123"},
+    ],
+    artifacts=["/abs/path/to/coverage-report.html"],
+)
+```
+
+The kernel validates types, caps the list (max 20 proofs / 50 artifacts), length-caps each field, and redacts secrets before any of this reaches downstream worker context or the dashboard — so don't hand-truncate, but also don't rely on proofs to carry large blobs. Attach evidence you'd want a reviewer to see at a glance.
+
 ## Claiming cards you actually created
 
 If your run produced new kanban tasks (via `kanban_create`), pass the ids in `created_cards` on `kanban_complete`. The kernel verifies each id exists and was created by your profile; any phantom id blocks the completion with an error listing what went wrong, and the rejected attempt is permanently recorded on the task's event log. **Only list ids you captured from a successful `kanban_create` return value — never invent ids from prose, never paste ids from earlier runs, never claim cards another worker created.**

@@ -488,6 +488,7 @@ def _handle_complete(args: dict, **kw) -> str:
     result = args.get("result")
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
+    proofs = args.get("proofs")
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -540,6 +541,34 @@ def _handle_complete(args: dict, **kw) -> str:
                 metadata["artifacts"] = merged
             else:
                 metadata["artifacts"] = artifacts
+    if proofs is not None:
+        if isinstance(proofs, dict):
+            # Accept a single proof record for convenience.
+            proofs = [proofs]
+        if not isinstance(proofs, (list, tuple)):
+            return tool_error(
+                f"proofs must be a list of evidence records "
+                f"(objects), got {type(proofs).__name__}"
+            )
+        # Fold typed proof evidence into metadata so it rides the same
+        # completion path as artifacts. The kernel's normalize_evidence
+        # does the real validation/caps/redaction; here we only coerce
+        # the container shape and merge with any metadata.proofs the
+        # worker passed directly.
+        proofs = [p for p in proofs if isinstance(p, dict)]
+        if proofs:
+            if metadata is None:
+                metadata = {}
+            elif not isinstance(metadata, dict):
+                return tool_error(
+                    f"metadata must be an object/dict, got "
+                    f"{type(metadata).__name__}"
+                )
+            existing_proofs = metadata.get("proofs")
+            if isinstance(existing_proofs, (list, tuple)):
+                metadata["proofs"] = list(existing_proofs) + proofs
+            else:
+                metadata["proofs"] = proofs
     if not (summary or result):
         return tool_error(
             "provide at least one of: summary (preferred), result"
@@ -995,7 +1024,11 @@ KANBAN_COMPLETE_SCHEMA = {
         "in ``artifacts`` — the gateway notifier will upload them as "
         "native attachments to the human who subscribed to the task, "
         "so the deliverable lands in their chat alongside the summary "
-        "instead of being a path they have to fetch by hand."
+        "instead of being a path they have to fetch by hand. To justify "
+        "the completion with structured evidence (tests run, commands "
+        "executed, URLs, metrics), attach typed records in ``proofs`` — "
+        "these render as evidence on the dashboard and flow to downstream "
+        "workers, and are validated/capped/redacted by the kernel."
     ),
     "parameters": {
         "type": "object",
@@ -1063,6 +1096,55 @@ KANBAN_COMPLETE_SCHEMA = {
                     "are not the deliverable. The path must exist "
                     "on disk when the notifier runs; missing files "
                     "are silently skipped."
+                ),
+            },
+            "proofs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": [
+                                "test", "command", "url", "file",
+                                "screenshot", "metric", "note",
+                            ],
+                            "description": (
+                                "Kind of evidence. Unknown values are "
+                                "coerced to \"note\"."
+                            ),
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "Short human label for the proof.",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": (
+                                "The evidence payload — a command line, "
+                                "test summary, URL, path, or metric value."
+                            ),
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["pass", "fail", "info"],
+                            "description": "Optional outcome marker.",
+                        },
+                    },
+                },
+                "description": (
+                    "Optional list of typed proof/evidence records that "
+                    "justify this completion — e.g. "
+                    "{\"type\": \"test\", \"label\": \"unit suite\", "
+                    "\"value\": \"42 passed\", \"status\": \"pass\"} or "
+                    "{\"type\": \"command\", \"label\": \"build\", "
+                    "\"value\": \"make build → ok\"}. Unlike ``artifacts`` "
+                    "(deliverable files the gateway uploads), proofs are "
+                    "rendered as evidence on the dashboard and surfaced to "
+                    "downstream workers; they are not uploaded. The kernel "
+                    "validates types, caps the list, and redacts secrets "
+                    "before the evidence reaches any worker context or the "
+                    "dashboard."
                 ),
             },
             "board": _board_schema_prop(),

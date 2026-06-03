@@ -484,6 +484,68 @@ def test_complete_rejects_non_list_artifacts(worker_env):
     assert "artifacts must be a list" in err
 
 
+def test_complete_with_proofs_lands_in_event_and_run(worker_env):
+    """``proofs=[...]`` is folded into metadata, validated/redacted by the
+    kernel, persisted on the run, and promoted onto the completed event."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "rate limiter shipped",
+        "proofs": [
+            {"type": "test", "label": "unit", "value": "14 passed", "status": "pass"},
+            {"type": "command", "label": "lint", "value": "ruff → clean"},
+        ],
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        proofs = run.metadata.get("proofs")
+        assert proofs == [
+            {"type": "test", "label": "unit", "value": "14 passed", "status": "pass"},
+            {"type": "command", "label": "lint", "value": "ruff → clean"},
+        ]
+        completed = [e for e in kb.list_events(conn, worker_env) if e.kind == "completed"]
+        assert len(completed) == 1
+        assert (completed[0].payload or {}).get("proofs") == proofs
+    finally:
+        conn.close()
+
+
+def test_complete_proofs_accepts_single_dict(worker_env):
+    """A bare proof object is auto-promoted to a single-element list."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "one proof",
+        "proofs": {"type": "url", "label": "PR", "value": "https://x/pr/1"},
+    })
+    assert json.loads(out)["ok"] is True
+
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        assert run.metadata.get("proofs") == [
+            {"type": "url", "label": "PR", "value": "https://x/pr/1"},
+        ]
+    finally:
+        conn.close()
+
+
+def test_complete_rejects_non_list_proofs(worker_env):
+    """A scalar proofs value (neither list nor object) is a clear error."""
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({
+        "summary": "bad shape",
+        "proofs": "not-a-record",
+    })
+    err = json.loads(out).get("error", "")
+    assert "proofs must be a list" in err
+
+
 def test_complete_rejects_no_handoff(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({})

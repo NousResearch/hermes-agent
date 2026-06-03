@@ -4076,9 +4076,26 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
-  resetHermesConnection()
-  setTimeout(() => mainWindow?.reload(), 150)
 
+  // Capture the reference before resetHermesConnection() nulls hermesProcess,
+  // so we can wait for actual exit rather than assuming a fixed delay is enough.
+  const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
+  resetHermesConnection()
+
+  if (dying) {
+    await new Promise(resolve => {
+      const timer = setTimeout(() => {
+        try { dying.kill('SIGKILL') } catch {}
+        resolve()
+      }, 5000)
+      dying.once('exit', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
+  }
+
+  mainWindow?.reload()
   return sanitizeDesktopConnectionConfig(config)
 })
 

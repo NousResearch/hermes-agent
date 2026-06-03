@@ -496,3 +496,94 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# DDGS overall timeout (bug #36776)
+# ---------------------------------------------------------------------------
+
+
+class TestDDGSSearchTimeout:
+    """The DDGS provider returns a clear error when the search hangs."""
+
+    def test_search_returns_error_on_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hanging ddgs call is bounded by _SEARCH_TIMEOUT_SECONDS.
+
+        We patch ``_run_ddgs_search`` (the blocking helper) to sleep
+        longer than the configured timeout, and separately lower the
+        timeout constant so the test completes quickly.
+        """
+        import time
+
+        import plugins.web.ddgs.provider as ddgs_provider
+
+        # Lower the cap so the test doesn't wait 30 s.
+        monkeypatch.setattr(
+            ddgs_provider, "_SEARCH_TIMEOUT_SECONDS", 1
+        )
+
+        def _slow_search(query: str, safe_limit: int):
+            time.sleep(10)  # far exceeds the patched 1-second cap
+            return []
+
+        monkeypatch.setattr(
+            ddgs_provider, "_run_ddgs_search", _slow_search
+        )
+
+        # Patch the import-guard so the provider doesn't bail out early
+        # with "ddgs not installed".
+        import types
+
+        fake_ddgs = types.ModuleType("ddgs")
+        fake_ddgs.DDGS = object  # type: ignore[attr-defined]
+        monkeypatch.setitem(
+            __import__("sys").modules, "ddgs", fake_ddgs
+        )
+
+        provider = ddgs_provider.DDGSWebSearchProvider()
+        result = provider.search("test query", limit=3)
+
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+        error_msg = result["error"]
+        assert "timed out" in error_msg.lower()
+        assert "1 second" in error_msg
+
+    def test_successful_search_not_affected_by_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fast searches still return results normally."""
+        import plugins.web.ddgs.provider as ddgs_provider
+
+        def _fast_search(query: str, safe_limit: int):
+            return [
+                {
+                    "title": "Example",
+                    "url": "https://example.com",
+                    "description": "An example result",
+                    "position": 1,
+                }
+            ]
+
+        monkeypatch.setattr(
+            ddgs_provider, "_run_ddgs_search", _fast_search
+        )
+
+        import types
+
+        fake_ddgs = types.ModuleType("ddgs")
+        fake_ddgs.DDGS = object  # type: ignore[attr-defined]
+        monkeypatch.setitem(
+            __import__("sys").modules, "ddgs", fake_ddgs
+        )
+
+        provider = ddgs_provider.DDGSWebSearchProvider()
+        result = provider.search("test query", limit=3)
+
+        assert result.get("success") is True
+        assert "data" in result
+        assert len(result["data"]["web"]) == 1
+        assert result["data"]["web"][0]["url"] == "https://example.com"

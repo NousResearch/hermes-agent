@@ -4060,6 +4060,70 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
+    def _build_exec_approval_embed(self, command: str, description: str):
+        """Build the Discord embed for a dangerous-command approval prompt."""
+        # Discord embed description limit is 4096; show full command up to that
+        max_desc = 4088
+        cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+        embed = discord.Embed(
+            title="⚠️ Command Approval Required",
+            description=f"```\n{cmd_display}\n```",
+            color=discord.Color.orange(),
+        )
+        embed.add_field(name="Reason", value=description, inline=False)
+        return embed
+
+    def _build_exec_approval_view(self, session_key: str):
+        """Build a fresh approval view that resolves the shared session queue."""
+        return ExecApprovalView(
+            session_key=session_key,
+            allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+
+    async def _send_exec_approval_operator_dms(
+        self,
+        *,
+        command: str,
+        description: str,
+        session_key: str,
+    ) -> None:
+        """Best-effort mirror of an exec approval prompt to operator DMs.
+
+        The primary channel/thread prompt remains canonical.  DM delivery is a
+        convenience copy for configured operator user IDs and must never make the
+        approval fail or remove the in-channel prompt.  Each DM gets a fresh
+        view, but all views share the same ``session_key`` so any button resolves
+        the same pending gateway approval.
+        """
+        if not self._allowed_user_ids:
+            return
+
+        numeric_user_ids = sorted(
+            uid for uid in self._allowed_user_ids
+            if str(uid).strip().isdigit()
+        )
+        for raw_user_id in numeric_user_ids:
+            user_id = int(raw_user_id)
+            try:
+                user = None
+                get_user = getattr(self._client, "get_user", None)
+                if callable(get_user):
+                    user = get_user(user_id)
+                if user is None:
+                    user = await self._client.fetch_user(user_id)
+                await user.send(
+                    embed=self._build_exec_approval_embed(command, description),
+                    view=self._build_exec_approval_view(session_key),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to mirror exec approval to Discord DM user %s: %s",
+                    self.name,
+                    raw_user_id,
+                    exc,
+                )
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -4070,6 +4134,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — this replaces the text-based ``/approve`` flow on Discord.
+        The prompt is also mirrored best-effort to configured operator DMs so a
+        noisy channel/thread cannot hide an approval request.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -4084,23 +4150,15 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
-            embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
-                color=discord.Color.orange(),
+            msg = await channel.send(
+                embed=self._build_exec_approval_embed(command, description),
+                view=self._build_exec_approval_view(session_key),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
-
-            view = ExecApprovalView(
+            await self._send_exec_approval_operator_dms(
+                command=command,
+                description=description,
                 session_key=session_key,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
             )
-
-            msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:

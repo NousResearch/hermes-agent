@@ -26,3 +26,10 @@ the current milestone.
 Hermes owns AI reasoning and analytics execution. The Next.js analytics app
 renders temporary visualization artifacts. Source-of-truth analytics changes
 should happen through GitHub PRs against the analytics repo.
+
+## Roadmap And Rollout
+
+Use `ROADMAP.md` as the canonical product roadmap and production rollout
+checklist for this profile. It tracks local implementation milestones,
+remaining external blockers, and the Slack E2E prompts that must pass before
+calling the analytics agent production-ready.

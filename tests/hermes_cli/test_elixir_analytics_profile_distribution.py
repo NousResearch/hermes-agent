@@ -21,6 +21,7 @@ def test_elixir_analytics_distribution_manifest_is_installable():
     assert manifest.name == "elixir-analytics"
     assert manifest.description == "Slack-first Elixir analytics agent."
     assert "SOUL.md" in manifest.owned_paths()
+    assert "ROADMAP.md" in manifest.owned_paths()
     assert "config.yaml" in manifest.owned_paths()
 
     required_env = {req.name for req in manifest.env_requires if req.required}
@@ -128,3 +129,18 @@ def test_elixir_analytics_distribution_ships_analytics_skill():
     assert "`dashboardUrl`" in body
     assert "Ask clarification" in body
     assert "--env-file /Users/ritik/.hermes/profiles/elixir-analytics/.env" in body
+
+
+def test_elixir_analytics_distribution_ships_product_roadmap():
+    body = (DIST_DIR / "ROADMAP.md").read_text(encoding="utf-8")
+
+    assert "Slack app: macros" in body
+    assert "Production Gates" in body
+    assert "Slack E2E Checklist" in body
+    assert "show GTV last 30 days by week" in body
+    assert "which users spent on Swiggy this week?" in body
+    assert "active users this week" in body
+    assert "how many app active users this week?" in body
+    assert "delete from profiles" in body
+    assert "ANALYTICS_DATABASE_URL" in body
+    assert "codex/mock-single-dashboard" in body

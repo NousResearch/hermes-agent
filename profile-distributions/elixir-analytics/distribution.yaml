@@ -35,6 +35,7 @@ env_requires:
 
 distribution_owned:
   - SOUL.md
+  - ROADMAP.md
   - config.yaml
   - skills
   - distribution.yaml

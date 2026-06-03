@@ -1554,6 +1554,36 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+def _normalize_skill_names(value: Any) -> list[str]:
+    """Normalize string/list skill config into a deduplicated list."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, (list, tuple)):
+        raw_values = [str(item) for item in value if item is not None]
+    else:
+        raw_values = [str(value)]
+
+    names: list[str] = []
+    for raw in raw_values:
+        for part in raw.split(","):
+            name = part.strip()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _configured_preload_skills(config: dict | None) -> list[str]:
+    """Return globally auto-loaded skills from config.yaml's skills.preload."""
+    if not isinstance(config, dict):
+        return []
+    skills_cfg = config.get("skills") or {}
+    if not isinstance(skills_cfg, dict):
+        return []
+    return _normalize_skill_names(skills_cfg.get("preload"))
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -8923,13 +8953,21 @@ class GatewayRunner:
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
 
-        # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
+        # Auto-load skill(s) for global defaults and topic/channel bindings
+        # (Telegram DM Topics, Discord channel_skill_bindings). Supports a
+        # single name or ordered list. Global defaults come from
+        # config.yaml: skills.preload.
         # Only inject on NEW sessions — ongoing conversations already have the
         # skill content in their conversation history from the first message.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
+        _skill_names = _configured_preload_skills(_load_gateway_config())
+        _skill_names.extend(_normalize_skill_names(_auto))
+        _deduped_skill_names: list[str] = []
+        for _sname in _skill_names:
+            if _sname and _sname not in _deduped_skill_names:
+                _deduped_skill_names.append(_sname)
+        if _is_new_session and _deduped_skill_names:
+            _skill_names = _deduped_skill_names
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
                 _combined_parts: list[str] = []

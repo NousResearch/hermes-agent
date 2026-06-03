@@ -2961,6 +2961,16 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return parsed
 
 
+def _configured_preload_skills(config: dict | None) -> list[str]:
+    """Return globally preloaded skills from config.yaml's skills.preload."""
+    if not isinstance(config, dict):
+        return []
+    skills_cfg = config.get("skills") or {}
+    if not isinstance(skills_cfg, dict):
+        return []
+    return _parse_skills_argument(skills_cfg.get("preload"))
+
+
 def save_config_value(key_path: str, value: any) -> bool:
     """
     Save a value to the active config file at the specified key path.
@@ -15521,7 +15531,10 @@ def main(
         from hermes_cli.tools_config import _get_platform_tools
         toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
-    parsed_skills = _parse_skills_argument(skills)
+    parsed_skills = []
+    for skill_name in _configured_preload_skills(CLI_CONFIG) + _parse_skills_argument(skills):
+        if skill_name not in parsed_skills:
+            parsed_skills.append(skill_name)
 
     # Create CLI instance
     cli = HermesCLI(

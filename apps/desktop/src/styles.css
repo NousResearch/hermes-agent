@@ -348,6 +348,77 @@
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
   }
 
+  :root[data-hermes-theme='dark-glass'] {
+    --theme-mix-chrome: 58%;
+    --theme-mix-sidebar: 70%;
+    --theme-mix-card: 20%;
+    --theme-mix-elevated: 28%;
+    --theme-mix-bubble: 34%;
+    --theme-fill-primary-accent-mix: 22%;
+    --theme-fill-secondary-accent-mix: 15%;
+    --theme-fill-tertiary-accent-mix: 10%;
+    --theme-stroke-primary-accent-mix: 36%;
+    --theme-stroke-secondary-accent-mix: 22%;
+    --theme-control-hover-accent-mix: 12%;
+    --theme-control-active-accent-mix: 18%;
+    --radius-scalar: 0.82;
+    --shadow-header:
+      inset 0 -0.0625rem 0 color-mix(in srgb, #ffffff 8%, transparent),
+      0 0.75rem 2rem -1.25rem color-mix(in srgb, #000 55%, transparent);
+    --shadow-md:
+      inset 0 0.0625rem 0 color-mix(in srgb, #ffffff 14%, transparent),
+      0 0 0 0.0625rem color-mix(in srgb, var(--dt-midground) 12%, transparent),
+      0 1.25rem 3rem -1.5rem color-mix(in srgb, #000 70%, transparent);
+    --shadow-composer:
+      inset 0 0.0625rem 0 color-mix(in srgb, #ffffff 16%, transparent),
+      0 0.5rem 1.75rem color-mix(in srgb, #000 26%, transparent);
+  }
+
+  :root[data-hermes-theme='dark-glass'] body {
+    background:
+      radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--dt-midground) 18%, transparent), transparent 32rem),
+      radial-gradient(circle at 88% 8%, color-mix(in srgb, #8fb6ff 10%, transparent), transparent 28rem),
+      var(--ui-chat-surface-background);
+  }
+
+  :root[data-hermes-theme='dark-glass'] :is([data-slot='dropdown-menu-content'], [data-slot='select-content'], [data-slot='dialog-content']),
+  :root[data-hermes-theme='dark-glass'] [data-slot='composer-surface'] {
+    background: color-mix(in srgb, var(--ui-bg-elevated) 76%, transparent) !important;
+    backdrop-filter: blur(1.125rem) saturate(1.24);
+    -webkit-backdrop-filter: blur(1.125rem) saturate(1.24);
+  }
+
+  :root[data-hermes-theme='veritas'] {
+    --theme-mix-chrome: 66%;
+    --theme-mix-sidebar: 82%;
+    --theme-mix-card: 30%;
+    --theme-mix-elevated: 38%;
+    --theme-mix-bubble: 42%;
+    --theme-fill-primary-accent-mix: 18%;
+    --theme-fill-secondary-accent-mix: 16%;
+    --theme-fill-tertiary-accent-mix: 10%;
+    --theme-stroke-primary-accent-mix: 32%;
+    --theme-stroke-secondary-accent-mix: 20%;
+    --theme-row-active-accent-mix: 12%;
+    --composer-ring-strength: 1.45;
+    --warm-glow: color-mix(in srgb, #f6d365 34%, color-mix(in srgb, var(--dt-midground) 12%, transparent));
+    --ui-selection-background: color-mix(in srgb, #f6d365 34%, color-mix(in srgb, var(--dt-midground) 18%, transparent));
+  }
+
+  :root[data-hermes-theme='veritas'] body {
+    background:
+      radial-gradient(circle at 10% 0%, color-mix(in srgb, #8b5cf6 20%, transparent), transparent 30rem),
+      radial-gradient(circle at 86% 12%, color-mix(in srgb, #2dd4bf 14%, transparent), transparent 26rem),
+      radial-gradient(circle at 64% 96%, color-mix(in srgb, #f6d365 8%, transparent), transparent 24rem),
+      var(--ui-chat-surface-background);
+  }
+
+  :root[data-hermes-theme='veritas'] .arc-border {
+    --arc-c1: #f6d365;
+    --arc-c2: var(--dt-midground);
+    --arc-duration: 3.7s;
+  }
+
   * {
     box-sizing: border-box;
     border-color: var(--dt-border);

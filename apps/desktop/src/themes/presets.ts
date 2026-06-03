@@ -15,6 +15,9 @@ export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SAN
 const NOUS_BLUE = '#0053FD'
 const PSYCHE_BLUE = '#1540B1'
 const PSYCHE_WARM = '#FFE6CB'
+const VERITAS_VIOLET = '#8B5CF6'
+const VERITAS_CYAN = '#2DD4BF'
+const VERITAS_GOLD = '#F6D365'
 
 const nousTint = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, #FFFFFF)`
 const nousTintTransparent = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, transparent)`
@@ -269,8 +272,88 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Translucent charcoal glass with cold blue/cyan highlights. */
+export const darkGlassTheme: DesktopTheme = {
+  name: 'dark-glass',
+  label: 'Dark Glass',
+  description: 'Translucent charcoal glass with cool blue highlights',
+  colors: {
+    background: '#070A12',
+    foreground: '#EEF7FF',
+    card: '#111827',
+    cardForeground: '#EEF7FF',
+    muted: '#172033',
+    mutedForeground: '#8FA5BC',
+    popover: '#111A29',
+    popoverForeground: '#F3FAFF',
+    primary: '#BFE7FF',
+    primaryForeground: '#06101C',
+    secondary: '#17253A',
+    secondaryForeground: '#C7DAEA',
+    accent: '#10283D',
+    accentForeground: '#DDF4FF',
+    border: '#29415B',
+    input: '#24364E',
+    ring: '#68D8FF',
+    midground: '#68D8FF',
+    composerRing: '#68D8FF',
+    destructive: '#FF5E7A',
+    destructiveForeground: '#FFF7F8',
+    sidebarBackground: '#080D17',
+    sidebarBorder: '#20344D',
+    userBubble: '#102D45',
+    userBubbleBorder: '#2E5D7D'
+  },
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
+/** Veritas — calm intelligence: obsidian, violet, cyan, and a small gold spark. */
+export const veritasTheme: DesktopTheme = {
+  name: 'veritas',
+  label: 'Veritas',
+  description: 'Obsidian violet/cyan with a restrained gold spark',
+  colors: {
+    background: '#090915',
+    foreground: '#F2F0FF',
+    card: '#121124',
+    cardForeground: '#F2F0FF',
+    muted: '#1A1830',
+    mutedForeground: '#9B96BD',
+    popover: '#15132B',
+    popoverForeground: '#F7F4FF',
+    primary: VERITAS_GOLD,
+    primaryForeground: '#171108',
+    secondary: '#201B3A',
+    secondaryForeground: '#DAD4F7',
+    accent: '#181F38',
+    accentForeground: '#E9E5FF',
+    border: '#322C54',
+    input: '#2B2747',
+    ring: VERITAS_VIOLET,
+    midground: VERITAS_CYAN,
+    midgroundForeground: '#041716',
+    composerRing: VERITAS_CYAN,
+    destructive: '#E35B72',
+    destructiveForeground: '#FFF5F7',
+    sidebarBackground: '#070713',
+    sidebarBorder: '#292346',
+    userBubble: '#171F3B',
+    userBubbleBorder: '#2B4F62'
+  },
+  typography: {
+    fontSans: `Inter, ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
+  'dark-glass': darkGlassTheme,
+  veritas: veritasTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

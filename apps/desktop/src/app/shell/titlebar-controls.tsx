@@ -16,6 +16,7 @@ import { Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
+import { $zoomState, resetZoom, zoomIn, zoomOut } from '@/store/zoom'
 
 import { PROFILES_ROUTE } from '../routes'
 
@@ -169,11 +170,69 @@ export function TitlebarControls({
         {visibleSystemToolsBeforeSettings.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
+        <ZoomMenuButton />
         <ProfilesMenuButton navigate={navigate} />
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
     </>
+  )
+}
+
+function ZoomMenuButton() {
+  const zoomState = useStore($zoomState)
+
+  const handleZoomIn = () => {
+    triggerHaptic('tap')
+    void zoomIn()
+  }
+
+  const handleZoomOut = () => {
+    triggerHaptic('tap')
+    void zoomOut()
+  }
+
+  const handleReset = () => {
+    triggerHaptic('tap')
+    void resetZoom()
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={`Zoom ${zoomState.percent}%`}
+          className={cn(titlebarButtonClass, 'min-w-12 bg-transparent px-2 text-xs font-medium tabular-nums select-none')}
+          onPointerDown={event => event.stopPropagation()}
+          title="UI zoom (Ctrl/Cmd +, Ctrl/Cmd -, Ctrl/Cmd 0)"
+          type="button"
+        >
+          {zoomState.percent}%
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48" sideOffset={8}>
+        <DropdownMenuLabel>
+          <div className="text-sm font-medium text-foreground">UI Zoom</div>
+          <div className="mt-1 text-xs font-normal leading-4 text-muted-foreground">Scales the whole desktop interface.</div>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={handleZoomOut}>
+          <span className="w-4 text-center text-base leading-none">−</span>
+          <span>Zoom Out</span>
+          <span className="ml-auto text-xs text-muted-foreground">Ctrl−</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={handleReset}>
+          <Codicon name="debug-restart" size="1rem" />
+          <span>Reset Zoom</span>
+          <span className="ml-auto text-xs text-muted-foreground">Ctrl0</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={handleZoomIn}>
+          <span className="w-4 text-center text-base leading-none">+</span>
+          <span>Zoom In</span>
+          <span className="ml-auto text-xs text-muted-foreground">Ctrl+</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

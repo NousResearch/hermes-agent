@@ -3,6 +3,17 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: () => ipcRenderer.invoke('hermes:connection'),
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  zoom: {
+    get: () => ipcRenderer.invoke('hermes:zoom:get'),
+    set: factor => ipcRenderer.invoke('hermes:zoom:set', factor),
+    adjust: direction => ipcRenderer.invoke('hermes:zoom:adjust', direction),
+    reset: () => ipcRenderer.invoke('hermes:zoom:reset'),
+    onChanged: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:zoom:changed', listener)
+      return () => ipcRenderer.removeListener('hermes:zoom:changed', listener)
+    }
+  },
   getConnectionConfig: () => ipcRenderer.invoke('hermes:connection-config:get'),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

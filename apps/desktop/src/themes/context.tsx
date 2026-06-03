@@ -151,13 +151,39 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
 // `:root.dark`; setting them inline keeps active-skin overrides surviving
 // the boot-time paint.
-const mixesFor = (isDark: boolean): Record<string, string> => ({
-  '--theme-mix-chrome': isDark ? '74%' : '92%',
-  '--theme-mix-sidebar': '100%',
-  '--theme-mix-card': isDark ? '38%' : '22%',
-  '--theme-mix-elevated': isDark ? '46%' : '28%',
-  '--theme-mix-bubble': isDark ? '46%' : '0%'
-})
+const mixesFor = (isDark: boolean, skinName: string): Record<string, string> => {
+  const base = {
+    '--theme-mix-chrome': isDark ? '74%' : '92%',
+    '--theme-mix-sidebar': '100%',
+    '--theme-mix-card': isDark ? '38%' : '22%',
+    '--theme-mix-elevated': isDark ? '46%' : '28%',
+    '--theme-mix-bubble': isDark ? '46%' : '0%'
+  }
+
+  if (isDark && skinName === 'dark-glass') {
+    return {
+      ...base,
+      '--theme-mix-chrome': '58%',
+      '--theme-mix-sidebar': '70%',
+      '--theme-mix-card': '20%',
+      '--theme-mix-elevated': '28%',
+      '--theme-mix-bubble': '34%'
+    }
+  }
+
+  if (isDark && skinName === 'veritas') {
+    return {
+      ...base,
+      '--theme-mix-chrome': '66%',
+      '--theme-mix-sidebar': '82%',
+      '--theme-mix-card': '30%',
+      '--theme-mix-elevated': '38%',
+      '--theme-mix-bubble': '42%'
+    }
+  }
+
+  return base
+}
 
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   if (typeof document === 'undefined') {
@@ -212,7 +238,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
-  for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {
+  for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark, skinName), ...palette })) {
     root.style.setProperty(k, v)
   }
 

@@ -46,6 +46,7 @@ import {
   setSessionsTotal
 } from '../store/session'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
+import { initializeZoom, zoomIn, zoomOut } from '../store/zoom'
 
 import { ChatView } from './chat'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
@@ -90,6 +91,8 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+
+const ZOOM_WHEEL_MIN_INTERVAL_MS = 80
 
 export function DesktopController() {
   const queryClient = useQueryClient()
@@ -157,6 +160,70 @@ export function DesktopController() {
   useEffect(() => {
     window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
   }, [chatOpen, filePreviewTarget, previewTarget])
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    void initializeZoom().then(result => {
+      unsubscribe = typeof result === 'object' && 'unsubscribe' in result ? result.unsubscribe : undefined
+    })
+
+    return () => unsubscribe?.()
+  }, [])
+
+  useEffect(() => {
+    let lastZoomAt = 0
+    let pendingDirection: -1 | 1 | null = null
+    let pendingTimer: ReturnType<typeof window.setTimeout> | undefined
+
+    const clearPendingTimer = () => {
+      if (pendingTimer) {
+        window.clearTimeout(pendingTimer)
+        pendingTimer = undefined
+      }
+    }
+
+    const applyWheelZoom = (direction: -1 | 1) => {
+      lastZoomAt = Date.now()
+      void (direction > 0 ? zoomIn() : zoomOut())
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      if (!window.hermesDesktop?.zoom || event.altKey || !(event.ctrlKey || event.metaKey) || event.deltaY === 0) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      const direction: -1 | 1 = event.deltaY < 0 ? 1 : -1
+      const now = Date.now()
+      const elapsed = now - lastZoomAt
+
+      if (elapsed >= ZOOM_WHEEL_MIN_INTERVAL_MS) {
+        clearPendingTimer()
+        pendingDirection = null
+        applyWheelZoom(direction)
+        return
+      }
+
+      pendingDirection = direction
+      clearPendingTimer()
+      pendingTimer = window.setTimeout(() => {
+        if (pendingDirection) {
+          applyWheelZoom(pendingDirection)
+          pendingDirection = null
+        }
+        pendingTimer = undefined
+      }, ZOOM_WHEEL_MIN_INTERVAL_MS - elapsed)
+    }
+
+    window.addEventListener('wheel', onWheel, { capture: true, passive: false })
+
+    return () => {
+      clearPendingTimer()
+      window.removeEventListener('wheel', onWheel, { capture: true })
+    }
+  }, [])
 
   useEffect(() => {
     startUpdatePoller()

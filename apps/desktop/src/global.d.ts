@@ -5,6 +5,13 @@ declare global {
     hermesDesktop: {
       getConnection: () => Promise<HermesConnection>
       getBootProgress: () => Promise<DesktopBootProgress>
+      zoom?: {
+        get: () => Promise<DesktopZoomState>
+        set: (factor: number) => Promise<DesktopZoomState>
+        adjust: (direction: number) => Promise<DesktopZoomState>
+        reset: () => Promise<DesktopZoomState>
+        onChanged: (callback: (payload: DesktopZoomState) => void) => () => void
+      }
       getConnectionConfig: () => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -129,6 +136,11 @@ export interface DesktopUpdateProgress {
   percent: number | null
   error: string | null
   at: number
+}
+
+export interface DesktopZoomState {
+  factor: number
+  percent: number
 }
 
 export interface HermesConnection {

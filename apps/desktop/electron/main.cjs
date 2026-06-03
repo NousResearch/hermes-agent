@@ -26,6 +26,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { createZoomController } = require('./zoom-controller.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -190,6 +191,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_ZOOM_CONFIG_PATH = path.join(app.getPath('userData'), 'zoom.json')
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -445,6 +447,12 @@ let previewShortcutActive = false
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
+const zoomController = createZoomController({
+  configPath: DESKTOP_ZOOM_CONFIG_PATH,
+  fs,
+  getWindow: () => mainWindow,
+  onChanged: payload => sendZoomChanged(payload)
+})
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
@@ -2520,6 +2528,13 @@ function sendWindowStateChanged(nextIsFullscreen) {
   webContents.send('hermes:window-state-changed', state)
 }
 
+function sendZoomChanged(payload = zoomController.getState()) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const { webContents } = mainWindow
+  if (!webContents || webContents.isDestroyed()) return
+  webContents.send('hermes:zoom:changed', payload)
+}
+
 function buildApplicationMenu() {
   const template = []
   const checkForUpdatesItem = {
@@ -2582,9 +2597,21 @@ function buildApplicationMenu() {
       { role: 'forceReload' },
       { role: 'toggleDevTools' },
       { type: 'separator' },
-      { role: 'resetZoom' },
-      { role: 'zoomIn' },
-      { role: 'zoomOut' },
+      {
+        accelerator: 'CommandOrControl+0',
+        click: () => zoomController.reset(),
+        label: 'Actual Size'
+      },
+      {
+        accelerator: 'CommandOrControl+=',
+        click: () => zoomController.adjust(1),
+        label: 'Zoom In'
+      },
+      {
+        accelerator: 'CommandOrControl+-',
+        click: () => zoomController.adjust(-1),
+        label: 'Zoom Out'
+      },
       { type: 'separator' },
       { role: 'togglefullscreen' }
     ]
@@ -2640,6 +2667,12 @@ function installPreviewShortcut(window) {
 
     event.preventDefault()
     sendClosePreviewRequested()
+  })
+}
+
+function installZoomShortcut(window) {
+  window.webContents.on('before-input-event', (event, input) => {
+    zoomController.handleBeforeInput(event, input)
   })
 }
 
@@ -3207,6 +3240,7 @@ function createWindow() {
 
   installPreviewShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
+  installZoomShortcut(mainWindow)
   installContextMenu(mainWindow)
   mainWindow.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
@@ -3228,14 +3262,21 @@ function createWindow() {
     mainWindow.loadURL(pathToFileURL(resolveRendererIndex()).toString())
   }
 
+  zoomController.load()
+
   mainWindow.webContents.once('did-finish-load', () => {
     broadcastBootProgress()
     sendWindowStateChanged()
+    sendZoomChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
   })
 }
 
 ipcMain.handle('hermes:connection', async () => startHermes())
+ipcMain.handle('hermes:zoom:get', async () => zoomController.getState())
+ipcMain.handle('hermes:zoom:set', async (_event, factor) => zoomController.setFactor(factor))
+ipcMain.handle('hermes:zoom:adjust', async (_event, direction) => zoomController.adjust(direction))
+ipcMain.handle('hermes:zoom:reset', async () => zoomController.reset())
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
   // reset connection state so the next startHermes() call restarts the

@@ -265,7 +265,14 @@ def inspect_active_task_store(path: str | Path) -> dict[str, Any]:
     for record in records:
         is_foreground = record.get("mode") == "foreground_session"
         is_active = str(record.get("status") or "") == "active"
-        if is_foreground and not (record.get("task_summary") or record.get("command")):
+        contract = record.get("task_contract")
+        contract_summary_safe = (
+            contract.get("task_summary_safe") if isinstance(contract, dict) else None
+        )
+        has_safe_task_body = bool(
+            record.get("task_summary_safe") or contract_summary_safe
+        )
+        if is_foreground and not has_safe_task_body:
             result["foreground_missing_task_count"] += 1
         raw_updated_at = str(record.get("updated_at") or "")
         try:

@@ -432,3 +432,34 @@ class TestCronWithGatewayOrigin:
                 assert result.get("status") != "approval_required"
         finally:
             clear_session_vars(tokens)
+
+
+class TestGatewayAfterCronSession:
+    """A cron marker left in process env must not disable live gateway approvals."""
+
+    def test_gateway_env_session_takes_precedence_over_cron_marker(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+
+        assert not result["approved"]
+        assert result.get("status") == "approval_required"
+        assert "cron_mode" not in result["message"]
+
+    def test_combined_guard_gateway_env_session_takes_precedence_over_cron_marker(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+
+        assert not result["approved"]
+        assert result.get("status") == "pending_approval"
+        assert result.get("approval_pending") is True
+        assert "cron_mode" not in result["message"]

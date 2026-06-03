@@ -350,6 +350,78 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("b-skill-199", identifiers)
         self.assertIn("c-skill-49", identifiers)
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_catalog_walk_aborts_on_budget_and_does_not_poison_cache(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """A walk truncated by the wall-clock budget must stop early and must
+        NOT write the (partial) result to the cache. Before the budget guard
+        the walk ran up to 750 pages and cached unconditionally — a truncated
+        walk poisoned the cache with incomplete catalog data."""
+        page_calls = {"n": 0}
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                idx = page_calls["n"]
+                page_calls["n"] += 1
+                # Always advertise another page so the walk would never stop
+                # on its own — only the budget can break it.
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [
+                            {"slug": f"skill-{idx}", "displayName": f"Skill {idx}"}
+                        ],
+                        "nextCursor": f"cursor-{idx + 1}",
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        # Force the deadline to be in the past immediately.
+        with patch.object(ClawHubSource, "CATALOG_WALK_BUDGET_SECONDS", -1):
+            results = self.src._load_catalog_index()
+
+        # Walk broke well before the 750-page cap.
+        self.assertLess(page_calls["n"], 750)
+        # Truncated walk must not poison the cache.
+        mock_write_cache.assert_not_called()
+        # Whatever was gathered is still returned to the caller.
+        self.assertIsInstance(results, list)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_catalog_walk_caches_when_terminating_naturally_within_budget(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """Happy path: a walk that exhausts the cursor within the budget DOES
+        write the cache."""
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [
+                            {"slug": "only-skill", "displayName": "Only Skill"}
+                        ],
+                        # No nextCursor -> natural termination.
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        results = self.src._load_catalog_index()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].identifier, "only-skill")
+        mock_write_cache.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

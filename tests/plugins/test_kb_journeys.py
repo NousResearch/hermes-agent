@@ -504,6 +504,119 @@ def test_kb_workbench_renders_guided_decision_cards(monkeypatch):
     assert ctx.calls[-1] == ("mcp_kb_engine_prod_object_context", {"object_path": "accounts/acme/state.md"})
 
 
+def test_kb_workbench_renders_situation_compact_rail_and_handoff_buttons(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
+    situation_ref = "situations/2026-05-acme-launch-decision"
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_dashboard_live": {
+                "result": {
+                    "surface": "dashboard.live",
+                    "summary": {
+                        "active_todo_count": 1,
+                        "publication_status": "clean",
+                        "readiness_status": "ready",
+                    },
+                    "sections": [
+                        {
+                            "id": "situations",
+                            "title": "Situations",
+                            "cards": [
+                                {
+                                    "id": "situation:acme-launch",
+                                    "kind": "situation",
+                                    "title": "Acme Launch Decision",
+                                    "detail": "Review the launch posture before standalone TODO hygiene.",
+                                    "target": situation_ref,
+                                    "action_descriptors": [
+                                        {
+                                            "packet_type": "dashboard_action_descriptor",
+                                            "schema_version": 2,
+                                            "action_id": "open_situation",
+                                            "label": "Open brief",
+                                            "method": "object.context",
+                                            "mutation": "read_only",
+                                            "target_kind": "situation",
+                                            "target_ref": situation_ref,
+                                            "preview_tool": "object.context",
+                                            "params": {"object_path": f"{situation_ref}/state.md"},
+                                            "advisory_guidance": _advisory_guidance(
+                                                "Use advisory guidance to decide the next Situation update."
+                                            ),
+                                            "dashboard_owned_write": False,
+                                        },
+                                        {
+                                            "packet_type": "dashboard_action_descriptor",
+                                            "schema_version": 2,
+                                            "action_id": "propose_situation_update",
+                                            "label": "Add update",
+                                            "method": "situation.request_preview",
+                                            "mutation": "handoff_only",
+                                            "target_kind": "situation",
+                                            "target_ref": situation_ref,
+                                            "preview_tool": "situation.request_preview",
+                                            "required_inputs": ["update_text"],
+                                            "dashboard_owned_write": False,
+                                        },
+                                        {
+                                            "packet_type": "dashboard_action_descriptor",
+                                            "schema_version": 2,
+                                            "action_id": "propose_child_commitment",
+                                            "label": "Add commitment",
+                                            "method": "situation.request_preview",
+                                            "mutation": "handoff_only",
+                                            "target_kind": "situation",
+                                            "target_ref": situation_ref,
+                                            "preview_tool": "situation.request_preview",
+                                            "required_inputs": ["commitment_text"],
+                                            "dashboard_owned_write": False,
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            },
+            "mcp_kb_engine_prod_object_context": {
+                "result": {
+                    "title": "Acme Launch Decision",
+                    "summary": "Canonical Situation context.",
+                    "receipt": {"state": "answered", "durable_effect": "none"},
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb workbench"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    text = adapter.sent[0]["text"]
+    assert "Situation Review" in text
+    assert "Rail: Open brief, Add update, Add commitment, Ask LLM, Skip" in text
+    assert "Writes: handoff-only until kb-engine returns a confirmed workflow." in text
+    assert [action.label for action in adapter.sent[0]["actions"]] == [
+        "Open brief",
+        "Add update",
+        "Add commitment",
+        "Ask LLM",
+    ]
+
+    handoff_card = adapter.sent[0]["actions"][1].handler(SimpleNamespace(actor_id="user-1", actor_name="tester"))
+    if asyncio.iscoroutine(handoff_card):
+        handoff_card = asyncio.run(handoff_card)
+
+    assert "Add update" in handoff_card["text"]
+    assert "This is a kb-engine handoff action, not a durable write." in handoff_card["text"]
+    assert "Required input: update_text" in handoff_card["text"]
+    assert "No KB state changed." in handoff_card["text"]
+
+
 def test_dashboard_validation_descriptor_renders_graph_receipt(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 

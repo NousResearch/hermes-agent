@@ -1066,16 +1066,14 @@ def _render_workbench(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     if not decision_cards:
         lines.append("No active kb-engine Decision Cards returned.")
     for index, (section_title, card, descriptors) in enumerate(decision_cards[:5], start=1):
-        title = _display_text(card.get("title") or "KB action")
-        detail = _display_text(card.get("detail"))
-        labels = [_short(d.get("label") or d.get("action_id") or "Action", "Action") for d in descriptors[:3]]
-        lines.append(f"{index}. {title}")
-        if section_title:
-            lines.append(f"   Surface: {section_title}")
-        if detail:
-            lines.append(f"   Summary: {_clip(detail, 180)}")
-        if labels:
-            lines.append(f"   Actions: {', '.join(labels)}")
+        lines.extend(
+            _workbench_compact_card_lines(
+                index=index,
+                section_title=section_title,
+                card=card,
+                descriptors=descriptors,
+            )
+        )
     if len(decision_cards) > 5:
         lines.append(f"... {len(decision_cards) - 5} more Decision Card(s)")
 
@@ -1089,6 +1087,63 @@ def _render_workbench(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     return {"title": "KB Workbench", "text": "\n".join(lines), "actions": _dashboard_descriptor_actions(ctx, target, sections)}
 
 
+def _workbench_review_kind(card: dict[str, Any], descriptors: list[dict[str, Any]]) -> str:
+    kind = str(card.get("kind") or "").strip().lower()
+    if kind:
+        return kind
+    for descriptor in descriptors:
+        target_kind = str(descriptor.get("target_kind") or "").strip().lower()
+        if target_kind:
+            return target_kind
+    return "review"
+
+
+def _workbench_rail_labels(descriptors: list[dict[str, Any]], *, include_skip: bool = True) -> list[str]:
+    labels: list[str] = []
+    for descriptor in descriptors:
+        label = _short(descriptor.get("label") or descriptor.get("action_id") or "", "")
+        if label and label not in labels:
+            labels.append(label)
+    if any(_descriptor_advisory_guidance(descriptor) for descriptor in descriptors) and "Ask LLM" not in labels:
+        labels.append("Ask LLM")
+    if include_skip and "Skip" not in labels:
+        labels.append("Skip")
+    return labels
+
+
+def _workbench_compact_card_lines(
+    *,
+    index: int,
+    section_title: str,
+    card: dict[str, Any],
+    descriptors: list[dict[str, Any]],
+) -> list[str]:
+    title = _display_text(card.get("title") or "KB review")
+    detail = _display_text(card.get("detail"))
+    kind = _workbench_review_kind(card, descriptors)
+    target = _short(
+        card.get("target")
+        or next((descriptor.get("target_ref") for descriptor in descriptors if descriptor.get("target_ref")), ""),
+        "",
+    )
+    labels = _workbench_rail_labels(descriptors)
+    lines = [f"{index}. {title}"]
+    if kind == "situation":
+        lines.append("   Surface: Situation Review")
+    elif section_title:
+        lines.append(f"   Surface: {section_title}")
+    if detail:
+        lines.append(f"   Summary: {_clip(detail, 180)}")
+    scope_bits = [bit for bit in (target, f"{len(descriptors)} action{'s' if len(descriptors) != 1 else ''}") if bit]
+    if scope_bits:
+        lines.append("   Scope: " + " · ".join(scope_bits))
+    if labels:
+        lines.append("   Rail: " + ", ".join(labels[:6]))
+    if kind == "situation":
+        lines.append("   Writes: handoff-only until kb-engine returns a confirmed workflow.")
+    return lines
+
+
 def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) -> list[Any]:
     try:
         from tools.kb_callback_registry import KbAction
@@ -1096,6 +1151,7 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
         return []
 
     actions: list[Any] = []
+    guidance_actions: list[Any] = []
     for section in sections:
         if not isinstance(section, dict):
             continue
@@ -1133,6 +1189,25 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
                             },
                         )
                     )
+                elif mutation == "handoff_only":
+                    if target_kind not in DESCRIPTOR_READONLY_TARGET_KINDS:
+                        continue
+                    actions.append(
+                        KbAction(
+                            label=label,
+                            action_id=f"{action_id}.handoff",
+                            handler=lambda callback_ctx, d=descriptor_copy: _render_handoff_descriptor_action(
+                                d,
+                                callback_ctx=callback_ctx,
+                            ),
+                            metadata={
+                                "target_kind": descriptor.get("target_kind"),
+                                "target_ref": descriptor.get("target_ref"),
+                                "preview_tool": descriptor.get("preview_tool") or descriptor.get("method"),
+                                "handoff_only": True,
+                            },
+                        )
+                    )
                 else:
                     generic = _generic_descriptor_action(ctx, target, descriptor_copy)
                     if generic is None:
@@ -1140,7 +1215,7 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
                     actions.append(generic)
                 guidance = _descriptor_advisory_guidance(descriptor)
                 if guidance:
-                    actions.append(
+                    guidance_actions.append(
                         KbAction(
                             label="Ask LLM",
                             action_id=f"{action_id}.guidance",
@@ -1157,7 +1232,7 @@ def _dashboard_descriptor_actions(ctx: Any, target: str, sections: list[Any]) ->
                     )
                 if len(actions) >= 4:
                     return actions
-    return actions
+    return (actions + guidance_actions)[:4]
 
 
 def _descriptor_advisory_guidance(descriptor: dict[str, Any]) -> dict[str, Any]:
@@ -1323,6 +1398,41 @@ def _render_readonly_descriptor_action(
     if target_ref:
         lines.append(f"Ref: {target_ref}")
     lines.extend(_receipt_lines(payload, include_request=True))
+    return {"title": label, "text": "\n".join(lines), "actions": []}
+
+
+def _render_handoff_descriptor_action(
+    descriptor: dict[str, Any],
+    *,
+    callback_ctx: Any,
+) -> dict[str, Any]:
+    del callback_ctx
+    label = _short(descriptor.get("label") or descriptor.get("action_id") or "KB handoff", "KB handoff")
+    target_ref = _short(descriptor.get("target_ref"), "")
+    route = _short(descriptor.get("preview_tool") or descriptor.get("method") or descriptor.get("surface"), "kb-engine")
+    required = descriptor.get("required_inputs")
+    if isinstance(required, str):
+        required_values = [required]
+    elif isinstance(required, list):
+        required_values = [str(value).strip() for value in required if str(value).strip()]
+    else:
+        required_values = []
+    lines = [
+        label,
+        "This is a kb-engine handoff action, not a durable write.",
+    ]
+    description = _short(descriptor.get("description") or descriptor.get("expected_result"), "")
+    if description:
+        lines.append(_clip(description, 220))
+    if target_ref:
+        lines.append(f"Target: {target_ref}")
+    lines.append(f"Route: {route}")
+    if required_values:
+        lines.append("Required input: " + ", ".join(required_values))
+        lines.append("Send the missing context explicitly, then preview through kb-engine before any confirmation.")
+    else:
+        lines.append("Preview through kb-engine before any confirmation.")
+    lines.append("No KB state changed.")
     return {"title": label, "text": "\n".join(lines), "actions": []}
 
 

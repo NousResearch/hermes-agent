@@ -6282,6 +6282,26 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     return canon, profiles_mod.get_profile_dir(canon)
 
 
+def _cron_job_profile(job: Dict[str, Any], fallback: str = "default") -> str:
+    profile = str(job.get("profile") or "").strip()
+    return profile or fallback or "default"
+
+
+def _cron_jobs_for_profile(
+    jobs: List[Dict[str, Any]],
+    profile: str,
+) -> List[Dict[str, Any]]:
+    if profile == "default":
+        return [
+            job for job in jobs
+            if _cron_job_profile(job, "default") == "default"
+        ]
+    return [
+        job for job in jobs
+        if _cron_job_profile(job, "default") == profile
+    ]
+
+
 def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
     annotated = dict(job)
     annotated["profile"] = profile
@@ -6292,34 +6312,51 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
 
 
 def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
-    """Run cron.jobs helpers against the selected profile's cron directory.
+    """Run cron.jobs helpers for the selected dashboard profile.
 
-    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
-    from the process HERMES_HOME at import time. The dashboard is a single
-    process that can inspect many profiles, so temporarily retarget those
-    globals while holding a lock and restore them immediately after the call.
+    Cron jobs live in the gateway-shared root store. The selected dashboard
+    profile is preserved on each job's ``profile`` field, then list/search
+    operations filter that root store by the stored profile value.
     """
     profile_name, home = _cron_profile_home(profile)
     with _CRON_PROFILE_LOCK:
         from cron import jobs as cron_jobs
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
-            result = getattr(cron_jobs, func_name)(*args, **kwargs)
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
+        call_kwargs = dict(kwargs)
+        if func_name == "create_job":
+            if not call_kwargs.get("profile"):
+                call_kwargs["profile"] = profile_name
+        call_args = args
+        if func_name in {
+            "get_job",
+            "update_job",
+            "pause_job",
+            "resume_job",
+            "trigger_job",
+            "remove_job",
+        } and args:
+            ref = str(args[0])
+            profile_jobs = _cron_jobs_for_profile(cron_jobs.list_jobs(True), profile_name)
+            matches = [
+                job for job in profile_jobs
+                if job.get("id") == ref or job.get("name") == ref
+            ]
+            if not matches:
+                return False if func_name == "remove_job" else None
+            if len(matches) == 1 and matches[0].get("id") != ref:
+                call_args = (matches[0]["id"], *args[1:])
+        result = getattr(cron_jobs, func_name)(*call_args, **call_kwargs)
 
     if isinstance(result, list):
-        return [_annotate_cron_job(j, profile_name, home) for j in result]
+        filtered = _cron_jobs_for_profile(result, profile_name)
+        return [_annotate_cron_job(j, profile_name, home) for j in filtered]
     if isinstance(result, dict):
-        return _annotate_cron_job(result, profile_name, home)
+        result_profile = _cron_job_profile(result, profile_name)
+        if result_profile == profile_name:
+            result_home = home
+        else:
+            result_profile, result_home = _cron_profile_home(result_profile)
+        return _annotate_cron_job(result, result_profile, result_home)
     return result
 
 

@@ -113,7 +113,10 @@ switch. These are power-user overrides, not command knobs.
 | `router.candidates` | `[]` | `{model, provider, cost, supports_images, card}` list. |
 | `workflow.max_concurrency` | `auto` | Loom parallelism (`auto` = `min(16, cpu-2)`). |
 | `workflow.max_agents` | `1000` | Runaway backstop. |
-| `workflow.agent_timeout_seconds` | `600` | Per-leaf wall-clock timeout. |
+| `workflow.agent_timeout_seconds` | `1800` | Per-leaf absolute ceiling (streaming-aware). |
+| `workflow.agent_idle_timeout_seconds` | `240` | Max silence (no streamed tokens / tool progress) before a leaf is killed. |
+| `workflow.worker_result_chars` | `48000` | Per-result spill threshold for leaves (soft context cap). |
+| `workflow.worker_turn_budget_chars` | `96000` | Per-turn aggregate context budget for leaves. |
 | `reminders.turns_between_maintenance` | `8` | Cadence of the "still on" nudge. |
 
 (Delegation parallelism is shared with Hermes's `delegation.max_concurrent_children`.)

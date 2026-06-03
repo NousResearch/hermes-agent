@@ -102,6 +102,20 @@ small, guarded, and a no-op when the mode is off.
   and preserves the original pre-Caduceus backup, so `--uninstall` always
   reverts cleanly to stock (verified for single install, double install, and
   tamper→refresh).
+- **Streaming-aware workflow-leaf timeout** — a leaf that's actively producing
+  output (streamed tokens, or an advancing/active tool) is no longer killed by a
+  fixed wall-clock cap mid-generation. Leaves now stay alive while making
+  progress and only fail after `caduceus.workflow.agent_idle_timeout_seconds` of
+  true silence (default 240s) or once the absolute
+  `caduceus.workflow.agent_timeout_seconds` ceiling (raised to 1800s) is hit —
+  so a big single-turn build finishes instead of timing out and retrying, while
+  a genuinely wedged leaf is still killed promptly. Tunable; `delegate_task`
+  keeps its original fixed-cap behavior.
+- **Soft worker-context cap** — workflow leaves run with a tighter tool-result
+  budget (`caduceus.workflow.worker_result_chars` / `worker_turn_budget_chars`,
+  ~half the global default) so a worker's running context stays lean and each
+  iteration stays fast. Oversized results still spill to disk and remain
+  `read_file`-accessible — only the in-context footprint shrinks.
 
 ---
 

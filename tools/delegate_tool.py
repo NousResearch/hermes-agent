@@ -391,6 +391,126 @@ def _get_child_timeout() -> float:
     return float(DEFAULT_CHILD_TIMEOUT)
 
 
+def _load_caduceus_workflow_config() -> dict:
+    """Return the resolved ``caduceus.workflow`` config section (or ``{}``).
+
+    Mirrors :func:`_load_config` (runtime CLI_CONFIG first, persistent config
+    second) but reaches into ``caduceus.workflow`` instead of ``delegation``.
+    """
+    try:
+        from cli import CLI_CONFIG
+
+        wf = (CLI_CONFIG.get("caduceus") or {}).get("workflow")
+        if wf:
+            return dict(wf)
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+
+        full = load_config()
+        return dict(((full.get("caduceus") or {}).get("workflow")) or {})
+    except Exception:
+        pass
+    return {}
+
+
+def _get_workflow_leaf_timeouts() -> "tuple[float, float]":
+    """Resolve ``(hard_timeout, idle_timeout)`` for a single workflow leaf.
+
+    Unlike :func:`_get_child_timeout` (a fixed wall-clock cap used by
+    ``delegate_task``), workflow leaves use a streaming-aware policy:
+
+    * ``hard_timeout`` — absolute ceiling regardless of activity, from
+      ``caduceus.workflow.agent_timeout_seconds`` (default 1800s);
+    * ``idle_timeout`` — longest stretch of *true silence* (no streamed tokens
+      and no tool/iteration progress) tolerated before the leaf is treated as
+      wedged, from ``caduceus.workflow.agent_idle_timeout_seconds`` (default
+      240s).
+
+    This lets a healthy, actively-streaming long generation run to completion
+    while still killing a genuinely hung leaf promptly.
+    """
+    wf = _load_caduceus_workflow_config()
+
+    def _read(key: str, env: str, default: float) -> float:
+        val = wf.get(key)
+        if val is not None:
+            try:
+                return max(30.0, float(val))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "caduceus.workflow.%s=%r is not a valid number; using "
+                    "default %s",
+                    key,
+                    val,
+                    default,
+                )
+        env_val = os.getenv(env)
+        if env_val:
+            try:
+                return max(30.0, float(env_val))
+            except (TypeError, ValueError):
+                pass
+        return float(default)
+
+    hard = _read(
+        "agent_timeout_seconds",
+        "WORKFLOW_LEAF_TIMEOUT_SECONDS",
+        DEFAULT_WORKFLOW_LEAF_HARD_TIMEOUT,
+    )
+    idle = _read(
+        "agent_idle_timeout_seconds",
+        "WORKFLOW_LEAF_IDLE_TIMEOUT_SECONDS",
+        DEFAULT_WORKFLOW_LEAF_IDLE_TIMEOUT,
+    )
+    # The idle/silence cap must never exceed the absolute ceiling.
+    idle = min(idle, hard)
+    return hard, idle
+
+
+def _build_leaf_budget_config():
+    """Return a tighter tool-result :class:`BudgetConfig` for workflow leaves.
+
+    Keeps a worker's running context lean so each iteration stays fast. Reads
+    ``caduceus.workflow.worker_result_chars`` / ``worker_turn_budget_chars``
+    (defaults ~half the global budget). Oversized tool results still spill to
+    disk and remain ``read_file``-accessible — only the in-context footprint is
+    reduced. Returns ``None`` on any failure so callers fall back to the global
+    default budget.
+    """
+    wf = _load_caduceus_workflow_config()
+
+    def _read(key: str, default: int) -> int:
+        val = wf.get(key)
+        if val is not None:
+            try:
+                iv = int(val)
+                if iv > 0:
+                    return iv
+            except (TypeError, ValueError):
+                logger.warning(
+                    "caduceus.workflow.%s=%r is not a valid positive int; "
+                    "using default %s",
+                    key,
+                    val,
+                    default,
+                )
+        return int(default)
+
+    result_chars = _read("worker_result_chars", DEFAULT_WORKFLOW_LEAF_RESULT_CHARS)
+    turn_chars = _read("worker_turn_budget_chars", DEFAULT_WORKFLOW_LEAF_TURN_CHARS)
+    # A single result threshold must never exceed the per-turn aggregate.
+    turn_chars = max(turn_chars, result_chars)
+    try:
+        from tools.budget_config import BudgetConfig
+
+        return BudgetConfig(default_result_size=result_chars, turn_budget=turn_chars)
+    except Exception as exc:
+        logger.debug("Could not build workflow-leaf budget config: %s", exc)
+        return None
+
+
 def _get_max_spawn_depth() -> int:
     """Read delegation.max_spawn_depth from config, clamped to [1, 3].
 
@@ -511,6 +631,22 @@ def _preserve_parent_mcp_toolsets(
 
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+# Streaming-aware timeouts for *workflow leaves* only (see
+# _get_workflow_leaf_timeouts / _run_single_child). A workflow leaf can run a
+# long, actively-streaming generation (e.g. building a whole site in one turn);
+# a fixed wall-clock cap kills that healthy stream mid-flight. Leaves instead use
+# an absolute ceiling plus an idle/silence cap that resets on streamed tokens or
+# tool/iteration progress, so fast models finish, big legit generations finish,
+# and only truly wedged leaves are killed.
+DEFAULT_WORKFLOW_LEAF_HARD_TIMEOUT = 1800  # absolute per-leaf ceiling (30 min)
+DEFAULT_WORKFLOW_LEAF_IDLE_TIMEOUT = 240  # max silence before a leaf is wedged (4 min)
+# Soft context cap for workflow leaves: a tighter tool-result budget (~half the
+# global 100K/200K) so a worker's running context stays lean and every iteration
+# stays fast. Oversized results still spill to disk (read_file-accessible), so
+# nothing is lost — only the in-context footprint shrinks. Tunable via
+# caduceus.workflow.worker_result_chars / worker_turn_budget_chars.
+DEFAULT_WORKFLOW_LEAF_RESULT_CHARS = 48_000  # per-result spill threshold for leaves
+DEFAULT_WORKFLOW_LEAF_TURN_CHARS = 96_000  # per-turn aggregate budget for leaves
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -1438,10 +1574,16 @@ def run_workflow_leaf(
     # workflow.agent.* lifecycle around this call.
     cbs = callbacks or {}
 
+    # Shared liveness clock: every streamed reasoning/text delta stamps this with
+    # a fresh monotonic time, which the streaming-aware leaf timeout in
+    # _run_single_child uses to tell a healthy long generation apart from a hang.
+    _activity_ts: Dict[str, float] = {"t": time.monotonic()}
+
     def _mk(handler):
         if handler is None:
             return None
         def _cb(*args, **kwargs):
+            _activity_ts["t"] = time.monotonic()
             try:
                 text = args[0] if args else kwargs.get("text", "")
                 handler(text)
@@ -1453,7 +1595,23 @@ def run_workflow_leaf(
     child.stream_delta_callback = _mk(cbs.get("on_text"))
     child.tool_progress_callback = None
 
-    res = _run_single_child(agent_index, prompt, child=child, parent_agent=parent_agent)
+    # Soft context cap: leaves run with a tighter tool-result budget so a
+    # worker's context doesn't balloon across iterations (oversized results
+    # still spill to disk, read_file-accessible). Scoped to leaves only.
+    _leaf_budget = _build_leaf_budget_config()
+    if _leaf_budget is not None:
+        child._tool_budget_config = _leaf_budget
+
+    _hard_timeout, _idle_timeout = _get_workflow_leaf_timeouts()
+    res = _run_single_child(
+        agent_index,
+        prompt,
+        child=child,
+        parent_agent=parent_agent,
+        idle_timeout=_idle_timeout,
+        hard_timeout=_hard_timeout,
+        activity_ts=_activity_ts,
+    )
     return {
         "text": res.get("summary") or "",
         "status": res.get("status"),
@@ -1637,6 +1795,19 @@ def _run_single_child(
         # Run child with a hard timeout to prevent indefinite blocking
         # when the child's API call or tool-level HTTP request hangs.
         child_timeout = _get_child_timeout()
+        # Workflow leaves opt into a *streaming-aware* timeout: rather than one
+        # fixed wall-clock cap, the leaf stays alive while it makes progress
+        # (streamed tokens, or an advancing/active tool/iteration) and is only
+        # failed after `idle_timeout` of true silence or once the absolute
+        # `hard_timeout` ceiling is reached. delegate_task passes none of these,
+        # so its behavior (a single fixed cap) is unchanged.
+        _idle_timeout = _kwargs.get("idle_timeout")
+        _hard_timeout = _kwargs.get("hard_timeout") or child_timeout
+        _activity_ts = _kwargs.get("activity_ts")
+        # Cap value surfaced in timeout messages / diagnostics.
+        effective_timeout = (
+            float(_hard_timeout) if _idle_timeout else float(child_timeout)
+        )
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
@@ -1658,8 +1829,64 @@ def _run_single_child(
             )
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
+
+        def _await_child_result():
+            """Block for the child's result, honoring the active timeout policy.
+
+            Without ``idle_timeout`` (delegate_task), this is a plain fixed-cap
+            wait. With it (workflow leaves), we poll the future and treat the
+            child as alive while it streams tokens or advances/sits inside a
+            tool, raising :class:`FuturesTimeoutError` only after ``idle_timeout``
+            of true silence or once the absolute ``hard_timeout`` is reached — so
+            a long, healthy generation isn't killed mid-stream.
+            """
+            if not _idle_timeout:
+                return _child_future.result(timeout=child_timeout)
+            idle_cap = float(_idle_timeout)
+            hard_cap = float(_hard_timeout)
+            poll = max(0.5, min(idle_cap / 4.0, 10.0))
+            last_activity = time.monotonic()
+            last_iter = -1
+            last_tool = "\0"  # sentinel distinct from None / any tool name
+            while True:
+                try:
+                    return _child_future.result(timeout=poll)
+                except FuturesTimeoutError:
+                    now = time.monotonic()
+                    # Streamed reasoning/text deltas stamp activity_ts.
+                    if _activity_ts:
+                        ts = _activity_ts.get("t")
+                        if ts and ts > last_activity:
+                            last_activity = ts
+                    # Tool/iteration progress — or simply being inside a tool —
+                    # also counts as alive, mirroring the heartbeat's in-tool
+                    # leniency so a legitimately slow tool isn't read as a hang
+                    # (the hard ceiling still backstops a truly wedged tool).
+                    try:
+                        _s = child.get_activity_summary()
+                        _it = int(_s.get("api_call_count", 0) or 0)
+                        _tl = _s.get("current_tool")
+                        if _it != last_iter or _tl != last_tool or _tl:
+                            last_iter, last_tool = _it, _tl
+                            last_activity = now
+                    except Exception:
+                        pass
+                    idle = now - last_activity
+                    total = now - child_start
+                    if idle >= idle_cap or total >= hard_cap:
+                        logger.warning(
+                            "Subagent %d leaf timeout: idle=%.0fs (cap %.0fs) "
+                            "total=%.0fs (cap %.0fs)",
+                            task_index,
+                            idle,
+                            idle_cap,
+                            total,
+                            hard_cap,
+                        )
+                        raise
+
         try:
-            result = _child_future.result(timeout=child_timeout)
+            result = _await_child_result()
         except Exception as _timeout_exc:
             # Signal the child to stop so its thread can exit cleanly.
             try:
@@ -1693,7 +1920,7 @@ def _run_single_child(
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
                     task_index=task_index,
-                    timeout_seconds=float(child_timeout),
+                    timeout_seconds=float(effective_timeout),
                     duration_seconds=float(duration),
                     worker_thread=_worker_thread_holder.get("t"),
                     goal=goal,
@@ -1724,7 +1951,7 @@ def _run_single_child(
             if is_timeout:
                 if child_api_calls == 0:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s without "
+                        f"Subagent timed out after {effective_timeout:.0f}s without "
                         f"making any API call — the child never reached its "
                         f"first LLM request (prompt construction, credential "
                         f"resolution, or transport may be stuck)."
@@ -1733,7 +1960,7 @@ def _run_single_child(
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s with "
+                        f"Subagent timed out after {effective_timeout:.0f}s with "
                         f"{child_api_calls} API call(s) completed — likely "
                         f"stuck on a slow API call or unresponsive network request."
                     )

@@ -44,8 +44,20 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
+from tools.budget_config import DEFAULT_BUDGET
 
 logger = logging.getLogger(__name__)
+
+
+def _agent_tool_budget(agent):
+    """Per-agent tool-result budget, falling back to the global default.
+
+    Workflow-leaf children carry a tighter ``_tool_budget_config`` (set in
+    :func:`tools.delegate_tool.run_workflow_leaf`) so a worker's running context
+    stays lean and fast; everything else uses ``DEFAULT_BUDGET`` unchanged.
+    """
+    cfg = getattr(agent, "_tool_budget_config", None)
+    return cfg if cfg is not None else DEFAULT_BUDGET
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -645,6 +657,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_name=name,
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
+            config=_agent_tool_budget(agent),
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -676,7 +689,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
+        enforce_turn_budget(
+            turn_tool_msgs,
+            env=get_active_env(effective_task_id),
+            config=_agent_tool_budget(agent),
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -1202,6 +1219,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_name=function_name,
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
+            config=_agent_tool_budget(agent),
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
@@ -1250,7 +1268,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
+        enforce_turn_budget(
+            messages[-num_tools_seq:],
+            env=get_active_env(effective_task_id),
+            config=_agent_tool_budget(agent),
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

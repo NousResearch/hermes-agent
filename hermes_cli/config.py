@@ -1769,9 +1769,23 @@ DEFAULT_CONFIG = {
             # null = unbounded; or an int output-token hard ceiling shared
             # across the main loop + all leaves for the run.
             "default_budget_tokens": None,
-            # Per-agent wall-clock timeout (seconds); leaves that exceed it
-            # resolve to None (failed->None semantics).
-            "agent_timeout_seconds": 600,
+            # Per-leaf timeout policy (streaming-aware). A leaf stays alive while
+            # it makes progress (streamed tokens, or an advancing/active tool)
+            # and is only failed after `agent_idle_timeout_seconds` of true
+            # silence or once this absolute ceiling is hit — so a long, healthy
+            # generation (e.g. building a whole site in one turn) isn't killed
+            # mid-stream. Leaves that exceed it resolve to None (failed->None).
+            "agent_timeout_seconds": 1800,
+            # Max stretch of silence (no streamed tokens and no tool/iteration
+            # progress) before a leaf is treated as wedged. Capped at
+            # agent_timeout_seconds.
+            "agent_idle_timeout_seconds": 240,
+            # Soft context cap for leaves: per-result spill threshold (chars) and
+            # per-turn aggregate budget (chars). ~half the global tool-result
+            # budget so a worker's context stays lean and each iteration stays
+            # fast; oversized results still spill to disk (read_file-accessible).
+            "worker_result_chars": 48000,
+            "worker_turn_budget_chars": 96000,
             # Whole-run wall-clock timeout (seconds); 0 = unbounded.
             "run_timeout_seconds": 0,
             # Structured-output validation retries on schema mismatch.

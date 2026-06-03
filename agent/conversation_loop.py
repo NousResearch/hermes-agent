@@ -4162,15 +4162,22 @@ def run_conversation(
                     )
                     if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
                         agent._empty_content_retries += 1
+                        _empty_wait = jittered_backoff(
+                            agent._empty_content_retries,
+                            base_delay=0.5,
+                            max_delay=4.0,
+                        )
                         logger.warning(
                             "Empty response (no content or reasoning) — "
-                            "retry %d/3 (model=%s)",
+                            "retry %d/3 (model=%s, wait=%.1fs)",
                             agent._empty_content_retries, agent.model,
+                            _empty_wait,
                         )
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
                             f"({agent._empty_content_retries}/3)"
                         )
+                        time.sleep(_empty_wait)
                         continue
 
                     # ── Exhausted retries — try fallback provider ──

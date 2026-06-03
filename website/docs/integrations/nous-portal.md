@@ -130,12 +130,15 @@ If you use [Hermes profiles](/user-guide/profiles), the Portal refresh token is 
 ### Inspecting what's wired up
 
 ```bash
-hermes portal status     # login status, subscription info, model + gateway routing
+hermes portal            # log in to Nous Portal + set it up (one-shot onboarding)
+hermes portal info       # login status, subscription info, model + gateway routing
 hermes portal tools      # detailed Tool Gateway catalog with per-tool routing
 hermes portal open       # open the subscription management page in your browser
 ```
 
-`hermes portal status` (or just `hermes portal`) gives you the high-level overview:
+`hermes portal` (with no subcommand) is the human-readable alias for `hermes auth add nous --type oauth` — it logs you in, sets Nous as your inference provider, and offers the Tool Gateway opt-in (identical to `hermes setup --portal`).
+
+`hermes portal info` gives you the high-level overview:
 
 ```
   Nous Portal
@@ -234,12 +237,12 @@ If the Portal invalidates the refresh token (password change, manual revoke, ses
 
 ## Troubleshooting
 
-### `hermes portal status` shows "not logged in"
+### `hermes portal info` shows "not logged in"
 
 You haven't completed the OAuth flow, or your refresh token was wiped. Run:
 
 ```bash
-hermes auth add nous --type oauth
+hermes portal
 ```
 
 or use `hermes model` and re-select Nous Portal.
@@ -260,7 +263,7 @@ If a model is genuinely missing, [open an issue](https://github.com/NousResearch
 
 ### Bills not appearing on my Portal account
 
-Check `hermes portal status` first — if it shows you're using a different provider (`Model: currently openrouter` instead of `using Nous as inference provider`), your local config has drifted. Run `hermes model`, pick Nous Portal, and the next request will route through your subscription.
+Check `hermes portal info` first — if it shows you're using a different provider (`Model: currently openrouter` instead of `using Nous as inference provider`), your local config has drifted. Run `hermes model`, pick Nous Portal, and the next request will route through your subscription.
 
 ## See also
 

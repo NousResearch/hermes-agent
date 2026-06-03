@@ -335,19 +335,45 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         return _adopt_existing_tab(session)
 
 
+def _get_viewport_config() -> Optional[Dict[str, int]]:
+    """Return viewport dimensions from ``browser.camofox.viewport`` config.
+
+    Expected format: ``{width: <int>, height: <int>}``.
+    Returns ``None`` if not configured or invalid.
+    """
+    camofox_cfg = _get_camofox_config()
+    viewport = camofox_cfg.get("viewport")
+    if not isinstance(viewport, dict):
+        return None
+    width = viewport.get("width")
+    height = viewport.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        return None
+    if not (320 <= width <= 3840) or not (240 <= height <= 2160):
+        logger.warning(
+            "camofox viewport out of range (%sx%s), ignoring", width, height,
+        )
+        return None
+    return {"width": width, "height": height}
+
+
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
     if session["tab_id"]:
         return session
     base = get_camofox_url()
+    body: Dict[str, Any] = {
+        "userId": session["user_id"],
+        "sessionKey": session["session_key"],
+        "url": url,
+    }
+    viewport = _get_viewport_config()
+    if viewport:
+        body["viewport"] = viewport
     resp = requests.post(
         f"{base}/tabs",
-        json={
-            "userId": session["user_id"],
-            "sessionKey": session["session_key"],
-            "url": url,
-        },
+        json=body,
         timeout=_DEFAULT_TIMEOUT,
     )
     resp.raise_for_status()

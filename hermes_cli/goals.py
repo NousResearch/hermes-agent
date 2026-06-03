@@ -8,7 +8,9 @@ goal is done, turn budget is exhausted, the user pauses/clears it, or the
 user sends a new message (which takes priority and pauses the goal loop).
 
 State is persisted in SessionDB's ``state_meta`` table keyed by
-``goal:<session_id>`` so ``/resume`` picks it up.
+``goal:<session_id>`` so ``/resume`` picks it up. Compression rotates the
+physical session id, so unfinished goal state is copied to the continuation
+session and the old row is archived as non-active.
 
 Design notes / invariants:
 
@@ -219,7 +221,8 @@ def _get_session_db() -> Optional[Any]:
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
 
-        home = str(get_hermes_home())
+        home_path = get_hermes_home()
+        home = str(home_path)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB bootstrap failed (%s)", exc)
         return None
@@ -228,7 +231,7 @@ def _get_session_db() -> Optional[Any]:
     if cached is not None:
         return cached
     try:
-        db = SessionDB()
+        db = SessionDB(db_path=home_path / "state.db")
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
@@ -277,6 +280,127 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+
+
+def _copy_goal_state(state: GoalState) -> GoalState:
+    """Return an independent serializable copy of a goal state."""
+    return GoalState.from_json(state.to_json())
+
+
+def migrate_goal_to_session(
+    old_session_id: str,
+    new_session_id: str,
+    *,
+    reason: str = "session switch",
+) -> bool:
+    """Copy an unfinished persistent goal across a logical-session boundary.
+
+    Goal state is stored under ``goal:<session_id>``. Context compression and
+    continuation flows can rotate the SQLite session id while the user's
+    logical task continues; without rebinding, the new GoalManager sees no
+    state and the goal loop stops silently.
+
+    Returns True when an active/paused goal was copied to ``new_session_id``.
+    Finished/cleared/missing source goals are no-ops. Existing destination
+    active/paused/done state is never overwritten; the caller can retry later
+    or resolve the conflict explicitly.
+    """
+    if not old_session_id or not new_session_id or old_session_id == new_session_id:
+        return False
+
+    try:
+        source = load_goal(old_session_id)
+        if source is None or source.status not in {"active", "paused"}:
+            return False
+
+        dest = load_goal(new_session_id)
+        if dest is not None and dest.status in {"active", "paused", "done"}:
+            logger.debug(
+                "GoalManager: not migrating %s to %s; destination already has %s goal",
+                old_session_id,
+                new_session_id,
+                dest.status,
+            )
+            return False
+
+        save_goal(new_session_id, _copy_goal_state(source))
+
+        archived = _copy_goal_state(source)
+        archived.status = "cleared"
+        archived.paused_reason = (
+            f"migrated to continuation session {new_session_id} ({reason})"
+        )
+        save_goal(old_session_id, archived)
+        logger.debug(
+            "GoalManager: migrated goal from %s to %s (%s)",
+            old_session_id,
+            new_session_id,
+            reason,
+        )
+        return True
+    except Exception as exc:
+        # Goal migration must never break the primary conversation turn.
+        logger.debug(
+            "GoalManager: migration from %s to %s failed: %s",
+            old_session_id,
+            new_session_id,
+            exc,
+        )
+        return False
+
+
+def _maybe_recover_goal_from_compression_lineage(session_id: str) -> Optional[GoalState]:
+    """Recover a goal orphaned on a compression parent, if lineage proves it.
+
+    This is a fail-soft compatibility path for sessions created by builds that
+    rotated ``session_id`` before goal migration existed. Only parents ended
+    with ``end_reason='compression'`` are considered, so normal branches,
+    delegates, and /new sessions do not inherit an unrelated goal.
+    """
+    if not session_id:
+        return None
+    db = _get_session_db()
+    if db is None:
+        return None
+
+    try:
+        current = db.get_session(session_id)
+    except Exception as exc:
+        logger.debug("GoalManager: could not inspect session lineage for %s: %s", session_id, exc)
+        return None
+
+    seen = {session_id}
+    while current:
+        parent_id = (current.get("parent_session_id") or "").strip()
+        if not parent_id or parent_id in seen:
+            return None
+        seen.add(parent_id)
+
+        try:
+            parent = db.get_session(parent_id)
+        except Exception as exc:
+            logger.debug("GoalManager: could not load parent session %s: %s", parent_id, exc)
+            return None
+        if not parent or parent.get("end_reason") != "compression":
+            return None
+
+        migrated = migrate_goal_to_session(
+            parent_id,
+            session_id,
+            reason="compression lineage recovery",
+        )
+        if migrated:
+            return load_goal(session_id)
+
+        parent_goal = load_goal(parent_id)
+        if parent_goal is not None and parent_goal.status in {"active", "paused"}:
+            # A destination conflict or write failure prevented migration. Do
+            # not walk past an unfinished parent goal and risk stealing older
+            # lineage state.
+            return None
+
+        current = parent
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -489,6 +613,8 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+        if self._state is None:
+            self._state = _maybe_recover_goal_from_compression_lineage(session_id)
 
     # --- introspection ------------------------------------------------
 
@@ -907,6 +1033,7 @@ __all__ = [
     "load_goal",
     "save_goal",
     "clear_goal",
+    "migrate_goal_to_session",
     "judge_goal",
     "run_kanban_goal_loop",
 ]

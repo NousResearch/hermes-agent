@@ -90,6 +90,56 @@ class TestCompressionBoundaryHook:
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
 
+    def test_compression_rotates_goal_state_to_new_session(self):
+        """Compression split carries active /goal state to the new physical session."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, load_goal
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"HERMES_HOME": str(Path(tmpdir))}):
+                db = SessionDB(db_path=Path(tmpdir) / "test.db")
+                agent = self._make_agent(db)
+                goals._DB_CACHE.clear()
+                goals._DB_CACHE[str(Path(tmpdir))] = db
+
+                compressor = MagicMock()
+                compressor.compress.return_value = [
+                    {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                    {"role": "user", "content": "tail question"},
+                ]
+                compressor.compression_count = 1
+                compressor.last_prompt_tokens = 0
+                compressor.last_completion_tokens = 0
+                compressor._last_summary_error = None
+                compressor._last_compress_aborted = False
+                agent.context_compressor = compressor
+
+                original_sid = agent.session_id
+                db.create_session(original_sid, "cli")
+                goal_mgr = GoalManager(session_id=original_sid, default_max_turns=9)
+                goal_mgr.set("survive compression")
+
+                try:
+                    agent._compress_context(
+                        [{"role": "user", "content": f"m{i}"} for i in range(10)],
+                        "sys",
+                        approx_tokens=10_000,
+                    )
+
+                    assert agent.session_id != original_sid
+                    continued = GoalManager(session_id=agent.session_id)
+                    assert continued.state is not None
+                    assert continued.state.goal == "survive compression"
+                    assert continued.state.status == "active"
+                    assert continued.state.max_turns == 9
+
+                    old_state = load_goal(original_sid)
+                    assert old_state is not None
+                    assert old_state.status == "cleared"
+                finally:
+                    goals._DB_CACHE.clear()
+
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
         from run_agent import AIAgent

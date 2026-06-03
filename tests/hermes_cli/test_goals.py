@@ -24,11 +24,19 @@ def hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     # Bust the goal-module's DB cache for each test so it re-resolves HERMES_HOME.
+    # Some agent tests use context-local Hermes home overrides; set our own so
+    # this fixture remains isolated even when those modules run in the same
+    # pytest process.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_cli import goals
 
+    token = set_hermes_home_override(home)
     goals._DB_CACHE.clear()
-    yield home
-    goals._DB_CACHE.clear()
+    try:
+        yield home
+    finally:
+        goals._DB_CACHE.clear()
+        reset_hermes_home_override(token)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -251,6 +259,123 @@ class TestGoalManager:
         assert mgr2.state is not None
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
+
+    def test_migrate_unfinished_goal_to_compression_continuation_session(self, hermes_home):
+        """Regression: a /compress-created session id must not orphan /goal state."""
+        from hermes_cli.goals import GoalManager, load_goal, migrate_goal_to_session, save_goal
+
+        old_mgr = GoalManager(session_id="goal-before-compress", default_max_turns=7)
+        old_mgr.set("finish the long-running task")
+        old_mgr.state.turns_used = 3
+        old_mgr.state.subgoals.append("preserve this criterion too")
+        save_goal(old_mgr.session_id, old_mgr.state)
+
+        migrated = migrate_goal_to_session(
+            "goal-before-compress",
+            "goal-after-compress",
+            reason="compression",
+        )
+
+        assert migrated is True
+        new_mgr = GoalManager(session_id="goal-after-compress")
+        assert new_mgr.state is not None
+        assert new_mgr.state.goal == "finish the long-running task"
+        assert new_mgr.state.status == "active"
+        assert new_mgr.state.max_turns == 7
+        assert new_mgr.state.turns_used == 3
+        assert new_mgr.state.subgoals == ["preserve this criterion too"]
+
+        old_state = load_goal("goal-before-compress")
+        assert old_state is not None
+        assert old_state.status == "cleared"
+        assert "goal-after-compress" in (old_state.paused_reason or "")
+
+    def test_migrate_paused_goal_to_continuation_session(self, hermes_home):
+        from hermes_cli.goals import GoalManager, migrate_goal_to_session
+
+        old_mgr = GoalManager(session_id="paused-before-compress")
+        old_mgr.set("paused long task")
+        old_mgr.pause(reason="waiting for budget")
+
+        assert migrate_goal_to_session("paused-before-compress", "paused-after-compress") is True
+
+        new_mgr = GoalManager(session_id="paused-after-compress")
+        assert new_mgr.state is not None
+        assert new_mgr.state.goal == "paused long task"
+        assert new_mgr.state.status == "paused"
+        assert new_mgr.state.paused_reason == "waiting for budget"
+
+    def test_migrate_goal_does_not_overwrite_existing_destination_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager, migrate_goal_to_session
+
+        old_mgr = GoalManager(session_id="old-with-goal")
+        old_mgr.set("old goal that should stay put")
+        new_mgr = GoalManager(session_id="new-with-goal")
+        new_mgr.set("existing destination goal")
+
+        assert migrate_goal_to_session("old-with-goal", "new-with-goal") is False
+
+        old_reloaded = GoalManager(session_id="old-with-goal")
+        new_reloaded = GoalManager(session_id="new-with-goal")
+        assert old_reloaded.state.status == "active"
+        assert old_reloaded.state.goal == "old goal that should stay put"
+        assert new_reloaded.state.status == "active"
+        assert new_reloaded.state.goal == "existing destination goal"
+
+    def test_migrate_goal_noops_for_missing_finished_or_same_session(self, hermes_home):
+        from hermes_cli.goals import GoalManager, migrate_goal_to_session
+
+        assert migrate_goal_to_session("", "new") is False
+        assert migrate_goal_to_session("same", "same") is False
+        assert migrate_goal_to_session("missing", "new") is False
+
+        done_mgr = GoalManager(session_id="done-goal")
+        done_mgr.set("already finished")
+        done_mgr.mark_done("complete")
+        assert migrate_goal_to_session("done-goal", "done-new") is False
+        assert GoalManager(session_id="done-new").state is None
+
+        cleared_mgr = GoalManager(session_id="cleared-goal")
+        cleared_mgr.set("already cleared")
+        cleared_mgr.clear()
+        assert migrate_goal_to_session("cleared-goal", "cleared-new") is False
+        assert GoalManager(session_id="cleared-new").state is None
+
+    def test_goal_manager_recovers_goal_from_compression_parent_lineage(self, hermes_home):
+        """If a previous build missed the migration hook, the child can recover via lineage."""
+        from hermes_state import SessionDB
+        from hermes_cli.goals import GoalManager, load_goal
+
+        db = SessionDB(db_path=hermes_home / "state.db")
+        db.create_session("lineage-parent", "cli")
+        parent_mgr = GoalManager(session_id="lineage-parent")
+        parent_mgr.set("recover me after compression")
+        db.end_session("lineage-parent", "compression")
+        db.create_session("lineage-child", "cli", parent_session_id="lineage-parent")
+
+        child_mgr = GoalManager(session_id="lineage-child")
+
+        assert child_mgr.state is not None
+        assert child_mgr.state.goal == "recover me after compression"
+        assert child_mgr.state.status == "active"
+        parent_state = load_goal("lineage-parent")
+        assert parent_state is not None
+        assert parent_state.status == "cleared"
+
+    def test_goal_manager_does_not_inherit_non_compression_parent_goal(self, hermes_home):
+        from hermes_state import SessionDB
+        from hermes_cli.goals import GoalManager
+
+        db = SessionDB(db_path=hermes_home / "state.db")
+        db.create_session("branch-parent", "cli")
+        parent_mgr = GoalManager(session_id="branch-parent")
+        parent_mgr.set("do not copy to branch")
+        db.create_session("branch-child", "cli", parent_session_id="branch-parent")
+
+        child_mgr = GoalManager(session_id="branch-child")
+
+        assert child_mgr.state is None
+        assert GoalManager(session_id="branch-parent").is_active()
 
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""

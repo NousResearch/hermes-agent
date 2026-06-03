@@ -54,6 +54,13 @@ from utils import env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+def _redact_terminal_error_text(value: Any) -> str:
+    """Force-redact text before serializing a terminal error envelope."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text("" if value is None else str(value), force=True)
+
+
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -2561,7 +2568,9 @@ def terminal_tool(
                         return json.dumps({
                             "output": "",
                             "exit_code": -1,
-                            "error": f"Terminal tool disabled: environment creation failed ({e})",
+                            "error": _redact_terminal_error_text(
+                                f"Terminal tool disabled: environment creation failed ({e})"
+                            ),
                             "status": "disabled"
                         }, ensure_ascii=False)
 
@@ -3033,7 +3042,9 @@ def terminal_tool(
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
-                    "error": f"Failed to start background process: {str(e)}"
+                    "error": _redact_terminal_error_text(
+                        f"Failed to start background process: {e}"
+                    )
                 }, ensure_ascii=False)
         else:
             # Run foreground command with retry logic
@@ -3093,7 +3104,9 @@ def terminal_tool(
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
+                        "error": _redact_terminal_error_text(
+                            f"Command execution failed: {type(e).__name__}: {e}"
+                        )
                     }, ensure_ascii=False)
                 
                 # Got a result
@@ -3305,7 +3318,6 @@ def terminal_tool(
         degraded_mode = os.getenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
         if degraded_mode == "fail":
             import traceback
-            from agent.redact import redact_sensitive_text
             tb_str = traceback.format_exc()
             logger.error("terminal_tool exception:\n%s", tb_str)
             # Exception text can embed the failing command line (and any
@@ -3313,8 +3325,8 @@ def terminal_tool(
             return json.dumps({
                 "output": "",
                 "exit_code": -1,
-                "error": redact_sensitive_text(f"Failed to execute command: {str(e)}"),
-                "traceback": redact_sensitive_text(tb_str),
+                "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
+                "traceback": _redact_terminal_error_text(tb_str),
                 "status": "error"
             }, ensure_ascii=False)
 
@@ -3337,7 +3349,6 @@ def terminal_tool(
 
     except Exception as e:
         import traceback
-        from agent.redact import redact_sensitive_text
         tb_str = traceback.format_exc()
         logger.error("terminal_tool exception:\n%s", tb_str)
         # Exception text can embed the failing command line (and any
@@ -3345,8 +3356,8 @@ def terminal_tool(
         return json.dumps({
             "output": "",
             "exit_code": -1,
-            "error": redact_sensitive_text(f"Failed to execute command: {str(e)}"),
-            "traceback": redact_sensitive_text(tb_str),
+            "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
+            "traceback": _redact_terminal_error_text(tb_str),
             "status": "error"
         }, ensure_ascii=False)
 

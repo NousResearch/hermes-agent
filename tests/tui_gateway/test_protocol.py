@@ -394,6 +394,108 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     ]
 
 
+def test_session_resume_reuses_existing_live_session(server, monkeypatch):
+    """Repeated resume must not allocate duplicate live agents."""
+
+    target = "20260409_010101_abc123"
+    created_sids: list[str] = []
+    first_agent_started = threading.Event()
+    agent_can_finish = threading.Event()
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "yo"},
+            ]
+
+    class _Worker:
+        def close(self):
+            pass
+
+    def make_agent(sid, key, session_id=None):
+        created_sids.append(sid)
+        first_agent_started.set()
+        assert agent_can_finish.wait(timeout=1)
+        return types.SimpleNamespace(model="test/model", session_id=session_id or key)
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", lambda _key, _model: _Worker())
+    monkeypatch.setattr(
+        server,
+        "_start_notification_poller",
+        lambda _sid, _session: threading.Event(),
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    fake_approval = types.SimpleNamespace(
+        load_permanent_allowlist=lambda: None,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        first_holder = {}
+
+        def resume_first():
+            first_holder["resp"] = server.handle_request(
+                {
+                    "id": "first",
+                    "method": "session.resume",
+                    "params": {"session_id": target, "cols": 100},
+                }
+            )
+
+        first_thread = threading.Thread(target=resume_first)
+        first_thread.start()
+        assert first_agent_started.wait(timeout=1)
+
+        second_holder = {}
+
+        def resume_second():
+            second_holder["resp"] = server.handle_request(
+                {
+                    "id": "second",
+                    "method": "session.resume",
+                    "params": {"session_id": target, "cols": 120},
+                }
+            )
+
+        second_thread = threading.Thread(target=resume_second)
+        second_thread.start()
+        agent_can_finish.set()
+
+        first_thread.join(timeout=1)
+        second_thread.join(timeout=1)
+        assert not first_thread.is_alive()
+        assert not second_thread.is_alive()
+        first = first_holder["resp"]
+        second = second_holder["resp"]
+
+    assert "error" not in first
+    assert "error" not in second
+    assert second["result"]["session_id"] == first["result"]["session_id"]
+    assert len(server._sessions) == 1
+    assert [s.get("session_key") for s in server._sessions.values()].count(target) == 1
+    assert created_sids == [first["result"]["session_id"]]
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 

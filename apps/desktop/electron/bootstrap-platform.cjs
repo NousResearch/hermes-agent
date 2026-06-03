@@ -51,7 +51,6 @@ const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 function detectRemoteDisplay(options = {}) {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
-  const isWsl = options.isWsl ?? isWslEnvironment(env, platform)
 
   const override = String(env.HERMES_DESKTOP_DISABLE_GPU || '').trim().toLowerCase()
   if (GPU_OVERRIDE_ON.has(override)) return 'override (HERMES_DESKTOP_DISABLE_GPU)'
@@ -64,12 +63,12 @@ function detectRemoteDisplay(options = {}) {
   if (platform === 'linux') {
     // X11 forwarding sets DISPLAY to "<host>:N" (e.g. "localhost:10.0"); a
     // local X server is ":0"/":1" with no host part before the colon.
+    // NB: WSLg deliberately isn't treated as remote — it reports
+    // GPU-accelerated vGPU surfaces locally and doesn't show the flicker.
     const display = String(env.DISPLAY || '')
     if (display.includes(':') && display.split(':')[0]) {
       return `x11-forwarding (DISPLAY=${display})`
     }
-    // WSLg pipes the GUI through an RDP/Wayland bridge — same flicker profile.
-    if (isWsl) return 'wslg'
   }
 
   if (platform === 'win32') {

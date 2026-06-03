@@ -6132,6 +6132,18 @@ def cmd_status(args):
     show_status(args)
 
 
+def cmd_diagnostics(args):
+    """Static diagnostics index."""
+    from hermes_cli.diagnostics_index import diagnostics_index_command
+
+    action = getattr(args, "diagnostics_action", None)
+    if action in ("index", None):
+        diagnostics_index_command(args)
+        return
+    print(f"Unknown diagnostics subcommand: {action}", file=sys.stderr)
+    return 1
+
+
 def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
@@ -10745,6 +10757,61 @@ def _build_provider_choices() -> list[str]:
         ]
 
 
+def _add_diagnostics_parser(subparsers):
+    from hermes_cli.diagnostics_index import available_areas
+
+    diagnostics_parser = subparsers.add_parser(
+        "diagnostics",
+        help="List known diagnostics commands without running them",
+        description="Static read-only index of known Hermes diagnostics commands.",
+    )
+    diagnostics_subparsers = diagnostics_parser.add_subparsers(
+        dest="diagnostics_action"
+    )
+    diagnostics_index = diagnostics_subparsers.add_parser(
+        "index",
+        help="List known diagnostics commands without running them",
+    )
+    diagnostics_index.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the diagnostics index as JSON",
+    )
+    diagnostics_index.add_argument(
+        "--area",
+        choices=available_areas(),
+        help="Only show diagnostics for one area",
+    )
+    diagnostics_index.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Only show entries marked read-only",
+    )
+    diagnostics_index.add_argument(
+        "--approval-required",
+        action="store_true",
+        help="Only show entries that require an explicit approval slice",
+    )
+    diagnostics_parser.set_defaults(
+        func=cmd_diagnostics,
+        diagnostics_action="index",
+        json=False,
+        area=None,
+        read_only=False,
+        approval_required=False,
+    )
+    diagnostics_index.set_defaults(func=cmd_diagnostics)
+    return diagnostics_parser
+
+
+def build_top_level_parser():
+    from hermes_cli._parser import build_top_level_parser as _build_top_level_parser
+
+    parser, subparsers, chat_parser = _build_top_level_parser()
+    _add_diagnostics_parser(subparsers)
+    return parser, subparsers, chat_parser
+
+
 # Top-level subcommands that argparse knows about WITHOUT running plugin
 # discovery.  Used to short-circuit eager plugin imports (which can take
 # 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the
@@ -10758,7 +10825,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "cron", "curator", "dashboard", "debug", "diagnostics", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
@@ -11756,6 +11823,11 @@ def main():
         "--deep", action="store_true", help="Run deep checks (may take longer)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # =========================================================================
+    # diagnostics command
+    # =========================================================================
+    _add_diagnostics_parser(subparsers)
 
     # =========================================================================
     # cron command

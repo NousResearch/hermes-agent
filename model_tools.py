@@ -123,7 +123,8 @@ def _run_async(coro):
             loop_ready.set()
             try:
                 asyncio.set_event_loop(worker_loop)
-                return worker_loop.run_until_complete(coro)
+                tool_task = worker_loop.create_task(coro)
+                return worker_loop.run_until_complete(tool_task)
             finally:
                 try:
                     # Cancel anything still pending (e.g. task cancelled
@@ -167,10 +168,12 @@ def _run_async(coro):
     # lifetime — preventing "Event loop is closed" on GC cleanup.
     if threading.current_thread() is not threading.main_thread():
         worker_loop = _get_worker_loop()
-        return worker_loop.run_until_complete(coro)
+        tool_task = worker_loop.create_task(coro)
+        return worker_loop.run_until_complete(tool_task)
 
     tool_loop = _get_tool_loop()
-    return tool_loop.run_until_complete(coro)
+    tool_task = tool_loop.create_task(coro)
+    return tool_loop.run_until_complete(tool_task)
 
 
 # =============================================================================

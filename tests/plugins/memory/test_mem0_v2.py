@@ -59,7 +59,12 @@ class TestMem0FiltersV2:
         assert client.captured_search["query"] == "hello"
         assert client.captured_search["top_k"] == 3
         assert client.captured_search["rerank"] is False
-        assert client.captured_search["filters"] == {"user_id": "u123"}
+        assert client.captured_search["filters"] == {
+            "OR": [
+                {"user_id": "u123"},
+                {"user_id": "u123", "agent_id": "hermes"},
+            ]
+        }
         # Must NOT have bare user_id kwarg
         assert "user_id" not in {k for k in client.captured_search if k != "filters"}
 
@@ -69,7 +74,12 @@ class TestMem0FiltersV2:
 
         provider.handle_tool_call("mem0_profile", {})
 
-        assert client.captured_get_all["filters"] == {"user_id": "u123"}
+        assert client.captured_get_all["filters"] == {
+            "OR": [
+                {"user_id": "u123"},
+                {"user_id": "u123", "agent_id": "hermes"},
+            ]
+        }
         assert "user_id" not in {k for k in client.captured_get_all if k != "filters"}
 
     def test_prefetch_uses_filters(self, monkeypatch):
@@ -80,7 +90,12 @@ class TestMem0FiltersV2:
         provider._prefetch_thread.join(timeout=2)
 
         assert client.captured_search["query"] == "hello"
-        assert client.captured_search["filters"] == {"user_id": "u123"}
+        assert client.captured_search["filters"] == {
+            "OR": [
+                {"user_id": "u123"},
+                {"user_id": "u123", "agent_id": "hermes"},
+            ]
+        }
         assert "user_id" not in {k for k in client.captured_search if k != "filters"}
 
     def test_sync_turn_uses_write_filters(self, monkeypatch):
@@ -107,12 +122,29 @@ class TestMem0FiltersV2:
         assert call["agent_id"] == "hermes"
         assert call["infer"] is False
 
-    def test_read_filters_no_agent_id(self):
-        """Read filters should use user_id only — cross-session recall across agents."""
+    def test_read_filters_include_unattributed_and_agent_scoped_memories(self):
+        """Read filters should cover old user-only rows and agent-attributed rows."""
         provider = Mem0MemoryProvider()
         provider._user_id = "u123"
         provider._agent_id = "hermes"
-        assert provider._read_filters() == {"user_id": "u123"}
+        assert provider._read_filters() == {
+            "OR": [
+                {"user_id": "u123"},
+                {"user_id": "u123", "agent_id": "hermes"},
+            ]
+        }
+
+    def test_read_filters_use_configured_agent_id(self):
+        """Read filters should use the active agent id, not a hard-coded name."""
+        provider = Mem0MemoryProvider()
+        provider._user_id = "u123"
+        provider._agent_id = "gideon"
+        assert provider._read_filters() == {
+            "OR": [
+                {"user_id": "u123"},
+                {"user_id": "u123", "agent_id": "gideon"},
+            ]
+        }
 
     def test_write_filters_include_agent_id(self):
         """Write filters should include agent_id for attribution."""

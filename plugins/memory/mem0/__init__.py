@@ -211,8 +211,20 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank = self._config.get("rerank", True)
 
     def _read_filters(self) -> Dict[str, Any]:
-        """Filters for search/get_all — scoped to user only for cross-session recall."""
-        return {"user_id": self._user_id}
+        """Filters for search/get_all, including agent-tagged memories.
+
+        Writes include both user_id and agent_id for attribution. Mem0 Platform
+        treats records with agent_id as entity-scoped, so a plain
+        {"user_id": ...} read can miss memories saved by the same user through
+        an agent. Include the current agent-scoped shape in an OR filter while
+        keeping the plain user filter for older un-attributed records.
+        """
+        return {
+            "OR": [
+                {"user_id": self._user_id},
+                {"user_id": self._user_id, "agent_id": self._agent_id},
+            ]
+        }
 
     def _write_filters(self) -> Dict[str, Any]:
         """Filters for add — scoped to user + agent for attribution."""

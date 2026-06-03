@@ -786,19 +786,13 @@ function renderNodeToOutput(
           node.scrollTop = maxScroll
           node.pendingScrollDelta = undefined
 
-          // Sync flag so useVirtualScroll's isSticky() agrees with positional
-          // state — sticky-broken-but-at-bottom (wheel tremor, click-select
-          // at max) otherwise leaves useVirtualScroll's clamp holding the
-          // viewport short of new streaming content. scrollTo/scrollBy set
-          // false; this restores true, same as scrollToBottom() would.
-          // Only restore when (a) positionally at bottom and (b) the flag
-          // was explicitly broken (===false) by scrollTo/scrollBy. When
-          // undefined (never set by user action) leave it alone — setting it
-          // would make the sticky flag sticky-by-default and lock out
-          // direct scrollTop writes (e.g. the alt-screen-perf test).
-          if (node.stickyScroll === false && scrollTopBeforeFollow >= prevMaxScroll) {
-            node.stickyScroll = true
-          }
+          // Do NOT silently re-enable stickyScroll here. When a user scrolls
+          // up to read older content, scrollTop can land exactly at
+          // prevMaxScroll while new streaming content arrives; re-locking
+          // sticky permanently pins the viewport to the bottom. stickyScroll
+          // is only (re)enabled by the initial prop or an explicit
+          // scrollToBottom(); positional follow above still pins scrollTop
+          // for transient at-bottom states without re-locking the flag.
         }
 
         const followDelta = (node.scrollTop ?? 0) - scrollTopBeforeFollow

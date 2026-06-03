@@ -12,7 +12,7 @@
     "lint:fix": "eslint src/ packages/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
-    "test": "vitest run",
+    "test": "npm run build --prefix packages/hermes-ink && vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

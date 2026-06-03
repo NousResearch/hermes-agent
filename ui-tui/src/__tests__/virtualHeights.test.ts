@@ -20,8 +20,12 @@ describe('virtual height estimates', () => {
   it('uses compound user prompt width when estimating user message wrapping', () => {
     const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
 
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+    // transcriptBodyWidth reserves 4 cols on desktop (padding + scrollbar).
+    // At cols=26 both prompts floor to 20 and wrap identically; cols=27 is
+    // the first width where a narrow prompt fits on one line and a wide one
+    // wraps to two.
+    expect(estimatedMsgHeight(msg, 27, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
+    expect(estimatedMsgHeight(msg, 27, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
   it('adds one row for a group-boundary lead gap', () => {

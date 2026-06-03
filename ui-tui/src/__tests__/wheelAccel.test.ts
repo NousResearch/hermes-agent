@@ -30,20 +30,23 @@ describe('wheelAccel — native path', () => {
     expect(computeWheelStep(s, 1, 2000)).toBe(1)
   })
 
-  it('direction flip defers one event for bounce detection', () => {
+  it('direction flip defers two events for confirmation', () => {
     const s = initWheelAccel(false, 1)
 
     computeWheelStep(s, 1, 1000)
 
     expect(computeWheelStep(s, -1, 1050)).toBe(0)
+    expect(computeWheelStep(s, -1, 1060)).toBeGreaterThanOrEqual(1)
   })
 
-  it('flip-back within bounce window engages wheelMode', () => {
+  it('flip-back within bounce window engages wheelMode (2-event confirmation)', () => {
     const s = initWheelAccel(false, 1)
 
     computeWheelStep(s, 1, 1000)
     computeWheelStep(s, -1, 1050)
+    computeWheelStep(s, -1, 1060)
     computeWheelStep(s, 1, 1100)
+    computeWheelStep(s, 1, 1110)
 
     expect(s.wheelMode).toBe(true)
   })
@@ -53,9 +56,26 @@ describe('wheelAccel — native path', () => {
 
     computeWheelStep(s, 1, 1000)
     computeWheelStep(s, -1, 1050)
+    computeWheelStep(s, -1, 1060)
     computeWheelStep(s, 1, 1400)
+    computeWheelStep(s, 1, 1410)
 
     expect(s.wheelMode).toBe(false)
+  })
+
+  it('single spurious opposite-direction event is ignored (no flip)', () => {
+    const s = initWheelAccel(false, 1)
+
+    computeWheelStep(s, 1, 1000)
+    computeWheelStep(s, 1, 1020)
+
+    expect(computeWheelStep(s, -1, 1040)).toBe(0)
+
+    const rows = computeWheelStep(s, 1, 1060)
+
+    expect(rows).toBeGreaterThanOrEqual(1)
+    expect(s.wheelMode).toBe(false)
+    expect(s.dir).toBe(1)
   })
 
   it('5 consecutive sub-5ms events disengage wheelMode (trackpad signature)', () => {

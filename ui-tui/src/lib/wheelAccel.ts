@@ -9,7 +9,7 @@
 //   gap 80-500ms (xterm.js)   → mult = 1 + (mult-1)·0.5^(gap/150) + 5·decay
 //                               cap 3 slow / 6 fast
 //   gap > 500ms               → reset (deliberate click stays responsive)
-//   flip + flip-back ≤200ms   → encoder bounce → engage wheel-mode (sticky cap)
+//   flip + flip-back ≤60ms    → encoder bounce → engage wheel-mode (sticky cap)
 //   5 consecutive <5ms events → trackpad flick → disengage wheel-mode
 //
 // Native terminals (Ghostty, iTerm2) and xterm.js embedders (VS Code,
@@ -23,11 +23,14 @@ const WHEEL_ACCEL_STEP = 0.3
 const WHEEL_ACCEL_MAX = 6
 
 // ── Encoder bounce / wheel-mode (mechanical wheels) ────────────────────
-const WHEEL_BOUNCE_GAP_MAX_MS = 200
-const WHEEL_MODE_STEP = 15
-const WHEEL_MODE_CAP = 15
-const WHEEL_MODE_RAMP = 3
-const WHEEL_MODE_IDLE_DISENGAGE_MS = 1500
+// Gap tightened from 200→60ms: Windows focus/blur and ConPTY glitches
+// produce phantom wheel events that pair with real events within 200ms,
+// falsely engaging wheelMode and causing sudden 15-row jumps.
+const WHEEL_BOUNCE_GAP_MAX_MS = 60
+const WHEEL_MODE_STEP = 8
+const WHEEL_MODE_CAP = 8
+const WHEEL_MODE_RAMP = 1
+const WHEEL_MODE_IDLE_DISENGAGE_MS = 1000
 
 // ── xterm.js (VS Code / Cursor / browser terminals) ────────────────────
 const WHEEL_DECAY_HALFLIFE_MS = 150
@@ -50,18 +53,41 @@ export type WheelAccelState = {
   /** Native baseline rows/event. Reset on idle/reversal; ramp builds on
    *  top. xterm.js path ignores. */
   base: number
-  /** Deferred direction flip (native): bounce vs reversal — next event
-   *  decides. */
-  pendingFlip: boolean
   /** Sticky once a flip-then-flip-back fires within the bounce window.
    *  Cleared by idle disengage or trackpad burst. */
   wheelMode: boolean
-  /** Consecutive <5ms events. ≥5 → trackpad flick → disengage. */
+  /** Consecutive <5ms events. Trackpad flick ≥5 → disengage wheelMode. */
   burstCount: number
+  /**
+   * Direction-change debounce. A single spurious event (common on Windows
+   * when focus changes or mouse-tracking glitches fire a lone wheel event)
+   * should not trigger a pending-flip → wheelMode chain. Two consecutive
+   * events in the new direction are required to confirm a real reversal.
+   */
+  pendingDir: 0 | 1 | -1
+  /** Consecutive events seen in `pendingDir`. Confirmed at ≥2. */
+  pendingCount: number
+  /** Saved direction before the pending reversal started — bounce-back detection. */
+  savedDir: 0 | 1 | -1
+  /** Timestamp when `savedDir` was first established. */
+  savedTime: number
 }
 
 export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
-  return { burstCount: 0, base, dir: 0, frac: 0, mult: base, pendingFlip: false, time: 0, wheelMode: false, xtermJs }
+  return {
+    base,
+    burstCount: 0,
+    dir: 0,
+    frac: 0,
+    mult: base,
+    pendingCount: 0,
+    pendingDir: 0,
+    savedDir: 0,
+    savedTime: 0,
+    time: 0,
+    wheelMode: false,
+    xtermJs
+  }
 }
 
 /** HERMES_TUI_SCROLL_SPEED (or CLAUDE_CODE_SCROLL_SPEED for portability).
@@ -92,29 +118,51 @@ function nativeStep(state: WheelAccelState, dir: -1 | 1, now: number): number {
     state.mult = state.base
   }
 
-  if (state.pendingFlip) {
-    state.pendingFlip = false
-
-    if (dir !== state.dir || now - state.time > WHEEL_BOUNCE_GAP_MAX_MS) {
-      // Real reversal (flip persisted OR flip-back too late). Commit.
-      // The deferred event's 1 row is lost — acceptable latency.
-      state.dir = dir
-      state.time = now
-      state.mult = state.base
-
-      return Math.floor(state.mult)
-    }
-
-    state.wheelMode = true
-  }
-
   const gap = now - state.time
 
+  // Single spurious events must not trigger pending-flip → wheelMode.
+  // Require 2+ consecutive events in the new direction to confirm reversal.
   if (dir !== state.dir && state.dir !== 0) {
-    state.pendingFlip = true
+    if (dir === state.pendingDir) {
+      state.pendingCount++
+
+      if (state.pendingCount >= 2) {
+        if (dir === state.savedDir && now - state.savedTime <= WHEEL_BOUNCE_GAP_MAX_MS) {
+          state.wheelMode = true
+        } else {
+          state.mult = state.base
+        }
+
+        state.dir = dir
+        state.time = now
+        state.pendingDir = 0
+        state.pendingCount = 0
+
+        return Math.floor(state.mult)
+      }
+
+      state.time = now
+
+      return 0
+    }
+
+    if (state.savedDir === 0) {
+      state.savedDir = state.dir
+      state.savedTime = now
+    }
+
+    state.pendingDir = dir
+    state.pendingCount = 1
     state.time = now
 
     return 0
+  }
+
+  if (state.pendingCount > 0) {
+    state.pendingDir = 0
+    state.pendingCount = 0
+    state.savedDir = 0
+    state.savedTime = 0
   }
 
   state.dir = dir

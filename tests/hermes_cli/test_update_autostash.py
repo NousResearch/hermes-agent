@@ -423,6 +423,37 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
+def test_cmd_update_aborts_when_fresh_managed_uv_rebuild_fails(monkeypatch, tmp_path):
+    """A failed fresh managed-uv venv rebuild must not continue into pip install."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        if cmd == ["git", "fetch", "origin"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    with patch("hermes_cli.managed_uv.ensure_uv", return_value=("/usr/bin/uv", True)), \
+         patch("hermes_cli.managed_uv.rebuild_venv", return_value=False), \
+         pytest.raises(RuntimeError, match="venv rebuild failed"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    assert install_cmds == []
+
+
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     """Termux update path should target .[termux-all] when requested."""
     calls = []

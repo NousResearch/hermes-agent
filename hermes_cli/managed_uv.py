@@ -111,13 +111,17 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
         shutil.rmtree(venv_dir, ignore_errors=True)
 
     result = subprocess.run(
-        [uv_bin, "venv", str(venv_dir), "--python", python_version],
+        [uv_bin, "venv", str(venv_dir), "--python", python_version, "--clear"],
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode == 0:
         venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
+        if not venv_python.exists():
+            logger.warning("venv rebuild reported success but %s is missing", venv_python)
+            print(f"  ✗ venv rebuild failed: Python interpreter missing at {venv_python}")
+            return False
         py_ver = subprocess.run(
             [str(venv_python), "--version"],
             capture_output=True,

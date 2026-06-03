@@ -114,8 +114,10 @@ class TestRebuildVenv:
         (venv_dir / "old_file").write_text("stale")
 
         uv_bin = str(tmp_path / "bin" / "uv")
+        commands = []
 
         def fake_run(cmd, **kwargs):
+            commands.append(cmd)
             m = MagicMock(returncode=0)
             if cmd[1] == "venv":
                 # Simulate uv creating the venv dir
@@ -133,6 +135,19 @@ class TestRebuildVenv:
             result = rebuild_venv(uv_bin, venv_dir)
             assert result is True
             mock_rmtree.assert_called_once_with(venv_dir, ignore_errors=True)
+            assert commands[0] == [uv_bin, "venv", str(venv_dir), "--python", "3.11", "--clear"]
+
+    def test_rebuild_success_without_python_returns_false(self, tmp_path):
+        venv_dir = tmp_path / "venv"
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv.shutil.rmtree"):
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+            assert result is False
+            assert mock_run.call_count == 1
 
     def test_rebuild_failure_returns_false(self, tmp_path):
         venv_dir = tmp_path / "venv"

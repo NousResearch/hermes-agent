@@ -179,6 +179,27 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+def _goal_judge_available() -> bool:
+    """True when an auxiliary client is configured for the goal judge.
+
+    ``judge_goal`` is fail-open at the source: when no auxiliary model can
+    be reached it returns a ``"continue"`` verdict that is indistinguishable
+    from a real "not done yet" judgment. The completion gate must not treat
+    that as a rejection, or an unconfigured/degraded auxiliary model would
+    wedge every ``goal_mode`` worker (it could never close its own task).
+
+    So we probe availability first and only enforce the gate when a judge is
+    actually reachable. This mirrors the same client lookup ``judge_goal``
+    performs internally.
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception:
+        return False
+    return client is not None and bool(model)
+
+
 # ---------------------------------------------------------------------------
 # Runtime-activity → board-heartbeat bridge (#31752)
 # ---------------------------------------------------------------------------
@@ -571,8 +592,10 @@ def _handle_complete(args: dict, **kw) -> str:
             # Goal-mode pre-completion judge gate (Issue #38367).
             # Prevent workers from bypassing the auxiliary judge by
             # calling kanban_complete before acceptance criteria are met.
+            # Only enforce when a judge is actually reachable — see
+            # _goal_judge_available for why an unavailable judge fails open.
             task = kb.get_task(conn, tid)
-            if task and task.goal_mode:
+            if task and task.goal_mode and _goal_judge_available():
                 verdict = "done"
                 reason = ""
                 try:
@@ -581,8 +604,8 @@ def _handle_complete(args: dict, **kw) -> str:
                         last_response=(summary or result or "").strip(),
                     )
                 except Exception as judge_exc:
-                    # Fail-open to avoid wedging the worker if the judge
-                    # is temporarily unavailable or misconfigured.
+                    # Defensive: judge_goal swallows its own errors, but if
+                    # it ever raises, fail open rather than wedge the worker.
                     logger.warning(
                         "goal judge check failed, allowing completion: %s",
                         judge_exc,
@@ -593,7 +616,7 @@ def _handle_complete(args: dict, **kw) -> str:
                         f"Goal completion rejected by judge: {reason}. "
                         f"To proceed, either: (1) provide explicit acceptance "
                         f"evidence in your summary matching the task's criteria, "
-                        f"or (2) create continuation tasks with parent={tid} "
+                        f"or (2) create continuation tasks with parents=[{tid}] "
                         f"and keep this task alive."
                     )
 

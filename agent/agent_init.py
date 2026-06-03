@@ -909,7 +909,17 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
-    
+
+    # When memory is disabled (e.g. cron with skip_memory=True), remove the
+    # memory tool from the surface so the agent never sees a tool that will
+    # always fail at runtime.  Without this, cron sessions expose "memory" in
+    # the tool schema but calls return "Memory is not available." — confusing.
+    if skip_memory and agent.tools:
+        agent.tools = [
+            t for t in agent.tools
+            if t.get("function", {}).get("name") != "memory"
+        ]
+
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
     if agent.tools:

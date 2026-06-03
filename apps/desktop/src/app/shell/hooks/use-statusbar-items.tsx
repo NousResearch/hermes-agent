@@ -309,23 +309,17 @@ export function useStatusbarItems({
       },
       {
         className: cn(
-          yoloActive &&
-            '!text-(--ui-text-primary) bg-amber-500/10 hover:!text-(--ui-text-primary) hover:bg-amber-500/16 dark:bg-amber-400/12 dark:hover:bg-amber-400/18',
-          yoloActive &&
-            !activeSessionId &&
-            'ring-1 ring-inset ring-amber-500/30 dark:ring-amber-400/25'
+          'w-8 justify-center px-2',
+          yoloActive && 'bg-[#f4e381] hover:bg-[#f4e381]',
+          yoloActive && !activeSessionId && 'ring-1 ring-inset ring-amber-700/15'
         ),
         hidden: !showYoloToggle,
         icon: (
           <Zap
-            className={cn(
-              'size-3 shrink-0',
-              yoloActive ? 'text-amber-900 dark:text-amber-100' : 'opacity-70'
-            )}
+            className={cn('size-3.5 shrink-0', yoloActive ? 'text-amber-950' : 'opacity-70')}
           />
         ),
         id: 'yolo',
-        label: 'YOLO',
         onSelect: () => void toggleYolo(),
         title: yoloActive
           ? activeSessionId

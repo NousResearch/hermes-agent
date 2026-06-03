@@ -404,6 +404,7 @@ class TestSanePathIncludesHomebrew:
         launchd_env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
+
         path_entries = result["PATH"].split(":")
         assert "/opt/homebrew/bin" in path_entries
         assert "/opt/homebrew/sbin" in path_entries
@@ -471,3 +472,228 @@ class TestSanePathIncludesHomebrew:
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]
         assert "PATH" not in result
+
+class TestSessionEnvBridge:
+    @staticmethod
+    def _reset_session_context_vars():
+        from gateway.session_context import _UNSET, _VAR_MAP
+
+        saved = {var: var.get() for var in _VAR_MAP.values()}
+        for var in _VAR_MAP.values():
+            var.set(_UNSET)
+        return saved
+
+    @staticmethod
+    def _restore_session_context_vars(saved):
+        for var, value in saved.items():
+            var.set(value)
+
+    def test_make_run_env_explicit_empty_context_clears_stale_process_env(self):
+        """Explicit empty ContextVars must not inherit stale process env values."""
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            clear_session_vars,
+            set_session_vars,
+        )
+        from tools.environments.local import _make_run_env
+
+        stale_env = {
+            "PATH": "/usr/bin:/bin",
+            "HERMES_SESSION_PLATFORM": "mattermost",
+            "HERMES_SESSION_CHAT_ID": "ekum_fantasy_channel",
+            "HERMES_SESSION_THREAD_ID": "ekum_fantasy_thread",
+            "HERMES_SESSION_MESSAGE_ID": "ekum_fantasy_post",
+        }
+        tokens = set_session_vars(
+            platform="mattermost",
+            chat_id="trading_channel",
+            thread_id="",
+            session_key="mattermost:trading",
+            message_id="trading_top_post",
+        )
+        try:
+            with patch.dict(os.environ, stale_env, clear=True):
+                result = _make_run_env({})
+        finally:
+            clear_session_vars(tokens)
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+
+        assert result["HERMES_SESSION_PLATFORM"] == "mattermost"
+        assert result["HERMES_SESSION_CHAT_ID"] == "trading_channel"
+        assert result["HERMES_SESSION_THREAD_ID"] == ""
+        assert result["HERMES_SESSION_MESSAGE_ID"] == "trading_top_post"
+        assert result["HERMES_SESSION_KEY"] == "mattermost:trading"
+
+    def test_make_run_env_gateway_unset_context_strips_foreign_session_env(self):
+        """Foreground env must not leak a foreign process-global session under the gateway."""
+        from tools.environments.local import _make_run_env
+
+        saved = self._reset_session_context_vars()
+        try:
+            stale_env = {
+                "PATH": "/usr/bin:/bin",
+                "_HERMES_GATEWAY": "1",
+                "HERMES_SESSION_KEY": "agent:main:discord:thread:FOREIGN:X",
+                "HERMES_SESSION_THREAD_ID": "FOREIGN_THREAD",
+            }
+            with patch.dict(os.environ, stale_env, clear=True):
+                result = _make_run_env({})
+        finally:
+            self._restore_session_context_vars(saved)
+
+        assert "HERMES_SESSION_KEY" not in result
+        assert "HERMES_SESSION_THREAD_ID" not in result
+
+    def test_make_run_env_gateway_partial_unset_strips_only_unset_session_vars(self):
+        """A partially-bound gateway context keeps bound values and strips only _UNSET vars."""
+        from gateway.session_context import _UNSET, _VAR_MAP, clear_session_vars, set_session_vars
+        from tools.environments.local import _make_run_env
+
+        tokens = set_session_vars(
+            platform="discord",
+            chat_id="CORRECT_CHAT",
+            thread_id="CORRECT_THREAD",
+            session_key="agent:main:discord:group:CORRECT_CHAT:1",
+        )
+        try:
+            _VAR_MAP["HERMES_SESSION_THREAD_ID"].set(_UNSET)
+            with patch.dict(os.environ, {
+                "PATH": "/usr/bin:/bin",
+                "_HERMES_GATEWAY": "1",
+                "HERMES_SESSION_CHAT_ID": "FOREIGN_CHAT",
+                "HERMES_SESSION_THREAD_ID": "FOREIGN_THREAD",
+                "HERMES_SESSION_KEY": "agent:main:discord:thread:FOREIGN:X",
+            }, clear=True):
+                result = _make_run_env({})
+        finally:
+            clear_session_vars(tokens)
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+
+        assert result["HERMES_SESSION_CHAT_ID"] == "CORRECT_CHAT"
+        assert result["HERMES_SESSION_KEY"] == "agent:main:discord:group:CORRECT_CHAT:1"
+        assert "HERMES_SESSION_THREAD_ID" not in result
+
+    def test_make_run_env_thread_without_copied_context_does_not_inherit_foreign_gateway_env(self):
+        """Regression for fresh worker threads whose ContextVars are _UNSET."""
+        from gateway.session_context import _UNSET, _VAR_MAP, clear_session_vars, set_session_vars
+        from tools.environments.local import _make_run_env
+
+        observed = []
+        tokens = set_session_vars(
+            platform="discord",
+            chat_id="CORRECT_CHAT",
+            session_key="agent:main:discord:group:CORRECT_CHAT:1",
+        )
+        try:
+            with patch.dict(os.environ, {
+                "PATH": "/usr/bin:/bin",
+                "_HERMES_GATEWAY": "1",
+                "HERMES_SESSION_KEY": "agent:main:discord:thread:FOREIGN:X",
+                "HERMES_SESSION_THREAD_ID": "FOREIGN_THREAD",
+            }, clear=True):
+                def worker():
+                    observed.append(_make_run_env({}))
+
+                t = threading.Thread(target=worker)
+                t.start()
+                t.join(timeout=5)
+                assert not t.is_alive()
+        finally:
+            clear_session_vars(tokens)
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+
+        assert len(observed) == 1
+        assert "HERMES_SESSION_KEY" not in observed[0]
+        assert "HERMES_SESSION_THREAD_ID" not in observed[0]
+
+    def test_make_run_env_unset_context_preserves_cli_env_fallback(self):
+        """Outside the gateway, CLI/cron still inherit HERMES_SESSION_* from os.environ."""
+        from tools.environments.local import _make_run_env
+
+        saved = self._reset_session_context_vars()
+        try:
+            cli_env = {
+                "PATH": "/usr/bin:/bin",
+                "HERMES_SESSION_KEY": "cli:session:kept",
+            }
+            with patch.dict(os.environ, cli_env, clear=True):
+                result = _make_run_env({})
+        finally:
+            self._restore_session_context_vars(saved)
+
+        assert result["HERMES_SESSION_KEY"] == "cli:session:kept"
+
+    def test_sanitize_subprocess_env_explicit_empty_context_clears_stale_env(self):
+        """Background subprocess env must use the same session overlay as foreground."""
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            clear_session_vars,
+            set_session_vars,
+        )
+        from tools.environments.local import _sanitize_subprocess_env
+
+        stale_env = {
+            "PATH": "/usr/bin:/bin",
+            "HERMES_SESSION_PLATFORM": "mattermost",
+            "HERMES_SESSION_CHAT_ID": "ekum_fantasy_channel",
+            "HERMES_SESSION_THREAD_ID": "ekum_fantasy_thread",
+            "HERMES_SESSION_MESSAGE_ID": "ekum_fantasy_post",
+        }
+        tokens = set_session_vars(
+            platform="mattermost",
+            chat_id="trading_channel",
+            thread_id="",
+            session_key="mattermost:trading",
+            message_id="trading_top_post",
+        )
+        try:
+            result = _sanitize_subprocess_env(stale_env)
+        finally:
+            clear_session_vars(tokens)
+            for var in _VAR_MAP.values():
+                var.set(_UNSET)
+
+        assert result["HERMES_SESSION_PLATFORM"] == "mattermost"
+        assert result["HERMES_SESSION_CHAT_ID"] == "trading_channel"
+        assert result["HERMES_SESSION_THREAD_ID"] == ""
+        assert result["HERMES_SESSION_MESSAGE_ID"] == "trading_top_post"
+        assert result["HERMES_SESSION_KEY"] == "mattermost:trading"
+
+    def test_sanitize_subprocess_env_gateway_unset_context_strips_foreign_session_env(self):
+        """Background env must use the same gateway _UNSET strip policy as foreground."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        saved = self._reset_session_context_vars()
+        try:
+            with patch.dict(os.environ, {"_HERMES_GATEWAY": "1"}, clear=True):
+                result = _sanitize_subprocess_env({
+                    "PATH": "/usr/bin:/bin",
+                    "HERMES_SESSION_KEY": "agent:main:discord:thread:FOREIGN:X",
+                    "HERMES_SESSION_THREAD_ID": "FOREIGN_THREAD",
+                })
+        finally:
+            self._restore_session_context_vars(saved)
+
+        assert "HERMES_SESSION_KEY" not in result
+        assert "HERMES_SESSION_THREAD_ID" not in result
+
+    def test_sanitize_subprocess_env_unset_context_preserves_cli_env_fallback(self):
+        """Background CLI/cron subprocesses keep explicit process env fallback values."""
+        from tools.environments.local import _sanitize_subprocess_env
+
+        saved = self._reset_session_context_vars()
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                result = _sanitize_subprocess_env({
+                    "PATH": "/usr/bin:/bin",
+                    "HERMES_SESSION_KEY": "cli:session:kept",
+                })
+        finally:
+            self._restore_session_context_vars(saved)
+
+        assert result["HERMES_SESSION_KEY"] == "cli:session:kept"

@@ -85,6 +85,29 @@ _VAR_MAP = {
 }
 
 
+def session_context_env_overlay(strip_unset: bool = False) -> list[tuple[str, str | None]]:
+    """Return session env overlay actions derived from ContextVars.
+
+    Each item is ``(name, value)``. A string value means set/export that exact
+    value. ``None`` means remove/unset the variable and is only emitted when
+    ``strip_unset`` is true and the ContextVar is still ``_UNSET``.
+
+    This gives all subprocess/shell bridges one shared interpretation of the
+    session ContextVars: explicit empty values clear stale state, while gateway
+    callers can also make ``_UNSET`` authoritative and strip process-global
+    values that may belong to another concurrent session.
+    """
+    overlay: list[tuple[str, str | None]] = []
+    for var_name, var in _VAR_MAP.items():
+        value = var.get()
+        if value is _UNSET:
+            if strip_unset:
+                overlay.append((var_name, None))
+            continue
+        overlay.append((var_name, "" if value is None else str(value)))
+    return overlay
+
+
 def set_current_session_id(session_id: str) -> None:
     """Synchronize ``HERMES_SESSION_ID`` across ContextVar and ``os.environ``.
 

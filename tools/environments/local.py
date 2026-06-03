@@ -203,6 +203,27 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _inject_session_context_env(env: dict) -> None:
+    """Bridge explicitly-bound gateway session ContextVars into subprocess env.
+
+    An explicitly empty value is meaningful: it clears any stale session value
+    inherited from os.environ or a previous shell snapshot. Under the gateway,
+    an unset ContextVar is also meaningful: do not inherit a process-global
+    value that may have been written by a different concurrent session.
+    """
+    try:
+        from gateway.session_context import session_context_env_overlay
+    except ImportError:
+        return
+
+    under_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+    for var_name, value in session_context_env_overlay(strip_unset=under_gateway):
+        if value is None:
+            env.pop(var_name, None)
+            continue
+        env[var_name] = value
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -226,6 +247,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[key] = value
 
     _inject_context_hermes_home(sanitized)
+    _inject_session_context_env(sanitized)
 
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
@@ -387,16 +409,8 @@ def _make_run_env(env: dict) -> dict:
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(run_env)
 
-    # Inject ContextVar-based session vars into subprocess env.
-    # ContextVars don't propagate to child processes, so we bridge them here.
-    try:
-        from gateway.session_context import _UNSET, _VAR_MAP
-        for var_name, var in _VAR_MAP.items():
-            value = var.get()
-            if value is not _UNSET and value:
-                run_env[var_name] = value
-    except Exception:
-        pass
+    # ContextVars don't propagate to child processes, so bridge them here.
+    _inject_session_context_env(run_env)
 
     return run_env
 

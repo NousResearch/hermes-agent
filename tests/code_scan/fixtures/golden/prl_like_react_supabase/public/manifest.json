@@ -1,0 +1,6 @@
+{
+  "name": "PRL-like Fixture PWA",
+  "short_name": "PRL Fixture",
+  "start_url": "/",
+  "display": "standalone"
+}

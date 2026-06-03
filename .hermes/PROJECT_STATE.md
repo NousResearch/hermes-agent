@@ -460,3 +460,24 @@ Committed: `24356edcd` | Tests: 80 passed
 - Handoff: `.hermes/handoffs/2026-06-03-0507-ua-p5-008-subagent-context-critic-packs.md`.
 - Commit/push gate: no commit, push, merge, deploy, or production mutation performed; awaiting explicit JC approval for local checkpoint commit if desired.
 
+## UA Phase 5 Development Hardening — UA-P5-009 Start Checkpoint
+- Timestamp: 2026-06-03T06:16:01Z.
+- Bead: `UA-P5-009 - PRL-like Golden E2E Gate`.
+- Status: in progress, uncommitted.
+- Base: `5528bcfee` (`feat(code-scan): checkpoint UA phase 5 critic packs`).
+- Safety decision: safe to execute because fixture must be tiny, synthetic, and must not copy PRL/Muster source; target is tests/fixtures only plus E2E test assertions.
+- Scope: add/extend synthetic fixture under `tests/code_scan/fixtures/golden/prl_like_react_supabase/` and E2E coverage in `tests/code_scan/test_e2e_ua_workflow.py` for manifest trust fields, runtime-readiness package-manager behavior, orphan taxonomy categories, domain surfaces, report confidence labels/boundaries, and subagent critic packs.
+- Required canonical smoke: run `scripts/code-scan/run_ua.py --mode review --read-only-target --external-cache-dir` against the fixture and inspect required artifacts.
+- Commit/push gate: no commit, push, merge, deploy, production mutation, PRL source copying, new dependencies, provider/LLM calls, or production repo mutation without separate JC approval.
+
+## UA Phase 5 Development Hardening — UA-P5-009 Completion Checkpoint
+- Timestamp: 2026-06-03T07:01:11Z.
+- Bead: `UA-P5-009 - PRL-like Golden E2E Gate`.
+- Status: implemented, reviewer PASS, uncommitted pending JC checkpoint approval.
+- Deterministic changes: added synthetic PRL-like React/Supabase/PWA golden fixture; added explicit P5 E2E gate; wired `run_ua.py` raw `REPORT.md` path to include deterministic P5-006 boundary/confidence language.
+- Canonical smoke: PASS with fresh external output/cache directories; worktree fixture manifest reported `target_cleanliness_status=preexisting_dirty` because new fixture files remain uncommitted, while isolated E2E temp-copy test verifies `clean`.
+- Verification: `python -m pytest tests/code_scan/test_e2e_ua_workflow.py::TestPhase5PrlLikeGoldenE2EGate -q` PASS; `python -m py_compile scripts/code-scan/run_ua.py` PASS; `git diff --check` PASS; canonical smoke PASS; `python -m pytest tests/code_scan/test_e2e_ua_workflow.py -q` PASS (`60 passed`); `python -m pytest tests/code_scan -q` PASS (`1011 passed`); added-lines secret scan PASS.
+- Reviewer: targeted reviewer PASS; fixture synthetic/safe, report addition deterministic, E2E contract appropriate, no scope creep found.
+- Diff artifact: `/tmp/ua-p5-009-diff.patch` (`383` lines, `14531` bytes) for code/test/fixture changes, excluding this ledger entry.
+- Commit/push gate: no commit, push, merge, deploy, production mutation, PRL source copying, dependency install, provider/LLM production call, or production repo mutation performed.
+

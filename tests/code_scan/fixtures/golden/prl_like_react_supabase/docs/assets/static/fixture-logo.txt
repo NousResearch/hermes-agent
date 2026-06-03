@@ -1,0 +1,2 @@
+fixture-logo
+tiny-text-placeholder

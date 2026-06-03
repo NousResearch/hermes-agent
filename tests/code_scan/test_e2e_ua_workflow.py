@@ -31,6 +31,7 @@ FIXTURE_NAMES = [
     "mixed_docs_assets",
     "ts_react_light",
     "suspicious_isolated",
+    "prl_like_react_supabase",
 ]
 
 
@@ -569,6 +570,92 @@ class TestPhase1E2EGate:
         assert manifest.get("project_state_append_status") == "not_attempted", (
             f"Expected 'not_attempted' by default, got {manifest.get('project_state_append_status')}"
         )
+
+
+# ── UA-P5-009: PRL-like golden E2E gate ───────────────────────────────────────
+
+class TestPhase5PrlLikeGoldenE2EGate:
+    """Exercise Phase 5 fields on a realistic but fully synthetic fixture."""
+
+    def test_prl_like_fixture_surfaces_phase5_contract(self, tmp_path: Path):
+        """Review mode must expose trust, readiness, domain, report, and critic fields."""
+        src = GOLDEN_DIR / "prl_like_react_supabase"
+        target = tmp_path / "prl_like_react_supabase"
+        shutil.copytree(src, target)
+
+        out = tmp_path / "bundle"
+        cache = tmp_path / "external-cache"
+        rc, _, stderr = run_ua(
+            str(target),
+            str(out),
+            mode="review",
+            extra_args=["--read-only-target", "--external-cache-dir", str(cache)],
+        )
+        assert rc == 0, f"review failed for PRL-like fixture: {stderr}"
+
+        required_artifacts = [
+            "manifest.json",
+            "REPORT.md",
+            "validation.json",
+            "runtime-readiness.json",
+            "runtime-readiness.md",
+            "subagent-context.json",
+            "domain-surfaces.json",
+        ]
+        for artifact in required_artifacts:
+            assert (out / artifact).exists(), f"Missing P5 artifact: {artifact}"
+
+        manifest = load_json(out / "manifest.json")
+        assert manifest["status"] == "complete"
+        assert manifest["target_mutation_allowed"] is False
+        assert manifest["target_cleanliness_status"] == "clean"
+        assert manifest["unexpected_target_changes"] == []
+        assert "provenance" in manifest
+        assert "artifact_integrity" in manifest
+        assert "REPORT.md" in manifest["artifact_integrity"]
+
+        readiness = load_json(out / "runtime-readiness.json")
+        assert "node" in readiness.get("detected_stacks", [])
+        gates = readiness.get("verification_gates", [])
+        assert any(
+            gate.get("stack") == "node"
+            and gate.get("status") == "suggested_not_run"
+            for gate in gates
+        ), "runtime-readiness must suggest but not run node verification"
+
+        validation = load_json(out / "validation.json")
+        assert validation.get("warnings"), "fixture should surface orphan warnings"
+        assert "severity_summary" in validation
+        assert any(
+            "Orphan node" in warning for warning in validation.get("warnings", [])
+        )
+
+        domain = load_json(out / "domain-surfaces.json")
+        surface_types = domain.get("summary", {}).get("surface_types", {})
+        for surface_type in [
+            "package_scripts",
+            "pwa_manifest",
+            "supabase_edge_function",
+            "supabase_migration",
+            "vite_config",
+        ]:
+            assert surface_types.get(surface_type, 0) >= 1
+
+        context = load_json(out / "subagent-context.json")
+        critic_packs = context.get("critic_packs", {})
+        for pack in ["reviewer_critic", "researcher_scout", "coder_preflight"]:
+            assert pack in critic_packs
+        assert critic_packs["reviewer_critic"]["domain_surface_inventory_summary"]["available"] is True
+
+        report = (out / "REPORT.md").read_text()
+        assert "What UA proves / What UA does not prove" in report
+        assert (
+            "does not prove security, deployment readiness, RLS correctness, or runtime correctness"
+            in report
+        )
+        assert "Confidence labels" in report
+        assert "deterministic_fact" in report
+        assert "suggested_verification_not_run" in report
 
 
 # ── UA-P1-005: Docs must not overclaim runtime test success ────────────────

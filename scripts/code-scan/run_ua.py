@@ -324,6 +324,12 @@ class RunUA:
             f"- **Mode**: `{self.mode}`",
             f"- **Timestamp**: {s.get('timestamp', 'N/A')}",
             "",
+            "## What UA proves / What UA does not prove",
+            "",
+            "UA proves deterministic inventory, import graph, graph validation, and artifact provenance facts captured in this bundle; it does not prove security, deployment readiness, RLS correctness, or runtime correctness.",
+            "",
+            "Confidence labels used in this report: deterministic_fact, static_analysis_finding, heuristic_signal, inferred_summary, suggested_verification_not_run, executed_external_gate, outside_ua_scope.",
+            "",
             "## Artifacts",
             "",
         ]

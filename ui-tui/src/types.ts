@@ -90,6 +90,7 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  allowPermanent?: boolean
   command: string
   description: string
 }

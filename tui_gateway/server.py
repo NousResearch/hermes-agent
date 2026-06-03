@@ -1986,6 +1986,36 @@ def _wire_callbacks(sid: str):
     set_secret_capture_callback(secret_cb)
 
 
+def _bind_turn_thread_callbacks(sid: str):
+    """Install per-turn interactive callbacks inside the worker thread.
+
+    ``tools.terminal_tool`` stores approval/sudo callbacks in
+    ``threading.local()``. TUI turns run in ad-hoc worker threads spawned by
+    ``prompt.submit``, so registering callbacks during session setup or agent
+    build leaves those worker threads with empty callback slots. The result is
+    a silent approval timeout in desktop/dashboard mode. Bind the callbacks in
+    the exact turn thread, matching CLI/ACP's thread-local pattern.
+    """
+    from tools.terminal_tool import set_approval_callback, set_sudo_password_callback
+
+    set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+
+    def approval_cb(command: str, description: str, allow_permanent: bool = True) -> str:
+        choice = _block(
+            "approval.request",
+            sid,
+            {
+                "allow_permanent": bool(allow_permanent),
+                "command": command,
+                "description": description,
+            },
+            timeout=60,
+        )
+        return str(choice or "deny")
+
+    set_approval_callback(approval_cb)
+
+
 def _render_personality_prompt(value) -> str:
     if isinstance(value, dict):
         parts = [value.get("system_prompt", "")]
@@ -4091,11 +4121,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         goal_followup = None  # set by the post-turn goal hook below
         try:
+            from tools.terminal_tool import set_approval_callback, set_sudo_password_callback
             from tools.approval import (
                 reset_current_session_key,
                 set_current_session_key,
             )
 
+            _bind_turn_thread_callbacks(sid)
             approval_token = set_current_session_key(session["session_key"])
             session_tokens = _set_session_context(session["session_key"])
             cwd = _session_cwd(session)
@@ -4417,6 +4449,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
+            except Exception:
+                pass
+            try:
+                set_sudo_password_callback(None)
+                set_approval_callback(None)
             except Exception:
                 pass
             _clear_session_context(session_tokens)

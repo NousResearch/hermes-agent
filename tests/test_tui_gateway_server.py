@@ -2371,6 +2371,78 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert captured["session_key"] == "session-key"
 
 
+def test_prompt_submit_registers_thread_local_approval_callbacks(monkeypatch):
+    from tools.terminal_tool import _get_approval_callback, _get_sudo_password_callback
+
+    captured = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            approval_cb = _get_approval_callback()
+            sudo_cb = _get_sudo_password_callback()
+            captured["approval"] = approval_cb
+            captured["sudo"] = sudo_cb
+            captured["approval_result"] = approval_cb(
+                "rm -rf /tmp/test",
+                "dangerous command",
+                allow_permanent=False,
+            )
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    events = []
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(
+        server,
+        "_block",
+        lambda kind, sid, payload, timeout=60: (
+            events.append((kind, sid, payload, timeout)) or "deny"
+        ),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "ping"},
+        }
+    )
+
+    assert resp["result"]["status"] == "streaming"
+    assert callable(captured["approval"])
+    assert callable(captured["sudo"])
+    assert captured["approval_result"] == "deny"
+    assert events == [
+        (
+            "approval.request",
+            "sid",
+            {
+                "allow_permanent": False,
+                "command": "rm -rf /tmp/test",
+                "description": "dangerous command",
+            },
+            60,
+        )
+    ]
+    assert _get_approval_callback() is None
+    assert _get_sudo_password_callback() is None
+
+
 def test_prompt_submit_expands_context_refs(monkeypatch):
     captured = {}
 

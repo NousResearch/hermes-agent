@@ -1,0 +1,14 @@
+services:
+  browser-tools:
+    build:
+      context: ./deploy/browser-tools-sidecar
+    image: hermes-browser-tools:local
+    environment:
+      BROWSER_TOOLS_ARTIFACT_DIR: /tmp/browser-tools-artifacts
+    ports:
+      - "127.0.0.1:8790:8790"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8790/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

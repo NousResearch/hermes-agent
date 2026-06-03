@@ -2791,7 +2791,7 @@ def _run_portal_one_shot(config: dict) -> None:
         except SystemExit as e:
             print()
             print_error(f"  Nous Portal login failed (exit {e.code}).")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
+            print_info("  You can retry later with `hermes portal`.")
             return
         except (KeyboardInterrupt, EOFError):
             print()
@@ -2800,7 +2800,7 @@ def _run_portal_one_shot(config: dict) -> None:
         except Exception as exc:
             print()
             print_error(f"  Nous Portal login failed: {exc}")
-            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
+            print_info("  You can retry later with `hermes portal`.")
             return
 
     # Set provider → nous so the model picker, status surfaces, and

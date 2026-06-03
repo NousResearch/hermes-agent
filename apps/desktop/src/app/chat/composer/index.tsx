@@ -31,6 +31,7 @@ import {
   enqueueQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
+  shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $messages } from '@/store/session'
@@ -124,6 +125,12 @@ export function ChatBar({
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
+  // Set when the user explicitly interrupts the running turn via the Stop
+  // button (busy + empty composer). It suppresses the next busy→false
+  // auto-drain so an explicit Stop actually halts instead of immediately
+  // firing the head of the queue. The queue is preserved; the user resumes
+  // it deliberately via Cmd/Ctrl+K, Enter, or the per-row "send now" arrow.
+  const userInterruptedRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
@@ -859,26 +866,42 @@ export function ChatBar({
     [queueEdit, runDrain]
   )
 
-  const interruptAndSendNextQueued = useCallback(async () => {
-    if (queuedPrompts.length === 0) {
-      return false
-    }
-
-    await Promise.resolve(onCancel())
-
-    return drainNextQueued()
-  }, [drainNextQueued, onCancel, queuedPrompts.length])
-
-  // Auto-drain on busy → false (turn settled).
+  // Auto-drain on busy → false (turn settled). An explicit user interrupt
+  // (Stop button) sets userInterruptedRef so we skip exactly one auto-drain:
+  // the user asked to halt, so we must not immediately re-send the queue.
+  // The queued turns stay intact and the user resumes them on demand.
   useEffect(() => {
     const wasBusy = previousBusyRef.current
     previousBusyRef.current = busy
 
-    if (busy || !wasBusy || queuedPrompts.length === 0) {
+    // Clear the interrupt latch when a new turn starts (false → true). This
+    // guards the sub-frame race where a Stop click lands after busy already
+    // flipped false (button not yet unmounted): the stale latch can no longer
+    // survive into the next turn and wrongly suppress its natural auto-drain.
+    if (busy && !wasBusy) {
+      userInterruptedRef.current = false
+
       return
     }
 
-    void drainNextQueued()
+    const interrupted = userInterruptedRef.current
+
+    // Consume the interrupt latch on any settle so a later natural completion
+    // is not wrongly suppressed.
+    if (!busy && wasBusy && interrupted) {
+      userInterruptedRef.current = false
+    }
+
+    if (
+      shouldAutoDrainOnSettle({
+        isBusy: busy,
+        queueLength: queuedPrompts.length,
+        userInterrupted: interrupted,
+        wasBusy
+      })
+    ) {
+      void drainNextQueued()
+    }
   }, [busy, drainNextQueued, queuedPrompts.length])
 
   // Clean up queue edit when its target disappears (session swap or external delete).
@@ -901,9 +924,13 @@ export function ChatBar({
     } else if (busy) {
       if (hasComposerPayload) {
         queueCurrentDraft()
-      } else if (queuedPrompts.length > 0) {
-        void interruptAndSendNextQueued()
       } else {
+        // Stop button: an explicit interrupt must actually halt the running
+        // turn. Mark the interrupt so the busy→false auto-drain effect skips
+        // re-sending the queue — otherwise a queued follow-up would fire the
+        // instant we cancel and Stop would appear to "never work". Queued
+        // turns are preserved; the user sends them on demand.
+        userInterruptedRef.current = true
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }

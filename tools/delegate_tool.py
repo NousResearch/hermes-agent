@@ -1924,6 +1924,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2017,7 +2018,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "model": model}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2063,7 +2064,7 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=t.get("model") or creds["model"],  # Per-task model override
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2736,6 +2737,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task model override (e.g. 'opencode-go/mimo-v2.5' or 'opencode-go/dsv4-flash'). If not set, inherits from delegation config. Enables dynamic-workflow skill to mix models within a single batch.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2748,6 +2753,16 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override model for this delegation call. "
+                    "Use exact model IDs like 'deepseek-v4-flash' or 'mimo-v2.5'. "
+                    "When set, ALL children in this call use this model instead of "
+                    "the delegation config default. For per-task model mixing, "
+                    "use the 'model' field inside each task object instead."
+                ),
             },
             "acp_command": {
                 "type": "string",
@@ -2793,6 +2808,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

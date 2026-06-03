@@ -11243,7 +11243,7 @@ class GatewayRunner:
 
             # Resolve using same provider infrastructure as /model
             try:
-                from hermes_cli.cli import _resolve_moac_spec
+                from hermes_cli.moa_config import resolve_moac_spec as _resolve_moac_spec
             except ImportError:
                 return "✗ Could not import model resolver"
 

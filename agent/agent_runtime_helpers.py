@@ -1467,13 +1467,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # openai-codex), the stale pool from the old provider would block all
         # credential rotation — every 429/402/401 gets the mismatch guard and
         # the agent is stuck retrying the same exhausted key (see #33538).
-        _existing_pool = getattr(agent, "_credential_pool", None)
-        if _existing_pool is not None:
-            _old_pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
-            if _old_pool_provider and _old_pool_provider != new_provider:
+        if new_provider:
+            _existing_pool = getattr(agent, "_credential_pool", None)
+            _old_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower() if _existing_pool else ""
+            if _old_provider != new_provider:
                 _reload_pool_for_provider(agent, new_provider)
-        elif new_provider:
-            _reload_pool_for_provider(agent, new_provider)
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":

@@ -869,6 +869,92 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return tool_error(error_msg)
 
 
+async def _builtin_http_extract(urls: List[str], format: str = None) -> List[Dict[str, Any]]:
+    """Builtin HTTP fallback: fetch URLs with httpx and extract text content.
+
+    Used when no extract-capable provider is configured (e.g. only SearXNG).
+    Returns a list of result dicts compatible with the web_extract pipeline.
+    """
+    import httpx
+    import re as _re
+
+    def _html_to_text(html: str) -> str:
+        """Strip HTML tags and collapse whitespace, keeping text content."""
+        # Remove script/style blocks
+        text = _re.sub(r'<(script|style|noscript)[^>]*>.*?</\1>', '', html, flags=_re.DOTALL | _re.IGNORECASE)
+        # Remove HTML comments
+        text = _re.sub(r'<!--.*?-->', '', text, flags=_re.DOTALL)
+        # Replace block elements with newlines
+        text = _re.sub(r'<(br|hr|/p|/div|/h[1-6]|/li|/tr|/blockquote)[^>]*>', '\n', text, flags=_re.IGNORECASE)
+        # Remove all remaining tags
+        text = _re.sub(r'<[^>]+>', '', text)
+        # Decode HTML entities
+        try:
+            from html import unescape
+            text = unescape(text)
+        except Exception:
+            pass
+        # Collapse whitespace
+        text = _re.sub(r'[ \t]+', ' ', text)
+        text = _re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    results = []
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers={
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }) as client:
+        for url in urls:
+            try:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+
+                if "pdf" in content_type or url.lower().endswith(".pdf"):
+                    # For PDFs, return the raw content with a note
+                    results.append({
+                        "url": url,
+                        "title": url.split("/")[-1] or url,
+                        "content": f"[PDF content — {len(resp.content)} bytes. Use browser tool to view.]",
+                        "raw_content": f"[PDF content — {len(resp.content)} bytes]",
+                        "error": None,
+                    })
+                else:
+                    html = resp.text
+                    # Try to extract title
+                    title_match = _re.search(r'<title[^>]*>([^<]+)</title>', html, _re.IGNORECASE)
+                    title = title_match.group(1).strip() if title_match else url
+                    # Convert HTML to text
+                    text = _html_to_text(html)
+                    if not text or len(text) < 50:
+                        results.append({
+                            "url": url,
+                            "title": title,
+                            "content": "",
+                            "raw_content": "",
+                            "error": "Empty or minimal content after extraction",
+                        })
+                    else:
+                        results.append({
+                            "url": url,
+                            "title": title,
+                            "content": text,
+                            "raw_content": text,
+                            "error": None,
+                        })
+            except Exception as exc:
+                logger.warning("Builtin HTTP extract failed for %s: %s", url, exc)
+                results.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": f"HTTP extraction failed: {exc}",
+                })
+    return results
+
+
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
@@ -965,52 +1051,33 @@ async def web_extract_tool(
             if provider is None or not provider.supports_extract():
                 # When the configured name IS registered but doesn't support
                 # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
+                # searxng), try the active-provider walk first, then fall
+                # through to the builtin HTTP fallback.
                 if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
-                provider = get_active_extract_provider()
-                if provider is None:
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
+                    provider = get_active_extract_provider()
+                elif provider is None:
+                    provider = get_active_extract_provider()
+
+                if provider is None or not provider.supports_extract():
+                    # ── Builtin HTTP fallback: fetch URL content directly ──
+                    logger.info("No extract-capable provider available, using builtin HTTP fallback")
+                    results = await _builtin_http_extract(safe_urls, format=format)
+                else:
+                    logger.info(
+                        "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
                     )
 
-            logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
-            )
-
-            # Async-or-sync dispatch: parallel + firecrawl have async
-            # extract(); exa + tavily are sync.
-            import inspect
-            if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
-            else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
-                )
+                    # Async-or-sync dispatch: parallel + firecrawl have async
+                    # extract(); exa + tavily are sync.
+                    import inspect
+                    if inspect.iscoroutinefunction(provider.extract):
+                        results = await provider.extract(safe_urls, format=format)
+                    else:
+                        # Run sync extract() in a thread so we don't block the
+                        # event loop on network I/O.
+                        results = await asyncio.to_thread(
+                            provider.extract, safe_urls, format=format
+                        )
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:

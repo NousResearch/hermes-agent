@@ -1158,19 +1158,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                     "(old pool_provider=%s, new=%s)",
                     fb_provider, fb_model, _pool_provider, fb_provider,
                 )
-                try:
-                    from agent.credential_pool import load_pool
-                    new_pool = load_pool(fb_provider)
-                    if new_pool and new_pool.has_credentials():
-                        agent._credential_pool = new_pool
-                        logger.info(
-                            "Fallback: reloaded credential pool for %s (%d entries)",
-                            fb_provider, len(new_pool.entries()),
-                        )
-                    else:
-                        agent._credential_pool = None
-                except Exception as exc:
-                    logger.debug("Fallback: could not load pool for %s: %s", fb_provider, exc)
+                from agent.agent_runtime_helpers import _reload_pool_for_provider
+                reloaded = _reload_pool_for_provider(agent, fb_provider)
+                if reloaded is None:
                     agent._credential_pool = None
 
         # Honor per-provider / per-model request_timeout_seconds for the

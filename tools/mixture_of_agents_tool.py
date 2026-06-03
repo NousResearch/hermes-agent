@@ -200,6 +200,47 @@ def _extract_content(response: Any) -> str:
         return ""
 
 
+async def _dispatch_llm_call(
+    model_spec: ModelSpec,
+    messages: List[Dict[str, str]],
+    temperature: float,
+    max_tokens: Optional[int] = None,
+    extra_body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Dispatch an LLM call to the correct backend based on model_spec.
+
+    Provider-routed specs (dict with non-openrouter provider) go through
+    ``async_call_llm``; OpenRouter strings and openrouter-routed dicts go
+    through the OpenRouter client.  Single helper, single decision point.
+    """
+    provider = _model_provider(model_spec)
+    model_name = _model_name(model_spec)
+
+    if isinstance(model_spec, dict) and provider and provider != "openrouter":
+        return await async_call_llm(
+            task="moa",
+            provider=provider,
+            model=model_name,
+            base_url=str(model_spec.get("base_url") or "") or None,
+            api_key=str(model_spec.get("api_key") or "") or None,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=float(model_spec.get("timeout") or 300),
+            extra_body=extra_body or {},
+        )
+
+    api_params: Dict[str, Any] = {
+        "model": model_name,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "extra_body": extra_body or {},
+    }
+    if not model_name.lower().startswith("gpt-"):
+        api_params["temperature"] = temperature
+    return await _get_openrouter_client().chat.completions.create(**api_params)
+
+
 def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> str:
     """
     Construct the final system prompt for the aggregator including all model responses.
@@ -238,36 +279,11 @@ async def _run_reference_model_safe(
     for attempt in range(max_retries):
         try:
             model_label = _model_label(model)
-            model_name = _model_name(model)
-            provider = _model_provider(model)
             logger.info("Querying %s (attempt %s/%s)", model_label, attempt + 1, max_retries)
 
             messages = _build_messages_for_reference(model, user_prompt)
             extra_body = _reasoning_extra_body_for_model(model)
-
-            if isinstance(model, dict) and provider != "openrouter":
-                response = await async_call_llm(
-                    task="moa",
-                    provider=provider,
-                    model=model_name,
-                    base_url=str(model.get("base_url") or "") or None,
-                    api_key=str(model.get("api_key") or "") or None,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=float(model.get("timeout") or 300),
-                    extra_body=extra_body,
-                )
-            else:
-                api_params = {
-                    "model": model_name,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "extra_body": extra_body,
-                }
-                if not model_name.lower().startswith('gpt-'):
-                    api_params["temperature"] = temperature
-                response = await _get_openrouter_client().chat.completions.create(**api_params)
+            response = await _dispatch_llm_call(model, messages, temperature, max_tokens, extra_body)
 
             content = _extract_content(response)
             if not content:
@@ -321,8 +337,6 @@ async def _run_aggregator_model(
         str: Synthesized final response
     """
     agg_spec = aggregator_model or AGGREGATOR_MODEL
-    provider = _model_provider(agg_spec)
-    model_name = _model_name(agg_spec)
     logger.info("Running aggregator model: %s", _model_label(agg_spec))
 
     messages = [
@@ -330,51 +344,14 @@ async def _run_aggregator_model(
         {"role": "user", "content": user_prompt}
     ]
     extra_body = _reasoning_extra_body_for_model(agg_spec)
-
-    if isinstance(agg_spec, dict) and provider != "openrouter":
-        response = await async_call_llm(
-            task="moa",
-            provider=provider,
-            model=model_name,
-            base_url=str(agg_spec.get("base_url") or "") or None,
-            api_key=str(agg_spec.get("api_key") or "") or None,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=float(agg_spec.get("timeout") or 300),
-            extra_body=extra_body,
-        )
-    else:
-        api_params = {
-            "model": model_name,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "extra_body": extra_body,
-        }
-        if not model_name.lower().startswith('gpt-'):
-            api_params["temperature"] = temperature
-        response = await _get_openrouter_client().chat.completions.create(**api_params)
+    response = await _dispatch_llm_call(agg_spec, messages, temperature, max_tokens, extra_body)
 
     content = _extract_content(response)
 
     # Retry once on empty content (reasoning-only response)
     if not content:
         logger.warning("Aggregator returned empty content, retrying once")
-        if isinstance(agg_spec, dict) and provider != "openrouter":
-            response = await async_call_llm(
-                task="moa",
-                provider=provider,
-                model=model_name,
-                base_url=str(agg_spec.get("base_url") or "") or None,
-                api_key=str(agg_spec.get("api_key") or "") or None,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=float(agg_spec.get("timeout") or 300),
-                extra_body=extra_body,
-            )
-        else:
-            response = await _get_openrouter_client().chat.completions.create(**api_params)
+        response = await _dispatch_llm_call(agg_spec, messages, temperature, max_tokens, extra_body)
         content = extract_content_or_reasoning(response)
 
     logger.info("Aggregation complete (%s characters)", len(content))

@@ -34,10 +34,6 @@ def resolve_moac_spec(provider_model: str) -> dict[str, str] | None:
     return None
 
 
-# Backward-compatible name used by older gateway code/tests.
-_resolve_moac_spec = resolve_moac_spec
-
-
 def list_moac_available(max_models: int = 20) -> list[dict[str, Any]]:
     """Return available authenticated providers and model samples for /moac."""
     try:

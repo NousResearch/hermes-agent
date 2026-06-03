@@ -669,8 +669,18 @@ def cmd_update(name: str) -> None:
             f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date."
         )
     else:
+        manifest = _read_manifest(target)
+        review_names = _plugin_review_names(name, target, manifest)
+        _prompt_plugin_env_vars(manifest, console)
+        _display_after_install(target, name)
+        disabled_for_review = _disable_enabled_plugin_names(review_names)
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
         console.print(f"[dim]{out}[/dim]")
+        if disabled_for_review:
+            console.print(
+                "[yellow]Review required:[/yellow] Updated plugin content was "
+                "disabled until you explicitly enable it again."
+            )
 
 
 def cmd_remove(name: str) -> None:
@@ -1958,7 +1968,21 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
 
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg
-    return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+    review_required = False
+    enabled_after_update = name in _get_enabled_set() and name not in _get_disabled_set()
+    if not unchanged:
+        manifest = _read_manifest(target)
+        review_names = _plugin_review_names(name, target, manifest)
+        review_required = _disable_enabled_plugin_names(review_names)
+        enabled_after_update = not review_required
+    return {
+        "ok": True,
+        "name": name,
+        "output": msg,
+        "unchanged": unchanged,
+        "review_required": review_required,
+        "enabled_after_update": enabled_after_update,
+    }
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:

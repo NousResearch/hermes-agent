@@ -452,10 +452,17 @@ class TestCmdInstall:
 class TestCmdUpdate:
     """Test the update command."""
 
+    @patch("hermes_cli.plugins_cmd._display_after_install")
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
+    def test_update_git_pull_success(
+        self,
+        mock_run,
+        mock_plugins_dir,
+        mock_sanitize,
+        mock_display_after_install,
+    ):
         from hermes_cli.plugins_cmd import cmd_update
 
         mock_plugins_dir_val = MagicMock()
@@ -472,6 +479,7 @@ class TestCmdUpdate:
         cmd_update("test-plugin")
 
         mock_run.assert_called_once()
+        mock_display_after_install.assert_called_once()
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -489,6 +497,60 @@ class TestCmdUpdate:
             cmd_update("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
+    def test_update_changed_enabled_plugin_disables_until_review(self, tmp_path, monkeypatch):
+        from hermes_cli.plugins_cmd import cmd_update
+        import hermes_cli.plugins_cmd as pc
+
+        hermes_home = tmp_path / "hermes"
+        plugins_dir = hermes_home / "plugins"
+        plugin_dir = plugins_dir / "review_me"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / ".git").mkdir()
+        (plugin_dir / "plugin.yaml").write_text("name: review_me\n", encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["review_me"], "disabled": []}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(pc, "_git_pull_plugin_dir", lambda _target: (True, "Fast-forward\n"))
+        monkeypatch.setattr(pc, "_copy_example_files", lambda *_args, **_kw: None)
+        monkeypatch.setattr(pc, "_prompt_plugin_env_vars", lambda *_args, **_kw: None)
+        monkeypatch.setattr(pc, "_display_after_install", lambda *_args, **_kw: None)
+
+        cmd_update("review_me")
+
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["plugins"]["enabled"] == []
+        assert cfg["plugins"]["disabled"] == ["review_me"]
+
+    def test_dashboard_update_changed_enabled_plugin_reports_review_required(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.plugins_cmd as pc
+
+        hermes_home = tmp_path / "hermes"
+        plugins_dir = hermes_home / "plugins"
+        plugin_dir = plugins_dir / "review_me"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / ".git").mkdir()
+        (plugin_dir / "plugin.yaml").write_text("name: review_me\n", encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["review_me"], "disabled": []}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(pc, "_git_pull_plugin_dir", lambda _target: (True, "Fast-forward\n"))
+        monkeypatch.setattr(pc, "_copy_example_files", lambda *_args, **_kw: None)
+
+        result = pc.dashboard_update_user_plugin("review_me")
+
+        assert result["ok"] is True
+        assert result["review_required"] is True
+        assert result["enabled_after_update"] is False
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["plugins"]["enabled"] == []
+        assert cfg["plugins"]["disabled"] == ["review_me"]
 
 
 # ── cmd_remove tests ─────────────────────────────────────────────────────────

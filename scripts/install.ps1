@@ -1010,9 +1010,12 @@ function Install-Repository {
         # directory OR a symlink OR a submodule-style gitfile -- and also when
         # it's a broken stub left over from a failed previous install (e.g.
         # a partial Remove-Item that couldn't delete a locked index.lock).
-        # Validate the repo properly by asking git itself.  Two checks
-        # belt-and-braces: rev-parse AND git status.  If either fails the
-        # repo is broken and we fall through to a fresh clone.
+        # Validate the repo properly by asking git itself.  Three checks
+        # belt-and-braces: rev-parse, git status, and a real HEAD commit.
+        # If any fails the repo is broken and we fall through to a fresh
+        # clone.  The HEAD check catches ZIP-fallback/partial installs that
+        # initialized .git but never created a commit; otherwise the update
+        # path later fails at "git checkout main".
         $repoValid = $false
         if (Test-Path "$InstallDir\.git") {
             Push-Location $InstallDir
@@ -1027,7 +1030,11 @@ function Install-Repository {
                 $null = & git -c windows.appendAtomically=false status --short 2>&1
                 $statusOk = ($LASTEXITCODE -eq 0)
 
-                if ($revParseOk -and $statusOk) {
+                $global:LASTEXITCODE = 0
+                $null = & git -c windows.appendAtomically=false rev-parse --verify HEAD 2>&1
+                $headOk = ($LASTEXITCODE -eq 0)
+
+                if ($revParseOk -and $statusOk -and $headOk) {
                     $repoValid = $true
                 }
             } catch {}

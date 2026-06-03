@@ -616,6 +616,25 @@ def test_block_rejects_empty_reason(worker_env):
         assert json.loads(out).get("error")
 
 
+def test_block_rejects_review_only_handoff(worker_env):
+    """Review handoffs must complete with metadata, not freeze the graph."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_block({"reason": "review-required: ready for reviewer"})
+    err = json.loads(out).get("error", "")
+    assert "Review/sign-off is not a Kanban blocker" in err
+    assert "kanban_complete" in err
+
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
 def test_heartbeat_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "progress"})
@@ -1219,6 +1238,9 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert "Do not block merely for review/sign-off" in prompt
+    assert "ready_for_review: true" in prompt
+    assert "review-required" not in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 

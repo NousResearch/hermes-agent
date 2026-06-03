@@ -56,15 +56,16 @@ Hermes Kanban 拥有生命周期的真实状态——`ready` → `running` → `
 
 kanban 内核强制要求每次运行恰好由其中一项终止。既未调用任何终止工具又正常退出的 worker 将被视为崩溃。
 
-## 输出与 review-required 约定
+## 输出与下游审查
 
-对于大多数涉及代码变更的任务，worker 完成的那一刻并不意味着真正*完成*——还需要人工审查。kanban 内核不强制执行这一区分（"涉及代码变更的任务"定义模糊，且在每个代码 worker 上强制 block 而非 complete 会破坏不需要审查的流程）。这是叠加在上层的约定：
+Worker 在自己的验收标准满足并验证后应当 complete。审查是后续工作，不是 producer 卡片的阻塞条件：
 
-- **使用 block 而非 complete**，`reason` 以 `review-required: ` 为前缀，使仪表板 / `hermes kanban show` 将该行显示为等待审查。
-- **先将结构化元数据写入 `kanban_comment`**，因为 `kanban_block` 只携带人类可读的 `reason`。Comment 是持久的注解通道——所有与审计相关的字段（changed_files、tests_run、diff_path 或 PR url、决策记录）都应放在这里。
-- **Reviewer 批准并解除阻塞**，这将重新生成 worker 并附带 comment 线程用于后续跟进；或通过另一条 comment 要求修改，下一次 worker 运行时将通过 `kanban_show` 的上下文看到这些内容。
+- **用结构化证据 complete producer 工作**：`kanban_complete(summary=..., metadata=...)`。
+- **把审查交接信息放进 metadata**：changed_files、tests_run/tests_passed、diff_path 或 PR URL、decisions、artifacts，以及需要审查时的 `ready_for_review: true`。
+- **用明确的 reviewer 子卡做审查**。Reviewer 可以 complete 并附 findings，或创建后续修复卡。
+- **只把真实阻塞用于 `kanban_block(reason=...)`**：缺少凭据、硬件/服务不可用、验证失败导致验收标准未满足，或需求歧义会实质改变工作。
 
-[`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill 中有 `kanban_complete`（真正终态的任务——拼写修复、文档变更、研究报告）和 `review-required` block 模式的完整示例。
+Kanban 内核会拒绝通用 review/sign-off block 原因，因为 blocked producer 卡会冻结依赖推进并卡住多 agent 图。
 
 ## 日志与审计追踪
 

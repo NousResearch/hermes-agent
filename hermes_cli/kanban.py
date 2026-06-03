@@ -1941,16 +1941,25 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
+    if kb.is_review_only_block_reason(reason):
+        print(kb.REVIEW_ONLY_BLOCK_MESSAGE, file=sys.stderr)
+        return 1
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
-            if not kb.block_task(
-                conn,
-                tid,
-                reason=reason,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                blocked = kb.block_task(
+                    conn,
+                    tid,
+                    reason=reason,
+                    expected_run_id=_worker_run_id_for(tid),
+                )
+            except ValueError as exc:
+                failed.append(tid)
+                print(f"cannot block {tid}: {exc}", file=sys.stderr)
+                continue
+            if not blocked:
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:

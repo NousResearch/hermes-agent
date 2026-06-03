@@ -65,28 +65,33 @@ kanban_complete(
 )
 ```
 
-**需要人工审查的编码任务（review-required）：**
+**带下游审查的编码任务：**
 
-对于大多数涉及代码变更的任务，在人工审查者过目之前，工作并未真正*完成*。应使用 block 而非 complete，并在 `reason` 前加 `review-required: ` 前缀，以便仪表板将该行标记为待审查。先将结构化元数据（变更文件、测试计数、diff/PR url）写入 comment，因为 `kanban_block` 只携带人类可读的原因——comment 是持久化注释的渠道。审查者可执行 `hermes kanban unblock <id>` 批准（这会携带 comment 线程重新派生你以处理后续事项），或通过另一条 comment 要求修改。
+如果卡片已经满足自身验收标准，并且看板中已有 reviewer/QA 子卡，**用结构化交接 complete producer 卡**。不要仅仅因为需要审查就 block；这会阻止依赖推进并卡住任务图。只有验收标准确实未满足，或存在具体前置条件/决策缺失时，才使用 `kanban_block`。
 
 ```python
-import json
-
-kanban_comment(
-    body="review-required handoff:\n" + json.dumps({
+kanban_complete(
+    summary="rate limiter implemented — token bucket, keys on user_id with IP fallback, 14/14 tests pass; ready for reviewer card",
+    metadata={
         "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
         "tests_run": 14,
         "tests_passed": 14,
         "diff_path": "/path/to/worktree",  # or PR url if pushed
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
-    }, indent=2),
-)
-kanban_block(
-    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
+        "ready_for_review": True,
+    },
 )
 ```
 
-仅在任务真正终结时使用 `kanban_complete`——例如单行拼写修复、无功能影响的文档变更，或产出物本身即为成果的研究任务。
+只有真实 blocker 才 block，并写清楚具体请求：
+
+```python
+kanban_block(
+    reason="Need rate-limit key decision: IP is simple but NAT-unsafe; user_id requires auth and skips anonymous endpoints.",
+)
+```
+
+即使后续还会有其他任务审查、集成或批准，只要当前任务自身产物已经完成并验证，就使用 `kanban_complete`。
 
 **研究任务：**
 ```python

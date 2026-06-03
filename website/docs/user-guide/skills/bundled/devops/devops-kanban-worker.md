@@ -65,28 +65,33 @@ kanban_complete(
 )
 ```
 
-**Coding task that needs human review (review-required):**
+**Coding task with downstream review:**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+If your card has met its acceptance criteria and the board already has a reviewer/QA child card, **complete the producer card** with a structured handoff. Do not block merely because review is desired; that stalls dependency promotion and can wedge the graph. Use `kanban_block` only when acceptance criteria are genuinely unmet or a concrete prerequisite/decision is missing.
 
 ```python
-import json
-
-kanban_comment(
-    body="review-required handoff:\n" + json.dumps({
+kanban_complete(
+    summary="rate limiter implemented — token bucket, keys on user_id with IP fallback, 14/14 tests pass; ready for reviewer card",
+    metadata={
         "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
         "tests_run": 14,
         "tests_passed": 14,
         "diff_path": "/path/to/worktree",  # or PR url if pushed
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
-    }, indent=2),
-)
-kanban_block(
-    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
+        "ready_for_review": True,
+    },
 )
 ```
 
-Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+Block instead only for a real blocker, with a concrete ask:
+
+```python
+kanban_block(
+    reason="Need rate-limit key decision: IP is simple but NAT-unsafe; user_id requires auth and skips anonymous endpoints.",
+)
+```
+
+Use `kanban_complete` when the task's own artifact is done and verified, even if another task will later review, integrate, or approve it.
 
 **Research task:**
 ```python

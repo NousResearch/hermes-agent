@@ -56,15 +56,16 @@ Every claim must end in exactly one of:
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.
 
-## Outputs and the review-required convention
+## Outputs and downstream review
 
-For most code-changing tasks, the work isn't truly *done* the moment the worker finishes — it needs a human reviewer. The kanban kernel doesn't enforce this distinction (a "code-changing task" is fuzzy and forcing block-instead-of-complete on every code worker would break flows where no review is wanted). It's a convention layered on top:
+A worker should complete once its own acceptance criteria are met and verified. Review is follow-up work, not a blocker for the producer card:
 
-- **Block instead of complete**, with `reason` prefixed `review-required: ` so the dashboard / `hermes kanban show` surfaces the row as awaiting review.
-- **Drop structured metadata into a `kanban_comment` first** since `kanban_block` only carries the human-readable `reason`. Comments are the durable annotation channel — every audit-relevant field (changed_files, tests_run, diff_path or PR url, decisions) belongs there.
-- **Reviewer either approves and unblocks**, which respawns the worker with the comment thread for follow-ups; or asks for changes via another comment, which the next worker run sees as part of `kanban_show`'s context.
+- **Complete producer work with structured evidence** via `kanban_complete(summary=..., metadata=...)`.
+- **Put review handoff data in metadata**: changed_files, tests_run/tests_passed, diff_path or PR URL, decisions, artifacts, and `ready_for_review: true` when a reviewer/QA/human should inspect it later.
+- **Use explicit reviewer child cards** for critique. The reviewer can complete with findings or create follow-up fix cards.
+- **Reserve `kanban_block(reason=...)` for real blockers**: missing credentials, unavailable hardware/services, failing verification that leaves acceptance criteria unmet, or ambiguous requirements that materially change the work.
 
-The [`kanban-worker`](https://github.com/NousResearch/hermes-agent/blob/main/skills/devops/kanban-worker/SKILL.md) skill has worked examples for both `kanban_complete` (truly terminal tasks — typo fixes, docs changes, research writeups) and the `review-required` block pattern.
+The kanban kernel rejects generic review/sign-off block reasons because blocked producer cards freeze dependency promotion and wedge multi-agent graphs.
 
 ## Logs and audit trail
 

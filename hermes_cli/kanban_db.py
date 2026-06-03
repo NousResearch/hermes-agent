@@ -103,6 +103,31 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
+_REVIEW_ONLY_BLOCK_RE = re.compile(
+    r"\b(?:review[-\s_]*required|ready[-\s_]*for[-\s_]*review|"
+    r"needs?[-\s_]*(?:human[-\s_]*)?review|human[-\s_]*eyes|"
+    r"sign[-\s_]*off)\b",
+    re.IGNORECASE,
+)
+
+REVIEW_ONLY_BLOCK_MESSAGE = (
+    "Review/sign-off is not a Kanban blocker. If the task's acceptance "
+    "criteria are met, use kanban_complete(summary=..., metadata={...}) "
+    "with ready_for_review=true and evidence. Reserve kanban_block for "
+    "real blockers such as missing credentials, unavailable hardware, "
+    "failed verification, or ambiguous requirements."
+)
+
+
+def is_review_only_block_reason(reason: Optional[str]) -> bool:
+    """Return True for generic review handoffs that should be completed.
+
+    ``blocked`` freezes dependency promotion. A generic "review required"
+    handoff is follow-up/reviewer work, not a prerequisite for the producer
+    card's own completion, so every Kanban entry point rejects this pattern.
+    """
+    return bool(reason and _REVIEW_ONLY_BLOCK_RE.search(str(reason)))
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -2847,10 +2872,11 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     A ``blocked`` status can come from two very different sources:
 
     * **Worker- or operator-initiated** — a worker called
-      ``kanban_block(reason="review-required: ...")`` (or somebody ran
-      ``hermes kanban block <id>``).  This is a deliberate handoff that
-      should stay blocked until an operator unblocks it.  The block tool
-      emits a ``"blocked"`` event row in ``task_events``.
+      ``kanban_block(reason="need missing credentials")`` (or somebody
+      ran ``hermes kanban block <id>``). This is a deliberate handoff
+      for a real blocker that should stay blocked until an operator
+      unblocks it. The block tool emits a ``"blocked"`` event row in
+      ``task_events``.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
@@ -2892,7 +2918,10 @@ def recompute_ready(
 
     1. The most recent block event was a worker-initiated
        ``kanban_block`` — those stay blocked until an explicit
-       ``kanban_unblock`` (#28712).
+       ``kanban_unblock`` (#28712). Without that guard, a stale
+       human-input handoff could auto-respawn, the fresh worker might
+       find nothing actionable to do, exit cleanly, get recorded as a
+       protocol violation, and the cycle would repeat indefinitely.
 
     2. The task's ``consecutive_failures`` has reached the effective
        failure limit.  This prevents infinite retry loops when a task
@@ -4052,6 +4081,8 @@ def block_task(
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
+    if is_review_only_block_reason(reason):
+        raise ValueError(REVIEW_ONLY_BLOCK_MESSAGE)
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(

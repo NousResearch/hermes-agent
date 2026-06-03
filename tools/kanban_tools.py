@@ -608,6 +608,9 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    from hermes_cli import kanban_db as _kb
+    if _kb.is_review_only_block_reason(str(reason)):
+        return tool_error(_kb.REVIEW_ONLY_BLOCK_MESSAGE)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)

@@ -67,6 +67,13 @@ export function resolveFastControl(
     return { kind: 'variant', baseId: model, fastId, on: false }
   }
 
+  // Fast isn't natively offered here, but if the session still has the speed
+  // param on (carried over from a previous model), expose the toggle so it can
+  // be turned off rather than stranded.
+  if (currentFastMode) {
+    return { kind: 'param', on: true }
+  }
+
   return { kind: 'none' }
 }
 
@@ -75,10 +82,11 @@ interface ModelEditSubmenuProps {
   fastControl: FastControl
   /** Whether this row's model is the active one. */
   isActive: boolean
-  /** Switch to this model. Awaited before applying edits when not active. */
-  onActivate: () => Promise<void> | void
+  /** Switch to this model (resolves false on failure). Awaited before applying
+   *  edits when not active so a failed switch doesn't write to the old model. */
+  onActivate: () => Promise<boolean> | void
   /** Switch to a specific model id (used to swap base ⇄ -fast variant). */
-  onSelectModel: (model: string) => Promise<void> | void
+  onSelectModel: (model: string) => Promise<boolean> | void
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -101,19 +109,26 @@ export function ModelEditSubmenu({
   const thinkingOn = isThinkingEnabled(currentReasoningEffort)
 
   // Reasoning/fast are session-scoped (they apply to the active model), so
-  // editing a non-active model first switches to it — otherwise the change
-  // would land on (and be capability-checked against) the wrong model.
-  const ensureActive = async () => {
-    if (!isActive) {
-      await onActivate()
+  // editing a non-active model first switches to it. Returns false if the
+  // switch failed, so callers skip applying to the wrong (previous) model.
+  const ensureActive = async (): Promise<boolean> => {
+    if (isActive) {
+      return true
     }
+
+    return (await onActivate()) !== false
   }
 
   const patchReasoning = async (next: string, rollback: string) => {
     setCurrentReasoningEffort(next)
 
     try {
-      await ensureActive()
+      if (!(await ensureActive())) {
+        setCurrentReasoningEffort(rollback)
+
+        return
+      }
+
       await requestGateway('config.set', {
         key: 'reasoning',
         session_id: activeSessionId ?? '',
@@ -138,7 +153,12 @@ export function ModelEditSubmenu({
 
       void (async () => {
         try {
-          await ensureActive()
+          if (!(await ensureActive())) {
+            setCurrentFastMode(!enabled)
+
+            return
+          }
+
           await requestGateway('config.set', {
             key: 'fast',
             session_id: activeSessionId ?? '',

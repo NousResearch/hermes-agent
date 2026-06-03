@@ -40,7 +40,7 @@ import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
-  onSelectModel: (selection: { model: string; persistGlobal: boolean; provider: string }) => Promise<void> | void
+  onSelectModel: (selection: { model: string; persistGlobal: boolean; provider: string }) => Promise<boolean> | void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -143,12 +143,21 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // Capabilities are looked up against the active/base id; the
                 // -fast variant carries the same param support as its base.
                 const caps = group.provider.capabilities?.[family.id]
-                const fastActive = optionsModel === family.fastId || (isCurrent && currentFastMode)
+
+                // Single source of truth for the active row's fast state — keeps
+                // the row label in lock-step with the submenu's Fast toggle and
+                // handles the standalone `-fast` id case.
+                const fastControl = resolveFastControl(
+                  activeId ?? family.id,
+                  group.provider.models ?? [],
+                  caps?.fast ?? false,
+                  currentFastMode
+                )
 
                 // Grayed text: active row shows live state (Fast + effort);
                 // others show a fast-capability hint.
                 const meta = isCurrent
-                  ? [fastActive ? 'Fast' : null, reasoningEffortLabel(currentReasoningEffort) || 'Med']
+                  ? [fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null, reasoningEffortLabel(currentReasoningEffort) || 'Med']
                       .filter(Boolean)
                       .join(' ')
                   : caps?.fast || family.fastId
@@ -176,12 +185,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                       {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>
                     <ModelEditSubmenu
-                      fastControl={resolveFastControl(
-                        activeId ?? family.id,
-                        group.provider.models ?? [],
-                        caps?.fast ?? false,
-                        currentFastMode
-                      )}
+                      fastControl={fastControl}
                       isActive={isCurrent}
                       onActivate={() => switchTo(family.id, group.provider.slug)}
                       onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}

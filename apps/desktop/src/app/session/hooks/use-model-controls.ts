@@ -48,11 +48,11 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     }
   }, [])
 
-  // Returns a promise so callers can await the switch before applying
-  // follow-up changes (e.g. editing a model's reasoning/fast must land on the
-  // right active model). Resolves even on failure (error is surfaced inline).
+  // Returns whether the switch succeeded so callers can await it before
+  // applying follow-up changes (e.g. editing a model's reasoning/fast must land
+  // on the right active model — bail rather than write to the previous one).
   const selectModel = useCallback(
-    async (selection: ModelSelection): Promise<void> => {
+    async (selection: ModelSelection): Promise<boolean> => {
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
       updateModelOptionsCache(selection.provider, selection.model, selection.persistGlobal || !activeSessionId)
@@ -72,14 +72,18 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
             queryKey: selection.persistGlobal ? ['model-options'] : ['model-options', activeSessionId]
           })
 
-          return
+          return true
         }
 
         await setGlobalModel(selection.provider, selection.model)
         void refreshCurrentModel()
         void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+
+        return true
       } catch (err) {
         notifyError(err, 'Model switch failed')
+
+        return false
       }
     },
     [activeSessionId, queryClient, refreshCurrentModel, requestGateway, updateModelOptionsCache]

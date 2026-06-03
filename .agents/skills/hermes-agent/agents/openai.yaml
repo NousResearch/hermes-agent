@@ -1,0 +1,6 @@
+interface:
+  display_name: "Hermes Agent"
+  short_description: "Repo-specific patterns and workflows for hermes-agent"
+  default_prompt: "Use the hermes-agent repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true

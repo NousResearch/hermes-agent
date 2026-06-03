@@ -9,6 +9,7 @@ const {
   nativeImage,
   nativeTheme,
   net: electronNet,
+  powerMonitor,
   protocol,
   safeStorage,
   session,
@@ -2693,6 +2694,32 @@ function sendClosePreviewRequested() {
   webContents.send('hermes:close-preview-requested')
 }
 
+// Tell the renderer the machine just woke. Sleep silently drops the
+// renderer's WebSocket to the local backend; the renderer reconnects on this
+// signal so the chat composer doesn't stay stuck on "Starting Hermes...".
+function sendPowerResume() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const { webContents } = mainWindow
+  if (!webContents || webContents.isDestroyed()) return
+  webContents.send('hermes:power-resume')
+}
+
+let powerResumeRegistered = false
+
+function registerPowerResumeListeners() {
+  if (powerResumeRegistered) return
+  powerResumeRegistered = true
+  try {
+    // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
+    // full suspend. Either can drop an idle socket.
+    powerMonitor.on('resume', sendPowerResume)
+    powerMonitor.on('unlock-screen', sendPowerResume)
+  } catch {
+    // powerMonitor is unavailable before app 'ready' on some platforms; the
+    // caller registers after 'ready', so this should not normally throw.
+  }
+}
+
 function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
@@ -4205,6 +4232,7 @@ app.whenReady().then(() => {
   registerMediaProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()
+  registerPowerResumeListeners()
   createWindow()
 
   app.on('activate', () => {

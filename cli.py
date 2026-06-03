@@ -5086,6 +5086,17 @@ class HermesCLI:
                 self._session_db._conn.commit()
             except Exception:
                 pass
+            # Restore the session working directory so the agent resumes
+            # where it left off. Design #19242: the local CLI backend does
+            # NOT use TERMINAL_CWD for live tracking, that env var stays at
+            # launch dir. Instead we chdir(2) the process so the local
+            # environment initial cwd matches the persisted one.
+            try:
+                session_cwd = session_meta.get("cwd")
+                if session_cwd and os.path.isdir(session_cwd):
+                    os.chdir(session_cwd)
+            except Exception:
+                pass
         
         try:
             runtime = runtime_override or {

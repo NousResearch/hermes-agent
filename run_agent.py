@@ -485,6 +485,7 @@ class AIAgent:
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
+                cwd=os.getcwd(),
             )
             self._session_db_created = True
         except Exception as e:
@@ -1418,6 +1419,16 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+        # Persist the live terminal cwd so resume (-c) picks up any cd
+        # the agent performed during the session.  Best-effort; never
+        # fails the session persistence.
+        try:
+            from tools.terminal_tool import get_live_terminal_cwd
+            live_cwd = get_live_terminal_cwd("default")
+            if live_cwd and os.path.isdir(live_cwd) and self._session_db:
+                self._session_db.update_session_cwd(self.session_id, live_cwd)
+        except Exception:
+            pass
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.

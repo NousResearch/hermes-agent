@@ -988,6 +988,27 @@ def clear_task_env_overrides(task_id: str):
     _task_env_overrides.pop(task_id, None)
 
 
+def get_live_terminal_cwd(task_id: str = "default") -> Optional[str]:
+    """Return the terminal environment's live working directory, if active.
+
+    env.cwd is the authoritative per-session directory — updated by
+    _update_cwd after every command (local backend reads it from a
+    temp file written by pwd -P).  This is not TERMINAL_CWD
+    (which is frozen at launch time per design #19242); it's the actual
+    directory the agent cd'd into during the session.
+
+    Returns None when no environment is active for task_id.
+    """
+    lookup = _resolve_container_task_id(task_id)
+    with _env_lock:
+        env = _active_environments.get(lookup)
+    if env is not None:
+        live = getattr(env, "cwd", None)
+        if isinstance(live, str) and live.strip():
+            return live
+    return None
+
+
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     Map a tool-call ``task_id`` to the container/sandbox key used by

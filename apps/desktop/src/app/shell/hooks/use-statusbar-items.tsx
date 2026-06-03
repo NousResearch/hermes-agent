@@ -88,8 +88,9 @@ export function useStatusbarItems({
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
 
-  // Per-session approval bypass. On a new-chat draft (no runtime session yet),
-  // arm locally; `createBackendSessionForSend` applies it after session.create.
+  // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
+  // new-chat draft (no runtime session yet) we arm locally; the session-create
+  // path applies it once the backend session exists.
   const toggleYolo = useCallback(async () => {
     const next = !$yoloActive.get()
     const sid = $activeSessionId.get()
@@ -314,12 +315,8 @@ export function useStatusbarItems({
         id: 'yolo',
         onSelect: () => void toggleYolo(),
         title: yoloActive
-          ? activeSessionId
-            ? 'YOLO on — auto-approving dangerous commands this session. Click to turn off.'
-            : 'YOLO armed for the next session — will apply when you send the first message.'
-          : activeSessionId
-            ? 'YOLO off — click to auto-approve dangerous commands this session.'
-            : 'YOLO off — click to enable for the next session.',
+          ? 'YOLO on — auto-approving dangerous commands. Click to turn off.'
+          : 'YOLO off — click to auto-approve dangerous commands.',
         variant: 'action'
       },
       {
@@ -352,7 +349,6 @@ export function useStatusbarItems({
       versionItem
     ],
     [
-      activeSessionId,
       busy,
       contextBar,
       contextUsage,

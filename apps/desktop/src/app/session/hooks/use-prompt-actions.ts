@@ -409,16 +409,16 @@ export function usePromptActions({
           return
         }
 
-        // /yolo maps to the status-bar YOLO control rather than a gateway slash.
-        // With an active session it flips that session; without one it just arms
-        // the sticky preference for the next session.
+        // /yolo maps to the status-bar YOLO control — a per-session approval
+        // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
+        // it locally; the session-create path applies it on the first message.
         if (normalizedName === 'yolo') {
           const sid = sessionHint || activeSessionIdRef.current
           const next = !$yoloActive.get()
 
           if (!sid) {
             setYoloActive(next)
-            notify({ kind: 'success', message: next ? 'YOLO armed for the next session' : 'YOLO off' })
+            notify({ kind: 'success', message: next ? 'YOLO armed for this chat' : 'YOLO off' })
 
             return
           }

@@ -38,7 +38,8 @@ import {
   setSessions,
   setSessionsTotal,
   setSessionStartedAt,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setYoloActive
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -250,6 +251,10 @@ function applyRuntimeInfo(
     setCurrentFastMode(info.fast)
   }
 
+  if (typeof info.yolo === 'boolean') {
+    setYoloActive(info.yolo)
+  }
+
   if (info.usage) {
     setCurrentUsage(current => ({ ...current, ...info.usage }))
   }
@@ -352,8 +357,8 @@ export function useSessionActions({
         updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
       }
 
-      // User may have armed YOLO on the new-chat draft before the runtime session
-      // existed — apply explicitly (toggle would be wrong if the server starts off).
+      // User may have armed YOLO on the new-chat draft before the runtime
+      // session existed — apply it to the freshly created session.
       if (yoloArmed) {
         await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
       }
@@ -523,12 +528,6 @@ export function useSessionActions({
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
-
-        // Sticky YOLO: the gateway clears per-session yolo on resume, so re-apply
-        // the user's persisted preference onto the resumed session.
-        if ($yoloActive.get() && resumed.info?.yolo !== true) {
-          void setSessionYolo(requestGateway, resumed.session_id, true).catch(() => undefined)
-        }
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 

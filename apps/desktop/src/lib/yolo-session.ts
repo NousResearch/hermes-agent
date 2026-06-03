@@ -5,7 +5,11 @@ export type GatewayRequester = <T = unknown>(
   params?: Record<string, unknown>
 ) => Promise<T>
 
-/** Apply per-session YOLO (approval bypass) via gateway `config.set`. */
+/**
+ * Toggle per-session YOLO (approval bypass) via gateway `config.set` — the same
+ * session-scoped flag as the TUI's Shift+Tab. It does NOT touch the global
+ * `approvals.mode` config, so CLI / TUI / cron behavior is unaffected.
+ */
 export async function setSessionYolo(
   requestGateway: GatewayRequester,
   sessionId: string,
@@ -16,7 +20,9 @@ export async function setSessionYolo(
     session_id: sessionId,
     value: enabled ? '1' : '0'
   })
+
   const active = result?.value === '1'
+
   setYoloActive(active)
 
   return active

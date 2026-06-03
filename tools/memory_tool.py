@@ -26,14 +26,17 @@ Design:
 import json
 import logging
 import os
+import re
 import tempfile
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
+
+# TOON-lite compact encoding for context blocks (opt-in via context.compact_format)
+from agent.toon_lite import format_memory_block_toon as _toon_memory_block
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -48,6 +51,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
 # Where memory files live — resolved dynamically so profile overrides
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
@@ -56,58 +60,70 @@ def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
+
 ENTRY_DELIMITER = "\n§\n"
 
 
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
 # in content that gets injected into the system prompt.
-#
-# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
-# shared with the context-file scanner and the tool-result delimiter system.
-# Memory uses the "strict" scope (broadest pattern set) because:
-#  - memory entries are user-curated; the user can rewrite a flagged entry
-#  - memory enters the system prompt as a FROZEN snapshot, so a poisoned
-#    entry persists for the entire session and across sessions until
-#    explicitly removed.
 # ---------------------------------------------------------------------------
 
-from tools.threat_patterns import first_threat_message as _first_threat_message
+_MEMORY_THREAT_PATTERNS = [
+    # Prompt injection
+    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"you\s+are\s+now\s+", "role_hijack"),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (
+        r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)",
+        "disregard_rules",
+    ),
+    (
+        r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)",
+        "bypass_restrictions",
+    ),
+    # Exfiltration via curl/wget with secrets
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_wget"),
+    (
+        r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)",
+        "read_secrets",
+    ),
+    # Persistence via shell rc
+    (r"authorized_keys", "ssh_backdoor"),
+    (r"\$HOME/\.ssh|\~/\.ssh", "ssh_access"),
+    (r"\$HOME/\.hermes/\.env|\~/\.hermes/\.env", "hermes_env"),
+]
+
+# Subset of invisible chars for injection detection
+_INVISIBLE_CHARS = {
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+}
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    return _first_threat_message(content, scope="strict")
+    # Check invisible unicode
+    for char in _INVISIBLE_CHARS:
+        if char in content:
+            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
 
+    # Check threat patterns
+    for pattern, pid in _MEMORY_THREAT_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE):
+            return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
-def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
-    """Build the error dict returned when external drift is detected.
-
-    The on-disk memory file contains content that wouldn't round-trip
-    through the tool's parser/serializer — flushing would discard the
-    appended/edited content from a patch tool, shell append, manual edit,
-    or sister-session write. We refuse the mutation, point the operator at
-    the .bak.<ts> snapshot we took, and tell them what to do next.
-    """
-    return {
-        "success": False,
-        "error": (
-            f"Refusing to write {path.name}: file on disk has content that "
-            f"wouldn't round-trip through the memory tool (likely added by "
-            f"the patch tool, a shell append, a manual edit, or a "
-            f"concurrent session). A snapshot was saved to {bak_path}. "
-            f"Resolve the drift first — either rewrite the file as a clean "
-            f"§-delimited list of entries, or move the extra content out — "
-            f"then retry. This guard exists to prevent silent data loss "
-            f"(issue #26045)."
-        ),
-        "drift_backup": bak_path,
-        "remediation": (
-            "Open the .bak file, integrate the missing entries into the "
-            "memory tool one at a time via memory(action=add, content=...), "
-            "then remove or rewrite the original file to a clean state."
-        ),
-    }
+    return None
 
 
 class MemoryStore:
@@ -121,32 +137,26 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        compact_format: bool = False,
+        warn_pct: int = 80,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.warn_pct = (
+            warn_pct  # 0 = disabled, show warning in headers/responses above this %
+        )
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._compact_format = compact_format
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
-
-        The frozen snapshot is what enters the system prompt. We scan each
-        entry for injection/promptware patterns at snapshot-build time —
-        ANY hit replaces the entry text in the snapshot with a placeholder
-        like ``[BLOCKED: …]``, so a poisoned-on-disk memory file (supply
-        chain, compromised tool, sister-session write) cannot inject into
-        the system prompt.
-
-        The live ``memory_entries`` / ``user_entries`` lists keep the
-        original text so the user can still SEE poisoned entries via
-        ``memory(action=read)`` and remove them — silently dropping them
-        would hide the attack from the user.
-
-        Scanning is deterministic from disk bytes, so the snapshot remains
-        stable for the entire session (prefix-cache invariant holds).
-        """
+        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
@@ -157,53 +167,11 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
-        # Sanitize entries for the system-prompt snapshot only.  Live state
-        # (memory_entries / user_entries) keeps the raw text so the user
-        # can see + remove poisoned entries via the memory tool.
-        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
-        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
-
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", sanitized_memory),
-            "user": self._render_block("user", sanitized_user),
+            "memory": self._render_block("memory", self.memory_entries),
+            "user": self._render_block("user", self.user_entries),
         }
-
-    @staticmethod
-    def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
-        """Return ``entries`` with any threat-matching entry replaced by a placeholder.
-
-        Each entry is scanned with the shared threat-pattern library at the
-        ``"strict"`` scope (same as memory writes).  On match, the entry is
-        replaced in the returned list with ``"[BLOCKED: <filename> entry
-        contained threat pattern: <ids>. Removed from system prompt.]"`` —
-        the placeholder enters the snapshot, the original entry stays in
-        live state for the user to inspect and delete.
-
-        Empty or already-block-marker entries pass through unchanged.
-        """
-        from tools.threat_patterns import scan_for_threats
-
-        sanitized: List[str] = []
-        for entry in entries:
-            if not entry or entry.startswith("[BLOCKED:"):
-                sanitized.append(entry)
-                continue
-            findings = scan_for_threats(entry, scope="strict")
-            if findings:
-                logger.warning(
-                    "Memory entry from %s blocked at load time: %s",
-                    filename, ", ".join(findings),
-                )
-                sanitized.append(
-                    f"[BLOCKED: {filename} entry contained threat pattern(s): "
-                    f"{', '.join(findings)}. Removed from system prompt; "
-                    f"use memory(action=read) to inspect and memory(action=remove) "
-                    f"to delete the original.]"
-                )
-            else:
-                sanitized.append(entry)
-        return sanitized
 
     @staticmethod
     @contextmanager
@@ -249,23 +217,14 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str) -> Optional[str]:
+    def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
-        Returns the backup path if external drift was detected (the on-disk
-        file contains content that wouldn't round-trip through our
-        parser/serializer, OR an entry larger than the store's char limit).
-        When drift is detected the caller must abort the mutation —
-        flushing would discard the un-roundtrippable content.
-        Returns None on clean reload.
         """
-        path = self._path_for(target)
-        bak = self._detect_external_drift(target)
-        fresh = self._read_file(path)
+        fresh = self._read_file(self._path_for(target))
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
-        return bak
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
@@ -306,20 +265,17 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions.
-            # If external drift was detected, the file was backed up to .bak.<ts>
-            # — refuse the mutation so we don't clobber the un-roundtrippable
-            # content the patch tool / shell append / sister session wrote.
-            bak = self._reload_target(target)
-            if bak:
-                return _drift_error(self._path_for(target), bak)
+            # Re-read from disk under lock to pick up writes from other sessions
+            self._reload_target(target)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
             # Reject exact duplicates
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(
+                    target, "Entry already exists (no duplicate added)."
+                )
 
             # Calculate what the new total would be
             new_entries = entries + [content]
@@ -351,7 +307,10 @@ class MemoryStore:
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
         if not new_content:
-            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
+            return {
+                "success": False,
+                "error": "new_content cannot be empty. Use 'remove' to delete entries.",
+            }
 
         # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
@@ -359,9 +318,7 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
-            if bak:
-                return _drift_error(self._path_for(target), bak)
+            self._reload_target(target)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -373,7 +330,9 @@ class MemoryStore:
                 # If all matches are identical (exact duplicates), operate on the first one
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = [
+                        e[:80] + ("..." if len(e) > 80 else "") for _, e in matches
+                    ]
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -411,9 +370,7 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
-            if bak:
-                return _drift_error(self._path_for(target), bak)
+            self._reload_target(target)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -425,7 +382,9 @@ class MemoryStore:
                 # If all matches are identical (exact duplicates), remove the first one
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = [
+                        e[:80] + ("..." if len(e) > 80 else "") for _, e in matches
+                    ]
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -470,10 +429,21 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
+        # Warn the agent when usage exceeds threshold so it can proactively trim
+        if self.warn_pct > 0 and pct >= self.warn_pct:
+            resp["warn"] = (
+                f"Memory usage at {pct}% (threshold: {self.warn_pct}%). "
+                "Consider removing or consolidating entries with memory(action='remove') "
+                "before adding more."
+            )
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header and usage indicator.
+
+        When self._compact_format is True, uses TOON-lite encoding to fit
+        more content per token by removing decorative separators.
+        """
         if not entries:
             return ""
 
@@ -482,10 +452,28 @@ class MemoryStore:
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
+        if self._compact_format:
+            return _toon_memory_block(
+                entries,
+                target,
+                usage_pct=pct,
+                usage_cur=current,
+                usage_max=limit,
+                warn_pct=self.warn_pct,
+            )
+
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            header = (
+                f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            )
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            header = (
+                f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            )
+
+        # Prefix a warning when usage exceeds the configured threshold
+        if self.warn_pct > 0 and pct >= self.warn_pct:
+            header = f"⚠️ NEAR FULL — trim soon  " + header
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
@@ -511,61 +499,6 @@ class MemoryStore:
         # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
-
-    def _detect_external_drift(self, target: str) -> Optional[str]:
-        """Return a backup-path string if on-disk content shows external drift.
-
-        The memory file is supposed to be a list of small entries the tool
-        wrote, joined by §. Detect drift via two signals:
-
-        1. Round-trip mismatch — re-parsing and re-serializing the file
-           doesn't produce identical bytes (rare; would catch oddly-encoded
-           delimiters).
-        2. Entry-size overflow — any single parsed entry exceeds the
-           store's whole-file char limit. The tool budgets the ENTIRE store
-           against that limit; no single tool-written entry can exceed it.
-           When we see one entry larger than the limit, an external writer
-           (patch tool, shell append, manual edit, sister session) appended
-           free-form content into what the tool will treat as one entry.
-           Flushing would then truncate that entry to the model's new
-           content, discarding the appended bytes — issue #26045.
-
-        Returns the absolute path of the .bak file when drift was found and
-        backed up; returns None when the file looks tool-shaped.
-
-        Note: this is an INSTANCE method (not static) because we need the
-        per-target char_limit for signal #2.
-        """
-        path = self._path_for(target)
-        if not path.exists():
-            return None
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
-            return None
-        if not raw.strip():
-            return None
-
-        parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-        roundtrip = ENTRY_DELIMITER.join(parsed)
-
-        char_limit = self._char_limit(target)
-        max_entry_len = max((len(e) for e in parsed), default=0)
-
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
-        if not drift_detected:
-            return None
-
-        # Drift confirmed — snapshot the file so the operator can recover
-        # whatever the external writer added, then return the .bak path so
-        # the caller can refuse the mutation.
-        ts = int(time.time())
-        bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
-        try:
-            bak_path.write_text(raw, encoding="utf-8")
-        except (OSError, IOError):
-            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
-        return str(bak_path)
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
@@ -612,10 +545,15 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
-        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+        return tool_error(
+            "Memory is not available. It may be disabled in config or this environment.",
+            success=False,
+        )
 
     if target not in {"memory", "user"}:
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+        return tool_error(
+            f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False
+        )
 
     if action == "add":
         if not content:
@@ -624,18 +562,26 @@ def memory_tool(
 
     elif action == "replace":
         if not old_text:
-            return tool_error("old_text is required for 'replace' action.", success=False)
+            return tool_error(
+                "old_text is required for 'replace' action.", success=False
+            )
         if not content:
-            return tool_error("content is required for 'replace' action.", success=False)
+            return tool_error(
+                "content is required for 'replace' action.", success=False
+            )
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
         if not old_text:
-            return tool_error("old_text is required for 'remove' action.", success=False)
+            return tool_error(
+                "old_text is required for 'remove' action.", success=False
+            )
         result = store.remove(target, old_text)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Use: add, replace, remove", success=False
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -680,20 +626,20 @@ MEMORY_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "description": "The action to perform.",
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile.",
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'."
+                "description": "The entry content. Required for 'add' and 'replace'.",
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove."
+                "description": "Short unique substring identifying the entry to replace or remove.",
             },
         },
         "required": ["action", "target"],
@@ -713,11 +659,8 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+    ),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

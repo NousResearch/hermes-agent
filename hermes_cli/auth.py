@@ -160,6 +160,9 @@ class ProviderConfig:
     extra: Dict[str, Any] = field(default_factory=dict)
     # For API-key providers: env vars to check (in priority order)
     api_key_env_vars: tuple = ()
+    # Optional command to retrieve the API key at runtime (e.g. "op read op://vault/provider/credential")
+    # stdout is used as the key; keys never appear in argv/env/history
+    api_key_command: str = ""
     # Optional env var for base URL override
     base_url_env_var: str = ""
 
@@ -583,6 +586,24 @@ def _resolve_api_key_provider_secret(
         val = (get_env_value(env_var) or "").strip()
         if has_usable_secret(val):
             return val, env_var
+
+    # Try api_key_command if configured (e.g. "op read op://vault/provider/credential")
+    # Keys never appear in argv/env/history — retrieved on demand at runtime
+    if pconfig.api_key_command:
+        import shlex
+        import subprocess as _subprocess
+        try:
+            cmd_parts = shlex.split(pconfig.api_key_command)
+            result = _subprocess.run(
+                cmd_parts,
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                key = result.stdout.strip()
+                if has_usable_secret(key):
+                    return key, f"api_key_command:{provider_id}"
+        except Exception:
+            pass
 
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:

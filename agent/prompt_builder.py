@@ -12,6 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_cli.config import cfg_get, load_config
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -25,6 +26,9 @@ from agent.skill_utils import (
     skill_matches_platform,
 )
 from utils import atomic_json_write
+
+# TOON-lite compact encoding for skills index (opt-in via context.compact_format)
+from agent.toon_lite import format_skills_index_toon as _toon_skills_index
 
 logger = logging.getLogger(__name__)
 
@@ -1254,12 +1258,25 @@ def build_skills_system_prompt(
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
             "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
         )
+
+        # Use skill routing table when configured (compact intent→skill mapping)
+        if bool(cfg_get(load_config(), "skills", "routing_table", default=False)):
+            from agent.skill_router import format_skills_routing_table as _rtr
+            _router_block = _rtr(skills_by_category, category_descriptions)
+            if _router_block:
+                result += _router_block
+        elif bool(cfg_get(load_config(), "context", "compact_format", default=False)):
+            result += _toon_skills_index(skills_by_category, category_descriptions)
+            result += "\n\nOnly proceed without loading a skill if genuinely none are relevant to the task."
+        else:
+            result += (
+                "<available_skills>\n"
+                + "\n".join(index_lines) + "\n"
+                "</available_skills>\n"
+                "\n"
+                "Only proceed without loading a skill if genuinely none are relevant to the task."
+            )
 
     # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:
@@ -1361,7 +1378,7 @@ def load_soul_md() -> Optional[str]:
     ``skip_soul=True`` so SOUL.md isn't injected twice.
     """
     try:
-        from hermes_cli.config import ensure_hermes_home
+        from hermes_cli.config import ensure_hermes_home, cfg_get
         ensure_hermes_home()
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)

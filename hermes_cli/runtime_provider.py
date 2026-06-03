@@ -600,6 +600,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:
             result["key_env"] = key_env
+        api_key_command = str(entry.get("api_key_command", "") or "").strip()
+        if api_key_command:
+            result["api_key_command"] = api_key_command
         if provider_key:
             result["provider_key"] = provider_key
         extra_body = entry.get("extra_body")
@@ -709,6 +712,37 @@ def _resolve_named_custom_runtime(
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
+
+    # Try api_key_command if configured (e.g. "op read op://vault/provider/credential")
+    api_key_command = custom_provider.get("api_key_command", "")
+    if api_key_command:
+        import shlex
+        import subprocess as _subprocess
+        try:
+            cmd_parts = shlex.split(api_key_command)
+            cmd_result = _subprocess.run(
+                cmd_parts,
+                capture_output=True, text=True, timeout=30,
+            )
+            if cmd_result.returncode == 0:
+                key = cmd_result.stdout.strip()
+                if key:
+                    cmd_api_key = key
+                    result = {
+                        "provider": "custom",
+                        "api_mode": custom_provider.get("api_mode")
+                        or _detect_api_mode_for_url(base_url)
+                        or "chat_completions",
+                        "base_url": base_url,
+                        "api_key": cmd_api_key,
+                        "source": f"custom_provider:{custom_provider.get('name', requested_provider)} (api_key_command)",
+                    }
+                    if custom_provider.get("model"):
+                        result["model"] = custom_provider["model"]
+                    return result
+        except Exception:
+            pass
+
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),

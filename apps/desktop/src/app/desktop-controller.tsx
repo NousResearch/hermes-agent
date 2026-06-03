@@ -1,11 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
+import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -31,8 +32,12 @@ import {
   $freshDraftReady,
   $gatewayState,
   $selectedStoredSessionId,
+  $sessions,
+  sessionPinId,
   setAwaitingResponse,
   setBusy,
+  setCurrentBranch,
+  setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
@@ -54,10 +59,11 @@ import { ChatSidebar } from './chat/sidebar'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { ModelPickerOverlay } from './model-picker-overlay'
+import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from './routes'
+import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -72,6 +78,7 @@ import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
 import { useStatusSnapshot } from './shell/hooks/use-status-snapshot'
 import { useStatusbarItems } from './shell/hooks/use-statusbar-items'
+import { ModelMenuPanel } from './shell/model-menu-panel'
 import type { StatusbarItem } from './shell/statusbar-controls'
 import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
@@ -122,6 +129,7 @@ export function DesktopController() {
     settingsOpen,
     toggleCommandCenter
   } = useOverlayRouting()
+
   const terminalTakeoverActive = chatOpen && terminalTakeover
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
@@ -192,7 +200,10 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
-      const result = await listSessions(limit)
+      // Require at least one message so abandoned/empty "Untitled" drafts (one
+      // was created per TUI/desktop launch before the lazy-create fix) don't
+      // clutter the sidebar.
+      const result = await listSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(result.sessions)
@@ -217,10 +228,14 @@ export function DesktopController() {
       return
     }
 
-    if ($pinnedSessionIds.get().includes(sessionId)) {
-      unpinSession(sessionId)
+    // Pin on the durable lineage-root id so the pin survives auto-compression.
+    const session = $sessions.get().find(s => s.id === sessionId || s._lineage_root_id === sessionId)
+    const pinId = session ? sessionPinId(session) : sessionId
+
+    if ($pinnedSessionIds.get().includes(pinId)) {
+      unpinSession(pinId)
     } else {
-      pinSession(sessionId)
+      pinSession(pinId)
     }
   }, [])
 
@@ -260,6 +275,22 @@ export function DesktopController() {
     queryClient,
     requestGateway
   })
+
+  const openProviderSettings = useCallback(() => {
+    navigate(`${SETTINGS_ROUTE}?tab=keys`)
+  }, [navigate])
+
+  const modelMenuContent = useMemo(
+    () =>
+      gatewayState === 'open' ? (
+        <ModelMenuPanel
+          gateway={gatewayRef.current || undefined}
+          onSelectModel={selectModel}
+          requestGateway={requestGateway}
+        />
+      ) : null,
+    [gatewayRef, gatewayState, requestGateway, selectModel]
+  )
 
   useContextSuggestions({
     activeSessionId,
@@ -324,6 +355,7 @@ export function DesktopController() {
   })
 
   const {
+    archiveSession,
     branchCurrentSession,
     createBackendSessionForSend,
     openSettings,
@@ -358,14 +390,22 @@ export function DesktopController() {
         target instanceof HTMLTextAreaElement ||
         target instanceof HTMLSelectElement
 
-      if (editing || event.defaultPrevented || event.repeat || event.altKey || event.ctrlKey || event.metaKey) {
+      if (event.defaultPrevented || event.repeat || event.altKey || event.code !== 'KeyN') {
         return
       }
 
-      if (event.shiftKey && event.code === 'KeyN') {
-        event.preventDefault()
-        startFreshSessionDraft()
+      // Two accelerators for "new session":
+      //   - Cmd/Ctrl+N (browser-like, works while typing in any input)
+      //   - Shift+N    (single-key, only when no input is focused)
+      const accelerator = event.metaKey || event.ctrlKey
+      const singleKey = !accelerator && !editing && event.shiftKey
+
+      if (!accelerator && !singleKey) {
+        return
       }
+
+      event.preventDefault()
+      startFreshSessionDraft()
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -390,6 +430,29 @@ export function DesktopController() {
       return branched
     },
     [branchCurrentSession, refreshSessions]
+  )
+
+  const startSessionInWorkspace = useCallback(
+    (path: null | string) => {
+      startFreshSessionDraft()
+
+      const target = path?.trim()
+
+      if (!target) {
+        return
+      }
+
+      // The next message creates the backend session in $currentCwd, so seed
+      // it (and the branch) from the workspace the user clicked the + on.
+      setCurrentCwd(target)
+      void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
+        .then(info => {
+          setCurrentCwd(info.cwd || target)
+          setCurrentBranch(info.branch || '')
+        })
+        .catch(() => undefined)
+    },
+    [requestGateway, startFreshSessionDraft]
   )
 
   const handleSkinCommand = useSkinCommand()
@@ -452,6 +515,7 @@ export function DesktopController() {
     gatewayLogLines,
     gatewayState,
     inferenceStatus,
+    modelMenuContent,
     openAgents,
     openCommandCenterSection,
     statusSnapshot,
@@ -461,9 +525,11 @@ export function DesktopController() {
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
+      onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreSessions={loadMoreSessions}
       onNavigate={selectSidebarItem}
+      onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
     />
   )
@@ -484,7 +550,9 @@ export function DesktopController() {
         requestGateway={requestGateway}
       />
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
+      <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
+      <GatewayConnectingOverlay />
       <BootFailureOverlay />
 
       {settingsOpen && (
@@ -494,6 +562,13 @@ export function DesktopController() {
             onClose={closeOverlayToPreviousRoute}
             onConfigSaved={() => {
               void refreshHermesConfig()
+              void refreshCurrentModel()
+              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+            }}
+            onMainModelChanged={(provider, model) => {
+              setCurrentProvider(provider)
+              setCurrentModel(model)
+              updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
@@ -507,13 +582,6 @@ export function DesktopController() {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
-            onMainModelChanged={(provider, model) => {
-              setCurrentProvider(provider)
-              setCurrentModel(model)
-              updateModelOptionsCache(provider, model, true)
-              void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-            }}
             onNavigateRoute={path => navigate(path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
@@ -575,10 +643,10 @@ export function DesktopController() {
       titlebarTools={titlebarToolGroups.flat.right}
     >
       <Pane
+        disabled={terminalTakeoverActive}
         id="chat-sidebar"
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
-        disabled={terminalTakeoverActive}
         resizable
         side="left"
         width={`${SIDEBAR_DEFAULT_WIDTH}px`}

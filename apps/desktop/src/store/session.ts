@@ -3,9 +3,14 @@ import { atom } from 'nanostores'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { persistString, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
+
+const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
+
+export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
 
 interface AppAtom<T> {
   get: () => T
@@ -15,6 +20,12 @@ interface AppAtom<T> {
 function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
   store.set(typeof next === 'function' ? (next as (current: T) => T)(store.get()) : next)
 }
+
+/** Durable id for pinning. Auto-compression rotates a conversation's session
+ *  id (root -> continuation tip), so pins keyed on the live id evaporate. The
+ *  lineage root is stable across every compression, so we pin on that. */
+export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
+  session._lineage_root_id ?? session.id
 
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
@@ -33,7 +44,7 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
-export const $currentCwd = atom('')
+export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
   calls: 0,
@@ -67,7 +78,14 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
-export const setCurrentCwd = (next: Updater<string>) => updateAtom($currentCwd, next)
+
+export const setCurrentCwd = (next: Updater<string>) => {
+  updateAtom($currentCwd, next)
+  // Keep localStorage in sync with the atom: a real folder is remembered, an
+  // empty cwd clears the key (|| null → removeItem).
+  persistString(WORKSPACE_CWD_KEY, $currentCwd.get().trim() || null)
+}
+
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)
@@ -78,6 +96,53 @@ export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
+
+// Watchdog tracking — when does a "working" session count as stuck?
+// Long-running tool calls (LLM inference, long shell commands, web fetches)
+// can take a few minutes legitimately. We allow 8 minutes of complete
+// silence on the stream before clearing the working flag; in practice this
+// catches gateway hangs and dropped streams without false-positive-clearing
+// real long turns.
+const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function armSessionWatchdog(sessionId: string) {
+  const existing = sessionWatchdogTimers.get(sessionId)
+
+  if (existing) {
+    clearTimeout(existing)
+  }
+
+  const timer = setTimeout(() => {
+    sessionWatchdogTimers.delete(sessionId)
+    // Re-check the latest state at fire-time. If the user already navigated
+    // away or the session genuinely finished, the timer is a no-op.
+    if ($workingSessionIds.get().includes(sessionId)) {
+      setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+    }
+  }, SESSION_WATCHDOG_TIMEOUT_MS)
+
+  sessionWatchdogTimers.set(sessionId, timer)
+}
+
+function clearSessionWatchdog(sessionId: string) {
+  const existing = sessionWatchdogTimers.get(sessionId)
+
+  if (existing) {
+    clearTimeout(existing)
+    sessionWatchdogTimers.delete(sessionId)
+  }
+}
+
+/** Call when a streaming event for a session lands. Refreshes the watchdog
+ *  so the session keeps its "working" status as long as data keeps coming. */
+export function noteSessionActivity(sessionId: string | null | undefined) {
+  if (!sessionId || !$workingSessionIds.get().includes(sessionId)) {
+    return
+  }
+
+  armSessionWatchdog(sessionId)
+}
 
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
@@ -93,4 +158,13 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
 
     return alreadyWorking ? current.filter(id => id !== sessionId) : current
   })
+
+  // Bookend the watchdog: arm it whenever a session enters "working",
+  // disarm it whenever it leaves. A subsequent noteSessionActivity() from
+  // a streaming event will refresh the timer.
+  if (working) {
+    armSessionWatchdog(sessionId)
+  } else {
+    clearSessionWatchdog(sessionId)
+  }
 }

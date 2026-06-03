@@ -8,6 +8,8 @@ const {
   ipcMain,
   nativeImage,
   nativeTheme,
+  net: electronNet,
+  protocol,
   safeStorage,
   session,
   shell,
@@ -364,15 +366,89 @@ app.setAboutPanelOptions({
   copyright: 'Copyright © 2026 Nous Research'
 })
 
+// Custom scheme for streaming local media (video/audio) into the renderer.
+// Reading large media through `readFileDataUrl` failed: it base64-loads the
+// whole file into memory and is hard-capped at DATA_URL_READ_MAX_BYTES (16 MB),
+// so any non-trivial video silently refused to load. Streaming via a protocol
+// handler removes the size cap and gives the <video> element seekable,
+// range-aware playback. Must be registered before the app is ready.
+const MEDIA_PROTOCOL = 'hermes-media'
+// Only audio/video may be streamed. Without this the handler would read any
+// non-blocklisted local file (no size cap) for any `fetch(hermes-media://…)`.
+const STREAMABLE_MEDIA_EXTS = new Set([
+  '.avi',
+  '.flac',
+  '.m4a',
+  '.mkv',
+  '.mov',
+  '.mp3',
+  '.mp4',
+  '.ogg',
+  '.opus',
+  '.wav',
+  '.webm'
+])
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: MEDIA_PROTOCOL,
+    privileges: {
+      secure: true,
+      standard: true,
+      stream: true,
+      supportFetchAPI: true
+    }
+  }
+])
+
+function registerMediaProtocol() {
+  protocol.handle(MEDIA_PROTOCOL, async request => {
+    let resolvedPath
+    try {
+      const url = new URL(request.url)
+      const filePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+      ;({ resolvedPath } = await resolveReadableFileForIpc(filePath, { purpose: 'Media stream' }))
+    } catch {
+      return new Response('Media not found', { status: 404 })
+    }
+
+    if (!STREAMABLE_MEDIA_EXTS.has(path.extname(resolvedPath).toLowerCase())) {
+      return new Response('Unsupported media type', { status: 415 })
+    }
+
+    // Delegate to Electron's net stack on a file:// URL — it resolves the
+    // content-type and honors Range requests so seeking works. Forward the
+    // renderer's headers (notably Range) and skip custom-protocol re-entry.
+    return electronNet.fetch(pathToFileURL(resolvedPath).toString(), {
+      bypassCustomProtocolHandlers: true,
+      headers: request.headers
+    })
+  })
+}
+
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+// Auto-reload budget for renderer crashes. A deterministic startup crash would
+// otherwise loop forever (reload → crash → reload), pinning CPU and spamming
+// logs. Allow a few reloads per rolling window, then stop and leave the dead
+// window so the user can read the error / quit.
+const RENDERER_RELOAD_WINDOW_MS = 60_000
+const RENDERER_RELOAD_MAX = 3
+let rendererReloadTimes = []
 // Latched bootstrap failure: when the first-launch install fails, we hold
 // onto the error so subsequent startHermes() calls (e.g. the renderer's
 // ensureGatewayOpen retrying after the WS won't open) return the same error
 // instead of re-running install.ps1 in a hot loop. Cleared explicitly by
 // the renderer's "Reload and retry" path or by quitting the app.
 let bootstrapFailure = null
+// Active first-launch install, so the renderer's Cancel button (and app quit)
+// can abort the in-flight install.sh/ps1 instead of leaving it running.
+let bootstrapAbortController = null
+// Set by the renderer's "Repair install" IPC. While true, resolution skips the
+// existing-install adopt branch (3b) so repair re-drives the installer instead
+// of re-adopting the install we're repairing. Cleared once a bootstrap runs.
+let forceBootstrapRepair = false
 let connectionConfigCache = null
 const hermesLog = []
 const previewWatchers = new Map()
@@ -461,6 +537,39 @@ function openExternalUrl(rawUrl) {
     parsed = new URL(raw)
   } catch {
     return false
+  }
+
+  // `file://` URLs come from the artifacts panel (the renderer can't open
+  // them itself because Chromium blocks file:// navigation from the app
+  // origin). Hand them to `shell.openPath`, which dispatches to the OS
+  // file association. If the OS can't open it (`error` is a non-empty
+  // string), fall back to revealing the file in the system file manager.
+  if (parsed.protocol === 'file:') {
+    let localPath
+    try {
+      localPath = fileURLToPath(parsed.toString())
+    } catch {
+      return false
+    }
+
+    void shell
+      .openPath(localPath)
+      .then(error => {
+        if (!error) {
+          return
+        }
+
+        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
+
+        try {
+          shell.showItemInFolder(localPath)
+        } catch (revealError) {
+          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
+        }
+      })
+      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
+
+    return true
   }
 
   if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
@@ -1401,8 +1510,12 @@ function readJson(filePath) {
 // Marker schema (version 1):
 //   {
 //     schemaVersion: 1,
-//     pinnedCommit: "<40-char SHA>",       // what install.ps1 was driven against
+//     pinnedCommit: "<40-char SHA>" | null, // what install.ps1 was driven against;
+//                                           // may be null for adopted installs
 //     pinnedBranch: "<branch name>" | null,
+//     adopted: <bool>,                      // true when we adopted a pre-existing
+//                                           // install rather than bootstrapping it;
+//                                           // treated as authoritative even sans commit
 //     completedAt:  "<ISO 8601>",
 //     desktopVersion: "<app.getVersion()>"  // for forensics
 //   }
@@ -1410,11 +1523,25 @@ function readBootstrapMarker() {
   return readJson(BOOTSTRAP_COMPLETE_MARKER)
 }
 
+// Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually
+// runnable right now? A complete CLI install (`install.sh --include-desktop`)
+// or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
+// ever having written the bootstrap marker -- so we must be able to recognise
+// "already installed" off the filesystem alone, not just the marker.
+function isActiveRuntimeUsable() {
+  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
+}
+
 function isBootstrapComplete() {
   const marker = readBootstrapMarker()
   if (!marker || typeof marker !== 'object') return false
   if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) return false
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) return false
+  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) {
+    // Adopted markers (an existing install we detected and took ownership of,
+    // possibly without a resolvable commit) are still authoritative -- they
+    // attest a runnable install we deliberately decided to forward to.
+    if (marker.adopted !== true) return false
+  }
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
   // update`, which moves HEAD legitimately. The marker just attests "we
@@ -1422,7 +1549,22 @@ function isBootstrapComplete() {
   // a runnable venv: an interrupted or split-home install can leave the marker
   // + checkout without a venv, and trusting that spawns a dead backend
   // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
+  return isActiveRuntimeUsable()
+}
+
+// HEAD commit of ACTIVE_HERMES_ROOT so an adopted marker carries the same
+// provenance a freshly-bootstrapped one would. null when git is unavailable or
+// the root isn't a checkout -- the marker stays valid via its `adopted` flag.
+function readActiveHeadCommit() {
+  try {
+    const sha = execFileSync(resolveGitBinary(), ['-C', ACTIVE_HERMES_ROOT, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+    return /^[0-9a-f]{7,40}$/i.test(sha) ? sha : null
+  } catch {
+    return null
+  }
 }
 
 function writeBootstrapMarker(payload) {
@@ -1431,6 +1573,7 @@ function writeBootstrapMarker(payload) {
     schemaVersion: BOOTSTRAP_MARKER_SCHEMA_VERSION,
     pinnedCommit: payload.pinnedCommit || null,
     pinnedBranch: payload.pinnedBranch || null,
+    adopted: Boolean(payload.adopted),
     completedAt: new Date().toISOString(),
     desktopVersion: app.getVersion()
   }
@@ -1454,10 +1597,18 @@ function resolveRendererIndex() {
 }
 
 function resolveHermesCwd() {
+  // In a packaged build, `process.cwd()` resolves to the install root (e.g.
+  // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
+  // on macOS). Sessions spawned there leave files inside the app bundle
+  // and bewilder users when "where did my files go?" is the install dir.
+  // The user-configurable default project directory wins over everything,
+  // followed by env hints (only honored when packaged if they point at a
+  // real directory), then the home dir.
   const candidates = [
+    readDefaultProjectDir(),
     process.env.HERMES_DESKTOP_CWD,
     process.env.INIT_CWD,
-    process.cwd(),
+    IS_PACKAGED ? null : process.cwd(),
     !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
     app.getPath('home')
   ]
@@ -1469,6 +1620,48 @@ function resolveHermesCwd() {
   }
 
   return app.getPath('home')
+}
+
+// Persisted "Default project directory" — surfaced as a setting in the
+// renderer (see app/settings/sessions-settings.tsx). Stored as JSON in
+// userData so it survives self-updates without bleeding into the new
+// install. `null` means "no preference, fall back to the usual chain".
+const DEFAULT_PROJECT_DIR_CONFIG_FILENAME = 'project-dir.json'
+
+function defaultProjectDirConfigPath() {
+  return path.join(app.getPath('userData'), DEFAULT_PROJECT_DIR_CONFIG_FILENAME)
+}
+
+function readDefaultProjectDir() {
+  try {
+    const raw = fs.readFileSync(defaultProjectDirConfigPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+
+    if (parsed && typeof parsed.dir === 'string' && parsed.dir.trim()) {
+      const resolved = path.resolve(parsed.dir)
+
+      if (directoryExists(resolved)) {
+        return resolved
+      }
+    }
+  } catch {
+    // Missing / unreadable / malformed → fall through to the rest of the
+    // candidate chain.
+  }
+
+  return null
+}
+
+function writeDefaultProjectDir(dir) {
+  const target = defaultProjectDirConfigPath()
+  const payload = dir ? JSON.stringify({ dir: path.resolve(dir) }, null, 2) : JSON.stringify({}, null, 2)
+
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, payload, 'utf8')
+  } catch (error) {
+    rememberLog(`[settings] write default project dir failed: ${error.message}`)
+  }
 }
 
 function createPythonBackend(root, label, dashboardArgs, options = {}) {
@@ -1535,6 +1728,24 @@ function resolveHermesBackend(dashboardArgs) {
   //    to spawning hermes. Updates flow through the in-app update path
   //    (applyUpdates -> git pull) or `hermes update` from the CLI.
   if (isBootstrapComplete()) {
+    return createActiveBackend(dashboardArgs)
+  }
+
+  // 3b. Existing-but-unmarked install at ACTIVE_HERMES_ROOT. The marker is
+  //     written only by OUR bootstrap, so a runtime from `install.sh
+  //     --include-desktop` (or a DMG launch over a prior CLI install) is
+  //     runnable yet markerless -- without this we'd fall to step 6 and re-run
+  //     the WHOLE install on top of a working one. ACTIVE_HERMES_ROOT is our
+  //     canonical location (unlike a random `hermes` on PATH), so adopt it:
+  //     stamp the marker once and forward straight to the app. Repair skips
+  //     this so a broken-but-present venv still gets rebuilt.
+  if (!forceBootstrapRepair && isActiveRuntimeUsable()) {
+    rememberLog(`[bootstrap] adopting existing install at ${ACTIVE_HERMES_ROOT}; skipping first-launch setup`)
+    try {
+      writeBootstrapMarker({ pinnedCommit: readActiveHeadCommit(), pinnedBranch: null, adopted: true })
+    } catch (err) {
+      rememberLog(`[bootstrap] could not stamp adopted marker: ${err.message}`)
+    }
     return createActiveBackend(dashboardArgs)
   }
 
@@ -1678,12 +1889,15 @@ async function ensureRuntime(backend) {
       })
     } catch {}
 
+    bootstrapAbortController = new AbortController()
+
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
       activeRoot: backend.activeRoot,
       sourceRepoRoot: SOURCE_REPO_ROOT,
       hermesHome: HERMES_HOME,
       logRoot: path.join(HERMES_HOME, 'logs'),
+      abortSignal: bootstrapAbortController.signal,
       onEvent: ev => {
         // Tee every bootstrap event to (a) the desktop log for forensics
         // and (b) the renderer for live progress UI. Either may be absent;
@@ -1698,6 +1912,16 @@ async function ensureRuntime(backend) {
       },
       writeMarker: writeBootstrapMarker
     })
+
+    bootstrapAbortController = null
+
+    if (bootstrapResult.cancelled) {
+      const cancelledError = new Error('Hermes install was cancelled.')
+      cancelledError.isBootstrapFailure = true
+      cancelledError.bootstrapCancelled = true
+      bootstrapFailure = cancelledError
+      throw cancelledError
+    }
 
     if (!bootstrapResult.ok) {
       const bootstrapError = new Error(
@@ -1715,6 +1939,9 @@ async function ensureRuntime(backend) {
     }
 
     rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
+    // A repair (if any) has now re-run, so clear the gate -- the re-resolution
+    // below SHOULD land on the fresh marker fast-path rather than skip it.
+    forceBootstrapRepair = false
     // Re-resolve now that the install exists. The new resolution lands in
     // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
     return ensureRuntime(resolveHermesBackend(backend.args))
@@ -2617,6 +2844,28 @@ function installContextMenu(window) {
       )
     }
 
+    // Spell-check suggestions for the misspelled word under the caret.
+    // Chromium surfaces them on `params.dictionarySuggestions`; we offer the
+    // top 5 plus a "Add to dictionary" affordance.
+    const suggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : []
+
+    if (isEditable && params.misspelledWord && suggestions.length > 0) {
+      if (template.length) template.push({ type: 'separator' })
+
+      for (const suggestion of suggestions.slice(0, 5)) {
+        template.push({
+          label: suggestion,
+          click: () => window.webContents.replaceMisspelling(suggestion)
+        })
+      }
+
+      template.push({ type: 'separator' })
+      template.push({
+        label: 'Add to dictionary',
+        click: () => window.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord)
+      })
+    }
+
     if (hasSelection || isEditable) {
       if (template.length) template.push({ type: 'separator' })
       if (isEditable) {
@@ -3144,6 +3393,51 @@ function createWindow() {
     openExternalUrl(url)
   })
 
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
+
+    if (details?.reason === 'crashed' || details?.reason === 'oom') {
+      const now = Date.now()
+      rendererReloadTimes = rendererReloadTimes.filter(t => now - t < RENDERER_RELOAD_WINDOW_MS)
+
+      if (rendererReloadTimes.length >= RENDERER_RELOAD_MAX) {
+        rememberLog(
+          `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
+        )
+
+        return
+      }
+
+      rendererReloadTimes.push(now)
+      setImmediate(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        try {
+          mainWindow.webContents.reload()
+        } catch (err) {
+          rememberLog(`[renderer] reload after crash failed: ${err?.message || err}`)
+        }
+      })
+    }
+  })
+
+  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+
+  // Electron always passes the event first. The canonical (Electron 36+) shape
+  // is (event, messageDetails); the deprecated positional shape is
+  // (event, level, message, line, sourceId). Handle both. `level` is numeric
+  // (0..3), where 3 === error.
+  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
+    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
+    const level = details ? details.level : detailsOrLevel
+
+    if (level !== 3) return
+
+    const text = details ? details.message : message
+    const src = details ? details.sourceUrl : sourceId
+    const lineNo = details ? details.lineNumber : line
+    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
+  })
+
   if (DEV_SERVER) {
     mainWindow.loadURL(DEV_SERVER)
   } else {
@@ -3164,6 +3458,7 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   // full backend flow (including a fresh runBootstrap pass).
   rememberLog('[bootstrap] reset requested by renderer; clearing latched failure')
   bootstrapFailure = null
+  forceBootstrapRepair = false
   connectionPromise = null
   bootstrapState = {
     active: false,
@@ -3191,8 +3486,23 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
     rememberLog(`[bootstrap] failed to remove marker during repair: ${error.message}`)
   }
   bootstrapFailure = null
+  // Force the next resolution past both the marker fast-path and the adopt
+  // branch so the installer actually re-runs (the whole point of repair).
+  forceBootstrapRepair = true
   resetHermesConnection()
   return { ok: true }
+})
+ipcMain.handle('hermes:bootstrap:cancel', async () => {
+  // Renderer's Cancel button during first-launch install. Abort the running
+  // install script (SIGTERM via the runner's abortSignal). runBootstrap
+  // resolves with { cancelled: true }, which surfaces the recovery overlay.
+  if (bootstrapAbortController) {
+    try {
+      bootstrapAbortController.abort()
+    } catch {}
+    return { ok: true, cancelled: true }
+  }
+  return { ok: false, cancelled: false }
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
@@ -3282,13 +3592,21 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
-  const properties = ['openFile']
-  if (options?.directories) properties.push('openDirectory')
+  const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')
+
+  let resolvedDefaultPath
+  if (options?.defaultPath) {
+    try {
+      resolvedDefaultPath = path.resolve(String(options.defaultPath))
+    } catch {
+      resolvedDefaultPath = undefined
+    }
+  }
 
   const result = await dialog.showOpenDialog(mainWindow, {
     title: options?.title || 'Add context',
-    defaultPath: options?.defaultPath ? path.resolve(String(options.defaultPath)) : undefined,
+    defaultPath: resolvedDefaultPath,
     properties,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
   })
@@ -3345,6 +3663,45 @@ ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
   }
+})
+
+// User-configurable default project directory. The renderer reads this on
+// settings mount and seeds the value into the picker; writing back persists
+// it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next
+// session spawn (no app restart needed).
+ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
+  dir: readDefaultProjectDir(),
+  defaultLabel: path.join(app.getPath('home'), 'hermes-projects')
+}))
+
+ipcMain.handle('hermes:setting:defaultProjectDir:set', async (_event, dir) => {
+  const next = typeof dir === 'string' && dir.trim() ? dir.trim() : null
+
+  if (next) {
+    try {
+      fs.mkdirSync(next, { recursive: true })
+    } catch (error) {
+      throw new Error(`Could not create directory: ${error.message}`)
+    }
+  }
+
+  writeDefaultProjectDir(next)
+
+  return { dir: next }
+})
+
+ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose default project directory',
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: readDefaultProjectDir() || app.getPath('home')
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true, dir: null }
+  }
+
+  return { canceled: false, dir: result.filePaths[0] }
 })
 
 ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
@@ -3647,14 +4004,108 @@ ipcMain.handle('hermes:version', async () => ({
   hermesRoot: resolveUpdateRoot()
 }))
 
+// ---------------------------------------------------------------------------
+// macOS first-launch placement: move into /Applications and pin to the Dock
+// ---------------------------------------------------------------------------
+//
+// The DMG and CLI-built apps launch from wherever the user left them (a DMG
+// mount, ~/Downloads, ~/.hermes/...) -- which means Gatekeeper translocation,
+// no Dock tile, and "which icon do I click?" confusion. On first packaged
+// launch we relocate into /Applications (Electron relaunches from there) and,
+// once we're that canonical copy, pin to the Dock. Both macOS-only,
+// packaged-only, best-effort, run at most once.
+
+// Move the bundle into /Applications and relaunch. Returns true when a relaunch
+// is underway (caller must stop init). No-op in dev, off macOS, or already in
+// /Applications. `existsAndRunning` -> another copy owns the slot; don't fight
+// it. `exists` -> stale copy; replace it so there's exactly one current app.
+function maybeRelocateToApplications() {
+  if (!IS_MAC || !IS_PACKAGED || process.env.HERMES_DESKTOP_NO_AUTO_MOVE === '1') return false
+  try {
+    if (app.isInApplicationsFolder()) return false
+    const moved = app.moveToApplicationsFolder({ conflictHandler: type => type !== 'existsAndRunning' })
+    if (moved) rememberLog('[install] relocated into /Applications; relaunching')
+    return moved
+  } catch (err) {
+    rememberLog(`[install] move to /Applications skipped: ${err.message}`)
+    return false
+  }
+}
+
+const DOCK_PINNED_MARKER = 'dock-pinned.json'
+
+// Pin the /Applications copy to the Dock once. macOS has no Electron API for
+// this, so we append to com.apple.dock's persistent-apps and restart the Dock.
+// Guarded by a userData marker + membership check so we never duplicate the tile.
+function maybePinToDock() {
+  if (!IS_MAC || !IS_PACKAGED || process.env.HERMES_DESKTOP_NO_DOCK_PIN === '1') return
+  const marker = path.join(app.getPath('userData'), DOCK_PINNED_MARKER)
+  if (fileExists(marker)) return
+
+  let bundle
+  try {
+    if (!app.isInApplicationsFolder()) return // don't pin a soon-to-be-stale path
+    bundle = runningAppBundle()
+  } catch {
+    return
+  }
+  if (!bundle) return
+
+  // The Dock stores tiles as file-reference URLs (type 15), e.g.
+  // file:///Applications/Hermes.app/ -- NOT a raw POSIX path. A type-0/raw-path
+  // tile is silently dropped when the Dock rewrites persistent-apps on restart.
+  const url = pathToFileURL(bundle.endsWith('/') ? bundle : `${bundle}/`).href
+
+  const done = (note = {}) => {
+    try {
+      fs.writeFileSync(marker, JSON.stringify({ bundle, pinnedAt: new Date().toISOString(), ...note }) + '\n')
+    } catch {
+      // best-effort; we re-check next launch (membership guard dedupes)
+    }
+  }
+
+  try {
+    const apps = execFileSync('defaults', ['read', 'com.apple.dock', 'persistent-apps'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    if (apps.includes(url)) return done({ alreadyPresent: true })
+  } catch {
+    // persistent-apps may not exist yet; -array-add creates it
+  }
+
+  const tile =
+    '<dict><key>tile-data</key><dict><key>file-data</key><dict>' +
+    `<key>_CFURLString</key><string>${url}</string><key>_CFURLStringType</key><integer>15</integer>` +
+    '</dict></dict></dict>'
+  try {
+    execFileSync('defaults', ['write', 'com.apple.dock', 'persistent-apps', '-array-add', tile], { stdio: 'ignore' })
+    // Flush the write through cfprefsd before restarting the Dock, otherwise the
+    // Dock reloads stale prefs and our tile is lost in the race.
+    execFileSync('defaults', ['read', 'com.apple.dock', 'persistent-apps'], { stdio: 'ignore' })
+    execFileSync('killall', ['Dock'], { stdio: 'ignore' })
+    done()
+    rememberLog(`[install] pinned to Dock: ${url}`)
+  } catch (err) {
+    rememberLog(`[install] Dock pin skipped: ${err.message}`)
+  }
+}
+
 app.whenReady().then(() => {
+  // macOS: relocate into /Applications before anything else so setup + state
+  // land in the final location; on success this relaunches, so bail here.
+  if (maybeRelocateToApplications()) return
+  maybePinToDock()
+
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {
     Menu.setApplicationMenu(null)
   }
   installMediaPermissions()
+  registerMediaProtocol()
   ensureWslWindowsFonts()
+  configureSpellChecker()
   createWindow()
 
   app.on('activate', () => {
@@ -3662,7 +4113,37 @@ app.whenReady().then(() => {
   })
 })
 
+// Seed Chromium's spellchecker with the system locale (falling back to en-US).
+// On macOS Electron uses the native spellchecker which ignores this list, but
+// on Windows/Linux Chromium downloads Hunspell dictionaries on demand and
+// won't enable any without an explicit language.
+function configureSpellChecker() {
+  try {
+    const defaultSession = session.defaultSession
+
+    if (!defaultSession || typeof defaultSession.setSpellCheckerLanguages !== 'function') {
+      return
+    }
+
+    const available = defaultSession.availableSpellCheckerLanguages || []
+    const locale = (app.getLocale && app.getLocale()) || 'en-US'
+    const candidates = [locale, locale.split('-')[0], 'en-US', 'en']
+    const chosen = candidates.find(lang => available.includes(lang)) || 'en-US'
+
+    defaultSession.setSpellCheckerLanguages([chosen])
+  } catch (error) {
+    rememberLog(`Spellchecker setup failed: ${error.message}`)
+  }
+}
+
 app.on('before-quit', () => {
+  // Quitting mid-install should stop the installer, not orphan it.
+  if (bootstrapAbortController) {
+    try {
+      bootstrapAbortController.abort()
+    } catch {}
+  }
+
   if (desktopLogFlushTimer) {
     clearTimeout(desktopLogFlushTimer)
     desktopLogFlushTimer = null

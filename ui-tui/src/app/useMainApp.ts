@@ -988,7 +988,17 @@ export function useMainApp(gw: GatewayClient) {
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
-      resumeById: session.resumeById,
+      // Resuming a cold session from the overlay CLOSES the current one, so it
+      // must respect the busy guard just like the `/resume` slash path.
+      // (Switching between live sessions and `+ new` keep the current session
+      // running, so those stay unguarded — that's the orchestrator's purpose.)
+      resumeById: (id: string) => {
+        if (session.guardBusySessionSwitch('switch sessions')) {
+          return
+        }
+
+        session.resumeById(id)
+      },
       setStickyPrompt
     }),
     [
@@ -1001,6 +1011,7 @@ export function useMainApp(gw: GatewayClient) {
       newPromptSession,
       onModelSelect,
       session.activateLiveSession,
+      session.guardBusySessionSwitch,
       session.newLiveSession,
       session.resumeById
     ]
@@ -1035,7 +1046,10 @@ export function useMainApp(gw: GatewayClient) {
 
   const appStatus = useMemo(
     () => ({
-      cwdLabel: fmtCwdBranch(cwd, gitBranch),
+      // Cap the status-bar cwd/branch label tighter than the shared default so
+      // it doesn't dominate the bar; the status rule reserves the left-side
+      // essentials and truncates this further on narrow terminals.
+      cwdLabel: fmtCwdBranch(cwd, gitBranch, 28),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,

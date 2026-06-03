@@ -365,6 +365,15 @@ def _validate_post_login_target(raw: str) -> str:
         for p in ("/login", "/auth/", "/api/auth/")
     ):
         return ""
+    # Reject any ``/api/*`` target. The gate's ``_safe_next_target``
+    # already filters these out before they reach the cookie, but a
+    # malicious or stale ``next=`` value that re-enters via the
+    # callback URL must not be honoured: a successful redirect to an
+    # API endpoint renders raw JSON in the browser address bar — never
+    # a useful post-login destination, and indistinguishable from an
+    # attacker trying to weaponise the redirect.
+    if decoded == "/api" or decoded.startswith("/api/"):
+        return ""
     return decoded
 
 

@@ -5,6 +5,8 @@ pieces. The OpenAI client and tool loading are mocked so no network calls
 are made.
 """
 
+import ast
+import inspect
 import io
 import json
 import logging
@@ -2051,6 +2053,39 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        hook_calls = []
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._current_api_request_id = "api-1"
+
+        def _capture_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _capture_hook)
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=KeyboardInterrupt),
+            patch("run_agent._set_interrupt"),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
+        assert len(post_calls) == 1
+        assert post_calls[0]["tool_name"] == "web_search"
+        assert post_calls[0]["tool_call_id"] == "c1"
+        assert post_calls[0]["session_id"] == "session-1"
+        assert post_calls[0]["turn_id"] == "turn-1"
+        assert post_calls[0]["api_request_id"] == "api-1"
+        assert post_calls[0]["status"] == "cancelled"
+        assert post_calls[0]["error_type"] == "keyboard_interrupt"
+        assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
+
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -2426,6 +2461,8 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                turn_id="",
+                api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
                 enabled_toolsets=agent.enabled_toolsets,
@@ -2475,6 +2512,30 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Agent-owned tool paths should close observer tool spans."""
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            result = agent._invoke_tool("todo", {"todos": []}, "task-1", tool_call_id="todo-1")
+
+        mock_todo.assert_called_once()
+        assert result == '{"ok":true}'
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["tool_call_id"] == "todo-1"
+        assert post_call[1]["status"] == "ok"
+        assert post_call[1]["error_type"] is None
+        assert isinstance(post_call[1]["duration_ms"], int)
 
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
@@ -2527,6 +2588,74 @@ class TestConcurrentToolExecution:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
+    def test_sequential_blocked_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Blocked pre_tool_call decisions still terminate observer tool spans."""
+        tool_call = _mock_tool_call(name="write_file",
+                                    arguments='{"path":"test.txt","content":"hello"}',
+                                    call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "write_file"
+        assert post_call[1]["tool_call_id"] == "c1"
+        assert post_call[1]["status"] == "blocked"
+        assert post_call[1]["error_type"] == "plugin_block"
+        assert post_call[1]["error_message"] == "Blocked by policy"
+
+    def test_sequential_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Sequential built-in tool paths should also close observer tool spans."""
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_todo.assert_called_once()
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["tool_call_id"] == "todo-1"
+        assert post_call[1]["result"] == '{"ok":true}'
+        assert post_call[1]["status"] == "ok"
+
+    def test_agent_runtime_post_hook_ownership_predicate_covers_agent_tools(self, agent):
+        """Sequential and concurrent agent-level paths share post-hook ownership."""
+        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
+
+        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+            assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
+
+        agent._context_engine_tool_names = {"context_query"}
+        assert agent_runtime_owns_post_tool_hook(agent, "context_query") is True
+
+        agent._memory_manager = SimpleNamespace(has_tool=lambda name: name == "memory_extra")
+        assert agent_runtime_owns_post_tool_hook(agent, "memory_extra") is True
+        assert agent_runtime_owns_post_tool_hook(agent, "web_search") is False
 
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
@@ -2658,6 +2787,135 @@ class TestConcurrentToolExecution:
 
         # Second (allowed) write must checkpoint even though first was blocked.
         cp_mock.assert_called_once()
+
+
+class TestAgentRuntimePostHookOwnershipSync:
+    """Pin the inline-dispatch tool list against the post-hook ownership set.
+
+    The post_tool_call hook fires from two places: the inline dispatcher in
+    agent/tool_executor.py:execute_tool_calls_sequential (for agent-runtime
+    tools that never reach handle_function_call) and
+    model_tools.handle_function_call itself (for registry-dispatched tools).
+    To prevent the executor from silently dropping or double-emitting,
+    AGENT_RUNTIME_POST_HOOK_TOOL_NAMES has to match exactly the static
+    `function_name == "..."` branches in the inline dispatch chain.
+
+    The chain is the if/elif tower anchored on `_block_msg is not None`.
+    Pre-dispatch `function_name == "..."` checks (counter resets, checkpoint
+    triggers) live outside the dispatch chain and are explicitly skipped.
+    """
+
+    _DISPATCH_ANCHOR_LEFT = "_block_msg"
+
+    @classmethod
+    def _is_dispatch_anchor(cls, test_node) -> bool:
+        # Looking for `_block_msg is not None`.
+        if not isinstance(test_node, ast.Compare):
+            return False
+        if not (isinstance(test_node.left, ast.Name) and test_node.left.id == cls._DISPATCH_ANCHOR_LEFT):
+            return False
+        if not (len(test_node.ops) == 1 and isinstance(test_node.ops[0], ast.IsNot)):
+            return False
+        comparator = test_node.comparators[0]
+        return isinstance(comparator, ast.Constant) and comparator.value is None
+
+    @staticmethod
+    def _function_name_literal(test_node) -> str | None:
+        """Return the string literal X for `function_name == "X"`, else None."""
+        if not isinstance(test_node, ast.Compare):
+            return None
+        if not (isinstance(test_node.left, ast.Name) and test_node.left.id == "function_name"):
+            return None
+        if not (len(test_node.ops) == 1 and isinstance(test_node.ops[0], ast.Eq)):
+            return None
+        comparator = test_node.comparators[0]
+        if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
+            return comparator.value
+        return None
+
+    @classmethod
+    def _extract_dispatch_chain_names(cls, func) -> set[str]:
+        """Find the if/elif chain anchored on `_block_msg is not None`, return its
+        `function_name == "..."` literals."""
+        source = inspect.cleandoc("\n" + inspect.getsource(func))
+        tree = ast.parse(source)
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            if not cls._is_dispatch_anchor(node.test):
+                continue
+            current = node
+            while current is not None:
+                literal = cls._function_name_literal(current.test)
+                if literal is not None:
+                    names.add(literal)
+                if current.orelse and len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                    current = current.orelse[0]
+                else:
+                    current = None
+            break
+        return names
+
+    @classmethod
+    def _extract_invoke_tool_names(cls, func) -> set[str]:
+        """invoke_tool uses a flat if/elif on function_name directly; walk every
+        Compare in the function body (no other static `function_name == "..."`
+        checks live there)."""
+        source = inspect.cleandoc("\n" + inspect.getsource(func))
+        tree = ast.parse(source)
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            literal = cls._function_name_literal(node)
+            if literal is not None:
+                names.add(literal)
+        return names
+
+    def test_frozenset_matches_inline_dispatch_chain(self):
+        from agent import tool_executor
+        from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+
+        inline_names = self._extract_dispatch_chain_names(
+            tool_executor.execute_tool_calls_sequential
+        )
+        assert inline_names, (
+            "Could not find the dispatch chain (anchored on "
+            "`_block_msg is not None`) in execute_tool_calls_sequential. "
+            "If the dispatcher was refactored, update _DISPATCH_ANCHOR_LEFT "
+            "and the walker in this test."
+        )
+        assert inline_names == set(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES), (
+            "Inline dispatch chain in "
+            "agent/tool_executor.py:execute_tool_calls_sequential has drifted "
+            "from AGENT_RUNTIME_POST_HOOK_TOOL_NAMES in "
+            "agent/agent_runtime_helpers.py.\n"
+            f"  Inline branches:     {sorted(inline_names)}\n"
+            f"  Ownership frozenset: {sorted(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES)}\n"
+            "Update both together so post_tool_call fires exactly once per "
+            "tool execution."
+        )
+
+    def test_invoke_tool_dispatch_matches_inline_dispatch_chain(self):
+        """invoke_tool (concurrent path) and the inline dispatcher (sequential
+        path) must cover the same set of agent-runtime tools — otherwise
+        post_tool_call fires inconsistently depending on which executor ran
+        the tool."""
+        from agent import agent_runtime_helpers, tool_executor
+
+        invoke_tool_names = self._extract_invoke_tool_names(
+            agent_runtime_helpers.invoke_tool
+        )
+        inline_names = self._extract_dispatch_chain_names(
+            tool_executor.execute_tool_calls_sequential
+        )
+        assert invoke_tool_names == inline_names, (
+            "Static `function_name == \"...\"` branches diverged between "
+            "agent/agent_runtime_helpers.py:invoke_tool (concurrent path) "
+            "and agent/tool_executor.py:execute_tool_calls_sequential "
+            "(sequential path).\n"
+            f"  invoke_tool:                   {sorted(invoke_tool_names)}\n"
+            f"  execute_tool_calls_sequential: {sorted(inline_names)}"
+        )
 
 
 class TestPathsOverlap:
@@ -3088,6 +3346,10 @@ class TestRunConversation:
 
         with (
             patch("run_agent.handle_function_call", return_value="search result"),
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
+            ),
             patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3103,9 +3365,85 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
+        assert all(call["turn_id"] == pre_request_calls[0]["turn_id"] for call in pre_request_calls + post_request_calls)
+        assert [call["api_request_id"] for call in pre_request_calls] == [
+            call["api_request_id"] for call in post_request_calls
+        ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
+        assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
-        assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
+        assert all("usage" in c and "response" in c for c in post_request_calls)
+        assert all("assistant_message" in c["response"] for c in post_request_calls)
+
+    def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
+        payload_built = False
+        hook_called = False
+
+        def _payload_for_hook(_api_kwargs):
+            nonlocal payload_built
+            payload_built = True
+            return {}
+
+        def _invoke_hook(_name, **_kwargs):
+            nonlocal hook_called
+            hook_called = True
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _invoke_hook)
+        monkeypatch.setattr(agent, "_api_request_payload_for_hook", _payload_for_hook)
+
+        agent._invoke_api_request_error_hook(
+            task_id="task-1",
+            turn_id="turn-1",
+            api_request_id="api-1",
+            api_call_count=1,
+            api_start_time=0.0,
+            api_kwargs={"messages": [{"role": "user", "content": "hi"}]},
+            error_type="RuntimeError",
+            error_message="boom",
+        )
+
+        assert payload_built is False
+        assert hook_called is False
+
+    def test_request_scoped_api_hooks_skip_payload_work_without_listeners(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="No listeners",
+            finish_reason="stop",
+        )
+        hook_checks = {"pre_api_request": 0, "post_api_request": 0}
+        payload_counts = {"request": 0, "response": 0}
+
+        def _has_hook(name):
+            if name in hook_checks:
+                hook_checks[name] += 1
+            return False
+
+        def _request_payload(_api_kwargs):
+            payload_counts["request"] += 1
+            return {}
+
+        def _response_payload(_response, _assistant_message, *, finish_reason):
+            payload_counts["response"] += 1
+            return {}
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", _has_hook)
+        monkeypatch.setattr(agent, "_api_request_payload_for_hook", _request_payload)
+        monkeypatch.setattr(agent, "_api_response_payload_for_hook", _response_payload)
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "No listeners"
+        assert hook_checks == {"pre_api_request": 1, "post_api_request": 1}
+        assert payload_counts == {"request": 0, "response": 0}
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)

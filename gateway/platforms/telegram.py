@@ -347,6 +347,9 @@ class TelegramAdapter(BasePlatformAdapter):
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
+    # Default album (media_group) debounce, in seconds. Per-instance value is
+    # resolved in ``__init__`` and may be overridden via the
+    # ``HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS`` environment variable.
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
@@ -412,6 +415,19 @@ class TelegramAdapter(BasePlatformAdapter):
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
+        # Album (media_group) debounce. Telegram delivers each album photo as a
+        # separate update; we reset this timer on each arrival and flush once it
+        # elapses. The 0.8s default is too short for slow/large uploads, where a
+        # later photo can arrive after the timer fires — splitting one album into
+        # several turns. Overridable via HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS;
+        # falls back to the class default on a missing/invalid value.
+        try:
+            self.MEDIA_GROUP_WAIT_SECONDS = float(
+                os.getenv("HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS", "")
+                or self.MEDIA_GROUP_WAIT_SECONDS
+            )
+        except (TypeError, ValueError):
+            pass  # keep the class-level default
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
         self._pending_photo_batch_tasks: Dict[str, asyncio.Task] = {}
         self._media_group_events: Dict[str, MessageEvent] = {}

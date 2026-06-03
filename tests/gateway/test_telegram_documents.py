@@ -892,3 +892,30 @@ class TestSendVideo:
 
         call_kwargs = connected_adapter._bot.send_video.call_args[1]
         assert call_kwargs["message_thread_id"] == 789
+
+
+# ---------------------------------------------------------------------------
+# TestMediaGroupWaitConfig — HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS override
+# ---------------------------------------------------------------------------
+
+class TestMediaGroupWaitConfig:
+    """The album debounce window is overridable via env, defaulting to 0.8s."""
+
+    def _make_adapter(self):
+        return TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+
+    def test_default_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS", raising=False)
+        assert self._make_adapter().MEDIA_GROUP_WAIT_SECONDS == 0.8
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS", "3.0")
+        assert self._make_adapter().MEDIA_GROUP_WAIT_SECONDS == 3.0
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS", "not-a-number")
+        assert self._make_adapter().MEDIA_GROUP_WAIT_SECONDS == 0.8
+
+    def test_empty_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS", "")
+        assert self._make_adapter().MEDIA_GROUP_WAIT_SECONDS == 0.8

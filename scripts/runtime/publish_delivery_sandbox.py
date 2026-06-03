@@ -128,7 +128,8 @@ VAPI_SERVER_AUTH_TOKEN = os.environ.get("VAPI_SERVER_AUTH_TOKEN", "")
 VAPI_ALLOWED_TOOL_NAMES = {
     "capture_voice_lead",
     "schedule_followup",
-    "escalate_to_jean",
+    "escalate_to_zeus",
+    "get_customer_context",
     "send_call_summary",
 }
 
@@ -661,6 +662,54 @@ def _tool_arguments(call: dict[str, Any]) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _digits(value: Any) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def _customer_context_path() -> Path:
+    return Path(os.environ.get("VAPI_CUSTOMER_CONTEXT_FILE", str(EVENT_DIR / "customer-context.json")))
+
+
+def _lookup_customer_context(args: dict[str, Any], call_context: dict[str, Any]) -> str:
+    """Return a sanitized caller context snapshot for Sophie.
+
+    The public callback service must not hold broad CRM credentials. A trusted
+    Zeus-side worker can publish a narrow, sanitized JSON cache keyed by phone,
+    email, name, or company. Sophie gets just enough context to continue a
+    returning conversation while Zeus keeps the canonical CRM as source of truth.
+    """
+    path = _customer_context_path()
+    if not path.exists():
+        return "No encontré contexto previo publicado para este contacto. Continúa como lead nuevo y captura los datos mínimos para Zeus."
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return "No pude leer el contexto previo. Continúa como lead nuevo y registra el resumen para Zeus."
+    records = data.get("records") if isinstance(data, dict) else data
+    if not isinstance(records, list):
+        return "El contexto publicado no tiene formato válido. Continúa como lead nuevo y registra el resumen para Zeus."
+    customer = call_context.get("customer") if isinstance(call_context.get("customer"), dict) else {}
+    needles = {
+        "phone": _digits(args.get("phone") or customer.get("number")),
+        "email": str(args.get("email") or "").strip().lower(),
+        "name": str(args.get("name") or "").strip().lower(),
+        "company": str(args.get("company") or "").strip().lower(),
+    }
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        phones = [_digits(x) for x in ([rec.get("phone")] + list(rec.get("phones") or []))]
+        emails = [str(x).strip().lower() for x in ([rec.get("email")] + list(rec.get("emails") or [])) if x]
+        names = [str(x).strip().lower() for x in [rec.get("name"), rec.get("contact_name")] if x]
+        companies = [str(x).strip().lower() for x in [rec.get("company"), rec.get("organization")] if x]
+        matched = (needles["phone"] and needles["phone"] in phones) or (needles["email"] and needles["email"] in emails) or (needles["name"] and needles["name"] in names) or (needles["company"] and needles["company"] in companies)
+        if matched:
+            summary = str(rec.get("summary") or rec.get("context") or "Hay contexto previo registrado.").strip()
+            next_step = str(rec.get("next_step") or rec.get("pending_action") or "Confirmar el próximo paso con el cliente.").strip()
+            return f"Contexto encontrado: {summary} Próximo paso pendiente: {next_step}"
+    return "No encontré contexto previo para este identificador. Continúa como lead nuevo y captura los datos mínimos para Zeus."
+
+
 def _handle_vapi_tools(handler: BaseHTTPRequestHandler) -> None:
     if not _vapi_authorized(handler):
         _json_response(handler, 401, {"ok": False, "error": "unauthorized"})
@@ -690,11 +739,13 @@ def _handle_vapi_tools(handler: BaseHTTPRequestHandler) -> None:
         if status == "unknown_tool":
             results.append({"toolCallId": tool_call_id, "name": name, "error": f"Tool no soportada: {name}"})
         else:
-            result = "Listo. Registré la información para que el equipo de SitioUno le dé seguimiento."
-            if name == "schedule_followup":
-                result = "Listo. Registré la solicitud de agendar seguimiento; el equipo confirmará la disponibilidad."
-            elif name == "escalate_to_jean":
-                result = "Listo. Escalé el caso para revisión prioritaria."
+            result = "Listo. Registré la información para que Zeus le dé seguimiento."
+            if name == "get_customer_context":
+                result = _lookup_customer_context(args, call_context)
+            elif name == "schedule_followup":
+                result = "Listo. Registré la solicitud de seguimiento para que Zeus la procese."
+            elif name == "escalate_to_zeus":
+                result = "Listo. Escalé el caso a Zeus para decisión y acción posterior."
             results.append({"toolCallId": tool_call_id, "name": name, "result": result})
     _json_response(handler, 200, {"results": results})
 

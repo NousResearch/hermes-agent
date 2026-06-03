@@ -476,6 +476,20 @@ class _FakeAiohttpSession:
 
 
 class TestSendWhatsAppMediaDelivery:
+    def test_whatsapp_e164_target_is_converted_to_baileys_jid(self, monkeypatch):
+        _FakeAiohttpSession.posts = []
+        monkeypatch.setitem(
+            sys.modules,
+            "aiohttp",
+            SimpleNamespace(ClientSession=_FakeAiohttpSession, ClientTimeout=lambda **kw: kw),
+        )
+
+        result = asyncio.run(_send_whatsapp({"bridge_port": 3000}, "+13059274824", "Prueba"))
+
+        assert result["success"] is True
+        assert _FakeAiohttpSession.posts[0]["url"] == "http://localhost:3000/send"
+        assert _FakeAiohttpSession.posts[0]["json"]["chatId"] == "13059274824@s.whatsapp.net"
+
     def test_whatsapp_media_uses_send_media_with_caption(self, tmp_path, monkeypatch):
         image_path = tmp_path / "photo.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)

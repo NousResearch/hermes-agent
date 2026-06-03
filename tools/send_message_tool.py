@@ -1103,6 +1103,17 @@ async def _send_whatsapp(extra, chat_id, message, media_files=None):
 
     media_files = media_files or []
 
+    def _normalize_whatsapp_target(value):
+        raw = str(value or "").strip()
+        e164 = _E164_TARGET_RE.fullmatch(raw)
+        if e164:
+            return f"{e164.group(1)}@s.whatsapp.net"
+        if raw.isdigit():
+            return f"{raw}@s.whatsapp.net"
+        return raw
+
+    chat_id = _normalize_whatsapp_target(chat_id)
+
     def _media_type_for_path(path, is_voice=False):
         ext = os.path.splitext(path)[1].lower()
         if ext in _IMAGE_EXTS:

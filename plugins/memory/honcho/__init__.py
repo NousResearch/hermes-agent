@@ -239,6 +239,9 @@ class HonchoMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "honcho"
 
+    def get_profile_config_paths(self) -> List[str]:
+        return ["honcho.json"]
+
     def is_available(self) -> bool:
         """Check if Honcho is configured. No network calls."""
         try:

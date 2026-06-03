@@ -604,6 +604,9 @@ class HindsightMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "hindsight"
 
+    def get_profile_config_paths(self) -> List[str]:
+        return ["hindsight/config.json"]
+
     def is_available(self) -> bool:
         try:
             cfg = _load_config()

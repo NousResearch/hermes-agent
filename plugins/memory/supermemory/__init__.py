@@ -472,6 +472,9 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def name(self) -> str:
         return "supermemory"
 
+    def get_profile_config_paths(self) -> List[str]:
+        return ["supermemory.json"]
+
     def is_available(self) -> bool:
         api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
         if not api_key:

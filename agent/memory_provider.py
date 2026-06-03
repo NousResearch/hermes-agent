@@ -151,6 +151,15 @@ class MemoryProvider(ABC):
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""
 
+    def get_profile_config_paths(self) -> List[str]:
+        """Return HERMES_HOME-relative provider config paths copied by profile clone.
+
+        Providers that persist native config files under the active profile
+        should return those file or directory paths here. Providers that use
+        only config.yaml or env vars can keep the default empty list.
+        """
+        return []
+
     # -- Optional hooks (override to opt in) ---------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:

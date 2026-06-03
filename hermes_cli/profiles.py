@@ -163,6 +163,100 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
+def _safe_profile_config_relpath(raw_path: object) -> Optional[Path]:
+    """Return a safe HERMES_HOME-relative config path, or None."""
+    try:
+        raw = os.fspath(raw_path)
+    except TypeError:
+        return None
+
+    if not isinstance(raw, str):
+        return None
+
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    posix_path = PurePosixPath(raw)
+    windows_path = PureWindowsPath(raw)
+    if posix_path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        return None
+
+    relpath = Path(raw)
+    if relpath.is_absolute():
+        return None
+
+    parts = relpath.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        return None
+
+    return relpath
+
+
+def _iter_memory_provider_profile_config_paths() -> List[Path]:
+    """Ask discovered memory providers which profile-local config paths they own."""
+    try:
+        from plugins.memory import discover_memory_providers, load_memory_provider
+    except Exception:
+        return []
+
+    try:
+        discovered = discover_memory_providers()
+    except Exception:
+        return []
+
+    config_paths: list[Path] = []
+    seen: set[str] = set()
+    for provider_info in discovered:
+        if not provider_info:
+            continue
+        provider_name = provider_info[0]
+        try:
+            provider = load_memory_provider(provider_name)
+        except Exception:
+            continue
+        if provider is None:
+            continue
+
+        get_paths = getattr(provider, "get_profile_config_paths", None)
+        if not callable(get_paths):
+            continue
+
+        try:
+            raw_paths = get_paths()
+        except Exception:
+            continue
+
+        if isinstance(raw_paths, (str, os.PathLike)):
+            raw_paths = [raw_paths]
+
+        for raw_path in raw_paths or []:
+            relpath = _safe_profile_config_relpath(raw_path)
+            if relpath is None:
+                continue
+            key = relpath.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            config_paths.append(relpath)
+
+    return config_paths
+
+
+def _copy_profile_config_path(source_dir: Path, profile_dir: Path, relpath: Path) -> None:
+    """Copy one profile-relative provider config file or directory if present."""
+    src = source_dir / relpath
+    if not src.exists():
+        return
+
+    dst = profile_dir / relpath
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+    elif src.is_file() or src.is_symlink():
+        shutil.copy2(src, dst)
+
+
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
 # caches, binaries) that named profiles don't have.  We exclude those so the
@@ -834,6 +928,13 @@ def create_profile(
                     dst = profile_dir / relpath
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+
+            # Clone provider-owned native config files for every provider
+            # that has config present in the source profile, active or not.
+            # Values are copied verbatim: provider-scoped memory banks remain
+            # shared with the source profile until the clone is reconfigured.
+            for relpath in _iter_memory_provider_profile_config_paths():
+                _copy_profile_config_path(source_dir, profile_dir, relpath)
 
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).

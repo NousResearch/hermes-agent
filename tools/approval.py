@@ -11,7 +11,9 @@ This module is the single source of truth for the dangerous command system:
 import contextvars
 import logging
 import os
+import posixpath
 import re
+import shlex
 import sys
 import threading
 import time
@@ -591,15 +593,128 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return command
 
 
+_DEFAULT_SAFE_DELETE_ROOTS = ("/tmp", "/private/tmp")
+_DELETE_TARGET_UNSAFE_MARKERS = ("$", "`", "*", "?", "[", "]", "{", "}")
+
+
+def _configured_safe_delete_roots() -> tuple[str, ...]:
+    """Return absolute roots where scoped rm targets can skip approvals."""
+    roots = list(_DEFAULT_SAFE_DELETE_ROOTS)
+    configured = _get_approval_config().get("safe_delete_roots", [])
+    if isinstance(configured, str):
+        configured = [configured]
+    elif not isinstance(configured, (list, tuple, set)):
+        configured = []
+
+    for root in configured:
+        roots.append(str(root))
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        root = root.strip()
+        if not root.startswith("/"):
+            continue
+        root = posixpath.normpath(root)
+        if root in {"/", "."} or root in seen:
+            continue
+        normalized.append(root)
+        seen.add(root)
+    return tuple(normalized)
+
+
+def _contains_shell_separator(command: str) -> bool:
+    """Conservatively reject compound commands from scoped delete bypasses."""
+    return any(sep in command for sep in ("\n", "&&", "||", ";", "|"))
+
+
+def _rm_tokens(command: str) -> list[str]:
+    if _contains_shell_separator(command):
+        return []
+    try:
+        tokens = shlex.split(command.strip(), posix=True)
+    except ValueError:
+        return []
+    return tokens if tokens and tokens[0] == "rm" else []
+
+
+def _rm_flag_is_recursive(flag: str) -> bool:
+    if flag == "--recursive":
+        return True
+    if flag.startswith("--"):
+        return False
+    return "r" in flag[1:] or "R" in flag[1:]
+
+
+def _rm_targets(command: str, require_recursive: bool) -> list[str]:
+    tokens = _rm_tokens(command)
+    if not tokens:
+        return []
+
+    flags: list[str] = []
+    targets: list[str] = []
+    after_double_dash = False
+    for token in tokens[1:]:
+        if after_double_dash:
+            targets.append(token)
+        elif token == "--":
+            after_double_dash = True
+        elif token.startswith("-") and token != "-":
+            flags.append(token)
+        else:
+            targets.append(token)
+
+    if require_recursive and not any(_rm_flag_is_recursive(flag) for flag in flags):
+        return []
+    return targets
+
+
+def _is_scoped_safe_delete_target(target: str) -> bool:
+    """True only for literal child paths under configured safe delete roots."""
+    if any(marker in target for marker in _DELETE_TARGET_UNSAFE_MARKERS):
+        return False
+    if not target.startswith("/"):
+        return False
+
+    normalized = posixpath.normpath(target)
+    if normalized != target.rstrip("/"):
+        return False
+
+    for root in _configured_safe_delete_roots():
+        prefix = root + "/"
+        if not normalized.startswith(prefix):
+            continue
+        rest = normalized[len(prefix):]
+        first_component = rest.split("/", 1)[0]
+        return bool(first_component) and first_component not in {".", ".."}
+    return False
+
+
+def _is_allowed_root_delete(command: str) -> bool:
+    """Allow non-recursive rm of literal children under safe delete roots."""
+    targets = _rm_targets(command, require_recursive=False)
+    return bool(targets) and all(_is_scoped_safe_delete_target(t) for t in targets)
+
+
+def _is_allowed_recursive_delete(command: str) -> bool:
+    """Allow scoped recursive cleanup while keeping broad rm -r gated."""
+    targets = _rm_targets(command, require_recursive=True)
+    return bool(targets) and all(_is_scoped_safe_delete_target(t) for t in targets)
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
+    command_normalized = _normalize_command_for_detection(command)
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
+        if pattern_re.search(command_normalized):
+            if description == "delete in root path" and _is_allowed_root_delete(command_normalized):
+                continue
+            if description.startswith("recursive delete") and _is_allowed_recursive_delete(command_normalized):
+                continue
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)

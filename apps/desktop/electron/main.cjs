@@ -1101,9 +1101,17 @@ function readDesktopUpdateConfig() {
   }
 }
 
+// Atomic file write: temp + rename (atomic on all platforms). Prevents
+// partial writes on crash/power loss that corrupt JSON config files.
+function writeFileAtomic(targetPath, data, encoding) {
+  const tmp = targetPath + '.tmp'
+  fs.writeFileSync(tmp, data, encoding)
+  fs.renameSync(tmp, targetPath)
+}
+
 function writeDesktopUpdateConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
-  fs.writeFileSync(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
+  writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
 }
 
 // Match the backend's source resolution but bias toward a real git checkout.
@@ -1628,7 +1636,7 @@ function writeBootstrapMarker(payload) {
     completedAt: new Date().toISOString(),
     desktopVersion: app.getVersion()
   }
-  fs.writeFileSync(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
+  writeFileAtomic(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
   return merged
 }
 
@@ -3163,7 +3171,7 @@ function readDesktopConnectionConfig() {
 
 function writeDesktopConnectionConfig(config) {
   fs.mkdirSync(path.dirname(DESKTOP_CONNECTION_CONFIG_PATH), { recursive: true })
-  fs.writeFileSync(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
+  writeFileAtomic(DESKTOP_CONNECTION_CONFIG_PATH, JSON.stringify(config, null, 2))
   connectionConfigCache = config
 }
 

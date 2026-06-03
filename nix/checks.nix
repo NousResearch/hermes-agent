@@ -58,6 +58,22 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             echo "ok" > $out/result
           ''
         );
+
+        # Verify the default package builds successfully (cross-platform).
+        # On Linux the runtime checks below already depend on the package,
+        # but this ensures darwin builders also build it during flake check.
+        build-package = pkgs.runCommand "hermes-build-package" { } ''
+          echo "PASS: package built at ${hermes-agent}"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Verify the devShell builds successfully (cross-platform).
+        build-devshell = pkgs.runCommand "hermes-build-devshell" { } ''
+          echo "PASS: devShell built at ${self'.devShells.default}"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Verify binaries exist and are executable
         package-contents = pkgs.runCommand "hermes-package-contents" { } ''
@@ -256,6 +272,19 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "PASS: extraDependencyGroups override evaluates cleanly"
 
           echo "=== All extraDependencyGroups checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
+        # Regression guard: messaging deps live outside [all], so the
+        # #messaging variant must actually ship discord.py — otherwise
+        # `nix profile install .#messaging` regresses to the broken default.
+        messaging-variant = pkgs.runCommand "hermes-messaging-variant" { } ''
+          set -e
+          echo "=== Checking discord.py importable from messaging variant ==="
+          ${self'.packages.messaging.hermesVenv}/bin/python3 -c \
+            "import discord; print(discord.__version__)"
+          echo "PASS: discord.py importable from messaging variant venv"
           mkdir -p $out
           echo "ok" > $out/result
         '';

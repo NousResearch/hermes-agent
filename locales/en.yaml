@@ -105,6 +105,7 @@ gateway:
     nothing_to_do:         "Nothing to compress yet (the transcript is still all protected context)."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression model configuration."
+    aborted:               "⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration."
     aux_failed:            "ℹ️ Configured compression model `{model}` failed ({error}). Recovered using your main model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml."
     failed:                "Compression failed: {error}"
 
@@ -236,9 +237,12 @@ gateway:
     no_named_sessions:     "No named sessions found.\nUse `/title My Session` to name your current session, then `/resume My Session` to return to it later."
     list_header:           "📋 **Named Sessions**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUsage: `/resume <session name>`"
+    list_footer_numbered:  "\nUsage: `/resume <session name>` or `/resume <number>` (e.g. `/resume 1` for the most recent)"
     list_failed:           "Could not list sessions: {error}"
+    out_of_range:          "Resume index {index} is out of range.\nUse `/resume` with no arguments to see available sessions."
     not_found:             "No session found matching '**{name}**'.\nUse `/resume` with no arguments to see available sessions."
     already_on:            "📌 Already on session **{name}**."
     switch_failed:         "Failed to switch session."
@@ -266,7 +270,7 @@ gateway:
     title:                 "**Title:** {title}"
     created:               "**Created:** {timestamp}"
     last_activity:         "**Last Activity:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Cumulative API tokens (re-sent each call):** {tokens}"
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"
     state_no:              "No"
@@ -301,7 +305,8 @@ gateway:
 
   undo:
     nothing:               "Nothing to undo."
-    removed:               "↩️ Undid {count} message(s).\nRemoved: \"{preview}\""
+    removed:               "↩️ Undid {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
 
   update:
     platform_not_messaging:  "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."

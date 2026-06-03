@@ -127,6 +127,8 @@ export const en: Translations = {
 
   sessions: {
     title: "Sessions",
+    history: "History",
+    overview: "Overview",
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
     noMatch: "No sessions match your search",
@@ -139,6 +141,22 @@ export const en: Translations = {
       "This permanently removes the conversation and all of its messages. This cannot be undone.",
     sessionDeleted: "Session deleted",
     failedToDelete: "Failed to delete session",
+    deleteEmpty: "Delete empty",
+    deleteEmptyConfirmTitle: "Delete empty sessions?",
+    deleteEmptyConfirmMessage:
+      "This permanently removes {count} sessions that have no messages. Active and archived sessions are skipped. This cannot be undone.",
+    emptySessionsDeleted: "{count} empty sessions deleted",
+    failedToDeleteEmpty: "Failed to delete empty sessions",
+    selectSession: "Select session",
+    selectAllOnPage: "Select all on this page",
+    clearSelection: "Clear selection",
+    selectedCount: "{count} selected",
+    deleteSelected: "Delete {count}",
+    deleteSelectedConfirmTitle: "Delete {count} sessions?",
+    deleteSelectedConfirmMessage:
+      "This permanently removes {count} selected sessions and all their messages. This cannot be undone.",
+    selectedSessionsDeleted: "{count} sessions deleted",
+    failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     previousPage: "Previous page",
     nextPage: "Next page",
@@ -209,6 +227,41 @@ export const en: Translations = {
     promptPlaceholder: "What should the agent do on each run?",
     schedule: "Schedule (cron expression)",
     schedulePlaceholder: "0 9 * * *",
+    scheduleMode: "Schedule",
+    scheduleModes: {
+      interval: "Every interval",
+      daily: "Daily",
+      weekly: "Weekly",
+      monthly: "Monthly",
+      once: "Once",
+      custom: "Custom (cron expression)",
+      intervalEvery: "Every",
+      intervalUnit: "Unit",
+      unitMinutes: "minutes",
+      unitHours: "hours",
+      unitDays: "days",
+      timeOfDay: "Time of day",
+      weekdays: "Days of week",
+      weekdaysShort: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      dayOfMonth: "Day of month",
+      onceAt: "Run at",
+      customLabel: "Cron expression",
+      customPlaceholder: "0 9 * * *",
+      customHint:
+        "Five-field cron expression (minute, hour, day, month, weekday).",
+      preview: "Sends as",
+      previewEmpty: "(incomplete)",
+    },
+    scheduleDescribe: {
+      none: "—",
+      everyMinutes: "Every {n} min",
+      everyHours: "Every {n} h",
+      everyDays: "Every {n} d",
+      dailyAt: "Daily at {time}",
+      weeklyAt: "Weekly on {days} at {time}",
+      monthlyAt: "Monthly on the {day} at {time}",
+      onceAt: "Once at {time}",
+    },
     deliverTo: "Deliver to",
     scheduledJobs: "Scheduled Jobs",
     noJobs: "No cron jobs configured. Create one above.",
@@ -269,7 +322,7 @@ export const en: Translations = {
       "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
     identifierLabel: "Git URL or owner/repo",
     inactive: "inactive",
-    installBtn: "Install from Git",
+    installBtn: "Install",
     installHeading: "Install from GitHub / Git URL",
     installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
     memoryProviderLabel: "Memory provider",
@@ -367,6 +420,8 @@ export const en: Translations = {
     description: "Manage API keys and secrets stored in",
     hideAdvanced: "Hide Advanced",
     showAdvanced: "Show Advanced",
+    showLess: "Show less",
+    showMore: "Show more",
     llmProviders: "LLM Providers",
     providersConfigured: "{configured} of {total} providers configured",
     getKey: "Get key",
@@ -392,7 +447,7 @@ export const en: Translations = {
     disconnect: "Disconnect",
     managedExternally: "Managed externally",
     copied: "Copied ✓",
-    cli: "CLI",
+    cli: "Copy",
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
@@ -419,7 +474,7 @@ export const en: Translations = {
   },
 
   language: {
-    switchTo: "Switch to Chinese",
+    switchTo: "Switch language",
   },
 
   theme: {
@@ -574,6 +629,9 @@ export const en: Translations = {
     createTask: "Create task in this column",
     noTasks: "— no tasks —",
     unassigned: "unassigned",
+    needsAssignee: "Needs assignee",
+    needsAssigneeHint:
+      "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile.",
     untitled: "(untitled)",
     loadingDetail: "Loading…",
     addComment: "Add a comment… (Enter to submit)",
@@ -655,6 +713,7 @@ export const en: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Todo",
+      scheduled: "Scheduled",
       ready: "Ready",
       running: "In Progress",
       blocked: "Blocked",
@@ -664,7 +723,8 @@ export const en: Translations = {
     columnHelp: {
       triage: "Raw ideas — a specifier will flesh out the spec",
       todo: "Waiting on dependencies or unassigned",
-      ready: "Assigned and waiting for a dispatcher tick",
+      scheduled: "Waiting on a known time delay or scheduled follow-up",
+      ready: "Dependencies satisfied; assign a profile to dispatch",
       running: "Claimed by a worker — in-flight",
       blocked: "Worker asked for human input",
       done: "Completed",
@@ -676,6 +736,8 @@ export const en: Translations = {
       "Archive this task? It disappears from the default board view.",
     confirmBlocked:
       "Mark this task as blocked? The worker's claim is released.",
+    confirmScheduled:
+      "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
     completionSummary:
       "Completion summary for {label}. This is stored as the task result.",
     completionSummaryRequired:

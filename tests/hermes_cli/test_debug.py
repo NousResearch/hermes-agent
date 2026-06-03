@@ -1,10 +1,8 @@
 """Tests for ``hermes debug`` CLI command and debug utilities."""
 
 import os
-import sys
 import urllib.error
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,6 +30,9 @@ def hermes_home(tmp_path, monkeypatch):
     )
     (logs_dir / "gateway.log").write_text(
         "2026-04-12 17:00:10 INFO gateway.run: started\n"
+    )
+    (logs_dir / "desktop.log").write_text(
+        "2026-04-12 17:00:15 INFO desktop: backend spawned\n"
     )
 
     return home
@@ -337,7 +338,6 @@ class TestCaptureLogSnapshotRedaction:
         redaction feature ships silently broken for users who opted out of
         runtime redaction (e.g. developers working on the redactor itself).
         """
-        import os
 
         # Force the runtime flag off so we're exercising the force=True path,
         # not the default-on path.
@@ -352,6 +352,40 @@ class TestCaptureLogSnapshotRedaction:
         assert _REDACT_FIXTURE_TOKEN not in snap.tail_text
         assert snap.full_text is not None
         assert _REDACT_FIXTURE_TOKEN not in snap.full_text
+
+    def test_default_redacts_email_addresses_for_public_share(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert "person@example.com" not in snap.tail_text
+        assert "[REDACTED_EMAIL]" in snap.tail_text
+        assert snap.full_text is not None
+        assert "person@example.com" not in snap.full_text
+
+    def test_no_redact_preserves_email_addresses(self, hermes_home_with_secret):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(
+            "2026-04-12 17:00:00 INFO gateway.run: "
+            "inbound message: platform=bluebubbles "
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+        )
+
+        snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
+
+        assert "person@example.com" in snap.tail_text
+        assert "person@example.com" in (snap.full_text or "")
 
     def test_capture_default_log_snapshots_threads_redact(
         self, hermes_home_with_secret
@@ -419,6 +453,15 @@ class TestCollectDebugReport:
             report = collect_debug_report(log_lines=50)
 
         assert "--- gateway.log" in report
+
+    def test_report_includes_desktop_log(self, hermes_home):
+        from hermes_cli.debug import collect_debug_report
+
+        with patch("hermes_cli.dump.run_dump"):
+            report = collect_debug_report(log_lines=50)
+
+        assert "--- desktop.log" in report
+        assert "backend spawned" in report
 
     def test_missing_logs_handled(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
@@ -495,8 +538,8 @@ class TestRunDebugShare:
         assert "FULL agent.log" in out
         assert "FULL gateway.log" in out
 
-    def test_share_uploads_three_pastes(self, hermes_home, capsys):
-        """Successful share uploads report + agent.log + gateway.log."""
+    def test_share_uploads_four_pastes(self, hermes_home, capsys):
+        """Successful share uploads report + agent.log + gateway.log + desktop.log."""
         from hermes_cli.debug import run_debug_share
 
         args = MagicMock()
@@ -518,14 +561,16 @@ class TestRunDebugShare:
             run_debug_share(args)
 
         out = capsys.readouterr().out
-        # Should have 3 uploads: report, agent.log, gateway.log
-        assert call_count[0] == 3
+        # Should have 4 uploads: report, agent.log, gateway.log, desktop.log
+        assert call_count[0] == 4
         assert "paste.rs/paste1" in out  # Report
         assert "paste.rs/paste2" in out  # agent.log
         assert "paste.rs/paste3" in out  # gateway.log
+        assert "paste.rs/paste4" in out  # desktop.log
         assert "Report" in out
         assert "agent.log" in out
         assert "gateway.log" in out
+        assert "desktop.log" in out
 
         # Each log paste should start with the dump header
         agent_paste = uploaded_content[1]
@@ -534,6 +579,9 @@ class TestRunDebugShare:
         gateway_paste = uploaded_content[2]
         assert "--- hermes dump ---" in gateway_paste
         assert "--- full gateway.log ---" in gateway_paste
+        desktop_paste = uploaded_content[3]
+        assert "--- hermes dump ---" in desktop_paste
+        assert "--- full desktop.log ---" in desktop_paste
 
     def test_share_keeps_report_and_full_log_on_same_snapshot(self, hermes_home, capsys):
         """A mid-run rotation must not make full agent.log older than the report."""

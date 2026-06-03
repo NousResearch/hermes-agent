@@ -203,7 +203,7 @@ def detect_apple_silicon() -> dict | None:
 
 
 def detect_intel_arc() -> dict | None:
-    if platform.system() not in ("Linux", "Windows"):
+    if platform.system() not in {"Linux", "Windows"}:
         return None
     if shutil.which("clinfo"):
         out = _run(["clinfo", "--list"])

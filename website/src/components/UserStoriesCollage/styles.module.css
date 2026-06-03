@@ -242,7 +242,11 @@
   text-decoration: none;
   font-weight: 600;
 }
-.footer a:hover { text-decoration: underline; }
+.footer a:hover {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-underline-offset: 4px;
+}
 
 .empty {
   padding: 3rem 1rem;

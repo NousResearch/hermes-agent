@@ -19,6 +19,7 @@ def test_version_string_no_v_prefix():
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     """When cache is fresh, check_for_updates should return cached value without calling git."""
     from hermes_cli.banner import check_for_updates
+    from hermes_cli import __version__
 
     # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
@@ -26,7 +27,7 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
@@ -34,6 +35,43 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
 
     assert result == 3
     mock_run.assert_not_called()
+
+
+def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
+    """A fresh cache from a different installed version must be re-checked, not reused.
+
+    Regression for #34491: after `pip install --upgrade`, VERSION changes but the
+    cache's 6h TTL hadn't expired and rev was unchanged (both None), so the stale
+    'behind' count survived the upgrade. The version guard forces a recheck.
+    """
+    import hermes_cli.banner as banner
+
+    # No local git checkout -> the PyPI path is exercised (pip-install class).
+    fake_banner = tmp_path / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+
+    # Fresh (within TTL) cache that says "behind", but stamped with an OLD version.
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 1, "rev": None, "ver": "0.0.1-old"})
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    with patch("hermes_cli.banner.subprocess.run") as mock_run, \
+         patch("hermes_cli.banner.check_via_pypi", return_value=0) as mock_pypi:
+        result = banner.check_for_updates()
+
+    # Stale-version cache rejected -> fresh check ran -> up-to-date result.
+    assert result == 0
+    mock_pypi.assert_called_once()
+    mock_run.assert_not_called()
+
+    # Cache rewritten with the current installed version.
+    written = json.loads(cache_file.read_text())
+    assert written["ver"] == banner.VERSION
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
@@ -59,7 +97,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
-    """Returns None when .git directory doesn't exist anywhere."""
+    """Falls back to PyPI check when .git directory doesn't exist anywhere."""
     import hermes_cli.banner as banner
 
     # Create a fake banner.py so the fallback path also has no .git
@@ -70,8 +108,9 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(banner, "__file__", str(fake_banner))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        result = banner.check_for_updates()
-    assert result is None
+        with patch("hermes_cli.banner.check_via_pypi", return_value=0):
+            result = banner.check_for_updates()
+    assert result == 0
     mock_run.assert_not_called()
 
 

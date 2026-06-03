@@ -11,7 +11,6 @@ import json
 import os
 import time
 import asyncio
-from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -237,6 +236,8 @@ class TestUpdateCommandGatewayFlag:
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
         assert "PYTHONUNBUFFERED" in cmd_string
+        assert "rc=$?" in cmd_string
+        assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
 

@@ -78,9 +78,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
-    "provider.anthropic": ("anthropic==0.86.0",),
+    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
+    # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
+    # service principal, az login, VS Code, azd, PowerShell). Only loaded
+    # when model.auth_mode=entra_id is selected; key-based azure-foundry
+    # users never pay this import.
+    "provider.azure_identity": ("azure-identity==1.25.3",),
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),
@@ -92,15 +97,16 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (see comment at top of [project.dependencies]). When bumping, update
     # both this map AND the corresponding extra in pyproject.toml.
     #
-    # NOTE: tts.mistral / stt.mistral entries are intentionally absent —
-    # the `mistralai` PyPI project is quarantined as of 2026-05-12 (Mini
-    # Shai-Hulud worm). Re-add when PyPI restores a clean release; see
-    # comment in pyproject.toml above the (removed) `mistral` extra for
-    # the full restoration checklist.
+    # mistralai pin tracks the `mistral` extra in pyproject.toml. PyPI
+    # quarantined the project 2026-05-12 (malicious 2.4.6, Mini Shai-Hulud);
+    # 2.4.6 was removed and clean releases resumed (2.4.7, 2.4.8). Voxtral
+    # STT + TTS share the same SDK.
+    "tts.mistral": ("mistralai==2.4.8",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
+    "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",
@@ -125,7 +131,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.slack": (
         "slack-bolt==1.27.0",
         "slack-sdk==3.40.1",
-        "aiohttp==3.13.3",
+        "aiohttp==3.13.4",  # CVE-2026-34513/34518/34519/34520/34525
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
@@ -143,11 +149,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.5.3",
         "qrcode==7.4.2",
     ),
+    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
+    # defusedxml only; aiohttp/httpx are core dependencies of every messaging
+    # adapter and ship via `platform.discord` / `platform.slack` / etc.
+    "platform.wecom_callback": ("defusedxml==0.7.1",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
-    "terminal.vercel": ("vercel==0.5.7",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
@@ -164,6 +173,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
+        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
     ),
 }
 
@@ -450,7 +460,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
-        if answer and answer not in ("y", "yes"):
+        if answer and answer not in {"y", "yes"}:
             raise FeatureUnavailable(
                 feature, missing, "user declined install at prompt"
             )

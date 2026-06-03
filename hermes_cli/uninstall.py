@@ -117,6 +117,49 @@ def remove_wrapper_script():
     return removed
 
 
+def remove_node_symlinks(hermes_home: Path) -> list:
+    """Remove the node/npm/npx symlinks the installer drops in ~/.local/bin.
+
+    The POSIX installer (``scripts/install.sh`` / ``scripts/lib/node-bootstrap.sh``)
+    creates::
+
+        ~/.local/bin/node -> $HERMES_HOME/node/bin/node
+        ~/.local/bin/npm  -> $HERMES_HOME/node/bin/npm
+        ~/.local/bin/npx  -> $HERMES_HOME/node/bin/npx
+
+    and prepends ``~/.local/bin`` to PATH, so these shadow an existing Node
+    manager such as nvm.  Symmetrically remove them on uninstall, but *only*
+    when the link still resolves into this Hermes home's ``node`` directory.
+    A link the user has since repointed at nvm (or anything else outside
+    Hermes) is left untouched so we never break unrelated tooling.
+    """
+    node_dir = (hermes_home / "node").resolve()
+    removed = []
+
+    for name in ("node", "npm", "npx"):
+        link = Path.home() / ".local" / "bin" / name
+        try:
+            # Only act on symlinks — never delete a real binary the user put here.
+            if not link.is_symlink():
+                continue
+
+            # Resolve the link target and confirm it points into our node dir.
+            # os.readlink + manual join handles broken (dangling) links too;
+            # Path.resolve() on a dangling link still returns the target path.
+            target = Path(os.readlink(link))
+            if not target.is_absolute():
+                target = (link.parent / target)
+            target = target.resolve()
+
+            if target == node_dir or node_dir in target.parents:
+                link.unlink()
+                removed.append(link)
+        except Exception as e:
+            log_warn(f"Could not remove {link}: {e}")
+
+    return removed
+
+
 def uninstall_gateway_service():
     """Stop and uninstall the gateway service (systemd, launchd, Windows
     Scheduled Task / Startup folder) and kill any standalone gateway processes.
@@ -594,6 +637,17 @@ def run_uninstall(args):
             log_success(f"Removed {wrapper}")
     else:
         log_info("No wrapper script found")
+
+    # 3b. Remove node/npm/npx symlinks the installer left in ~/.local/bin
+    #     (only when they still point into this Hermes home's node dir, so we
+    #     never clobber an existing nvm / user-managed Node).
+    log_info("Removing Hermes-managed node/npm/npx symlinks...")
+    removed_node_links = remove_node_symlinks(hermes_home)
+    if removed_node_links:
+        for link in removed_node_links:
+            log_success(f"Removed {link}")
+    else:
+        log_info("No Hermes-managed node/npm/npx symlinks found")
     
     # 4. Remove installation directory (code)
     log_info("Removing installation directory...")
@@ -664,7 +718,7 @@ def run_uninstall(args):
         print()
         print("To reinstall later with your existing settings:")
         if _is_windows():
-            print(color("  irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex", Colors.DIM))
+            print(color("  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)", Colors.DIM))
         else:
             print(color("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash", Colors.DIM))
         print()

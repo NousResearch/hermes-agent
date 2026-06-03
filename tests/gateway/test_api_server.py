@@ -2065,6 +2065,33 @@ class TestResponsesEndpoint:
             assert resp.status == 500
 
     @pytest.mark.asyncio
+    async def test_result_error_fallback_is_redacted(self, adapter):
+        raw_secret = "sk-responses-leak-1234567890"
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "",
+                        "error": f"provider auth failed OPENAI_API_KEY={raw_secret}",
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hello"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            body = json.dumps(data)
+            assert raw_secret not in body
+            assert "OPENAI_API_KEY=" in body
+            assert data["output"][0]["content"][0]["text"] != f"provider auth failed OPENAI_API_KEY={raw_secret}"
+
+    @pytest.mark.asyncio
     async def test_invalid_input_type_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2966,6 +2993,35 @@ class TestChatCompletionsAgentIncomplete:
             assert data["hermes"]["error_code"] == "output_truncated"
             assert resp.headers.get("X-Hermes-Completed") == "false"
             assert resp.headers.get("X-Hermes-Partial") == "true"
+
+    @pytest.mark.asyncio
+    async def test_hard_failure_redacts_secret_like_error_text(self, adapter):
+        raw_secret = "sk-api-server-leak-1234567890"
+        mock_result = {
+            "final_response": "",
+            "completed": False,
+            "partial": False,
+            "failed": True,
+            "error": f"provider auth failed OPENAI_API_KEY={raw_secret}",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]},
+                )
+
+            assert resp.status == 502
+            data = await resp.json()
+            body = json.dumps(data)
+            assert raw_secret not in body
+            assert raw_secret not in resp.headers.get("X-Hermes-Error", "")
+            assert "OPENAI_API_KEY=" in body
+            assert data["error"]["hermes"]["failed"] is True
 
     @pytest.mark.asyncio
     async def test_failure_with_no_text_returns_502_error_envelope(self, adapter):

@@ -2689,6 +2689,35 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     assert "failed" in resp["error"]["message"]
 
 
+def test_shell_exec_fails_closed_when_approval_import_fails(monkeypatch):
+    real_import = __import__
+    calls = []
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tools.approval":
+            raise ImportError("approval unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "shell.exec",
+            "params": {"command": "echo should-not-run"},
+        }
+    )
+
+    assert resp["error"]["code"] == 5004
+    assert "safety checks unavailable" in resp["error"]["message"]
+    assert calls == []
+
+
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
         resp = server.handle_request(

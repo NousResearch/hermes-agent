@@ -128,6 +128,61 @@ def _reply_anchor_for_event(event) -> str | None:
     return getattr(event, "message_id", None)
 
 
+def _gateway_response_splitter_config(config: dict, platform: str, chat_id: str) -> dict:
+    """Return response_splitters[platform][chat_id] with gateway.<key> fallback."""
+    if not isinstance(config, dict):
+        return {}
+    platform = _platform_name(platform)
+    chat_id = str(chat_id or "")
+    candidates = [config.get("response_splitters")]
+    gateway_cfg = config.get("gateway")
+    if isinstance(gateway_cfg, dict):
+        candidates.append(gateway_cfg.get("response_splitters"))
+    for root in candidates:
+        if not isinstance(root, dict):
+            continue
+        platform_map = root.get(platform)
+        if not isinstance(platform_map, dict):
+            continue
+        value = platform_map.get(chat_id)
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def split_gateway_response_text(
+    text: str,
+    *,
+    platform: str,
+    chat_id: str,
+    config: dict,
+) -> list[str]:
+    """Split a final gateway response according to per-channel config."""
+    if not text:
+        return []
+    splitter = _gateway_response_splitter_config(config, platform, chat_id)
+    marker_regex = splitter.get("marker_regex") if isinstance(splitter, dict) else None
+    if not marker_regex:
+        return [text]
+    try:
+        match = re.search(str(marker_regex), text)
+    except re.error:
+        logger.warning("Invalid gateway response splitter regex for %s/%s", platform, chat_id)
+        return [text]
+    if not match:
+        return [text]
+
+    keep_marker = bool(splitter.get("keep_marker_with_head", True))
+    strip_marker = bool(splitter.get("strip_marker_from_tail", True))
+    head = text[:match.start()].rstrip()
+    marker = match.group(0).strip()
+    tail_start = match.end() if strip_marker else match.start()
+    tail = text[tail_start:].strip()
+    if keep_marker and marker:
+        head = (head + "\n\n" + marker).strip() if head else marker
+    return [part for part in (head, tail) if part]
+
+
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
     """Return True when a media file should use the platform's audio sender.
 
@@ -5323,13 +5378,33 @@ class BasePlatformAdapter(ABC):
                         except Exception:
                             logger.debug("delivery ledger record failed", exc_info=True)
                             _obligation_id = None
-                    result = await delivery_adapter._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_final_thread_metadata,
+
+                    try:
+                        from hermes_cli.config import load_config as _load_config
+                        _splitter_config = _load_config()
+                    except Exception:
+                        _splitter_config = {}
+
+                    text_parts = split_gateway_response_text(
+                        text_content,
+                        platform=_platform_name(self.platform),
+                        chat_id=str(event.source.chat_id or ""),
+                        config=_splitter_config,
                     )
-                    _record_delivery(result)
+
+                    result = None
+                    _send_failed = False
+                    for _text_part in text_parts:
+                        result = await delivery_adapter._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=_text_part,
+                            reply_to=_reply_anchor,
+                            metadata=_final_thread_metadata,
+                        )
+                        _record_delivery(result)
+                        if not getattr(result, "success", False):
+                            _send_failed = True
+
                     if _obligation_id is not None:
                         try:
                             from gateway.delivery_ledger import (
@@ -5337,12 +5412,12 @@ class BasePlatformAdapter(ABC):
                                 mark_failed,
                             )
 
-                            if getattr(result, "success", False):
+                            if not _send_failed and getattr(result, "success", False):
                                 mark_delivered(_obligation_id)
                             else:
                                 mark_failed(
                                     _obligation_id,
-                                    str(getattr(result, "error", "") or ""),
+                                    str(getattr(result, "error", "") or "split send failed"),
                                 )
                         except Exception:
                             logger.debug(
@@ -5354,6 +5429,7 @@ class BasePlatformAdapter(ABC):
                     if (
                         _ephemeral_ttl
                         and _ephemeral_ttl > 0
+                        and result is not None
                         and result.success
                         and result.message_id
                     ):

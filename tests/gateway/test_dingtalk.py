@@ -581,6 +581,8 @@ class TestExtractMedia:
         msg.image_content = None
         msg.rich_text_content = None
         msg.rich_text = items
+        msg.message_type = "richText"
+        msg.extensions = {}
         return msg
 
     def test_voice_rich_text_item_classified_as_voice(self):
@@ -621,6 +623,81 @@ class TestExtractMedia:
             assert mtypes == ["audio"]
         finally:
             del DINGTALK_TYPE_MAPPING["audio"]
+
+    def test_rich_text_voice_not_reset_to_text(self):
+        """Regression: the richText fallback must not overwrite VOICE back to
+        TEXT when the rich-text loop already classified a voice item."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [{"type": "voice", "downloadCode": "dl_voice_reg"}]
+        )
+        # message_type is "richText" (set by helper) — the fallback at
+        # _extract_media line ~810 must NOT reset msg_type to TEXT.
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.VOICE, (
+            f"richText fallback overwrote VOICE to {msg_type}"
+        )
+        assert urls == ["dl_voice_reg"]
+        assert mtypes == ["audio"]
+
+    def test_rich_text_image_still_photo(self):
+        """Image-only richText messages must still be classified as PHOTO."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = self._msg_with_rich_text(
+            [{"type": "picture", "downloadCode": "dl_img_123"}]
+        )
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.PHOTO
+        assert urls == ["dl_img_123"]
+        assert mtypes == ["image"]
+
+    def test_native_voice_from_extensions(self):
+        """Native msgtype=voice callbacks (not converted by SDK) should be
+        extracted from message.extensions["content"]."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.text = None
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = ""
+        msg.extensions = {"content": {"msgtype": "voice", "downloadCode": "dl_ext_voice"}}
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.VOICE
+        assert urls == ["dl_ext_voice"]
+        assert mtypes == ["audio"]
+
+    def test_native_audio_from_extensions(self):
+        """Native msgtype=audio callbacks should be extracted as AUDIO (not
+        auto-transcribed)."""
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        from gateway.platforms.base import MessageType
+
+        msg = MagicMock()
+        msg.text = None
+        msg.image_content = None
+        msg.rich_text_content = None
+        msg.rich_text = None
+        msg.message_type = ""
+        msg.extensions = {"content": {"msgtype": "audio", "downloadCode": "dl_ext_audio"}}
+        msg_type, urls, mtypes = DingTalkAdapter._extract_media(
+            DingTalkAdapter, msg
+        )
+        assert msg_type == MessageType.AUDIO
+        assert urls == ["dl_ext_audio"]
+        assert mtypes == ["audio"]
 
 
 # ---------------------------------------------------------------------------

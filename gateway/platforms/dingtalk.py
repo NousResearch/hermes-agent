@@ -804,10 +804,52 @@ class DingTalkAdapter(BasePlatformAdapter):
                                 if msg_type == MessageType.TEXT:
                                     msg_type = MessageType.DOCUMENT
 
+        # Extract native voice/audio/video/file payloads from
+        # message.extensions["content"].  The dingtalk-stream SDK does not
+        # convert ``msgtype=voice`` callbacks into typed content objects;
+        # the raw dict lives under ``extensions["content"]`` instead.
+        if not media_urls:
+            ext_content = {}
+            try:
+                ext_content = (getattr(message, "extensions", None) or {}).get("content", {}) or {}
+            except (AttributeError, TypeError):
+                pass
+            if isinstance(ext_content, dict):
+                native_type = ext_content.get("msgtype") or ext_content.get("type", "")
+                dl_code = ext_content.get("downloadCode") or ext_content.get("download_code") or ""
+                if dl_code and native_type:
+                    mapped = DINGTALK_TYPE_MAPPING.get(native_type, "file")
+                    media_urls.append(dl_code)
+                    if mapped == "image":
+                        media_types.append("image")
+                        if msg_type == MessageType.TEXT:
+                            msg_type = MessageType.PHOTO
+                    elif mapped == "audio":
+                        media_types.append("audio")
+                        if msg_type == MessageType.TEXT:
+                            msg_type = MessageType.VOICE if native_type == "voice" else MessageType.AUDIO
+                    elif native_type == "audio":
+                        media_types.append("audio")
+                        if msg_type == MessageType.TEXT:
+                            msg_type = MessageType.AUDIO
+                    elif native_type in ("video",):
+                        media_types.append("video")
+                        if msg_type == MessageType.TEXT:
+                            msg_type = MessageType.VIDEO
+                    elif native_type in ("file",):
+                        media_types.append("application/octet-stream")
+                        if msg_type == MessageType.TEXT:
+                            msg_type = MessageType.DOCUMENT
+
         msg_type_str = getattr(message, "message_type", "") or ""
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
-        elif msg_type_str == "richText":
+        elif msg_type_str == "richText" and msg_type == MessageType.TEXT:
+            # Only apply the richText fallback when _extract_media has not
+            # already classified the message (e.g. voice → VOICE for STT,
+            # audio → AUDIO for attachments).  The earlier loop sets msg_type
+            # for every rich-text media item; resetting unconditionally here
+            # overwrote VOICE back to TEXT, breaking DingTalk voice-note STT.
             msg_type = (
                 MessageType.PHOTO
                 if any("image" in t for t in media_types)

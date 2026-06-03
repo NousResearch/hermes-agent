@@ -787,8 +787,10 @@ def AIAgent(*args, **kwargs):
 
 
 def get_tool_definitions(*args, **kwargs):
+    from hermes_cli.mcp_startup import wait_for_mcp_discovery
     from model_tools import get_tool_definitions as _get_tool_definitions
 
+    wait_for_mcp_discovery()
     return _get_tool_definitions(*args, **kwargs)
 
 
@@ -870,6 +872,17 @@ _cleanup_done = False
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 _deferred_agent_startup_done = False
+# Set True once the TUI's prompt_toolkit app starts (which enables focus
+# reporting + mouse tracking). Gates the on-exit terminal reset so non-TUI
+# one-shot CLI runs — which also register _run_cleanup via atexit — don't emit
+# escape codes for modes they never enabled (#36823).
+_tui_input_modes_active = False
+
+
+def _mark_tui_input_modes_active() -> None:
+    """Record that the TUI app started, so _run_cleanup resets input modes."""
+    global _tui_input_modes_active
+    _tui_input_modes_active = True
 
 
 def _prepare_deferred_agent_startup() -> None:
@@ -896,9 +909,12 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
     try:
-        from tools.mcp_tool import discover_mcp_tools
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        discover_mcp_tools()
+        start_background_mcp_discovery(
+            logger=logger,
+            thread_name="termux-cli-mcp-discovery",
+        )
     except Exception:
         logger.debug(
             "MCP tool discovery failed at deferred CLI startup",
@@ -921,6 +937,12 @@ def _run_cleanup():
     if _cleanup_done:
         return
     _cleanup_done = True
+
+    # Reset terminal input modes first, before the slower resource teardown
+    # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
+    # user's terminal becomes usable immediately, and a later step raising
+    # can't skip the reset (#36823). No-op unless the TUI actually ran.
+    _reset_terminal_input_modes_on_exit()
 
     try:
         _cleanup_all_terminals()
@@ -963,6 +985,50 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
+    except Exception:
+        pass
+
+
+def _reset_terminal_input_modes_on_exit() -> None:
+    """Best-effort: disable focus reporting + mouse tracking on TUI exit so they
+    don't leak into the next shell session sharing the tab.
+
+    prompt_toolkit restores these on a clean teardown, but Ctrl+C, SIGTERM /
+    SIGHUP and crashes can bypass its unwind, leaving the modes enabled. The
+    terminal then emits raw ``ESC[I`` / ``ESC[O`` focus events and fragmented
+    SGR mouse reports as visible text in whatever runs next in the same tab
+    (#36823). Called from ``_run_cleanup`` (atexit-registered + invoked on the
+    normal / EOF / interrupt exit paths) this covers normal quit, Ctrl+C and
+    SIGTERM/SIGHUP. ``kill -9`` is uncatchable, and the kanban worker's
+    ``os._exit(0)`` path bypasses ``atexit``; neither runs this — but both are
+    non-TTY / non-TUI, so there is nothing to reset there.
+
+    Gated on ``_tui_input_modes_active`` so one-shot non-TUI CLI runs (which
+    share ``_run_cleanup`` via ``atexit``) never emit these codes. Writes to the
+    controlling terminal directly: by exit, prompt_toolkit's own output is torn
+    down, so ``sys.stdout`` is the real fd; falls back to ``/dev/tty`` when
+    stdout is redirected away from the terminal.
+    """
+    global _tui_input_modes_active
+    if not _tui_input_modes_active:
+        return
+    # About to disable the modes — clear the flag so a re-armed _run_cleanup (or
+    # a long-lived process that reuses it) doesn't re-emit them.
+    _tui_input_modes_active = False
+    # Prefer stdout when it's the terminal; otherwise the TUI may have driven
+    # /dev/tty while stdout was redirected — reset there instead of nowhere.
+    try:
+        stream = sys.stdout
+        if stream is not None and stream.isatty():
+            stream.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+            stream.flush()
+            return
+    except Exception:
+        pass
+    try:
+        with open("/dev/tty", "w", encoding="ascii") as tty:
+            tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+            tty.flush()
     except Exception:
         pass
 
@@ -1537,8 +1603,16 @@ def _query_osc11_background() -> str | None:
     Most modern terminals reply with \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
     within a few ms.  We wait up to 100ms total before giving up.
     Returns "#RRGGBB" or None on timeout / non-tty.
+
+    Skipped over SSH: the round-trip routinely exceeds our 100ms budget, so a
+    late reply lands after prompt_toolkit has grabbed the tty — its payload
+    leaks in as typed text and the BEL terminator reads as Ctrl+G (open
+    editor), trapping the user in a stray editor. Remote sessions fall back to
+    COLORFGBG / env hints / the dark default instead.
     """
     if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return None
     try:
         import termios
@@ -1587,8 +1661,11 @@ def _query_osc11_background() -> str | None:
         r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
         return f"#{r:02X}{g:02X}{b:02X}"
     finally:
+        # TCSAFLUSH discards any unread input as it restores the original
+        # attributes — scrubs a slow/partial OSC 11 reply out of the tty
+        # buffer before prompt_toolkit can read it as keystrokes.
         try:
-            termios.tcsetattr(fd, termios.TCSANOW, old)
+            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
         except Exception:
             pass
 
@@ -2098,6 +2175,41 @@ def _cprint(text: str):
             _pt_print(_PT_ANSI(text))
         except Exception:
             pass
+
+
+def _prepend_note_to_message(message, note: str):
+    """Prepend a one-shot system-style note to a user message.
+
+    ``message`` is normally a plain string, but when the user attaches an image
+    to a vision-capable model it becomes a list of OpenAI-style content parts
+    (text + ``image_url`` blocks). Naively doing ``note + "\\n\\n" + message``
+    then raises ``TypeError: can only concatenate str (not "list") to str`` —
+    e.g. running ``/model ...`` (which queues a model-switch note) and then
+    sending a pasted image in the same turn.
+
+    Returns the message with ``note`` prepended:
+      * ``str``  → ``f"{note}\\n\\n{message}"`` (just ``note`` when empty)
+      * ``list`` → note folded into the first text part, or inserted as a new
+        leading ``{"type": "text"}`` part when there is no text part.
+    Unknown shapes are returned unchanged (fail-open).
+    """
+    note = str(note or "").strip()
+    if not note:
+        return message
+    if isinstance(message, str):
+        return f"{note}\n\n{message}" if message else note
+    if isinstance(message, list):
+        parts = list(message)
+        for i, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") == "text":
+                merged = dict(part)
+                text = merged.get("text", "")
+                merged["text"] = f"{note}\n\n{text}" if text else note
+                parts[i] = merged
+                return parts
+        # No text part (image-only) — insert the note as a leading text block.
+        return [{"type": "text", "text": note}, *parts]
+    return message
 
 
 # ---------------------------------------------------------------------------
@@ -3248,6 +3360,12 @@ class HermesCLI:
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
+        # Armed when a bare `/resume` prints the recent-sessions list so the
+        # very next bare numeric input (e.g. `3`) resolves to that session.
+        # Holds the exact list used for index resolution; one-shot (cleared on
+        # the next submitted input, whether it's the selection or anything
+        # else). See #34584.
+        self._pending_resume_sessions = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -3541,6 +3659,7 @@ class HermesCLI:
         except Exception:
             pass
 
+
         if not agent:
             return snapshot
 
@@ -3555,8 +3674,17 @@ class HermesCLI:
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
+            # last_prompt_tokens is parked at the -1 sentinel right after a
+            # compression, until the next real API call reports a prompt count
+            # (awaiting_real_usage_after_compression). The status bar must not
+            # render that sentinel verbatim — it produced "-1/200K" / "-1%".
+            # Clamp it to 0 so the one transitional turn reads as empty context.
             context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            if context_tokens < 0:
+                context_tokens = 0
             context_length = getattr(compressor, "context_length", 0) or 0
+            if context_length < 0:
+                context_length = 0
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
@@ -4865,6 +4993,10 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return False
 
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
             try:
@@ -5523,7 +5655,7 @@ class HermesCLI:
             # Also undo the last conversation turn so the agent's context
             # matches the restored filesystem state
             if self.conversation_history:
-                self.undo_last()
+                self.undo_last(prefill=False)
                 print("  Chat turn undone to match restored file state.")
         else:
             print(f"  ❌ {result['error']}")
@@ -5985,24 +6117,6 @@ class HermesCLI:
             f"Tokens: {total_tokens:,}",
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
-
-        # Session recap — pure local compute summary of recent activity
-        # (turn counts, tools used, files touched, last ask, last reply).
-        # No LLM call, no prompt-cache impact. Inspired by Claude Code
-        # 2.1.114's /recap.
-        try:
-            from hermes_cli.session_recap import build_recap
-            recap = build_recap(
-                self.conversation_history or [],
-                session_title=title or None,
-                session_id=self.session_id,
-                platform="cli",
-            )
-            if recap:
-                lines.extend(["", recap])
-        except Exception as exc:  # defensive — don't let /status fail
-            logger.debug("build_recap failed in /status: %s", exc)
-
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
@@ -6693,9 +6807,20 @@ class HermesCLI:
         if not target:
             _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
+                # Arm a one-shot pending-resume selection so the user can type
+                # just the number (`3`) on the next line instead of having to
+                # retype `/resume 3`. The list here must match the one shown by
+                # _show_recent_sessions and used for index resolution below —
+                # all three go through _list_recent_sessions(limit=10). See
+                # #34584.
+                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
                 return
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
             return
+
+        # Any explicit /resume <target> supersedes a previously-armed bare
+        # numbered prompt.
+        self._pending_resume_sessions = None
 
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -6809,6 +6934,44 @@ class HermesCLI:
             self._display_resumed_history()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+
+    def _consume_pending_resume_selection(self, text: str) -> bool:
+        """Resolve a bare numeric reply that follows a bare ``/resume`` prompt.
+
+        After ``/resume`` (no args) prints the recent-sessions list it arms
+        ``self._pending_resume_sessions``. The next submitted input is given
+        one chance to be a bare session number (``3``); if so we resume that
+        session here. Anything else (another command, free text, blank) simply
+        disarms the prompt and is handled normally by the caller.
+
+        Returns True if the input was consumed as a resume selection (caller
+        must not treat it as chat); False otherwise. The pending state is
+        always one-shot: it is cleared on the first submitted input regardless
+        of outcome. See #34584.
+        """
+        pending = self._pending_resume_sessions
+        if not pending:
+            return False
+        # One-shot: disarm now so a non-matching input can't leave the prompt
+        # armed and hijack a later number the user meant as chat.
+        self._pending_resume_sessions = None
+
+        if not isinstance(text, str):
+            return False
+        stripped = text.strip()
+        # Only a pure number selects; let "/resume 3", titles, or any other
+        # text fall through to normal handling.
+        if not stripped.isdigit():
+            return False
+
+        index = int(stripped)
+        if index < 1 or index > len(pending):
+            _cprint(f"  Resume index {index} is out of range.")
+            _cprint("  Use /resume with no arguments to see available sessions.")
+            return True
+
+        self._handle_resume_command(f"/resume {index}")
+        return True
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -7036,37 +7199,156 @@ class HermesCLI:
         print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
         return last_message
     
-    def undo_last(self):
-        """Remove the last user/assistant exchange from conversation history.
-        
-        Walks backwards and removes all messages from the last user message
-        onward (including assistant responses, tool calls, etc.).
+    def undo_last(self, n: int = 1, prefill: bool = True):
+        """Back up N user turns: truncate history, soft-delete on disk, prefill.
+
+        Walks backwards N user messages and discards everything from the
+        Nth-from-last user message onward (its assistant response, tool
+        calls, etc.). ``n`` defaults to 1 (the last exchange); ``/undo 3``
+        backs up three user turns. If ``n`` exceeds the number of user
+        turns, it backs up to the oldest one.
+
+        Beyond the in-memory ``conversation_history`` slice, this also:
+          • soft-deletes the truncated rows in SessionDB (``active=0``) so
+            they're hidden from re-prompts and search but kept for audit;
+          • notifies memory providers via ``on_session_switch(rewound=True)``;
+          • mirrors /branch's agent surgery (system-prompt invalidation +
+            flush-index reset);
+          • when ``prefill`` is set and an input buffer is available,
+            pre-fills the composer with the backed-up message text so it
+            can be edited and resubmitted.
+
+        ``prefill=False`` is used by callers that drive the undo
+        programmatically (e.g. checkpoint rollback) and don't want to
+        touch the user's input buffer.
         """
         if not self.conversation_history:
             print("(._.) No messages to undo.")
             return
-        
-        # Walk backwards to find the last user message
-        last_user_idx = None
+
+        if n < 1:
+            n = 1
+
+        # Walk backwards collecting the indices of the last N user messages.
+        user_indices = []
         for i in range(len(self.conversation_history) - 1, -1, -1):
             if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx is None:
+                user_indices.append(i)
+                if len(user_indices) >= n:
+                    break
+
+        if not user_indices:
             print("(._.) No user message found to undo.")
             return
-        
-        # Count how many messages we're removing
-        removed_count = len(self.conversation_history) - last_user_idx
-        removed_msg = self.conversation_history[last_user_idx].get("content", "")
-        
-        # Truncate history to before the last user message
-        self.conversation_history = self.conversation_history[:last_user_idx]
-        
-        print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
+
+        # The oldest of the collected user messages is our truncation point.
+        cut_idx = user_indices[-1]
+        turns_undone = len(user_indices)
+
+        removed_count = len(self.conversation_history) - cut_idx
+        removed_msg = self.conversation_history[cut_idx].get("content", "")
+        removed_text = self._undo_content_to_text(removed_msg)
+
+        # Truncate the in-memory history to before that user message.
+        self.conversation_history = self.conversation_history[:cut_idx]
+
+        # Soft-delete the truncated rows on disk so re-prompts and search
+        # see the clean transcript while the rows survive for audit.
+        rewound_rows = 0
+        if self._session_db is not None and self.session_id:
+            try:
+                recents = self._session_db.list_recent_user_messages(
+                    self.session_id, limit=max(turns_undone, 10)
+                )
+                if recents:
+                    target_idx = min(turns_undone - 1, len(recents) - 1)
+                    target_id = recents[target_idx]["id"]
+                    result = self._session_db.rewind_to_message(
+                        self.session_id, target_id
+                    )
+                    rewound_rows = result.get("rewound_count", 0)
+                    # Prefer the DB's decoded target text for the prefill —
+                    # it's the canonical persisted copy.
+                    db_text = self._undo_content_to_text(
+                        (result.get("target_message") or {}).get("content")
+                    )
+                    if db_text:
+                        removed_text = db_text
+            except ValueError as e:
+                # Non-user target / cross-session — keep the in-memory undo
+                # but skip the soft-delete; surface a debug-level note.
+                logger.debug("undo: soft-delete skipped: %s", e)
+            except Exception as e:
+                logger.debug("undo: soft-delete failed: %s", e)
+
+        # Agent surgery: invalidate the system-prompt cache and reset the
+        # flush index so the next turn re-flushes from the truncated head.
+        if self.agent is not None:
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                try:
+                    self.agent._invalidate_system_prompt()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                try:
+                    self.agent._last_flushed_db_idx = len(self.conversation_history)
+                except Exception:
+                    pass
+            # Notify memory providers — same hook /branch fires, with the
+            # rewound flag so per-turn document caches invalidate (#6672, #21910).
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None and self.session_id:
+                    _mm.on_session_switch(
+                        self.session_id,
+                        parent_session_id="",
+                        reset=False,
+                        rewound=True,
+                    )
+            except Exception:
+                pass
+
+        turn_word = "turn" if turns_undone == 1 else "turns"
+        msg_count = rewound_rows or removed_count
+        print(
+            f"(^_^)b Undid {turns_undone} {turn_word} ({msg_count} message(s)). "
+            f"Backed up to: \"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}\""
+        )
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
+
+        # Pre-fill the composer with the backed-up message so the user can
+        # edit and resubmit (Claude-Code-style). Editable, not auto-sent.
+        if prefill and removed_text:
+            self._prefill_input_buffer(removed_text)
+
+    @staticmethod
+    def _undo_content_to_text(content) -> str:
+        """Flatten message content (str or content-part list) to plain text."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            return "\n".join(t for t in parts if t)
+        return ""
+
+    def _prefill_input_buffer(self, text: str) -> None:
+        """Place ``text`` in the active prompt_toolkit buffer, editable."""
+        app = getattr(self, "_app", None)
+        if app is None:
+            return
+        try:
+            buf = app.current_buffer
+            buf.text = text
+            if hasattr(buf, "cursor_position"):
+                buf.cursor_position = len(text)
+            app.invalidate()
+        except Exception as e:
+            logger.debug("undo: prefill buffer failed: %s", e)
     
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
@@ -8333,7 +8615,14 @@ class HermesCLI:
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
-        
+
+        # A bare `/resume` prompt is one-shot: any command other than the
+        # resume/sessions handlers (which manage the pending state themselves)
+        # disarms it so a later number isn't swallowed as a stale selection.
+        # See #34584.
+        if canonical not in {"resume", "sessions"}:
+            self._pending_resume_sessions = None
+
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
             # session's transcripts + SQLite history. Ported from
@@ -8525,13 +8814,29 @@ class HermesCLI:
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
+            # Parse optional turn count: "/undo" → 1, "/undo 3" → 3.
+            _undo_n = 1
+            _undo_parts = cmd_original.split()
+            if len(_undo_parts) > 1:
+                try:
+                    _undo_n = int(_undo_parts[1])
+                except ValueError:
+                    print(f"(._.) Invalid count {_undo_parts[1]!r} — use /undo or /undo N.")
+                    return
+                if _undo_n < 1:
+                    _undo_n = 1
+            _undo_desc = (
+                "This removes the last user/assistant exchange from history."
+                if _undo_n == 1
+                else f"This removes the last {_undo_n} user turns from history."
+            )
             if self._confirm_destructive_slash(
                 "undo",
-                "This removes the last user/assistant exchange from history.",
+                _undo_desc,
                 cmd_original=cmd_original,
             ) is None:
                 return
-            self.undo_last()
+            self.undo_last(_undo_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":
@@ -9885,10 +10190,20 @@ class HermesCLI:
     def _manual_compress(self, cmd_original: str = ""):
         """Manually trigger context compression on the current conversation.
 
-        Accepts an optional focus topic: ``/compress <focus>`` guides the
-        summariser to preserve information related to *focus* while being
-        more aggressive about discarding everything else.  Inspired by
-        Claude Code's ``/compact <focus>`` feature.
+        Two modes:
+
+        * ``/compress [<focus>]`` — compress the *whole* history. An
+          optional focus topic guides the summariser to preserve
+          information related to *focus* while being more aggressive
+          about discarding everything else.  Inspired by Claude Code's
+          ``/compact <focus>`` feature.
+        * ``/compress here [N]`` — boundary-aware compression. Summarize
+          everything *except* the most recent ``N`` exchanges (default
+          2), which are preserved verbatim. Inspired by Claude Code's
+          Rewind "Summarize up to here" action (v2.1.139, May 2026,
+          https://code.claude.com/docs/en/whats-new/2026-w20). Lets the
+          user pick the compression boundary instead of leaving it to
+          the automatic token-budget heuristic.
         """
         if not self.conversation_history or len(self.conversation_history) < 4:
             print("(._.) Not enough conversation to compress (need at least 4 messages).")
@@ -9902,12 +10217,21 @@ class HermesCLI:
             print("(._.) Compression is disabled in config.")
             return
 
-        # Extract optional focus topic from the command (e.g. "/compress database schema")
-        focus_topic = ""
+        from hermes_cli.partial_compress import (
+            parse_partial_compress_args,
+            rejoin_compressed_head_and_tail,
+            split_history_for_partial_compress,
+        )
+
+        # Args after the command word (e.g. "/compress here 3" -> "here 3").
+        raw_args = ""
         if cmd_original:
-            parts = cmd_original.strip().split(None, 1)
-            if len(parts) > 1:
-                focus_topic = parts[1].strip()
+            _parts = cmd_original.strip().split(None, 1)
+            if len(_parts) > 1:
+                raw_args = _parts[1].strip()
+
+        partial, keep_last, focus_topic = parse_partial_compress_args(raw_args)
+        focus_topic = focus_topic or ""
 
         original_count = len(self.conversation_history)
         with self._busy_command("Compressing context..."):
@@ -9915,6 +10239,22 @@ class HermesCLI:
                 from agent.model_metadata import estimate_request_tokens_rough
                 from agent.manual_compression_feedback import summarize_manual_compression
                 original_history = list(self.conversation_history)
+
+                # Boundary-aware split: only the head is summarized; the
+                # most recent `keep_last` exchanges ride along verbatim.
+                tail: list = []
+                head = original_history
+                if partial:
+                    head, tail = split_history_for_partial_compress(
+                        original_history, keep_last
+                    )
+                    if not tail:
+                        # Split degenerated (everything would be kept, or
+                        # no head left to compress). Fall back to full
+                        # compression so the user still gets an action.
+                        partial = False
+                        head = original_history
+
                 # Include system prompt + tool schemas in the estimate —
                 # a transcript-only number understates real request pressure
                 # and can even appear to grow after compression because a
@@ -9926,7 +10266,11 @@ class HermesCLI:
                     system_prompt=_sys_prompt,
                     tools=_tools,
                 )
-                if focus_topic:
+                if partial:
+                    print(f"🗜️  Summarizing up to here: compressing {len(head)} of "
+                          f"{original_count} messages (~{approx_tokens:,} tokens), "
+                          f"keeping last {keep_last} exchange(s) verbatim...")
+                elif focus_topic:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
                           f"focus: \"{focus_topic}\"...")
                 else:
@@ -9939,12 +10283,21 @@ class HermesCLI:
                 # which already contain the agent identity — resulting in the
                 # identity block appearing twice (issue #15281).
                 compressed, _ = self.agent._compress_context(
-                    original_history,
+                    head,
                     None,
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                     force=True,
                 )
+                # Re-append the verbatim tail after the compressed head.
+                # The split guarantees `tail` begins on a user turn, so the
+                # compressed-head -> tail boundary is normally valid
+                # (the head's compressed output ends on assistant/tool).
+                # rejoin_compressed_head_and_tail() additionally guards the
+                # seam against any illegal user->user / assistant->assistant
+                # adjacency, defending provider role-alternation rules.
+                if partial and tail:
+                    compressed = rejoin_compressed_head_and_tail(compressed, tail)
                 self.conversation_history = compressed
                 # _compress_context ends the old session and creates a new child
                 # session on the agent (run_agent.py::_compress_context). Sync the
@@ -11878,17 +12231,21 @@ class HermesCLI:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
-                # Prepend pending model switch note so the model knows about the switch
+                # Prepend pending notes via _prepend_note_to_message, which
+                # handles both plain-string and multimodal content-parts list
+                # messages. Naive ``note + "\n\n" + agent_message`` crashed with
+                # TypeError when an image was attached (agent_message is a list)
+                # and a /model or /reload-skills note was queued for the turn.
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
-                    agent_message = _msn + "\n\n" + agent_message
+                    agent_message = _prepend_note_to_message(agent_message, _msn)
                     self._pending_model_switch_note = None
                 # Prepend pending /reload-skills note so the model sees which
                 # skills were added/removed before handling this turn. Same
                 # one-shot queue pattern as the model-switch note above.
                 _srn = getattr(self, '_pending_skills_reload_note', None)
                 if _srn:
-                    agent_message = _srn + "\n\n" + agent_message
+                    agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(
@@ -12835,6 +13192,13 @@ class HermesCLI:
                         if event.app.is_running:
                             event.app.exit()
                     event.app.current_buffer.reset(append_to_history=True)
+                    # Force a repaint: process_command() prints through
+                    # patch_stdout (scrolls output above the prompt) and never
+                    # invalidates the app, so the just-cleared input area can
+                    # keep showing the submitted text until some unrelated
+                    # redraw fires. Every other early-return branch in this
+                    # handler invalidates after reset — match them.
+                    event.app.invalidate()
                     return
 
                 # Handle /steer while the agent is running immediately on the
@@ -12846,6 +13210,13 @@ class HermesCLI:
                 if self._should_handle_steer_command_inline(text, has_images=has_images):
                     self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
+                    # Force a repaint after clearing the buffer.  /steer is
+                    # dispatched mid-run while the agent streams output through
+                    # patch_stdout; process_command() never invalidates the
+                    # app, so without this the submitted "/steer <text>" can
+                    # linger in the input area (looking unsent) and invite an
+                    # accidental re-submit. See issue #34569.
+                    event.app.invalidate()
                     return
 
                 # Snapshot and clear attached images
@@ -13979,7 +14350,12 @@ class HermesCLI:
             reserved_below = 6
 
             available = max(0, term_rows - reserved_below)
-            mandatory_full = chrome_full + len(choice_wrapped) + len(other_wrapped)
+            # The compact decision must reserve room for at least one question
+            # row on top of the choices, otherwise full chrome (3 blank
+            # separators) gets kept when there is no room for it and the panel
+            # overflows the viewport — HSplit then clips the panel's tail,
+            # silently dropping the choices (the reported bug).
+            mandatory_full = chrome_full + 1 + len(choice_wrapped) + len(other_wrapped)
 
             use_compact_chrome = mandatory_full > available
             chrome_rows = chrome_tight if use_compact_chrome else chrome_full
@@ -13987,9 +14363,24 @@ class HermesCLI:
             max_question_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(other_wrapped))
             max_question_rows = min(max_question_rows, 12)  # soft cap on huge terminals
 
+            # When the choices alone (plus compact chrome) already exceed the
+            # viewport, drop the question entirely — the choices are the only
+            # thing the user must see to make a selection. Without this the
+            # question would still claim its 1-row floor above and push the
+            # tail of the choices off-screen (HSplit clips the overflow).
+            choices_overflow = chrome_rows + len(choice_wrapped) + len(other_wrapped) >= available
+            if choices_overflow:
+                max_question_rows = 0
+
             question_wrapped = _wrap_panel_text(question, inner_text_width)
-            if len(question_wrapped) > max_question_rows:
-                keep = max(1, max_question_rows - 1)
+            if max_question_rows <= 0:
+                question_wrapped = []
+            elif len(question_wrapped) > max_question_rows:
+                # The truncation marker is itself a row, so it must count
+                # against the budget. With a 1-row budget there is no room for
+                # both a question line and the marker — show the marker alone
+                # so the rendered question never exceeds max_question_rows.
+                keep = max(0, max_question_rows - 1)
                 question_wrapped = question_wrapped[:keep] + ["… (question truncated)"]
 
             lines = []
@@ -14523,6 +14914,17 @@ class HermesCLI:
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
 
+                    # A bare number right after a bare `/resume` prompt selects
+                    # that session (see #34584). Checked before chat routing so
+                    # the digit isn't sent to the agent as a message.
+                    if (
+                        not _file_drop
+                        and self._pending_resume_sessions
+                        and isinstance(user_input, str)
+                        and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
+
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")
                         try:
@@ -14794,6 +15196,9 @@ class HermesCLI:
                     pass  # No running loop -- nothing to patch
                 except Exception:
                     pass
+                # The app enables focus reporting + mouse tracking; record that
+                # so _run_cleanup resets them on exit (#36823).
+                _mark_tui_input_modes_active()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
@@ -14898,6 +15303,96 @@ class HermesCLI:
 # ============================================================================
 # Main Entry Point
 # ============================================================================
+
+def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
+    """Drive a kanban goal_mode worker through the Ralph-style goal loop.
+
+    Called from the quiet single-query path AFTER the worker's first turn,
+    only when ``HERMES_KANBAN_GOAL_MODE`` is set (dispatcher-spawned
+    goal_mode card). Wires the worker's ``run_conversation`` and the kanban
+    DB into ``goals.run_kanban_goal_loop``. All errors are swallowed by the
+    caller — a broken goal loop must never wedge a worker, the dispatcher's
+    claim TTL / crash detection is the backstop.
+    """
+    import os as _os
+
+    task_id = (_os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return
+
+    from hermes_cli import kanban_db as _kb
+    from hermes_cli.goals import run_kanban_goal_loop as _run_loop, DEFAULT_MAX_TURNS as _DEF_TURNS
+
+    # Resolve goal text from the card (title + body = the acceptance
+    # criteria the judge evaluates against).
+    conn = _kb.connect()
+    try:
+        task = _kb.get_task(conn, task_id)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if task is None:
+        return
+
+    goal_parts = [task.title or ""]
+    if task.body:
+        goal_parts.append(task.body)
+    goal_text = "\n\n".join(p for p in goal_parts if p).strip()
+    if not goal_text:
+        return
+
+    max_turns = task.goal_max_turns or _DEF_TURNS
+
+    def _run_turn(prompt: str) -> str:
+        result = cli.agent.run_conversation(
+            user_message=prompt,
+            conversation_history=cli.conversation_history,
+        )
+        # Keep session_id in sync if mid-run compression rotated it.
+        if (
+            getattr(cli.agent, "session_id", None)
+            and cli.agent.session_id != cli.session_id
+        ):
+            cli.session_id = cli.agent.session_id
+        resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
+        if resp:
+            print(resp)
+        return resp or ""
+
+    def _task_status() -> "str | None":
+        c = _kb.connect()
+        try:
+            t = _kb.get_task(c, task_id)
+            return t.status if t is not None else None
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    def _block(reason: str) -> None:
+        c = _kb.connect()
+        try:
+            _kb.block_task(c, task_id, reason=reason)
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    _run_loop(
+        task_id=task_id,
+        goal_text=goal_text,
+        run_turn=_run_turn,
+        task_status_fn=_task_status,
+        block_fn=_block,
+        max_turns=max_turns,
+        first_response=first_response or "",
+        log=lambda m: logger.info("%s", m),
+    )
+
 
 def main(
     query: str = None,
@@ -15296,6 +15791,20 @@ def main(
                         print(f"Error: {result['error']}", file=sys.stderr)
                     elif response:
                         print(response)
+
+                    # Kanban goal-loop mode: a worker spawned for a
+                    # goal_mode card keeps working in THIS session until an
+                    # auxiliary judge agrees the card is done, the worker
+                    # terminates the task itself, or the turn budget runs
+                    # out (→ sticky block). Gated on the env vars the
+                    # dispatcher sets in `_default_spawn`; a no-op for every
+                    # normal worker and every non-kanban `-q` run.
+                    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+                        try:
+                            _run_kanban_goal_loop_q(cli, response)
+                        except Exception as _goal_exc:
+                            logger.debug("kanban goal loop failed: %s", _goal_exc)
+
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                     

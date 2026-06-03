@@ -70,9 +70,16 @@ DETECTED_BROWSER_EXECUTABLE=""
 USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
+NO_SKILLS=false
 BRANCH="main"
+INSTALL_COMMIT=""
 ENSURE_DEPS=""
 POSTINSTALL_MODE=false
+MANIFEST_MODE=false
+STAGE_NAME=""
+JSON_OUTPUT=false
+NON_INTERACTIVE=false
+INCLUDE_DESKTOP=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -98,9 +105,37 @@ while [[ $# -gt 0 ]]; do
             SKIP_BROWSER=true
             shift
             ;;
-        --branch)
+        --no-skills)
+            NO_SKILLS=true
+            shift
+            ;;
+        --branch|-Branch)
             BRANCH="$2"
             shift 2
+            ;;
+        --commit|-Commit)
+            INSTALL_COMMIT="$2"
+            shift 2
+            ;;
+        --manifest|-Manifest)
+            MANIFEST_MODE=true
+            shift
+            ;;
+        --stage|-Stage)
+            STAGE_NAME="$2"
+            shift 2
+            ;;
+        --json|-Json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --non-interactive|-NonInteractive)
+            NON_INTERACTIVE=true
+            shift
+            ;;
+        --include-desktop|-IncludeDesktop)
+            INCLUDE_DESKTOP=true
+            shift
             ;;
         --dir)
             INSTALL_DIR="$2"
@@ -128,7 +163,16 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
+            echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
+            echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
+            echo "                   'hermes update' runs never inject bundled skills either"
             echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
+            echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
+            echo "  --stage NAME   Run one desktop bootstrap stage"
+            echo "  --json         Print a JSON result frame for --stage"
+            echo "  --non-interactive  Skip stages that require user input"
+            echo "  --include-desktop  Also build the desktop app (apps/desktop -> Hermes.app)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -189,6 +233,66 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+json_escape() {
+    # Enough for short installer status strings; avoids requiring jq during
+    # pre-install bootstrap.
+    printf '%s' "$1" | tr '\n' ' ' | sed \
+        -e 's/\\/\\\\/g' \
+        -e 's/"/\\"/g'
+}
+
+# npm rewrites tracked package-lock.json files non-deterministically during
+# `npm install` / `npm run pack`. On a managed install those diffs are never
+# intentional, but they leave the checkout dirty — which forces `hermes update`
+# to autostash on every run and makes branch switches fragile. Restore them so
+# a fresh install ends with a clean tree. Best-effort; only touches lockfiles.
+restore_dirty_lockfiles() {
+    local repo="${1:-$INSTALL_DIR}"
+    [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
+    command -v git >/dev/null 2>&1 || return 0
+    local dirty
+    dirty=$(git -C "$repo" diff --name-only 2>/dev/null | grep 'package-lock\.json$' || true)
+    [ -z "$dirty" ] && return 0
+    echo "$dirty" | while IFS= read -r f; do
+        [ -n "$f" ] && git -C "$repo" checkout -- "$f" 2>/dev/null || true
+    done
+}
+
+emit_manifest() {
+    # Stage-Desktop is included only with --include-desktop, mirroring
+    # install.ps1: the signed bootstrap installer (Hermes-Setup) passes it so
+    # a GUI install ends up with a launchable app; the Electron app's own
+    # first-launch bootstrap and the CLI one-liner omit it (building the
+    # desktop from inside the already-running app would clobber it).
+    local desktop_stage=""
+    if [ "$INCLUDE_DESKTOP" = true ]; then
+        desktop_stage='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
+    fi
+    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+    printf '\n'
+}
+
+stage_needs_user_input() {
+    case "$1" in
+        setup|gateway) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+emit_stage_json() {
+    local stage="$1"
+    local ok="$2"
+    local skipped="${3:-false}"
+    local reason="${4:-}"
+    local escaped_reason
+    escaped_reason="$(json_escape "$reason")"
+    if [ -n "$escaped_reason" ]; then
+        printf '{"ok":%s,"stage":"%s","skipped":%s,"reason":"%s"}\n' "$ok" "$stage" "$skipped" "$escaped_reason"
+    else
+        printf '{"ok":%s,"stage":"%s","skipped":%s}\n' "$ok" "$stage" "$skipped"
+    fi
+}
+
 prompt_yes_no() {
     local question="$1"
     local default="${2:-yes}"
@@ -201,7 +305,9 @@ prompt_yes_no() {
         *) prompt_suffix="[y/N]" ;;
     esac
 
-    if [ "$IS_INTERACTIVE" = true ]; then
+    if [ "$NON_INTERACTIVE" = true ]; then
+        answer=""
+    elif [ "$IS_INTERACTIVE" = true ]; then
         read -r -p "$question $prompt_suffix " answer || answer=""
     elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
         printf "%s %s " "$question" "$prompt_suffix" > /dev/tty
@@ -369,39 +475,22 @@ install_uv() {
         return 0
     fi
 
-    log_info "Checking for uv package manager..."
+    # Hermes owns its own uv at $HERMES_HOME/bin/uv.  Always install there —
+    # no PATH probing, no conda guards, no multi-location resolution chains.
+    # The runtime update path (hermes_cli/managed_uv.py) looks in the same
+    # place, so install.sh and `hermes update` stay in sync.
+    local _managed_uv="$HERMES_HOME/bin/uv"
 
-    # Check common locations for uv
-    if command -v uv &> /dev/null; then
-        UV_CMD="uv"
+    if [ -x "$_managed_uv" ]; then
+        UV_CMD="$_managed_uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found ($UV_VERSION)"
+        log_success "Managed uv found ($UV_VERSION)"
         return 0
     fi
 
-    # Check ~/.local/bin (default uv install location) even if not on PATH yet
-    if [ -x "$HOME/.local/bin/uv" ]; then
-        UV_CMD="$HOME/.local/bin/uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found at ~/.local/bin ($UV_VERSION)"
-        return 0
-    fi
+    log_info "Installing managed uv into $HERMES_HOME/bin ..."
+    mkdir -p "$HERMES_HOME/bin"
 
-    # Check ~/.cargo/bin (alternative uv install location)
-    if [ -x "$HOME/.cargo/bin/uv" ]; then
-        UV_CMD="$HOME/.cargo/bin/uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv found at ~/.cargo/bin ($UV_VERSION)"
-        return 0
-    fi
-
-    # Install uv
-    log_info "Installing uv (fast Python package manager)..."
-    # Capture installer output so a failure shows the user WHY (network,
-    # glibc mismatch on old distros, missing curl, ~/.local/bin not
-    # writable, disk full, corp proxy / TLS interception, etc.) instead
-    # of the previous "✗ Failed to install uv" with zero diagnostic.
-    #
     # Two-stage: download the installer, then run it.  Piping
     # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
     # and conflates network errors with installer errors.
@@ -416,26 +505,22 @@ install_uv() {
         rm -f "$_uv_install_log" "$_uv_installer"
         exit 1
     fi
-    if sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
+    # UV_UNMANAGED_INSTALL tells the astral installer to place the binary
+    # directly into $HERMES_HOME/bin instead of ~/.local/bin.
+    if UV_UNMANAGED_INSTALL="$HERMES_HOME/bin" sh "$_uv_installer" >>"$_uv_install_log" 2>&1; then
         rm -f "$_uv_installer"
-        # uv installs to ~/.local/bin by default
-        if [ -x "$HOME/.local/bin/uv" ]; then
-            UV_CMD="$HOME/.local/bin/uv"
-        elif [ -x "$HOME/.cargo/bin/uv" ]; then
-            UV_CMD="$HOME/.cargo/bin/uv"
-        elif command -v uv &> /dev/null; then
-            UV_CMD="uv"
+        if [ -x "$_managed_uv" ]; then
+            UV_CMD="$_managed_uv"
         else
-            log_error "uv installer reported success but binary not found on PATH"
+            log_error "uv installer reported success but binary not found at $_managed_uv"
             log_info "Installer output:"
             sed 's/^/    /' "$_uv_install_log" >&2
-            log_info "Try adding ~/.local/bin to your PATH and re-running"
             rm -f "$_uv_install_log"
             exit 1
         fi
         rm -f "$_uv_install_log"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
-        log_success "uv installed ($UV_VERSION)"
+        log_success "Managed uv installed ($UV_VERSION)"
     else
         log_error "Failed to install uv"
         log_info "Installer output:"
@@ -489,10 +574,78 @@ check_python() {
     fi
 }
 
+# Best-effort automatic git provisioning, mirroring install.ps1's Install-Git
+# (which downloads PortableGit on Windows). git is required to clone the repo,
+# and a fresh "normie" machine with no developer tools won't have it. Returns 0
+# if git is available afterwards, non-zero otherwise (caller prints manual
+# instructions and aborts).
+attempt_install_git() {
+    case "$OS" in
+        macos)
+            # Prefer Homebrew — fully headless when present.
+            if command -v brew >/dev/null 2>&1; then
+                log_info "Installing Git via Homebrew..."
+                brew install git >/dev/null 2>&1 || true
+                command -v git >/dev/null 2>&1 && return 0
+            fi
+            # Fall back to Apple Command Line Tools, which provide git AND the
+            # compiler some Python wheels need. `xcode-select --install` pops a
+            # system dialog (Apple gates CLT behind it — it cannot be fully
+            # silent without MDM), so we trigger it and poll for git to appear.
+            if command -v xcode-select >/dev/null 2>&1; then
+                log_info "Requesting Apple Command Line Tools (provides git + compiler)..."
+                log_info "If a macOS dialog appears, click \"Install\" and accept the license."
+                xcode-select --install >/dev/null 2>&1 || true
+                local waited=0
+                local timeout=900
+                while [ "$waited" -lt "$timeout" ]; do
+                    if command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; then
+                        return 0
+                    fi
+                    sleep 5
+                    waited=$((waited + 5))
+                    if [ $((waited % 60)) -eq 0 ]; then
+                        log_info "Still waiting for Command Line Tools install ($((waited / 60))m)..."
+                    fi
+                done
+            fi
+            return 1
+            ;;
+        linux)
+            local sudo_cmd=""
+            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
+                command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+            fi
+            case "$DISTRO" in
+                ubuntu|debian)
+                    log_info "Installing Git via apt..."
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null 2>&1 || true
+                    ;;
+                fedora)
+                    log_info "Installing Git via dnf..."
+                    $sudo_cmd dnf install -y git >/dev/null 2>&1 || true
+                    ;;
+                arch)
+                    log_info "Installing Git via pacman..."
+                    $sudo_cmd pacman -S --noconfirm git >/dev/null 2>&1 || true
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
+            command -v git >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+    esac
+    return 1
+}
+
 check_git() {
     log_info "Checking Git..."
 
-    if command -v git &> /dev/null; then
+    # On fresh macOS /usr/bin/git is a stub that exits non-zero until CLT is installed.
+    if command -v git &> /dev/null && git --version &> /dev/null; then
         GIT_VERSION=$(git --version | awk '{print $3}')
         log_success "Git $GIT_VERSION found"
         return 0
@@ -510,7 +663,15 @@ check_git() {
         fi
     fi
 
-    log_info "Please install Git:"
+    # Try to install it automatically before giving up (parity with install.ps1).
+    log_info "Attempting to install Git automatically..."
+    if attempt_install_git; then
+        GIT_VERSION=$(git --version | awk '{print $3}')
+        log_success "Git $GIT_VERSION installed"
+        return 0
+    fi
+
+    log_warn "Could not install Git automatically. Please install it manually:"
 
     case "$OS" in
         linux)
@@ -985,6 +1146,14 @@ clone_repo() {
     fi
 
     cd "$INSTALL_DIR"
+
+    if [ -n "$INSTALL_COMMIT" ]; then
+        log_info "Pinning checkout to commit $INSTALL_COMMIT..."
+        if ! git cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; then
+            git fetch origin "$INSTALL_COMMIT" || true
+        fi
+        git checkout --detach "$INSTALL_COMMIT"
+    fi
 
     log_success "Repository ready"
 }
@@ -1485,14 +1654,26 @@ SOUL_EOF
     log_success "Configuration directory ready: ~/.hermes/"
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-        log_success "Skills synced to ~/.hermes/skills/"
+    if [ "$NO_SKILLS" = true ]; then
+        # Blank-slate install: write the opt-out marker and skip seeding.
+        # skills_sync.py and `hermes update` both honor this marker, so the
+        # default profile stays empty across future updates too.
+        printf '%s\n' \
+            "This profile opted out of bundled-skill seeding (installed with --no-skills)." \
+            "Delete this file to re-enable sync on the next 'hermes update'." \
+            > "$HERMES_HOME/.no-bundled-skills" 2>/dev/null || true
+        log_info "Skipping bundled skills (--no-skills). Wrote $HERMES_HOME/.no-bundled-skills"
+        log_info "  Future 'hermes update' runs will not inject bundled skills. Delete the marker to opt back in."
     else
-        # Fallback: simple directory copy if Python sync fails
-        if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
-            cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-            log_success "Skills copied to ~/.hermes/skills/"
+        log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
+        if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+            log_success "Skills synced to ~/.hermes/skills/"
+        else
+            # Fallback: simple directory copy if Python sync fails
+            if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
+                cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
+                log_success "Skills copied to ~/.hermes/skills/"
+            fi
         fi
     fi
 }
@@ -1697,7 +1878,8 @@ install_node_deps() {
         log_success "TUI dependencies installed"
     fi
 
-
+    # Keep the checkout clean so `hermes update` doesn't autostash every run.
+    restore_dirty_lockfiles "$INSTALL_DIR"
 }
 
 run_setup_wizard() {
@@ -2040,6 +2222,268 @@ postinstall_mode() {
     fi
 }
 
+# Build apps/desktop into a launchable native app. Mirrors install.ps1's
+# Install-Desktop: a root-level npm install so the apps/* workspace resolves
+# the desktop's own deps (Electron ~150MB), then `npm run pack`
+# (electron-builder --dir) which emits an unpacked app for the current OS. Only invoked
+# via the 'desktop' stage / --include-desktop, which the Electron app's own
+# first-launch bootstrap never requests (it must not rebuild itself).
+install_desktop() {
+    local desktop_dir="$INSTALL_DIR/apps/desktop"
+
+    # The desktop stage only runs when a build is explicitly requested
+    # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
+    # failure, not a silent skip — a silent skip yields a "complete" install
+    # with no app and a confusing "couldn't find a built desktop" at launch.
+    # Try the Hermes-managed Node first (check_node adds $HERMES_HOME/node/bin
+    # to PATH or installs it) before giving up.
+    if ! command -v npm >/dev/null 2>&1; then
+        check_node
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        log_error "Cannot build desktop app: Node.js / npm unavailable"
+        log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"
+        return 1
+    fi
+    if [ ! -f "$desktop_dir/package.json" ]; then
+        log_warn "Skipping desktop build (apps/desktop not present in checkout)"
+        return 0
+    fi
+
+    # 1. Root workspace install so apps/desktop's deps (Electron, Vite,
+    #    node-pty prebuilds) resolve. The browser-tools install runs in the
+    #    repo-root package workspace, which does not pull apps/* deps.
+    log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
+    ( cd "$INSTALL_DIR" && npm install ) || {
+        log_error "Desktop workspace npm install failed"
+        return 1
+    }
+    log_success "Desktop workspace dependencies installed"
+
+    # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
+    #    producing an unpacked app for the current OS. We disable signing
+    #    auto-discovery so electron-builder falls back to an ad-hoc signature
+    #    instead of grabbing an unrelated Developer ID from the keychain; a
+    #    real signed/notarized .dmg needs Apple credentials and is a separate
+    #    release concern.
+    log_info "Building desktop app (this takes 1-3 minutes)..."
+    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
+        log_error "Desktop app build failed"
+        log_info "Run manually: cd $desktop_dir && npm run pack"
+        return 1
+    }
+
+    local app=""
+    if [ "$OS" = "linux" ]; then
+        if [ -x "$desktop_dir/release/linux-unpacked/Hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/Hermes"
+        elif [ -x "$desktop_dir/release/linux-unpacked/hermes" ]; then
+            app="$desktop_dir/release/linux-unpacked/hermes"
+        fi
+    else
+        local cand
+        for cand in \
+            "$desktop_dir/release/mac-arm64/Hermes.app" \
+            "$desktop_dir/release/mac/Hermes.app"; do
+            if [ -d "$cand" ]; then
+                app="$cand"
+                break
+            fi
+        done
+    fi
+    if [ -z "$app" ]; then
+        log_error "Desktop build completed but no app was found under $desktop_dir/release/"
+        return 1
+    fi
+    log_success "Desktop app built: $app"
+
+    # Linux: Electron's chrome-sandbox helper needs root:root 4755 or the
+    # sandboxed renderer will abort on startup.  Check the file is a regular
+    # file (not a symlink) before chown/chmod so we don't follow an
+    # attacker-controlled link to an arbitrary path.
+    if [ "$OS" = "linux" ]; then
+        local sandbox="$desktop_dir/release/linux-unpacked/chrome-sandbox"
+        if [ -f "$sandbox" ] && [ ! -L "$sandbox" ]; then
+            if [ "$(id -u)" -eq 0 ]; then
+                chown root:root "$sandbox" && chmod 4755 "$sandbox" || {
+                    log_error "Cannot configure Electron sandbox helper: $sandbox"
+                    return 1
+                }
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo chown root:root "$sandbox" && sudo chmod 4755 "$sandbox" || {
+                    log_error "Cannot configure Electron sandbox helper (sudo failed): $sandbox"
+                    return 1
+                }
+            else
+                log_error "Cannot configure Electron sandbox helper without sudo: $sandbox"
+                return 1
+            fi
+        fi
+    fi
+
+    # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
+    # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
+    # later in-place rebuild (new cdhash) plus the inherited quarantine flag
+    # trips Gatekeeper's tamper check ("Hermes is damaged and can't be opened").
+    # Strip quarantine + re-apply a clean deep ad-hoc signature (no
+    # hardened-runtime flag, which an ad-hoc build can't satisfy). Skipped when a
+    # real signing identity is configured so a signed build isn't clobbered.
+    if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
+        xattr -cr "$app" 2>/dev/null || true
+        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+    fi
+
+    # `npm install` + `npm run pack` rewrite lockfiles; restore them so the
+    # checkout stays clean for the next `hermes update`.
+    restore_dirty_lockfiles "$INSTALL_DIR"
+}
+
+# Each --stage runs in its own process, so (unlike the monolithic main() where
+# clone_repo cd's once and later steps inherit it) a stage that operates on the
+# checkout must cd into it explicitly. Without this, install_deps/setup_path run
+# from the desktop app's cwd and resolve `.` / the venv against the wrong tree.
+require_install_dir() {
+    if [ -z "$INSTALL_DIR" ] || [ ! -d "$INSTALL_DIR" ]; then
+        log_error "Install directory not found: ${INSTALL_DIR:-<unset>}"
+        log_info "The 'repository' stage must run before this one."
+        return 1
+    fi
+    cd "$INSTALL_DIR"
+}
+
+# Desktop bootstrap stage protocol. Mirrors the Windows install.ps1 surface
+# closely enough for the Electron bootstrap runner to show structured progress.
+run_stage_body() {
+    local stage="$1"
+
+    case "$stage" in
+        prerequisites)
+            print_banner
+            detect_os
+            resolve_install_layout
+            install_uv
+            check_python
+            check_git
+            check_node
+            check_network_prerequisites
+            install_system_packages
+            ;;
+        repository)
+            detect_os
+            resolve_install_layout
+            check_git
+            clone_repo
+            ;;
+        venv)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            install_uv
+            check_python
+            setup_venv
+            ;;
+        python-deps)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            install_uv
+            check_python
+            install_deps
+            ;;
+        node-deps)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            check_node
+            install_node_deps
+            ;;
+        path)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            setup_path
+            ;;
+        config)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            copy_config_templates
+            ;;
+        setup)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            run_setup_wizard
+            ;;
+        gateway)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            maybe_start_gateway
+            ;;
+        desktop)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            # Each stage runs in its own process, so the Hermes-managed Node
+            # provisioned during prerequisites/node-deps (at $HERMES_HOME/node/bin)
+            # isn't on PATH here. check_node re-adds it (or installs if missing)
+            # so install_desktop can find npm instead of silently skipping.
+            check_node
+            install_desktop
+            ;;
+        complete)
+            detect_os
+            resolve_install_layout
+            print_success
+            echo "git" > "$HERMES_HOME/.install_method"
+            ;;
+        *)
+            log_error "Unknown stage: $stage"
+            return 2
+            ;;
+    esac
+}
+
+run_stage_protocol() {
+    local stage="$1"
+    if [ -z "$stage" ]; then
+        log_error "--stage requires a stage name"
+        if [ "$JSON_OUTPUT" = true ]; then
+            emit_stage_json "" false false "missing stage name"
+        fi
+        return 2
+    fi
+
+    if [ "$NON_INTERACTIVE" = true ] && stage_needs_user_input "$stage"; then
+        log_info "Skipping $stage (non-interactive bootstrap)"
+        if [ "$JSON_OUTPUT" = true ]; then
+            emit_stage_json "$stage" true true
+        fi
+        return 0
+    fi
+
+    # Run the stage body in a subshell so a stage helper that calls `exit 1`
+    # on failure (clone_repo, install_deps, etc. were written for the monolithic
+    # flow) only exits the subshell — the parent still reaches the JSON result
+    # frame below. Without this, a failed --stage would terminate the process
+    # before emitting the frame and the Rust/Electron parser would see "no
+    # result frame" instead of a clean {ok:false} contract response.
+    set +e
+    ( run_stage_body "$stage" )
+    local code=$?
+    set -e
+
+    if [ "$JSON_OUTPUT" = true ]; then
+        if [ "$code" -eq 0 ]; then
+            emit_stage_json "$stage" true false
+        else
+            emit_stage_json "$stage" false false "exit code $code"
+        fi
+    fi
+    return "$code"
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -2065,12 +2509,20 @@ main() {
     run_setup_wizard
     maybe_start_gateway
 
+    if [ "$INCLUDE_DESKTOP" = true ]; then
+        install_desktop
+    fi
+
     print_success
 
     echo "git" > "$HERMES_HOME/.install_method"
 }
 
-if [ -n "$ENSURE_DEPS" ]; then
+if [ "$MANIFEST_MODE" = true ]; then
+    emit_manifest
+elif [ -n "$STAGE_NAME" ]; then
+    run_stage_protocol "$STAGE_NAME"
+elif [ -n "$ENSURE_DEPS" ]; then
     ensure_mode
 elif [ "$POSTINSTALL_MODE" = true ]; then
     postinstall_mode

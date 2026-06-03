@@ -72,6 +72,15 @@ _last_init_error_lock = threading.Lock()
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
+_FTS_TRIGGERS = (
+    "messages_fts_insert",
+    "messages_fts_delete",
+    "messages_fts_update",
+    "messages_fts_trigram_insert",
+    "messages_fts_trigram_delete",
+    "messages_fts_trigram_update",
+)
+
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -240,6 +249,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_read_tokens INTEGER DEFAULT 0,
     cache_write_tokens INTEGER DEFAULT 0,
     reasoning_tokens INTEGER DEFAULT 0,
+    cwd TEXT,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -253,6 +263,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    rewind_count INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -273,7 +285,8 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,
-    observed INTEGER DEFAULT 0
+    observed INTEGER DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -293,6 +306,15 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+"""
+
+# Indexes that reference columns added in later schema versions must be
+# created AFTER _reconcile_columns() has had a chance to ADD them on
+# existing databases. SCHEMA_SQL above is run by sqlite executescript
+# which would otherwise fail on legacy DBs ("no such column: active").
+DEFERRED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_messages_session_active
+    ON messages(session_id, active, timestamp);
 """
 
 FTS_SQL = """
@@ -380,6 +402,8 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        self._fts_enabled = False
+        self._fts_unavailable_warned = False
         try:
             self._conn = sqlite3.connect(
                 str(self.db_path),
@@ -388,7 +412,6 @@ class SessionDB:
                 # handles contention instead of sitting in SQLite's internal
                 # busy handler for up to 30s.
                 timeout=1.0,
-                # Autocommit mode: Python's default isolation_level=""
                 # auto-starts transactions on DML, which conflicts with our
                 # explicit BEGIN IMMEDIATE.  None = we manage transactions
                 # ourselves.
@@ -416,6 +439,108 @@ class SessionDB:
             raise
 
     # ── Core write helper ──
+
+    @staticmethod
+    def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        err = str(exc).lower()
+        return "no such module" in err and "fts5" in err
+
+    def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
+        self._fts_enabled = False
+        if self._fts_unavailable_warned:
+            return
+        self._fts_unavailable_warned = True
+        logger.warning(
+            "SQLite FTS5 unavailable for %s; full-text session search "
+            "disabled. Run `hermes update` to rebuild the venv with a "
+            "current Python (managed uv guarantees FTS5). "
+            "(underlying error: %s)",
+            self.db_path,
+            exc,
+        )
+
+    def _sqlite_supports_fts5(self, cursor: sqlite3.Cursor) -> bool:
+        try:
+            cursor.execute("CREATE VIRTUAL TABLE temp._hermes_fts5_probe USING fts5(x)")
+            cursor.execute("DROP TABLE temp._hermes_fts5_probe")
+            return True
+        except sqlite3.OperationalError as exc:
+            if not self._is_fts5_unavailable_error(exc):
+                raise
+            self._warn_fts5_unavailable(exc)
+            return False
+
+    @staticmethod
+    def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
+        for trigger in _FTS_TRIGGERS:
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.OperationalError:
+                pass
+
+    @staticmethod
+    def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
+        placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
+        row = cursor.execute(
+            f"SELECT COUNT(*) FROM sqlite_master "
+            f"WHERE type = 'trigger' AND name IN ({placeholders})",
+            _FTS_TRIGGERS,
+        ).fetchone()
+        return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
+
+    @staticmethod
+    def _rebuild_fts_indexes(cursor: sqlite3.Cursor) -> None:
+        for table_name in ("messages_fts", "messages_fts_trigram"):
+            cursor.execute(f"DELETE FROM {table_name}")
+        cursor.execute(
+            "INSERT INTO messages_fts(rowid, content) "
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+        cursor.execute(
+            "INSERT INTO messages_fts_trigram(rowid, content) "
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+
+    def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
+        try:
+            cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
+            return True
+        except sqlite3.OperationalError as exc:
+            if self._is_fts5_unavailable_error(exc):
+                self._warn_fts5_unavailable(exc)
+                return None
+            if "no such table" in str(exc).lower():
+                return False
+            raise
+
+    def _ensure_fts_schema(
+        self,
+        cursor: sqlite3.Cursor,
+        table_name: str,
+        ddl: str,
+    ) -> bool:
+        status = self._fts_table_probe(cursor, table_name)
+        if status is None:
+            return False
+        try:
+            # Run even when the virtual table exists so any dropped or missing
+            # triggers are recreated after a previous no-FTS5 runtime disabled
+            # them to keep message writes working.
+            cursor.executescript(ddl)
+            return True
+        except sqlite3.OperationalError as exc:
+            if not self._is_fts5_unavailable_error(exc):
+                raise
+            self._warn_fts5_unavailable(exc)
+            return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
@@ -629,6 +754,20 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
+        # Deferred indexes that reference the reconciler-added ``active``
+        # column (idx_messages_session_active) — same ordering constraint.
+        cursor.executescript(DEFERRED_INDEX_SQL)
+
+        fts5_available = self._sqlite_supports_fts5(cursor)
+        fts_migrations_complete = True
+        if not fts5_available:
+            # Existing FTS triggers can still fire on messages INSERT/UPDATE
+            # even though the current sqlite runtime cannot read the virtual
+            # tables they target. Drop only the triggers so core persistence
+            # continues; if a future runtime has FTS5, _ensure_fts_schema()
+            # recreates them.
+            self._drop_fts_triggers(cursor)
+
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
         # version.  No version-gated column additions remain.
@@ -650,17 +789,24 @@ class SessionDB:
                 # virtual table + triggers are created unconditionally via
                 # FTS_TRIGRAM_SQL below, but existing rows need a one-time
                 # backfill into the FTS index.
-                try:
-                    cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-                    _fts_trigram_exists = True
-                except sqlite3.OperationalError:
-                    _fts_trigram_exists = False
-                if not _fts_trigram_exists:
-                    cursor.executescript(FTS_TRIGRAM_SQL)
-                    cursor.execute(
-                        "INSERT INTO messages_fts_trigram(rowid, content) "
-                        "SELECT id, content FROM messages WHERE content IS NOT NULL"
+                if fts5_available:
+                    _fts_trigram_exists = self._fts_table_probe(
+                        cursor, "messages_fts_trigram"
                     )
+                    if _fts_trigram_exists is False:
+                        if self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        ):
+                            cursor.execute(
+                                "INSERT INTO messages_fts_trigram(rowid, content) "
+                                "SELECT id, content FROM messages WHERE content IS NOT NULL"
+                            )
+                        else:
+                            fts_migrations_complete = False
+                    elif _fts_trigram_exists is None:
+                        fts_migrations_complete = False
+                else:
+                    fts_migrations_complete = False
             if current_version < 11:
                 # v11: re-index FTS5 tables to cover tool_name + tool_calls and
                 # switch from external-content to inline mode. Existing DBs have
@@ -668,45 +814,62 @@ class SessionDB:
                 # overwrite, so we drop them explicitly and let the post-migration
                 # existence checks (below) recreate them from FTS_SQL /
                 # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
-                for _trig in (
-                    "messages_fts_insert",
-                    "messages_fts_delete",
-                    "messages_fts_update",
-                    "messages_fts_trigram_insert",
-                    "messages_fts_trigram_delete",
-                    "messages_fts_trigram_update",
-                ):
-                    try:
-                        cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
-                    except sqlite3.OperationalError:
-                        pass
-                for _tbl in ("messages_fts", "messages_fts_trigram"):
-                    try:
-                        cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
-                    except sqlite3.OperationalError:
-                        pass
-                # Recreate virtual tables + triggers with the new inline-mode
-                # schema that indexes content || tool_name || tool_calls.
-                cursor.executescript(FTS_SQL)
-                cursor.executescript(FTS_TRIGRAM_SQL)
-                # Backfill both indexes from every existing messages row.
-                cursor.execute(
-                    "INSERT INTO messages_fts(rowid, content) "
-                    "SELECT id, "
-                    "COALESCE(content, '') || ' ' || "
-                    "COALESCE(tool_name, '') || ' ' || "
-                    "COALESCE(tool_calls, '') "
-                    "FROM messages"
-                )
-                cursor.execute(
-                    "INSERT INTO messages_fts_trigram(rowid, content) "
-                    "SELECT id, "
-                    "COALESCE(content, '') || ' ' || "
-                    "COALESCE(tool_name, '') || ' ' || "
-                    "COALESCE(tool_calls, '') "
-                    "FROM messages"
-                )
-            if current_version < SCHEMA_VERSION:
+                if fts5_available:
+                    self._drop_fts_triggers(cursor)
+                    for _tbl in ("messages_fts", "messages_fts_trigram"):
+                        try:
+                            cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                        except sqlite3.OperationalError as exc:
+                            if not self._is_fts5_unavailable_error(exc):
+                                raise
+                            self._warn_fts5_unavailable(exc)
+                            fts5_available = False
+                            fts_migrations_complete = False
+                            break
+
+                    if fts5_available:
+                        # Recreate virtual tables + triggers with the new inline-mode
+                        # schema that indexes content || tool_name || tool_calls.
+                        if (
+                            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+                            and self._ensure_fts_schema(
+                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                            )
+                        ):
+                            # Backfill both indexes from every existing messages row.
+                            cursor.execute(
+                                "INSERT INTO messages_fts(rowid, content) "
+                                "SELECT id, "
+                                "COALESCE(content, '') || ' ' || "
+                                "COALESCE(tool_name, '') || ' ' || "
+                                "COALESCE(tool_calls, '') "
+                                "FROM messages"
+                            )
+                            cursor.execute(
+                                "INSERT INTO messages_fts_trigram(rowid, content) "
+                                "SELECT id, "
+                                "COALESCE(content, '') || ' ' || "
+                                "COALESCE(tool_name, '') || ' ' || "
+                                "COALESCE(tool_calls, '') "
+                                "FROM messages"
+                            )
+                        else:
+                            fts_migrations_complete = False
+                else:
+                    fts_migrations_complete = False
+            if current_version < 12:
+                # v12: messages.active flag for rewind/undo soft-deletion.
+                # The declarative reconcile_columns() above adds the
+                # column itself; this UPDATE is belt-and-suspenders to
+                # ensure any rows that pre-existed the ADD COLUMN have
+                # active=1 rather than NULL.
+                try:
+                    cursor.execute(
+                        "UPDATE messages SET active = 1 WHERE active IS NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
                     (SCHEMA_VERSION,),
@@ -721,17 +884,22 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
-        # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
-        try:
-            cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+        if fts5_available:
+            # FTS5 setup. Run the DDL even when the virtual table exists so
+            # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
+            # an earlier no-FTS5 runtime.
+            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
 
-        # Trigram FTS5 for CJK/substring search
-        try:
-            cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+            # Trigram FTS5 for CJK/substring search. This is optional relative
+            # to the main FTS table; if it cannot be created, CJK search falls
+            # back to LIKE.
+            if self._fts_enabled:
+                trigram_enabled = self._ensure_fts_schema(
+                    cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                )
+                if trigram_enabled and triggers_need_repair:
+                    self._rebuild_fts_indexes(cursor)
 
         self._conn.commit()
 
@@ -748,13 +916,14 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        cwd: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, cwd, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -763,6 +932,7 @@ class SessionDB:
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
                     parent_session_id,
+                    cwd,
                     time.time(),
                 ),
             )
@@ -799,6 +969,15 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_cwd(self, session_id: str, cwd: str) -> None:
+        """Persist the session working directory when a frontend knows it."""
+        if not session_id or not cwd:
+            return
+
+        def _do(conn):
+            conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (cwd, session_id))
+
+        self._execute_write(_do)
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
@@ -932,6 +1111,20 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
+            )
+        self._execute_write(_do)
+
+    def update_session_model(self, session_id: str, model: str) -> None:
+        """Update the model for a session after a mid-session switch.
+
+        Unlike ``update_token_counts`` which uses ``COALESCE(model, ?)``
+        (only filling in NULL), this unconditionally sets the model column
+        so that the dashboard reflects the user's latest /model choice.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model = ? WHERE id = ?",
+                (model, session_id),
             )
         self._execute_write(_do)
 
@@ -1235,6 +1428,22 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
+    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+        """Archive or unarchive a session.
+
+        Archived sessions are hidden from the default session list but keep all
+        their messages — this is a soft hide, not a delete. Returns True when a
+        row was updated.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET archived = ? WHERE id = ?",
+                (1 if archived else 0, session_id),
+            )
+            return cursor.rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:
@@ -1351,8 +1560,11 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        min_message_count: int = 0,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
+        include_archived: bool = False,
+        archived_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1405,6 +1617,13 @@ class SessionDB:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
+        if min_message_count > 0:
+            where_clauses.append("s.message_count >= ?")
+            params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         if order_by_last_active:
@@ -1524,7 +1743,7 @@ class SessionDB:
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt",
+                    "model", "system_prompt", "cwd",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
@@ -1798,11 +2017,24 @@ class SessionDB:
 
         self._execute_write(_do)
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages for a session, ordered by insertion order."""
+    def get_messages(
+        self, session_id: str, include_inactive: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Load messages for a session in insertion order.
+
+        By default only active messages are returned. Pass
+        ``include_inactive=True`` to load soft-deleted rows (e.g. for
+        audit / debug views of rewound history). See
+        :meth:`rewind_to_message` for the soft-delete mechanic.
+
+        Ordered by AUTOINCREMENT id (true insertion order) rather than
+        timestamp — see c03acca50 for the WSL2 clock-regression rationale.
+        """
+        active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                "SELECT * FROM messages WHERE session_id = ?"
+                f"{active_clause} ORDER BY id",
                 (session_id,),
             )
             rows = cursor.fetchall()
@@ -2084,23 +2316,32 @@ class SessionDB:
         return session_id
 
     def get_messages_as_conversation(
-        self, session_id: str, include_ancestors: bool = False
+        self,
+        session_id: str,
+        include_ancestors: bool = False,
+        include_inactive: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
+
+        By default only active messages are returned. Pass
+        ``include_inactive=True`` to load soft-deleted (rewound) rows
+        as well. See :meth:`rewind_to_message`.
         """
         session_ids = [session_id]
         if include_ancestors:
             session_ids = self._session_lineage_root_to_tip(session_id)
 
+        active_clause = "" if include_inactive else " AND active = 1"
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed "
-                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
+                f"FROM messages WHERE session_id IN ({placeholders})"
+                f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -2199,6 +2440,175 @@ class SessionDB:
         return False
 
     # =========================================================================
+    # Rewind (soft-delete) — see /rewind slash command + issue #21910
+    # =========================================================================
+
+    def rewind_to_message(
+        self, session_id: str, target_message_id: int
+    ) -> Dict[str, Any]:
+        """Soft-delete all messages with id >= ``target_message_id`` in *session_id*.
+
+        The target message itself becomes inactive as well so the caller
+        can pre-fill it as the next user prompt without it appearing
+        twice in the replayed transcript.  Rewound rows are kept on
+        disk with ``active=0`` for audit / forensic inspection — use
+        :meth:`get_messages` with ``include_inactive=True`` to see them.
+
+        Returns a dict::
+
+            {
+                "rewound_count": int,    # number of rows newly flipped to active=0
+                "target_message": dict,  # full row dict of the target
+                "new_head_id":   int|None  # id of the last still-active row, or None
+            }
+
+        Raises ``ValueError`` if the target message does not exist in
+        *session_id* or if its role is not ``"user"``.
+
+        Always increments ``sessions.rewind_count`` — even when the
+        target is already inactive — so the counter accurately reflects
+        the number of rewind operations performed against the session.
+        Idempotent on the ``active`` flag: re-rewinding past the same
+        target is a no-op on row state but still bumps the counter.
+        """
+
+        # 1) Validate target up-front (read-only, outside the write txn).
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+                (target_message_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"message {target_message_id} not found in session {session_id}"
+            )
+        target_row = dict(row)
+        if target_row.get("role") != "user":
+            raise ValueError(
+                f"rewind target must be a 'user' message (got role="
+                f"{target_row.get('role')!r}, id={target_message_id})"
+            )
+
+        # Decode content for callers (prefill the prompt buffer).
+        target_row["content"] = self._decode_content(target_row.get("content"))
+
+        rewound: List[int] = []
+
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 1",
+                (session_id, target_message_id),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            conn.execute(
+                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
+                "WHERE id = ?",
+                (session_id,),
+            )
+            return ids
+
+        rewound = self._execute_write(_do)
+
+        # 2) Compute new head id (largest still-active row id in session).
+        with self._lock:
+            head_row = self._conn.execute(
+                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+
+        return {
+            "rewound_count": len(rewound),
+            "target_message": target_row,
+            "new_head_id": new_head_id,
+        }
+
+    def restore_rewound(self, session_id: str, since_message_id: int) -> int:
+        """Mark inactive messages with id >= *since_message_id* active again.
+
+        Returns the number of rows flipped back to ``active=1``.
+        Intended for undo-of-rewind and test cleanup; not wired to a
+        slash command in v1.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND id >= ? AND active = 0",
+                (session_id, since_message_id),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 1 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            return len(ids)
+
+        return self._execute_write(_do)
+
+    def list_recent_user_messages(
+        self,
+        session_id: str,
+        limit: int = 20,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return the *limit* most-recent user messages, newest first.
+
+        Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
+        ``preview`` is the first 80 characters of the message content
+        (with line breaks collapsed to spaces). Used by the /rewind
+        slash command picker.
+
+        By default only active messages are returned.
+        """
+        active_clause = "" if include_inactive else " AND active = 1"
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, timestamp, content FROM messages "
+                "WHERE session_id = ? AND role = 'user'"
+                f"{active_clause} "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, int(limit)),
+            )
+            rows = cursor.fetchall()
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            decoded = self._decode_content(row["content"])
+            if isinstance(decoded, list):
+                # Multimodal — flatten text parts.
+                text_parts = [
+                    p.get("text", "") for p in decoded
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                preview = " ".join(t for t in text_parts if t).strip()
+                if not preview:
+                    preview = "[multimodal content]"
+            elif isinstance(decoded, str):
+                preview = decoded
+            else:
+                preview = ""
+            preview = " ".join(preview.split())  # collapse whitespace
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            result.append(
+                {
+                    "id": row["id"],
+                    "timestamp": row["timestamp"],
+                    "preview": preview,
+                }
+            )
+        return result
+
+    # =========================================================================
     # Search
     # =========================================================================
 
@@ -2295,6 +2705,7 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         sort: str = None,
+        include_inactive: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -2316,7 +2727,13 @@ class SessionDB:
         The short-CJK LIKE fallback already orders by timestamp DESC and
         ignores ``sort``. The trigram CJK path honours ``sort`` like the main
         FTS5 path.
+
+        Rewound (``active=0``) rows are excluded by default. Pass
+        ``include_inactive=True`` to search every row.
         """
+        if not self._fts_enabled:
+            return []
+
         if not query or not query.strip():
             return []
 
@@ -2346,6 +2763,8 @@ class SessionDB:
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
+        if not include_inactive:
+            where_clauses.append("m.active = 1")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -2425,6 +2844,8 @@ class SessionDB:
                 trigram_query = " ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
+                if not include_inactive:
+                    tri_where.append("m.active = 1")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -2626,15 +3047,32 @@ class SessionDB:
     # Utility
     # =========================================================================
 
-    def session_count(self, source: str = None) -> int:
+    def session_count(
+        self,
+        source: str = None,
+        min_message_count: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
+    ) -> int:
         """Count sessions, optionally filtered by source."""
+        where_clauses = []
+        params = []
+
+        if source:
+            where_clauses.append("source = ?")
+            params.append(source)
+        if min_message_count > 0:
+            where_clauses.append("message_count >= ?")
+            params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("archived = 1")
+        elif not include_archived:
+            where_clauses.append("archived = 0")
+
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
         with self._lock:
-            if source:
-                cursor = self._conn.execute(
-                    "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-                )
-            else:
-                cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions{where_sql}", params)
             return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
@@ -2744,6 +3182,178 @@ class SessionDB:
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
+
+    def delete_sessions(
+        self,
+        session_ids: List[str],
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete every session in *session_ids* in a single transaction.
+
+        Backs the dashboard's bulk-select-then-delete flow on the
+        sessions page (``POST /api/sessions/bulk-delete``). Mirrors the
+        single-session :meth:`delete_session` contract per row:
+
+        * Unknown IDs are silently skipped (no 404) — selection state
+          in the UI can race against another tab's delete, and we'd
+          rather succeed-on-the-rest than fail-the-whole-batch.
+        * Children of every deleted ID are orphaned
+          (``parent_session_id → NULL``), never cascade-deleted, so a
+          branch / subagent transcript survives an inadvertent parent
+          delete.
+        * Messages and the session row both go in one
+          ``_execute_write`` call so a partial failure can't leave the
+          DB in a "messages gone but session row still there" state.
+        * On-disk transcript / ``request_dump_*`` files are cleaned up
+          outside the DB transaction when *sessions_dir* is provided,
+          matching :meth:`prune_sessions` and
+          :meth:`delete_empty_sessions`.
+
+        Returns the count of sessions that actually existed and were
+        deleted (may be less than ``len(session_ids)`` if some IDs were
+        already gone).
+        """
+        if not session_ids:
+            return 0
+        # Dedup + drop any non-string entries up-front. Avoids
+        # double-counting in the WHERE-IN list and protects against
+        # callers that pass a list with stray ``None`` values.
+        unique_ids = list({sid for sid in session_ids if isinstance(sid, str) and sid})
+        if not unique_ids:
+            return 0
+
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            placeholders = ",".join("?" * len(unique_ids))
+            # First, filter to IDs that actually exist — we want to
+            # return the real deleted count, not the input length.
+            cursor = conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({placeholders})",
+                unique_ids,
+            )
+            existing = [row["id"] for row in cursor.fetchall()]
+            if not existing:
+                return 0
+
+            existing_placeholders = ",".join("?" * len(existing))
+            # Orphan children whose parent is in the kill list so the
+            # FK constraint stays satisfied. Pin children whose parent
+            # is itself in the kill list rather than NULL-ing parents
+            # of survivors — the IN list on ``parent_session_id`` does
+            # exactly this.
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({existing_placeholders})",
+                existing,
+            )
+            conn.execute(
+                f"DELETE FROM messages WHERE session_id IN ({existing_placeholders})",
+                existing,
+            )
+            conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({existing_placeholders})",
+                existing,
+            )
+            removed_ids.extend(existing)
+            return len(existing)
+
+        count = self._execute_write(_do)
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
+
+    def count_empty_sessions(self) -> int:
+        """Return the count of empty, non-active, non-archived sessions.
+
+        "Empty" = ``message_count = 0`` AND the session has ended
+        (``ended_at IS NOT NULL``) AND is not archived. The ``ended_at``
+        guard matches the safety contract used by :meth:`prune_sessions`:
+        only ended sessions are candidates for bulk deletion, so a freshly
+        spawned session whose first message hasn't landed yet — or one
+        held open by the live agent — is never sniped out from under
+        the runtime.
+
+        Backs the ``GET /api/sessions/empty/count`` endpoint that lets the
+        web dashboard hide its "Delete empty" button when there's nothing
+        to clean up, and pre-populate the confirm dialog with the actual
+        count.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE message_count = 0 "
+                "AND ended_at IS NOT NULL "
+                "AND archived = 0"
+            )
+            return cursor.fetchone()[0]
+
+    def delete_empty_sessions(
+        self,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Delete every empty, ended, non-archived session.
+
+        Mirrors :meth:`prune_sessions`' transactional shape:
+
+        * Selects candidate IDs first (``message_count = 0`` AND
+          ``ended_at IS NOT NULL`` AND ``archived = 0``) so we never
+          touch a live session or one the user deliberately archived.
+        * Orphans any child whose parent is in the kill list — children
+          of an empty parent are kept and re-parented to ``NULL`` rather
+          than cascade-deleted, matching ``delete_session`` /
+          ``prune_sessions`` semantics so branch/subagent transcripts
+          survive an inadvertent parent cleanup.
+        * Deletes the rows in a single ``_execute_write`` callback so
+          the operation is atomic — a partial failure (e.g. SIGKILL
+          mid-loop) doesn't leave the DB in a "messages-deleted but
+          session-row-still-there" half-state.
+        * Cleans up on-disk transcript files (``.json`` / ``.jsonl`` /
+          ``request_dump_*``) outside the DB transaction when
+          ``sessions_dir`` is provided. Empty sessions don't typically
+          have transcript files, but the gateway can leave a stub
+          ``request_dump_*`` if it crashed before the first reply —
+          so we still sweep, matching ``prune_sessions``.
+
+        Returns the number of sessions deleted.
+        """
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM sessions "
+                "WHERE message_count = 0 "
+                "AND ended_at IS NOT NULL "
+                "AND archived = 0"
+            )
+            session_ids = {row["id"] for row in cursor.fetchall()}
+
+            if not session_ids:
+                return 0
+
+            placeholders = ",".join("?" * len(session_ids))
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({placeholders})",
+                list(session_ids),
+            )
+
+            for sid in session_ids:
+                # DELETE FROM messages is paranoia — by construction
+                # these rows have ``message_count = 0`` — but if a
+                # bookkeeping bug ever lets the counter drift below the
+                # real row count, we still leave a clean FK state.
+                conn.execute(
+                    "DELETE FROM messages WHERE session_id = ?", (sid,)
+                )
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                removed_ids.append(sid)
+            return len(session_ids)
+
+        count = self._execute_write(_do)
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
 
     def prune_sessions(
         self,
@@ -3251,7 +3861,59 @@ class SessionDB:
 
     # ── Space reclamation ──
 
-    def vacuum(self) -> None:
+    # FTS5 virtual tables whose b-tree segments we merge on optimize. The
+    # trigram table is created lazily / may be disabled, so we probe before
+    # touching it (see optimize_fts).
+    _FTS_TABLES = ("messages_fts", "messages_fts_trigram")
+
+    def _fts_table_exists(self, name: str) -> bool:
+        """True if an FTS5 virtual table is queryable in this DB."""
+        try:
+            self._conn.execute(f"SELECT 1 FROM {name} LIMIT 0")
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    def optimize_fts(self) -> int:
+        """Merge fragmented FTS5 b-tree segments into one per index.
+
+        FTS5 indexes grow as a series of incremental segments — one per
+        ``INSERT`` batch driven by the message triggers. Over tens of
+        thousands of messages these segments accumulate, which both bloats
+        the ``*_data`` shadow tables and slows ``MATCH`` queries that must
+        scan every segment. The special ``'optimize'`` command rewrites each
+        index as a single merged segment.
+
+        This is purely a maintenance operation — it changes neither search
+        results nor ``snippet()`` output, only on-disk layout and query
+        speed. It is complementary to VACUUM: ``optimize`` compacts the FTS
+        index internally, then VACUUM returns the freed pages to the OS.
+
+        Skips any FTS table that does not exist (e.g. the trigram index when
+        disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or not yet created), so
+        it is safe to call unconditionally.
+
+        Returns the number of FTS indexes that were optimized.
+        """
+        optimized = 0
+        with self._lock:
+            for tbl in self._FTS_TABLES:
+                if not self._fts_table_exists(tbl):
+                    continue
+                try:
+                    # The column name in the INSERT must match the table name
+                    # for FTS5 special commands.
+                    self._conn.execute(
+                        f"INSERT INTO {tbl}({tbl}) VALUES('optimize')"
+                    )
+                    optimized += 1
+                except sqlite3.OperationalError as exc:
+                    logger.warning(
+                        "FTS optimize failed for %s: %s", tbl, exc
+                    )
+        return optimized
+
+    def vacuum(self) -> int:
         """Run VACUUM to reclaim disk space after large deletes.
 
         SQLite does not shrink the database file when rows are deleted —
@@ -3264,7 +3926,21 @@ class SessionDB:
         exclusive lock, so callers must ensure no other writers are
         active. Safe to call at startup before the gateway/CLI starts
         serving traffic.
+
+        FTS5 segments are merged first via :meth:`optimize_fts` so the
+        subsequent VACUUM reclaims the pages freed by the merge. This is a
+        layout-only optimization — search results are unchanged.
+
+        Returns the number of FTS indexes that were optimized (0 if the
+        merge step failed or no FTS tables exist).
         """
+        # Merge FTS5 segments before VACUUM so the freed pages are returned
+        # to the OS in the same pass. optimize_fts() manages its own lock.
+        optimized = 0
+        try:
+            optimized = self.optimize_fts()
+        except Exception as exc:
+            logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
         with self._lock:
             # Best-effort WAL checkpoint first, then VACUUM.
@@ -3273,6 +3949,7 @@ class SessionDB:
             except Exception:
                 pass
             self._conn.execute("VACUUM")
+        return optimized
 
     def maybe_auto_prune_and_vacuum(
         self,
@@ -3446,4 +4123,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

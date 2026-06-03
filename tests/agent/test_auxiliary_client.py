@@ -22,6 +22,8 @@ from agent.auxiliary_client import (
     _get_provider_chain,
     _is_payment_error,
     _is_rate_limit_error,
+    _is_model_not_found_error,
+    _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
@@ -86,6 +88,62 @@ class TestAuxiliaryMaxTokensParam:
         with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com/chat/completions", "key", None)), \
              patch("agent.auxiliary_client._read_nous_auth", return_value=None):
             assert auxiliary_max_tokens_param(2048) == {"max_completion_tokens": 2048}
+
+
+class TestBuildCallKwargsMaxTokens:
+    """_build_call_kwargs should not cap output by default (#34530).
+
+    Most chat-completions providers treat an omitted max_tokens as "use the
+    model max", which is what we want for auxiliary tasks. An explicit cap only
+    risks truncation or a wire-format 400 (GitHub Copilot / GPT-5 reject
+    max_tokens; ZAI vision rejects it entirely). The Anthropic Messages wire is
+    the one exception — max_tokens is a mandatory field there.
+    """
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("copilot", "gpt-5.4", "https://api.githubcopilot.com"),
+            ("copilot", "gpt-5.5", "https://api.githubcopilot.com"),
+            ("custom", "gpt-5", "https://api.openai.com/v1"),
+            ("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
+            ("nous", "hermes-4", "https://inference-api.nousresearch.com/v1"),
+            ("custom", "qwen", "http://localhost:8080/v1"),
+            ("zai", "glm-4v-flash", "https://open.bigmodel.cn/api/paas/v4"),
+        ],
+    )
+    def test_omits_max_tokens_for_openai_compatible(self, provider, model, base_url):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url=base_url,
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("minimax", "minimax-m2", "https://api.minimax.io/v1"),
+            ("custom", "claude", "https://proxy.example.com/anthropic/v1"),
+        ],
+    )
+    def test_keeps_max_tokens_on_anthropic_wire(self, provider, model, base_url):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 1234
+        assert "max_completion_tokens" not in kwargs
 
 
 class TestNormalizeAuxProvider:
@@ -1240,6 +1298,108 @@ class TestIsPaymentError:
         exc = Exception("Rate limit exceeded. Retry after 10s.")
         exc.status_code = 429
         assert _is_payment_error(exc) is False
+
+
+class TestIsModelNotFoundError:
+    """_is_model_not_found_error detects stale/invalid model 404s, distinct
+    from payment errors."""
+
+    def test_nous_openrouter_catalog_404(self):
+        """The exact incident error: a Portal-recommended model dropped from
+        the Nous → OpenRouter catalog."""
+        exc = Exception(
+            "Model 'gpt-5.4-mini' not found. The requested model does not "
+            "exist in our configuration or OpenRouter catalog."
+        )
+        exc.status_code = 404
+        assert _is_model_not_found_error(exc) is True
+
+    def test_openai_style_model_does_not_exist(self):
+        exc = Exception("The model `gpt-9-turbo` does not exist")
+        exc.status_code = 404
+        assert _is_model_not_found_error(exc) is True
+
+    def test_invalid_model_id_400(self):
+        exc = Exception("openrouter/foo/bar is not a valid model ID")
+        exc.status_code = 400
+        assert _is_model_not_found_error(exc) is True
+
+    def test_no_such_model(self):
+        exc = Exception("no such model: phantom-v1")
+        exc.status_code = 400
+        assert _is_model_not_found_error(exc) is True
+
+    def test_billing_404_is_not_model_not_found(self):
+        """Free-tier / credit 404s belong to _is_payment_error, not here —
+        the two predicates must not overlap."""
+        exc = Exception(
+            "Model 'gpt-5' is not available on the free tier. Upgrade."
+        )
+        exc.status_code = 404
+        assert _is_model_not_found_error(exc) is False
+        assert _is_payment_error(exc) is True
+
+    def test_out_of_funds_404_is_not_model_not_found(self):
+        exc = Exception(
+            "Your API key is blocked or out of funds. model_not_found"
+        )
+        exc.status_code = 404
+        # billing keyword wins — payment owns it
+        assert _is_model_not_found_error(exc) is False
+
+    def test_rate_limit_is_not_model_not_found(self):
+        exc = Exception("rate limit exceeded, retry after 5s")
+        exc.status_code = 429
+        assert _is_model_not_found_error(exc) is False
+
+    def test_500_is_not_model_not_found(self):
+        exc = Exception("model does not exist")  # right phrase, wrong status
+        exc.status_code = 500
+        assert _is_model_not_found_error(exc) is False
+
+
+class TestRefreshNousRecommendedModel:
+    """_refresh_nous_recommended_model picks a fresh model after a stale 404."""
+
+    def test_returns_fresh_portal_recommendation(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.models.get_nous_recommended_aux_model",
+            lambda **kw: "stepfun/step-3.7-flash:free",
+        )
+        out = _refresh_nous_recommended_model(
+            vision=True, stale_model="openai/gpt-5.4-mini")
+        assert out == "stepfun/step-3.7-flash:free"
+
+    def test_falls_back_to_default_when_portal_matches_stale(self, monkeypatch):
+        """If the Portal still recommends the model that just 404'd, fall back
+        to the known-good default."""
+        monkeypatch.setattr(
+            "hermes_cli.models.get_nous_recommended_aux_model",
+            lambda **kw: "openai/gpt-5.4-mini",
+        )
+        out = _refresh_nous_recommended_model(
+            vision=True, stale_model="openai/gpt-5.4-mini")
+        assert out == "google/gemini-3-flash-preview"
+
+    def test_falls_back_to_default_when_portal_unavailable(self, monkeypatch):
+        def _boom(**kw):
+            raise RuntimeError("portal down")
+        monkeypatch.setattr(
+            "hermes_cli.models.get_nous_recommended_aux_model", _boom)
+        out = _refresh_nous_recommended_model(
+            vision=False, stale_model="some/dead-model")
+        assert out == "google/gemini-3-flash-preview"
+
+    def test_returns_none_when_no_distinct_alternative(self, monkeypatch):
+        """When the failed model IS the default and the Portal has nothing
+        else, there's no usable alternative."""
+        monkeypatch.setattr(
+            "hermes_cli.models.get_nous_recommended_aux_model",
+            lambda **kw: "google/gemini-3-flash-preview",
+        )
+        out = _refresh_nous_recommended_model(
+            vision=False, stale_model="google/gemini-3-flash-preview")
+        assert out is None
 
 
 class TestIsRateLimitError:

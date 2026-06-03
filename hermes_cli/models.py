@@ -32,34 +32,43 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
+    # Anthropic
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
-    ("anthropic/claude-opus-4.7",              ""),
-    ("anthropic/claude-opus-4.6",              ""),
     ("anthropic/claude-sonnet-4.6",            ""),
-    ("moonshotai/kimi-k2.6",                   "recommended"),
-    ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
-    ("qwen/qwen3.7-max",                       ""),
     ("anthropic/claude-haiku-4.5",             ""),
+    # OpenAI
     ("openai/gpt-5.5",                         ""),
     ("openai/gpt-5.5-pro",                     ""),
     ("openai/gpt-5.4-mini",                    ""),
-    ("openai/gpt-5.4-nano",                    ""),
-    ("openai/gpt-5.3-codex",                   ""),
-    ("xiaomi/mimo-v2.5-pro",                   ""),
-    ("tencent/hy3-preview",                    ""),
-    ("google/gemini-3-pro-image-preview",      ""),
-    ("google/gemini-3.5-flash",                ""),
+    # Google
+    ("google/gemini-3-pro-preview",            ""),
     ("google/gemini-3.1-pro-preview",          ""),
-    ("google/gemini-3.1-flash-lite-preview",   ""),
-    ("qwen/qwen3.6-35b-a3b",                   ""),
-    ("stepfun/step-3.7-flash",                 ""),
-    ("minimax/minimax-m2.7",                   ""),
-    ("z-ai/glm-5.1",                           ""),
-    ("x-ai/grok-4.20",                         ""),
+    ("google/gemini-3.5-flash",                ""),
+    # xAI
     ("x-ai/grok-4.3",                          ""),
-    ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
+    ("deepseek/deepseek-v4-flash",             ""),
+    # Qwen
+    ("qwen/qwen3.7-max",                       ""),
+    ("qwen/qwen3.6-35b-a3b",                   ""),
+    # MoonshotAI
+    ("moonshotai/kimi-k2.6",                   "recommended"),
+    # MiniMax
+    ("minimax/minimax-m3",                     ""),
+    # Z-AI
+    ("z-ai/glm-5.1",                           ""),
+    # Xiaomi
+    ("xiaomi/mimo-v2.5-pro",                   ""),
+    # Tencent
+    ("tencent/hy3-preview",                    ""),
+    # StepFun
+    ("stepfun/step-3.7-flash",                 ""),
+    # NVIDIA
+    ("nvidia/nemotron-3-super-120b-a12b",      ""),
+    # OpenRouter routers
+    ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
@@ -141,31 +150,40 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
+        # Anthropic
         "anthropic/claude-opus-4.8",
-        "anthropic/claude-opus-4.7",
-        "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
-        "moonshotai/kimi-k2.6",
-        "qwen/qwen3.7-max",
         "anthropic/claude-haiku-4.5",
+        # OpenAI
         "openai/gpt-5.5",
         "openai/gpt-5.5-pro",
         "openai/gpt-5.4-mini",
-        "openai/gpt-5.4-nano",
-        "openai/gpt-5.3-codex",
-        "xiaomi/mimo-v2.5-pro",
-        "tencent/hy3-preview",
+        # Google
         "google/gemini-3-pro-preview",
-        "google/gemini-3.5-flash",
         "google/gemini-3.1-pro-preview",
-        "google/gemini-3.1-flash-lite-preview",
-        "qwen/qwen3.6-35b-a3b",
-        "stepfun/step-3.7-flash",
-        "minimax/minimax-m2.7",
-        "z-ai/glm-5.1",
+        "google/gemini-3.5-flash",
+        # xAI
         "x-ai/grok-4.3",
-        "nvidia/nemotron-3-super-120b-a12b",
+        # DeepSeek
         "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+        # Qwen
+        "qwen/qwen3.7-max",
+        "qwen/qwen3.6-35b-a3b",
+        # MoonshotAI
+        "moonshotai/kimi-k2.6",
+        # MiniMax
+        "minimax/minimax-m3",
+        # Z-AI
+        "z-ai/glm-5.1",
+        # Xiaomi
+        "xiaomi/mimo-v2.5-pro",
+        # Tencent
+        "tencent/hy3-preview",
+        # StepFun
+        "stepfun/step-3.7-flash",
+        # NVIDIA
+        "nvidia/nemotron-3-super-120b-a12b",
     ],
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
@@ -217,13 +235,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
+        # Code Assist serves two flash slugs with different access gates
+        # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
+        # that subscription/free-tier OAuth users actually reach, while
+        # gemini-3.5-flash is GA-channel-gated. Offer both so non-GA users
+        # aren't stuck with a slug cloudcode-pa 404s for them.
         "gemini-3-flash-preview",
+        "gemini-3.5-flash",
     ],
     "zai": [
         "glm-5.1",
@@ -277,16 +301,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
     "minimax-oauth": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
     ],
     "minimax-cn": [
+        "MiniMax-M3",
         "MiniMax-M2.7",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
@@ -875,41 +902,41 @@ class ProviderEntry(NamedTuple):
     tui_desc: str   # detailed description for `hermes model` TUI
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
-    ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
-    ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
-    ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (AI-native cloud: Model API, Agent Sandbox, GPU Cloud)"),
-    ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
-    ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
-    ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
+    ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
+    ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
+    ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
+    ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
+    ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
+    ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
-    ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
-    ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+)"),
-    ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
-    ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
-    ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
-    ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
-    ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-    ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
-    ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — native Gemini API)"),
-    ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (free tier supported; no API key needed)"),
-    ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (DeepSeek-V3, R1, coder — direct API)"),
-    ProviderEntry("xai",            "xAI",                      "xAI (Grok models — direct API)"),
-    ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu AI direct API)"),
-    ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com) & Moonshot API"),
-    ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
-    ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (agent/coding models via Step Plan API)"),
-    ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
+    ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope (Qwen + multi-provider)"),
+    ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
+    ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
+    ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview via tokenhub.tencentmaas.com)"),
+    ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
+    ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
+    ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
+    ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
+    ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
+    ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
+    ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
+    ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
+    ProviderEntry("kimi-coding",    "Kimi / Kimi Coding Plan",  "Kimi Coding Plan (api.kimi.com & Moonshot API)"),
+    ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Domestic direct API)"),
+    ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (Agent / coding models via Step Plan API)"),
+    ProviderEntry("minimax",        "MiniMax",                  "MiniMax (Global direct API)"),
     ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
-    ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
-    ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
-    ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
-    ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (multi-model direct API)"),
+    ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (Domestic direct API)"),
+    ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (Cloud-hosted open models, ollama.com)"),
+    ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models, direct API)"),
+    ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (Multi-model direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
-    ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
-    ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
-    ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
-    ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
-    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
+    ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (Curated models, pay-as-you-go)"),
+    ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (Open models subscription)"),
+    ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
+    ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
+    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -934,6 +961,109 @@ except Exception:
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+
+
+# ---------------------------------------------------------------------------
+# Provider groups — DISPLAY ONLY
+#
+# Some vendors expose several Hermes provider slugs (one per endpoint /
+# auth method: global API, China API, OAuth coding plan, ...). Listing every
+# slug as a top-level row in the interactive `hermes model` / setup wizard /
+# Telegram `/model` pickers makes that list long and noisy.
+#
+# These groups fold related slugs under one top-level row in INTERACTIVE
+# PICKERS only. They do NOT change ``CANONICAL_PROVIDERS``, slug identity,
+# the ``--provider`` flag, ``/model <provider:model>``, or any typed path —
+# every member slug remains individually addressable. Grouping is a pure
+# display affordance; ``group_providers()`` is the single fold used by all
+# three picker surfaces so they stay consistent.
+#
+#   group_id -> (display_label, group_description, [member_slug, ...])
+#
+# ``group_description`` is a short blurb shown on the collapsed top-level group
+# row in the interactive pickers (alongside the label). Member-specific detail
+# lives in each member's ``tui_desc`` and shows in the drill-down sub-picker.
+# Member order is the order shown inside the group submenu.
+# ---------------------------------------------------------------------------
+PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
+    "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
+    "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
+    "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
+    "google":   ("Google Gemini",   "AI Studio API or OAuth + Code Assist",            ["gemini", "google-gemini-cli"]),
+    "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
+    "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
+    "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
+}
+
+# Reverse index: member slug -> group_id. Built once at import.
+_SLUG_TO_GROUP: dict[str, str] = {
+    slug: gid for gid, (_label, _desc, members) in PROVIDER_GROUPS.items() for slug in members
+}
+
+
+def provider_group_for_slug(slug: str) -> str:
+    """Return the group_id a provider slug belongs to, or "" if ungrouped."""
+    return _SLUG_TO_GROUP.get(str(slug or "").strip().lower(), "")
+
+
+def group_providers(slugs):
+    """Fold a flat ordered slug iterable into picker rows by provider group.
+
+    DISPLAY ONLY. Used by every interactive picker (``hermes model``, the
+    setup wizard, the Telegram ``/model`` keyboard) so grouping is identical
+    across surfaces.
+
+    Each returned row is a dict::
+
+        {"kind": "single", "slug": <slug>}                       # ungrouped, or
+                                                                  # 1-member group
+        {"kind": "group", "group_id": <gid>, "label": <label>,
+         "description": <desc>, "members": [<slug>, ...]}        # 2+ members
+
+    Rules:
+      * A group row appears at the position of its FIRST present member, in
+        the input order. Subsequent members fold into that row (and are not
+        emitted again).
+      * Member order inside a group follows ``PROVIDER_GROUPS`` declaration,
+        restricted to the members actually present in ``slugs``.
+      * A group reduced to a single present member degrades to a ``single``
+        row — no pointless one-item submenu.
+      * Slugs not in any group pass through as ``single`` rows, order
+        preserved.
+      * Duplicate slugs in the input are ignored after first sight.
+    """
+    seen: set[str] = set()
+    # Which present members each group has, in declaration order.
+    group_members: dict[str, list[str]] = {}
+    for gid, (_label, _desc, members) in PROVIDER_GROUPS.items():
+        present = [m for m in members if m in set(slugs)]
+        if present:
+            group_members[gid] = present
+
+    rows = []
+    emitted_groups: set[str] = set()
+    for slug in slugs:
+        s = str(slug or "").strip().lower()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        gid = _SLUG_TO_GROUP.get(s, "")
+        if not gid:
+            rows.append({"kind": "single", "slug": s})
+            continue
+        if gid in emitted_groups:
+            continue  # already folded at the first member's position
+        emitted_groups.add(gid)
+        members = group_members.get(gid, [s])
+        if len(members) <= 1:
+            rows.append({"kind": "single", "slug": members[0]})
+        else:
+            label, desc, _ = PROVIDER_GROUPS[gid]
+            rows.append(
+                {"kind": "group", "group_id": gid, "label": label,
+                 "description": desc, "members": list(members)}
+            )
+    return rows
 
 
 _PROVIDER_ALIASES = {
@@ -1738,19 +1868,21 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model is a Claude model eligible for Anthropic Fast Mode.
+    """Return True if the model accepts the Anthropic Fast Mode ``speed`` param.
 
-    Fast mode is currently supported on Claude Opus 4.6 only. Per Anthropic's
-    docs (https://platform.claude.com/docs/en/build-with-claude/fast-mode):
-    "Fast mode is currently supported on Opus 4.6 only. Sending speed: fast
-    with an unsupported model returns an error." Opus 4.7 explicitly rejects
-    the ``speed`` parameter with HTTP 400.
+    This gates the *speed=fast request parameter*, which Anthropic supports on
+    Opus 4.6 only (Opus 4.7 explicitly 400s). It is deliberately NOT a general
+    "is this a fast model" check: for Opus 4.8 the fast offering is a SEPARATE
+    model id (``…-opus-4.8-fast``) selected via the model field, not the speed
+    parameter — see ``agent.anthropic_adapter._supports_fast_mode`` and its
+    test. Keep this in lock-step with that adapter gate so the UI never shows a
+    Fast toggle that the runtime would silently drop.
     """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     if not base.startswith("claude-"):
         return False
-    # Only Opus 4.6 supports fast mode at present.
+    # Only Opus 4.6 supports the speed=fast parameter at present.
     return "opus-4-6" in base or "opus-4.6" in base
 
 
@@ -1982,9 +2114,32 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if api_key:
             base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
             base = base_raw or "https://api.openai.com/v1"
+            # Custom OpenAI-compatible endpoints (proxies, gateways, self-hosted)
+            # may serve a small curated catalog — use the live list verbatim so
+            # discovery works. But the canonical api.openai.com /v1/models dump
+            # is 120+ entries of embeddings, whisper, tts, dall-e, moderation and
+            # legacy chat models — none of which belong in the agent model picker.
+            # For the default endpoint, intersect the live list with our curated
+            # agentic catalog so ``/model`` matches what ``hermes model`` shows.
+            is_default_openai = base.rstrip("/") in (
+                "https://api.openai.com/v1",
+                "https://api.openai.com",
+            )
             try:
                 live = fetch_api_models(api_key, base)
                 if live:
+                    if is_default_openai:
+                        live_lower = {m.lower() for m in live}
+                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                        # Keep curated order; only surface curated models the
+                        # account actually has access to.
+                        filtered = [m for m in curated if m.lower() in live_lower]
+                        if filtered:
+                            return filtered
+                        # Account serves none of the curated models (rare —
+                        # e.g. org without GPT-5 access). Fall back to curated
+                        # so the picker still offers sane defaults.
+                        return curated or live
                     return live
             except Exception:
                 pass

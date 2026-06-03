@@ -743,8 +743,18 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
-    workspace_kind = args.get("workspace_kind") or "scratch"
+    # Resolve workspace. If the caller passed one explicitly, honor it.
+    # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
+    # inherits its own running task's workspace, so a worker editing a
+    # dir:/worktree project that spawns a follow-up child keeps the child
+    # in that project instead of a throwaway scratch dir. Orchestrators
+    # (kanban toolset, no HERMES_KANBAN_TASK) and CLI/dashboard callers
+    # fall back to scratch as before. Explicit None path stays None.
+    workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    _inherit_workspace = workspace_kind is None and workspace_path is None
+    if workspace_kind is None:
+        workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
@@ -759,6 +769,10 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
+    if goal_bool_error:
+        return tool_error(goal_bool_error)
+    goal_max_turns = args.get("goal_max_turns")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -769,6 +783,15 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Inherit the spawning worker's own task workspace when the
+            # caller didn't specify one (see resolution note above).
+            if _inherit_workspace:
+                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                if _self_tid:
+                    _self_task = kb.get_task(conn, _self_tid)
+                    if _self_task is not None and _self_task.workspace_kind:
+                        workspace_kind = _self_task.workspace_kind
+                        workspace_path = _self_task.workspace_path
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -786,6 +809,10 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                goal_mode=goal_mode,
+                goal_max_turns=(
+                    int(goal_max_turns) if goal_max_turns is not None else None
+                ),
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -1248,6 +1275,29 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "goal_mode": {
+                "type": "boolean",
+                "description": (
+                    "Run the dispatched worker in a goal loop. When true, "
+                    "after each turn an auxiliary judge checks the worker's "
+                    "response against this card's title/body; if the work "
+                    "isn't done and budget remains, the worker keeps going "
+                    "in the same session until the judge agrees it's "
+                    "complete (or the goal-turn budget is exhausted, which "
+                    "blocks the task for human review). Use this for "
+                    "open-ended cards where one shot rarely finishes the "
+                    "work. Defaults to false (classic single-shot worker)."
+                ),
+            },
+            "goal_max_turns": {
+                "type": "integer",
+                "description": (
+                    "Turn budget for goal_mode workers. Caps how many "
+                    "continuation turns the worker may take before the task "
+                    "is blocked for review. Ignored unless goal_mode is "
+                    "true. Defaults to the goal-engine default (20)."
                 ),
             },
             "board": _board_schema_prop(),

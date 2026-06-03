@@ -48,14 +48,84 @@ def test_stamp_file_takes_precedence(tmp_path):
         assert detect_install_method(project_root=tmp_path) == "docker"
 
 
-def test_docker_detected_via_dockerenv(tmp_path):
+def test_container_without_stamp_is_not_docker(tmp_path):
+    """An unstamped install in a generic container must NOT be flagged as docker.
+
+    Regression for issue #34397. The two supported installs both stamp
+    ``.install_method`` (the curl installer -> ``git``, covered by
+    ``test_stamp_file_takes_precedence``; the published image -> ``docker``),
+    so neither hits this path. An unsupported manual install dropped into a
+    container has no stamp and was wrongly classified as the published Docker
+    image, so ``hermes update`` refused to run. With a ``.git`` checkout it
+    must resolve to ``git``.
+    """
+    (tmp_path / ".git").mkdir()
     with patch("hermes_cli.config.get_managed_system", return_value=None), \
          patch("hermes_cli.config.get_hermes_home", return_value=tmp_path), \
          patch("hermes_constants.is_container", return_value=True):
         from hermes_cli.config import detect_install_method
-        assert detect_install_method(project_root=tmp_path) == "docker"
+        assert detect_install_method(project_root=tmp_path) == "git"
+
+
+def test_container_pip_install_without_stamp_is_pip(tmp_path):
+    """Container + no .git + no stamp -> pip, not docker (issue #34397)."""
+    with patch("hermes_cli.config.get_managed_system", return_value=None), \
+         patch("hermes_cli.config.get_hermes_home", return_value=tmp_path), \
+         patch("hermes_constants.is_container", return_value=True):
+        from hermes_cli.config import detect_install_method
+        assert detect_install_method(project_root=tmp_path) == "pip"
 
 
 def test_recommended_update_command_docker():
     from hermes_cli.config import recommended_update_command_for_method
     assert "docker pull" in recommended_update_command_for_method("docker")
+
+
+def test_banner_warns_on_pip_install(tmp_path):
+    """The welcome banner surfaces a warning when the install method is pip."""
+    import io
+    from rich.console import Console
+    from hermes_cli import banner
+
+    hh = tmp_path / ".hermes"
+    hh.mkdir()
+    (hh / ".install_method").write_text("pip\n")
+
+    with patch("hermes_cli.config.get_hermes_home", return_value=hh), \
+         patch("hermes_constants.get_hermes_home", return_value=hh):
+        buf = io.StringIO()
+        # Wide console so the warning isn't wrapped across lines in the panel.
+        console = Console(file=buf, width=400, force_terminal=False, color_system=None)
+        banner.build_welcome_banner(
+            console, model="m", cwd="/tmp",
+            tools=[{"function": {"name": "terminal"}}],
+            enabled_toolsets=["terminal"],
+        )
+        out = buf.getvalue()
+
+    assert "officially" in out
+    assert "instability" in out
+
+
+def test_banner_no_pip_warning_on_git_install(tmp_path):
+    """Git installs must not show the pip-install warning."""
+    import io
+    from rich.console import Console
+    from hermes_cli import banner
+
+    hh = tmp_path / ".hermes"
+    hh.mkdir()
+    (hh / ".install_method").write_text("git\n")
+
+    with patch("hermes_cli.config.get_hermes_home", return_value=hh), \
+         patch("hermes_constants.get_hermes_home", return_value=hh):
+        buf = io.StringIO()
+        console = Console(file=buf, width=400, force_terminal=False, color_system=None)
+        banner.build_welcome_banner(
+            console, model="m", cwd="/tmp",
+            tools=[{"function": {"name": "terminal"}}],
+            enabled_toolsets=["terminal"],
+        )
+        out = buf.getvalue()
+
+    assert "officially" not in out

@@ -1,9 +1,53 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import sqlite3
 import time
 import pytest
 
-from hermes_state import SessionDB
+from hermes_state import SCHEMA_SQL, SessionDB
+
+
+class _NoFtsCursor(sqlite3.Cursor):
+    """Simulate a SQLite build without the fts5 module."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if "USING fts5" in probe:
+            raise sqlite3.OperationalError("no such module: fts5")
+        if probe in (
+            "SELECT * FROM messages_fts LIMIT 0",
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such table: " + probe.split()[-3])
+        return super().execute(sql, parameters)
+
+    def executescript(self, sql_script):
+        if "USING fts5" in sql_script:
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().executescript(sql_script)
+
+
+class _NoFtsConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFtsCursor)
+
+
+class _NoFtsExistingTableCursor(_NoFtsCursor):
+    """Simulate existing FTS virtual tables under a runtime without FTS5."""
+
+    def execute(self, sql, parameters=()):
+        probe = sql.strip()
+        if probe in (
+            "SELECT * FROM messages_fts LIMIT 0",
+            "SELECT * FROM messages_fts_trigram LIMIT 0",
+        ):
+            raise sqlite3.OperationalError("no such module: fts5")
+        return super().execute(sql, parameters)
+
+
+class _NoFtsExistingTableConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoFtsExistingTableCursor)
 
 
 @pytest.fixture()
@@ -128,12 +172,163 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
 
+    def test_update_session_model_overwrites_existing(self, db):
+        """A mid-session /model switch must overwrite the stored model.
+
+        update_token_counts uses COALESCE(model, ?) (first-writer-wins), so
+        the dashboard kept showing the original model after a switch (#34850).
+        update_session_model sets the column unconditionally.
+        """
+        db.create_session(session_id="s1", source="telegram",
+                          model="xiaomi/mimo-v2.5-pro")
+        # Token updates never change the model once set.
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               model="xiaomi/mimo-v2.5-pro")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5-pro"
+
+        # Explicit switch overwrites it.
+        db.update_session_model("s1", "xiaomi/mimo-v2.5")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
+        # And a subsequent token update does NOT revert it (COALESCE no-ops
+        # because the column is now non-NULL).
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               model="xiaomi/mimo-v2.5-pro")
+        assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+    def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            assert db._fts_enabled is False
+            # Neither FTS5 virtual table should have been created on a build
+            # that lacks the fts5 module — both init paths must degrade.
+            assert db._fts_table_exists("messages_fts") is False
+            assert db._fts_table_exists("messages_fts_trigram") is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="hello from sqlite without fts")
+
+            messages = db.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "hello from sqlite without fts"
+            assert db.search_messages("hello") == []
+        finally:
+            db.close()
+
+    def test_existing_fts_tables_do_not_break_without_fts5(
+        self, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="before runtime change")
+        finally:
+            seeded.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsExistingTableConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._fts_enabled is False
+            assert db.get_session("s1") is not None
+            assert len(db.get_messages("s1")) == 1
+
+            # Existing FTS triggers must be disabled too; otherwise this write
+            # would try to insert into an unusable FTS virtual table.
+            db.append_message("s1", role="assistant", content="after runtime change")
+            messages = db.get_messages("s1")
+            assert len(messages) == 2
+            assert messages[1]["content"] == "after runtime change"
+        finally:
+            db.close()
+
+    def test_old_schema_without_fts5_does_not_crash(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (9,))
+        conn.commit()
+        conn.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db._fts_enabled is False
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="legacy no fts")
+            assert db.get_messages("s1")[0]["content"] == "legacy no fts"
+            assert db.search_messages("legacy") == []
+
+            # Leave the FTS migration version in place so a future FTS-capable
+            # runtime can still rebuild and backfill the indexes.
+            row = db._conn.execute("SELECT version FROM schema_version").fetchone()
+            assert row["version"] == 9
+        finally:
+            db.close()
+
+    def test_fts_runtime_restores_triggers_after_no_fts_open(
+        self, tmp_path, monkeypatch
+    ):
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="first searchable")
+        finally:
+            seeded.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_fts(*args, **kwargs):
+            kwargs["factory"] = _NoFtsExistingTableConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_fts)
+        no_fts = SessionDB(db_path=db_path)
+        try:
+            no_fts.append_message("s1", role="assistant", content="not indexed yet")
+        finally:
+            no_fts.close()
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", real_connect)
+        restored = SessionDB(db_path=db_path)
+        try:
+            assert restored._fts_enabled is True
+            restored.append_message("s1", role="assistant", content="indexed again")
+            assert len(restored.search_messages("not indexed yet")) == 1
+            assert len(restored.search_messages("indexed")) == 2
+        finally:
+            restored.close()
 
 
 # =========================================================================
@@ -1328,6 +1523,243 @@ class TestDeleteSessionOrphansChildren:
         assert grandchild["parent_session_id"] == "child"
 
 
+class TestBulkDeleteSessions:
+    """``delete_sessions(ids)`` — the bulk-delete primitive backing the
+    sessions-page "Delete N selected" button. Per-row contract matches
+    :meth:`SessionDB.delete_session` (children orphaned, not cascade-
+    deleted), but applied across the whole list in one transaction.
+
+    Invariants this class locks in:
+
+    1. Returns the real deleted count (existing intersection), not
+       just ``len(session_ids)`` — selection state in the UI can race
+       against another tab's delete.
+    2. Unknown IDs are silently skipped, never raise.
+    3. ``message_count > 0`` sessions are deleted too — unlike
+       ``delete_empty_sessions``, the user explicitly picked them, so
+       we trust the selection.
+    4. Live (un-ended) and archived sessions ARE deleted on explicit
+       selection (no bulk-sweep safety guards apply when the user
+       hand-picks the row).
+    5. Children of any deleted parent are orphaned, even when the
+       parent is mid-list.
+    6. ``[]`` / ``None``-laden lists are safe no-ops.
+    """
+
+    def test_deletes_listed_sessions(self, db):
+        db.create_session(session_id="a", source="cli")
+        db.append_message("a", role="user", content="hi")
+        db.create_session(session_id="b", source="cli")
+        db.create_session(session_id="c", source="cli")
+
+        deleted = db.delete_sessions(["a", "b"])
+        assert deleted == 2
+        assert db.get_session("a") is None
+        assert db.get_session("b") is None
+        # Unlisted survives.
+        assert db.get_session("c") is not None
+
+    def test_returns_real_count_skipping_unknown_ids(self, db):
+        """Unknown IDs are silently skipped — the return value reflects
+        what was *actually* deleted, so the UI can show an accurate
+        toast even if the selection raced against another tab."""
+        db.create_session(session_id="real", source="cli")
+
+        deleted = db.delete_sessions(["real", "ghost1", "ghost2"])
+        assert deleted == 1
+        assert db.get_session("real") is None
+
+    def test_empty_list_is_noop(self, db):
+        """``[]`` returns 0 without touching the DB. Guards against a
+        bulk endpoint with an empty payload triggering an
+        unconditional 'wipe everything' if the caller forgets the
+        WHERE clause."""
+        db.create_session(session_id="keep", source="cli")
+        assert db.delete_sessions([]) == 0
+        assert db.get_session("keep") is not None
+
+    def test_drops_non_string_entries(self, db):
+        """Stray ``None`` / empty strings in the input list are
+        filtered out before hitting SQL. Callers may pull selection IDs
+        from a Set-like that occasionally contains noise; we don't want
+        a SQL parameter-type error to fail the whole batch."""
+        db.create_session(session_id="real", source="cli")
+        # noinspection PyTypeChecker
+        deleted = db.delete_sessions(["real", None, "", "ghost"])  # type: ignore[list-item]
+        assert deleted == 1
+        assert db.get_session("real") is None
+
+    def test_dedupes_duplicate_ids(self, db):
+        """The same ID listed twice counts as one deletion. Defends
+        against a hand-crafted POST body or a UI bug that double-adds
+        the same selection."""
+        db.create_session(session_id="real", source="cli")
+        deleted = db.delete_sessions(["real", "real"])
+        assert deleted == 1
+
+    def test_orphans_children_of_deleted_parents(self, db):
+        """Bulk-deleting a parent leaves its children alive but
+        re-parented to NULL. Same contract as the single-session
+        :meth:`delete_session` path."""
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent"
+        )
+
+        deleted = db.delete_sessions(["parent"])
+        assert deleted == 1
+        child = db.get_session("child")
+        assert child is not None
+        assert child["parent_session_id"] is None
+
+    def test_deletes_archived_and_active_when_selected(self, db):
+        """Unlike the safety-gated ``delete_empty_sessions`` sweep,
+        explicit bulk-select trusts the user — archived sessions and
+        un-ended live sessions are both deleted when in the list.
+        Otherwise the selection UI would silently 'leak' rows the user
+        thought they'd removed."""
+        db.create_session(session_id="archived", source="cli")
+        db.end_session("archived", end_reason="done")
+        db.set_session_archived("archived", True)
+        db.create_session(session_id="live", source="cli")
+
+        deleted = db.delete_sessions(["archived", "live"])
+        assert deleted == 2
+        assert db.get_session("archived") is None
+        assert db.get_session("live") is None
+
+    def test_cleans_up_transcript_files(self, db, tmp_path):
+        """When ``sessions_dir`` is provided, on-disk transcripts are
+        swept as part of the bulk operation — mirrors the per-row
+        :meth:`delete_session(sessions_dir=...)` behaviour so the
+        bulk-delete CLI / web flows don't leak files."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        (tmp_path / "s1.jsonl").write_text("")
+        (tmp_path / "s2.json").write_text("{}")
+
+        deleted = db.delete_sessions(["s1", "s2"], sessions_dir=tmp_path)
+        assert deleted == 2
+        assert not (tmp_path / "s1.jsonl").exists()
+        assert not (tmp_path / "s2.json").exists()
+
+
+class TestDeleteEmptySessions:
+    """``delete_empty_sessions`` sweeps every ended, non-archived session
+    whose ``message_count`` is 0. Backs the dashboard's "Delete empty"
+    button — see ``SessionsPage.tsx`` + ``DELETE /api/sessions/empty``
+    in ``hermes_cli/web_server.py``.
+
+    Invariants this class locks in:
+
+    1. Only ``message_count = 0`` rows are touched.
+    2. Active (un-ended) sessions are skipped even if they're empty —
+       the agent might be mid-handshake, and yanking the row would
+       race the live runtime.
+    3. Archived sessions are skipped — the user already filed them away.
+    4. Children of a deleted parent are orphaned (parent_session_id →
+       NULL) rather than cascade-deleted, matching the
+       ``delete_session`` / ``prune_sessions`` contract.
+    5. The pre-DB count matches the post-DB delete return value.
+    """
+
+    def test_count_and_delete_empties_only(self, db):
+        # Two empty + ended sessions → both should be in the kill list.
+        db.create_session(session_id="empty1", source="cli")
+        db.end_session("empty1", end_reason="done")
+        db.create_session(session_id="empty2", source="cli")
+        db.end_session("empty2", end_reason="done")
+
+        # One non-empty + ended session → must survive.
+        db.create_session(session_id="hasmsg", source="cli")
+        db.append_message("hasmsg", role="user", content="Hello")
+        db.end_session("hasmsg", end_reason="done")
+
+        assert db.count_empty_sessions() == 2
+
+        deleted = db.delete_empty_sessions()
+        assert deleted == 2
+        assert db.get_session("empty1") is None
+        assert db.get_session("empty2") is None
+        assert db.get_session("hasmsg") is not None
+        assert db.count_empty_sessions() == 0
+
+    def test_skips_active_empty_sessions(self, db):
+        """A live (un-ended) empty session is what you get during the
+        race between session-create and the first message landing. The
+        sweep must not delete it — that would yank a session out from
+        under the agent before its first reply persists."""
+        db.create_session(session_id="live", source="cli")
+        # Deliberately no end_session() — session is "active".
+
+        assert db.count_empty_sessions() == 0
+        assert db.delete_empty_sessions() == 0
+        assert db.get_session("live") is not None
+
+    def test_skips_archived_empty_sessions(self, db):
+        """Archived = soft-hidden by the user. They explicitly chose to
+        keep the row around (even though it's empty), so the bulk sweep
+        must not surprise them by deleting it. Restoring an archived
+        session is one click; resurrecting one we deleted is impossible."""
+        db.create_session(session_id="archived_empty", source="cli")
+        db.end_session("archived_empty", end_reason="done")
+        db.set_session_archived("archived_empty", True)
+
+        assert db.count_empty_sessions() == 0
+        assert db.delete_empty_sessions() == 0
+        assert db.get_session("archived_empty") is not None
+
+    def test_returns_zero_when_nothing_to_delete(self, db):
+        """No-op path: no candidate rows → return 0, no error."""
+        db.create_session(session_id="hasmsg", source="cli")
+        db.append_message("hasmsg", role="user", content="Hello")
+        db.end_session("hasmsg", end_reason="done")
+
+        assert db.count_empty_sessions() == 0
+        assert db.delete_empty_sessions() == 0
+        assert db.get_session("hasmsg") is not None
+
+    def test_orphans_children_of_deleted_empty_parent(self, db):
+        """Even an empty parent can have a child (e.g. a branch session
+        spawned before the parent received any messages). The sweep
+        must orphan that child, not cascade-delete it — same contract
+        as ``delete_session`` and ``prune_sessions``."""
+        db.create_session(session_id="empty_parent", source="cli")
+        db.end_session("empty_parent", end_reason="done")
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="empty_parent"
+        )
+        db.append_message("child", role="user", content="something")
+        db.end_session("child", end_reason="done")
+
+        deleted = db.delete_empty_sessions()
+        assert deleted == 1
+        assert db.get_session("empty_parent") is None
+        child = db.get_session("child")
+        assert child is not None
+        assert child["parent_session_id"] is None
+
+    def test_cleans_up_on_disk_transcript_files(self, db, tmp_path):
+        """When ``sessions_dir`` is provided, transcript files left
+        behind by a crashed gateway (``request_dump_*.json``) are swept
+        too. Empty sessions rarely have ``{id}.json`` / ``.jsonl``
+        transcripts, but the request-dump path is real — the gateway
+        writes one before the first reply lands, so a crash mid-reply
+        produces an empty session with a non-empty dump file."""
+        db.create_session(session_id="empty_with_dump", source="cli")
+        db.end_session("empty_with_dump", end_reason="done")
+
+        dump = tmp_path / "request_dump_empty_with_dump_0.json"
+        dump.write_text("{}")
+        transcript = tmp_path / "empty_with_dump.jsonl"
+        transcript.write_text("")
+
+        deleted = db.delete_empty_sessions(sessions_dir=tmp_path)
+        assert deleted == 1
+        assert not dump.exists()
+        assert not transcript.exists()
+
+
 # =========================================================================
 # Schema and WAL mode
 # =========================================================================
@@ -2423,6 +2855,24 @@ class TestCompressionChainProjection:
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
 
+    def test_list_projection_uses_tip_cwd(self, db):
+        """Projected lineage rows should carry cwd from the live tip row.
+
+        Without this, compressed conversations can lose workspace grouping
+        even after the continuation session persists its cwd.
+        """
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.update_session_cwd("tip1", "/tmp/workspaces/tip")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["cwd"] == "/tmp/workspaces/tip"
+
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root
         rows — useful for admin/debug UIs.
@@ -2674,6 +3124,64 @@ class TestVacuum:
         db.append_message(session_id="s1", role="user", content="hi")
         # Should not raise, even though there's nothing significant to reclaim.
         db.vacuum()
+
+
+class TestOptimizeFts:
+    def test_optimize_returns_index_count(self, db):
+        """A fresh DB has both FTS indexes; optimize merges both."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hello world")
+        assert db.optimize_fts() == 2
+
+    def test_optimize_preserves_search_and_snippet(self, db):
+        """Optimize is layout-only: MATCH results + snippets are unchanged."""
+        db.create_session(session_id="s1", source="cli")
+        for i in range(50):
+            db.append_message(
+                session_id="s1",
+                role="user",
+                content=f"needle alpha bravo charlie message {i}",
+            )
+        before = db.search_messages("needle")
+        n = db.optimize_fts()
+        assert n == 2
+        after = db.search_messages("needle")
+        assert len(after) == len(before)
+        assert len(after) > 0
+        # Snippet must still be populated (would be empty/None if the FTS
+        # content shadow were lost during optimize).
+        assert all(row.get("snippet") for row in after)
+        # IDs and snippets are identical before/after — pure layout change.
+        assert [r["id"] for r in after] == [r["id"] for r in before]
+        assert [r["snippet"] for r in after] == [r["snippet"] for r in before]
+
+    def test_optimize_skips_missing_trigram_table(self, db):
+        """When the trigram index is absent, optimize handles only the porter
+        index and does not raise."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hello")
+        # Drop the trigram table + triggers to simulate a disabled/absent index.
+        with db._lock:
+            for trig in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                db._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            db._conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+        assert db._fts_table_exists("messages_fts_trigram") is False
+        assert db._fts_table_exists("messages_fts") is True
+        # Only the porter index remains -> 1 optimized, no error.
+        assert db.optimize_fts() == 1
+
+    def test_optimize_idempotent(self, db):
+        """Running optimize twice is safe (second pass is a no-op merge)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="repeat me")
+        assert db.optimize_fts() == 2
+        assert db.optimize_fts() == 2
+        # Search still works after repeated optimization.
+        assert len(db.search_messages("repeat")) == 1
 
 
 class TestAutoMaintenance:
@@ -3238,3 +3746,43 @@ class TestApplyWalProbe:
         assert any("journal_mode=WAL" in sql for sql in conn.executed), (
             "set-pragma must fire when probe returns 'delete'"
         )
+
+
+class TestSessionArchive:
+    """Soft-archiving hides a session from default listings without deleting it."""
+
+    def _seed(self, db, sid, *, archived=False):
+        db.create_session(session_id=sid, source="cli")
+        db.append_message(session_id=sid, role="user", content=f"hello from {sid}")
+        if archived:
+            db.set_session_archived(sid, True)
+
+    def test_set_session_archived_roundtrip(self, db):
+        self._seed(db, "s1")
+        assert db.set_session_archived("s1", True) is True
+        assert db.get_session("s1")["archived"] == 1
+        assert db.set_session_archived("s1", False) is True
+        assert db.get_session("s1")["archived"] == 0
+
+    def test_set_session_archived_missing_row(self, db):
+        assert db.set_session_archived("nope", True) is False
+
+    def test_archived_excluded_by_default(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        ids = [s["id"] for s in db.list_sessions_rich()]
+        assert ids == ["live"]
+        assert db.session_count() == 1
+
+    def test_archived_only_and_include(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        only = [s["id"] for s in db.list_sessions_rich(archived_only=True)]
+        assert only == ["hidden"]
+        assert db.session_count(archived_only=True) == 1
+
+        both = {s["id"] for s in db.list_sessions_rich(include_archived=True)}
+        assert both == {"live", "hidden"}
+        assert db.session_count(include_archived=True) == 2

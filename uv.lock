@@ -1244,6 +1244,15 @@ wheels = [
 ]
 
 [[package]]
+name = "eval-type-backport"
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/a3/cafafb4558fd638aadfe4121dc6cefb8d743368c085acb2f521df0f3d9d7/eval_type_backport-0.3.1.tar.gz", hash = "sha256:57e993f7b5b69d271e37482e62f74e76a0276c82490cf8e4f0dffeb6b332d5ed", size = 9445, upload-time = "2025-12-02T11:51:42.987Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cf/22/fdc2e30d43ff853720042fa15baa3e6122722be1a7950a98233ebb55cd71/eval_type_backport-0.3.1-py3-none-any.whl", hash = "sha256:279ab641905e9f11129f56a8a78f493518515b83402b860f6f06dd7c011fdfa8", size = 6063, upload-time = "2025-12-02T11:51:41.665Z" },
+]
+
+[[package]]
 name = "exa-py"
 version = "2.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1593,21 +1602,26 @@ version = "0.15.1"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
+    { name = "fastapi" },
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "openai" },
+    { name = "pathspec" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-dotenv" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "rich" },
     { name = "ruamel-yaml" },
     { name = "tenacity" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.optional-dependencies]
@@ -1623,13 +1637,13 @@ all = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
     { name = "mcp" },
-    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "ruff" },
+    { name = "setuptools" },
     { name = "simple-term-menu" },
+    { name = "starlette" },
     { name = "ty" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "youtube-transcript-api" },
@@ -1648,6 +1662,7 @@ cli = [
 ]
 computer-use = [
     { name = "mcp" },
+    { name = "starlette" },
 ]
 daytona = [
     { name = "daytona" },
@@ -1659,6 +1674,8 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
     { name = "ruff" },
+    { name = "setuptools" },
+    { name = "starlette" },
     { name = "ty" },
 ]
 dingtalk = [
@@ -1705,6 +1722,7 @@ matrix = [
 ]
 mcp = [
     { name = "mcp" },
+    { name = "starlette" },
 ]
 messaging = [
     { name = "aiohttp" },
@@ -1715,15 +1733,14 @@ messaging = [
     { name = "slack-bolt" },
     { name = "slack-sdk" },
 ]
+mistral = [
+    { name = "mistralai" },
+]
 modal = [
     { name = "modal" },
 ]
 parallel-web = [
     { name = "parallel-web" },
-]
-pty = [
-    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
 ]
 slack = [
     { name = "aiohttp" },
@@ -1737,10 +1754,9 @@ termux = [
     { name = "agent-client-protocol" },
     { name = "honcho-ai" },
     { name = "mcp" },
-    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "simple-term-menu" },
+    { name = "starlette" },
 ]
 termux-all = [
     { name = "agent-client-protocol" },
@@ -1751,10 +1767,9 @@ termux-all = [
     { name = "google-auth-oauthlib" },
     { name = "honcho-ai" },
     { name = "mcp" },
-    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
-    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "simple-term-menu" },
+    { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 tts-premium = [
@@ -1767,6 +1782,7 @@ voice = [
 ]
 web = [
     { name = "fastapi" },
+    { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 wecom = [
@@ -1801,6 +1817,7 @@ requires-dist = [
     { name = "elevenlabs", marker = "extra == 'tts-premium'", specifier = "==1.59.0" },
     { name = "exa-py", marker = "extra == 'exa'", specifier = "==2.10.2" },
     { name = "fal-client", marker = "extra == 'fal'", specifier = "==0.13.1" },
+    { name = "fastapi", specifier = ">=0.104.0,<1" },
     { name = "fastapi", marker = "extra == 'web'", specifier = "==0.133.1" },
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = "==1.2.1" },
     { name = "fire", specifier = "==0.7.1" },
@@ -1840,13 +1857,15 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==1.26.0" },
+    { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "openai", specifier = "==2.24.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
+    { name = "pathspec", specifier = "==1.1.1" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
-    { name = "ptyprocess", marker = "sys_platform != 'win32' and extra == 'pty'", specifier = "==0.7.0" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.2" },
@@ -1855,7 +1874,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = "==1.2.2" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'messaging'", specifier = "==22.6" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.6" },
-    { name = "pywinpty", marker = "sys_platform == 'win32' and extra == 'pty'", specifier = "==2.0.15" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=2.0.0,<3" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "qrcode", marker = "extra == 'dingtalk'", specifier = "==7.4.2" },
     { name = "qrcode", marker = "extra == 'feishu'", specifier = "==7.4.2" },
@@ -1864,19 +1883,25 @@ requires-dist = [
     { name = "rich", specifier = "==14.3.3" },
     { name = "ruamel-yaml", specifier = "==0.18.17" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.10" },
+    { name = "setuptools", marker = "extra == 'dev'", specifier = "==82.0.1" },
     { name = "simple-term-menu", marker = "extra == 'cli'", specifier = "==1.6.6" },
     { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.27.0" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.27.0" },
     { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.40.1" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.40.1" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
+    { name = "starlette", marker = "extra == 'computer-use'", specifier = "==1.0.1" },
+    { name = "starlette", marker = "extra == 'dev'", specifier = "==1.0.1" },
+    { name = "starlette", marker = "extra == 'mcp'", specifier = "==1.0.1" },
+    { name = "starlette", marker = "extra == 'web'", specifier = "==1.0.1" },
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0,<1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2207,6 +2232,15 @@ wheels = [
 ]
 
 [[package]]
+name = "jsonpath-python"
+version = "1.1.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/18/4ca8742534a5993ff383f7602e325ce2d5d7cc93d72ac5e1cdedbea8a458/jsonpath_python-1.1.6.tar.gz", hash = "sha256:dded9932b4ec41fb8726e09c83afa4e6be618f938c2db287cc2a81723c639671", size = 88178, upload-time = "2026-05-07T01:26:34.482Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/8a/1270a6803bd821cbfcdda387eaa13cb41a7b1f7b9bd145979b3bfb9d6cb7/jsonpath_python-1.1.6-py3-none-any.whl", hash = "sha256:a1c50afd8d3fbbaf47a4873bc890dcb3c15da96f5c020327977d844d8731a2d4", size = 14453, upload-time = "2026-05-07T01:26:33.306Z" },
+]
+
+[[package]]
 name = "jsonschema"
 version = "4.26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2406,6 +2440,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "mistralai"
+version = "2.4.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "eval-type-backport" },
+    { name = "httpx" },
+    { name = "jsonpath-python" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/55/1c/04119828a3da3be8c79efbe59035a621ae22af873c1ee5a4200355025aa6/mistralai-2.4.8.tar.gz", hash = "sha256:4f27b9b7dfd564ae111d3d9992d2a8ad1454aaf3e7675554c686aa3bb89617e2", size = 464443, upload-time = "2026-05-28T10:00:45.72Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/2a/d9952a97596ff9570ff7f486084ebfc5637b1bcf62084b97c0f8415713fc/mistralai-2.4.8-py3-none-any.whl", hash = "sha256:edc445c8b5edf332d45db6c708cd1e4d3f62e6eba5d2e8bf3969bdc5117f6472", size = 1110598, upload-time = "2026-05-28T10:00:43.939Z" },
 ]
 
 [[package]]
@@ -3000,6 +3053,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/24/50/fb9b28a679e01682006b5259abff96de3d16e114e9447a7793fec31715de/parallel_web-0.4.2.tar.gz", hash = "sha256:599b5a8f387dc35c7dc8c81e372eadf6958a40acacea58bf170dfc663c003da7", size = 140026, upload-time = "2026-03-09T22:24:35.448Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/3e/2218fa29637781b8e7ac35a928108ff2614ddd40879389d3af2caa725af5/parallel_web-0.4.2-py3-none-any.whl", hash = "sha256:aa3a4a9aecc08972c5ce9303271d4917903373dff4dd277d9a3e30f9cff53346", size = 144012, upload-time = "2026-03-09T22:24:33.979Z" },
+]
+
+[[package]]
+name = "pathspec"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/82/42f767fc1c1143d6fd36efb827202a2d997a375e160a71eb2888a925aac1/pathspec-1.1.1.tar.gz", hash = "sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a", size = 135180, upload-time = "2026-04-27T01:46:08.907Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl", hash = "sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189", size = 57328, upload-time = "2026-04-27T01:46:07.06Z" },
 ]
 
 [[package]]
@@ -4040,15 +4102,15 @@ wheels = [
 
 [[package]]
 name = "starlette"
-version = "0.52.1"
+version = "1.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/a3/84e821cc54b4ab50ae6dbc6ac3800a651b65ec35f045cc73785380654057/starlette-1.0.1.tar.gz", hash = "sha256:512399c5f1de7fac99c88572212ded9ddeddef2fb32afa82d724000e88b38f4f", size = 2659596, upload-time = "2026-05-21T21:58:58.433Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74", size = 74272, upload-time = "2026-01-18T13:34:09.188Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/e1/b2df4bc09a1e51ff664c1e17018a4274b42e5e9352e4a478ea540512dc88/starlette-1.0.1-py3-none-any.whl", hash = "sha256:7c0e69b2ee1c848bd54669d908500117a3ee13de603a21427e5c6fc1adf98dcd", size = 72802, upload-time = "2026-05-21T21:58:56.551Z" },
 ]
 
 [[package]]

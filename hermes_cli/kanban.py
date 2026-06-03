@@ -341,6 +341,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--goal", action="store_true", dest="goal_mode",
+                          help="Run the worker in a goal loop: after each "
+                               "turn a judge checks the response against the "
+                               "card title/body and, if not done, the worker "
+                               "keeps going in the same session until the "
+                               "judge agrees it's complete (or the turn "
+                               "budget runs out, which blocks the card for "
+                               "review). Best for open-ended cards one shot "
+                               "rarely finishes.")
+    p_create.add_argument("--goal-max-turns", type=int, default=None,
+                          metavar="N", dest="goal_max_turns",
+                          help="Turn budget for --goal workers (default 20). "
+                               "Ignored without --goal.")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1343,6 +1356,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            goal_mode=bool(getattr(args, "goal_mode", False)),
+            goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)

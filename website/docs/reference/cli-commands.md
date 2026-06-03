@@ -1349,6 +1349,7 @@ Launch the web dashboard — a browser-based UI for managing configuration, API 
 | `--no-open` | — | Don't auto-open the browser |
 | `--tui` | off | Enable the in-browser Chat tab by running `hermes --tui` behind a PTY/WebSocket bridge. Requires `pip install 'hermes-agent[web,pty]'` and a POSIX PTY environment such as Linux, macOS, or WSL2. |
 | `--insecure` | off | Allow binding to non-localhost hosts. Exposes dashboard credentials on the network; use only behind trusted network controls. |
+| `--allowed-hosts` | — | Extra accepted Host headers for loopback proxy/tunnel access |
 | `--stop` | — | Stop running `hermes dashboard` processes and exit. |
 | `--status` | — | List running `hermes dashboard` processes and exit. |
 
@@ -1361,6 +1362,25 @@ hermes dashboard --port 8080 --no-open
 
 # Enable the browser Chat tab
 hermes dashboard --tui
+```
+
+### Dashboard service
+
+```bash
+hermes dashboard service install [--host 127.0.0.1] [--port 9119] [--tui] [--start-now]
+hermes dashboard service start|stop|restart|status|uninstall
+hermes dashboard service unit
+```
+
+Linux uses systemd user services by default (`--system` installs a boot-time
+system service), macOS uses launchd, and Windows uses a Scheduled Task.
+
+### Dashboard access helpers
+
+```bash
+hermes dashboard access tailscale-serve --port 9119 [--apply]
+hermes dashboard access cloudflare-config --tunnel <id> --credentials-file <path> --hostname <host>
+hermes dashboard access cloudflare-service install|start|stop|restart|status|uninstall
 ```
 
 ## `hermes profile`

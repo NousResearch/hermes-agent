@@ -1144,6 +1144,12 @@ display:
 # (the ~/.hermes/.env file is reserved for API keys and secrets).
 #
 # dashboard:
+#   # Additional Host headers accepted only when the dashboard is bound to a
+#   # loopback address. Use this for Tailscale/headscale Serve, cloudflared, or
+#   # same-host reverse proxies that forward a public hostname to
+#   # http://127.0.0.1:9119 without using --insecure.
+#   allowed_hosts: []
+#
 #   oauth:
 #     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
 #     portal_url: ""   # blank → default https://portal.nousresearch.com

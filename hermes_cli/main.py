@@ -7372,10 +7372,11 @@ def _find_stale_dashboard_pids() -> list[int]:
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
-    The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args — so the only sane action
-    after an update is to kill the stale process and let the user restart
-    it.  This helper is just the detection step; see
+    Manual dashboard processes have no PID file, and we can't know the
+    original launch args — so the only sane action after an update is to kill
+    the stale process and let the user restart it. Service-managed dashboards
+    are controlled by ``hermes dashboard service ...``. This helper is just
+    the detection step; see
     ``_kill_stale_dashboard_processes`` for the kill.
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
@@ -7589,12 +7590,11 @@ def _kill_stale_dashboard_processes(
     """Kill running ``hermes dashboard`` processes.
 
     Called at the end of ``hermes update`` (default ``reason``) and also
-    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
-    dashboard has no service manager, so after a code update the running
-    process is guaranteed to be serving stale Python against a
-    freshly-updated JS bundle.  Leaving it alive produces silent
-    frontend/backend mismatches (new auth headers the old backend doesn't
-    recognise → every API call 401s).
+    from ``hermes dashboard --stop`` (which overrides ``reason``). Manual
+    dashboard processes serve stale Python against a freshly-updated JS bundle
+    after a code update. Leaving them alive produces silent frontend/backend
+    mismatches (new auth headers the old backend doesn't recognise → every API
+    call 401s).
 
     POSIX: SIGTERM, wait up to ~3s for graceful exit, SIGKILL any survivors.
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
@@ -10929,11 +10929,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes — the dashboard has no service
-        # manager, so leaving it alive after a code update produces a
-        # silent frontend/backend mismatch.  We can't auto-restart it
-        # (no saved launch args) but we can stop it, and a hint is
-        # printed for the user to re-launch.
+        # Kill stale manual dashboard processes. Service-managed dashboards
+        # are restarted through their service manager; stray manual processes
+        # still need this cleanup to avoid frontend/backend mismatches.
         _kill_stale_dashboard_processes()
 
         print()
@@ -11699,6 +11697,14 @@ def _report_dashboard_status() -> int:
 
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
+    try:
+        from hermes_cli.dashboard_service import dashboard_command
+
+        if dashboard_command(args):
+            return
+    except SystemExit:
+        raise
+
     # --status: report running dashboards and exit, no deps needed.
     if getattr(args, "status", False):
         count = _report_dashboard_status()
@@ -11783,12 +11789,25 @@ def cmd_dashboard(args):
     from hermes_cli.web_server import start_server
 
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
+    allowed_hosts = getattr(args, "allowed_hosts", None)
+    if not allowed_hosts:
+        allowed_hosts = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    if not allowed_hosts:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            dash_cfg = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
+            allowed_hosts = dash_cfg.get("allowed_hosts", "")
+        except Exception:
+            allowed_hosts = ""
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
+        allowed_hosts=allowed_hosts,
     )
 
 
@@ -15068,6 +15087,15 @@ Examples:
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
     )
     dashboard_parser.add_argument(
+        "--allowed-hosts",
+        action="append",
+        default=None,
+        help=(
+            "Extra Host header names to accept when the dashboard is reached "
+            "through a loopback proxy/tunnel. Comma-separated; repeatable."
+        ),
+    )
+    dashboard_parser.add_argument(
         "--tui",
         action="store_true",
         help=(
@@ -15084,12 +15112,9 @@ Examples:
             "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
     )
-    # Lifecycle flags — mutually exclusive with each other and with the
-    # start-a-server flags above (if both are passed, --stop / --status win
-    # because they exit before the server is started).  The dashboard has
-    # no service manager and no PID file, so these scan the process table
-    # for `hermes dashboard` cmdlines and SIGTERM them directly — the same
-    # path `hermes update` uses to clean up stale dashboards.
+    # Legacy process-table lifecycle flags. The durable service manager lives
+    # under `hermes dashboard service ...`; these flags keep the older manual
+    # dashboard process behavior working for scripts.
     dashboard_parser.add_argument(
         "--stop",
         action="store_true",
@@ -15100,6 +15125,130 @@ Examples:
         action="store_true",
         help="List running hermes dashboard processes and exit",
     )
+    dashboard_subparsers = dashboard_parser.add_subparsers(dest="dashboard_command")
+
+    dashboard_service = dashboard_subparsers.add_parser(
+        "service",
+        help="Install or manage the durable dashboard service",
+    )
+    dashboard_service_sub = dashboard_service.add_subparsers(
+        dest="dashboard_service_command"
+    )
+
+    def _add_dashboard_service_options(p):
+        p.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
+        p.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
+        p.add_argument("--tui", action="store_true", help="Enable embedded dashboard chat")
+        p.add_argument("--insecure", action="store_true", help="Disable the OAuth auth gate")
+        p.add_argument(
+            "--allowed-hosts",
+            action="append",
+            default=None,
+            help="Extra accepted Host headers, comma-separated; repeatable",
+        )
+        p.add_argument(
+            "--public-url",
+            default="",
+            help="Public dashboard URL for OAuth callbacks behind a proxy",
+        )
+
+    dashboard_service_install = dashboard_service_sub.add_parser(
+        "install",
+        help="Install the dashboard as a systemd/launchd/Windows service",
+    )
+    _add_dashboard_service_options(dashboard_service_install)
+    dashboard_service_install.add_argument("--force", action="store_true", help="Force reinstall")
+    dashboard_service_install.add_argument(
+        "--system",
+        action="store_true",
+        help="Install as a Linux system-level service",
+    )
+    dashboard_service_install.add_argument(
+        "--run-as-user",
+        dest="run_as_user",
+        help="User account the Linux system service should run as",
+    )
+    dashboard_service_install.add_argument(
+        "--start-now",
+        dest="start_now",
+        action="store_true",
+        default=False,
+        help="Start the dashboard service after installing",
+    )
+    dashboard_service_install.add_argument(
+        "--no-start-on-login",
+        dest="start_on_login",
+        action="store_false",
+        default=True,
+        help="Install without enabling automatic startup",
+    )
+
+    for _name in ("start", "restart"):
+        _p = dashboard_service_sub.add_parser(_name, help=f"{_name.capitalize()} dashboard service")
+        _add_dashboard_service_options(_p)
+        _p.add_argument("--system", action="store_true", help="Target the Linux system service")
+
+    dashboard_service_stop = dashboard_service_sub.add_parser("stop", help="Stop dashboard service")
+    dashboard_service_stop.add_argument("--system", action="store_true", help="Target the Linux system service")
+
+    dashboard_service_uninstall = dashboard_service_sub.add_parser(
+        "uninstall", help="Uninstall dashboard service"
+    )
+    dashboard_service_uninstall.add_argument(
+        "--system", action="store_true", help="Target the Linux system service"
+    )
+
+    dashboard_service_status = dashboard_service_sub.add_parser(
+        "status", help="Show dashboard service status"
+    )
+    dashboard_service_status.add_argument("--deep", action="store_true", help="Show recent service logs")
+    dashboard_service_status.add_argument("-l", "--full", action="store_true", help="Show full service output")
+    dashboard_service_status.add_argument("--system", action="store_true", help="Target the Linux system service")
+
+    dashboard_service_unit = dashboard_service_sub.add_parser(
+        "unit", help="Print the generated service definition"
+    )
+    _add_dashboard_service_options(dashboard_service_unit)
+    dashboard_service_unit.add_argument("--system", action="store_true", help="Print Linux system unit")
+    dashboard_service_unit.add_argument("--systemd", action="store_true", help="Force systemd output")
+    dashboard_service_unit.add_argument("--launchd", action="store_true", help="Force launchd output")
+    dashboard_service_unit.add_argument("--run-as-user", dest="run_as_user")
+
+    dashboard_access = dashboard_subparsers.add_parser(
+        "access", help="Secure dashboard access helpers"
+    )
+    dashboard_access_sub = dashboard_access.add_subparsers(dest="dashboard_access_command")
+    tailscale_serve = dashboard_access_sub.add_parser(
+        "tailscale-serve",
+        help="Print or apply a Tailscale/headscale Serve command",
+    )
+    tailscale_serve.add_argument("--port", type=int, default=9119, help="Local dashboard port")
+    tailscale_serve.add_argument("--target", help="Serve target (default 127.0.0.1:<port>)")
+    tailscale_serve.add_argument("--https", type=int, default=443, help="Tailnet HTTPS port")
+    tailscale_serve.add_argument("--http", type=int, help="Use a tailnet HTTP port instead")
+    tailscale_serve.add_argument("--set-path", default="", help="Optional Serve path")
+    tailscale_serve.add_argument("--foreground", action="store_true", help="Do not pass --bg")
+    tailscale_serve.add_argument("--interactive", action="store_true", help="Do not pass --yes")
+    tailscale_serve.add_argument("--apply", action="store_true", help="Run the command")
+
+    cloudflare_config = dashboard_access_sub.add_parser(
+        "cloudflare-config", help="Generate a cloudflared tunnel config"
+    )
+    cloudflare_config.add_argument("--tunnel", required=True, help="Tunnel UUID or name")
+    cloudflare_config.add_argument("--credentials-file", required=True, help="Tunnel credentials JSON")
+    cloudflare_config.add_argument("--hostname", required=True, help="Public hostname")
+    cloudflare_config.add_argument("--service", help="Origin service URL")
+    cloudflare_config.add_argument("--port", type=int, default=9119, help="Local dashboard port")
+    cloudflare_config.add_argument("--output", help="Write config YAML to this path")
+
+    cloudflare_service = dashboard_access_sub.add_parser(
+        "cloudflare-service", help="Manage the native cloudflared service"
+    )
+    cloudflare_service_sub = cloudflare_service.add_subparsers(
+        dest="cloudflare_service_command"
+    )
+    for _name in ("install", "uninstall", "start", "stop", "restart", "status"):
+        cloudflare_service_sub.add_parser(_name, help=f"{_name.capitalize()} cloudflared service")
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================

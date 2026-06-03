@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -830,6 +831,178 @@ class TestBackupEdgeCases:
         assert out_zip.exists()
         with zipfile.ZipFile(out_zip, "r") as zf:
             assert "backup.zip" not in zf.namelist()
+
+
+class TestHindsightEmbeddedBackup:
+    def test_local_embedded_uses_admin_backup_and_skips_raw_pg0(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        (hermes_home / "hindsight").mkdir()
+        (hermes_home / "hindsight" / "config.json").write_text(
+            json.dumps({"mode": "local_embedded", "profile": "hermes prod"})
+        )
+        (hermes_home / ".pg0" / "instances").mkdir(parents=True)
+        (hermes_home / ".pg0" / "instances" / "raw-postgres-file").write_text("raw")
+        (hermes_home / ".hindsight" / "pg0").mkdir(parents=True)
+        (hermes_home / ".hindsight" / "pg0" / "raw-postgres-file").write_text("raw")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HINDSIGHT_API_DATABASE_URL", raising=False)
+        monkeypatch.delenv("HINDSIGHT_EMBED_API_DATABASE_URL", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_cli.backup._find_hindsight_admin", lambda: "/usr/bin/hindsight-admin")
+
+        captured = {}
+
+        def fake_run(cmd, cwd, env, capture_output, text, check):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            captured["env"] = env
+            with zipfile.ZipFile(cmd[-1], "w") as zf:
+                zf.writestr("dump.json", "{}")
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr("hermes_cli.backup.subprocess.run", fake_run)
+
+        out_zip = tmp_path / "out.zip"
+        from hermes_cli.backup import run_backup
+        run_backup(Namespace(output=str(out_zip)))
+
+        assert captured["cmd"][:2] == ["/usr/bin/hindsight-admin", "backup"]
+        assert captured["cwd"] == str(hermes_home)
+        assert captured["env"]["HINDSIGHT_API_DATABASE_URL"] == "pg0://hindsight-embed-hermes-prod"
+        assert captured["env"]["HOME"] == str(hermes_home)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "hindsight/embedded-backups/hindsight-embedded-hermes-prod.zip" in names
+            assert "hindsight/config.json" in names
+            assert ".pg0/instances/raw-postgres-file" not in names
+            assert ".hindsight/pg0/raw-postgres-file" not in names
+
+    def test_missing_admin_keeps_raw_files_and_warns(self, tmp_path, monkeypatch, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        (hermes_home / "hindsight").mkdir()
+        (hermes_home / "hindsight" / "config.json").write_text(
+            json.dumps({"mode": "local_embedded", "profile": "hermes"})
+        )
+        (hermes_home / ".pg0" / "instances").mkdir(parents=True)
+        (hermes_home / ".pg0" / "instances" / "raw-postgres-file").write_text("raw")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_cli.backup._find_hindsight_admin", lambda: None)
+
+        out_zip = tmp_path / "out.zip"
+        from hermes_cli.backup import run_backup
+        run_backup(Namespace(output=str(out_zip)))
+
+        captured = capsys.readouterr()
+        assert "hindsight-admin not found" in captured.out
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert ".pg0/instances/raw-postgres-file" in names
+            assert "hindsight/embedded-backups/hindsight-embedded-hermes.zip" not in names
+
+    def test_admin_backup_warning_redacts_database_url(self, tmp_path, monkeypatch, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        (hermes_home / "hindsight").mkdir()
+        (hermes_home / "hindsight" / "config.json").write_text(
+            json.dumps({"mode": "local_embedded", "profile": "hermes"})
+        )
+        database_url = "postgresql://user:secret@localhost:5432/hindsight"
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HINDSIGHT_API_DATABASE_URL", database_url)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_cli.backup._find_hindsight_admin", lambda: "/usr/bin/hindsight-admin")
+
+        def fake_run(cmd, cwd, env, capture_output, text, check):
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="",
+                stderr=f"could not connect to {database_url}",
+            )
+
+        monkeypatch.setattr("hermes_cli.backup.subprocess.run", fake_run)
+
+        out_zip = tmp_path / "out.zip"
+        from hermes_cli.backup import run_backup
+        run_backup(Namespace(output=str(out_zip)))
+
+        output = capsys.readouterr().out
+        assert database_url not in output
+        assert "<redacted-database-url>" in output
+
+    def test_import_restores_embedded_artifact_with_admin_cli(self, tmp_path, monkeypatch, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HINDSIGHT_API_DATABASE_URL", raising=False)
+        monkeypatch.delenv("HINDSIGHT_EMBED_API_DATABASE_URL", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_cli.backup._find_hindsight_admin", lambda: "/usr/bin/hindsight-admin")
+
+        zip_path = tmp_path / "backup.zip"
+        artifact_bytes = tmp_path / "artifact.zip"
+        with zipfile.ZipFile(artifact_bytes, "w") as zf:
+            zf.writestr("dump.json", "{}")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: test\n")
+            zf.writestr(
+                "hindsight/config.json",
+                json.dumps({"mode": "local_embedded", "profile": "hermes prod"}),
+            )
+            zf.writestr(
+                "hindsight/embedded-backups/hindsight-embedded-hermes-prod.zip",
+                artifact_bytes.read_bytes(),
+            )
+
+        captured = {}
+
+        def fake_run(cmd, cwd, env, capture_output, text, check):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            captured["env"] = env
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr("hermes_cli.backup.subprocess.run", fake_run)
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        artifact = hermes_home / "hindsight" / "embedded-backups" / "hindsight-embedded-hermes-prod.zip"
+        assert artifact.exists()
+        assert captured["cmd"] == ["/usr/bin/hindsight-admin", "restore", str(artifact), "--yes"]
+        assert captured["cwd"] == str(hermes_home)
+        assert captured["env"]["HINDSIGHT_API_DATABASE_URL"] == "pg0://hindsight-embed-hermes-prod"
+        output = capsys.readouterr().out
+        assert "Hindsight embedded backups restored: 1" in output
+
+    def test_import_warns_when_hindsight_restore_admin_missing(self, tmp_path, monkeypatch, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_cli.backup._find_hindsight_admin", lambda: None)
+
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: test\n")
+            zf.writestr("hindsight/config.json", json.dumps({"mode": "local_embedded"}))
+            zf.writestr("hindsight/embedded-backups/hindsight-embedded-hermes.zip", b"zip")
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        output = capsys.readouterr().out
+        assert "Hindsight local embedded restore skipped: hindsight-admin not found" in output
 
 
 class TestImportEdgeCases:

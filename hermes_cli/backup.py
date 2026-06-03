@@ -11,8 +11,10 @@ HERMES_HOME root.
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -101,6 +103,62 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return False
 
 
+def _is_hindsight_raw_store_dir(rel_dir: Path, dirname: str) -> bool:
+    """Return True for embedded Hindsight PostgreSQL data dirs.
+
+    Hindsight's admin backup CLI creates a transactionally consistent dump; once
+    we have that artifact, raw pg0 directories are skipped to avoid archiving a
+    live PostgreSQL data directory.
+    """
+    if dirname == ".pg0":
+        return True
+    if rel_dir == Path(".hindsight") and dirname in {"pg0", "data"}:
+        return True
+    return False
+
+
+def _collect_backup_files(
+    hermes_root: Path,
+    out_path: Path,
+    *,
+    extra_files: Optional[list[tuple[Path, Path]]] = None,
+    skip_hindsight_raw_store: bool = False,
+) -> tuple[list[tuple[Path, Path]], set[str]]:
+    """Collect files to add to a full backup zip."""
+    files_to_add: list[tuple[Path, Path]] = []
+    skipped_dirs = set()
+
+    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+        dp = Path(dirpath)
+        rel_dir = dp.relative_to(hermes_root)
+
+        orig_dirnames = dirnames[:]
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _EXCLUDED_DIRS
+            and not (
+                skip_hindsight_raw_store
+                and _is_hindsight_raw_store_dir(rel_dir, d)
+            )
+        ]
+        for removed in set(orig_dirnames) - set(dirnames):
+            skipped_dirs.add(str(rel_dir / removed))
+
+        for fname in filenames:
+            fpath = dp / fname
+            rel = fpath.relative_to(hermes_root)
+
+            if _should_skip_backup_file(fpath, rel, out_path):
+                continue
+
+            files_to_add.append((fpath, rel))
+
+    if extra_files:
+        files_to_add.extend(extra_files)
+
+    return files_to_add, skipped_dirs
+
+
 # ---------------------------------------------------------------------------
 # SQLite safe copy
 # ---------------------------------------------------------------------------
@@ -126,6 +184,191 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
         except Exception as exc2:
             logger.error("Raw copy also failed for %s: %s", src, exc2)
             return False
+
+
+# ---------------------------------------------------------------------------
+# Hindsight consistent backup/restore
+# ---------------------------------------------------------------------------
+
+_HINDSIGHT_CONFIG_REL = Path("hindsight/config.json")
+_HINDSIGHT_BACKUP_PREFIX = Path("hindsight/embedded-backups")
+
+
+def _load_simple_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def _safe_hindsight_profile(value: Any) -> str:
+    profile = str(value or "hermes")
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "-", profile)
+    return safe or "hermes"
+
+
+def _load_hindsight_backup_config(hermes_root: Path) -> Optional[dict[str, Any]]:
+    config_path = hermes_root / _HINDSIGHT_CONFIG_REL
+    if not config_path.exists():
+        return None
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not read Hindsight config for backup: %s", exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _find_hindsight_admin() -> Optional[str]:
+    admin = shutil.which("hindsight-admin")
+    if admin:
+        return admin
+    sibling = Path(sys.executable).parent / "hindsight-admin"
+    if sibling.exists():
+        return str(sibling)
+    return None
+
+
+def _hindsight_home_for_backup(hermes_root: Path) -> Path:
+    """Return the HOME directory Hindsight embedded storage is using.
+
+    Standard desktop installs use ``~/.hermes`` for HERMES_HOME and keep
+    Hindsight's pg0/profile files in the real user home. Hosted/service
+    installs can set the service user's home directly to HERMES_HOME, placing
+    ``.pg0`` and ``.hindsight`` under the Hermes root.
+    """
+    if (hermes_root / ".pg0").exists() or (hermes_root / ".hindsight").exists():
+        return hermes_root
+    return Path.home()
+
+
+def _hindsight_admin_env(hermes_root: Path, config: dict[str, Any]) -> dict[str, str]:
+    profile = str(config.get("profile") or "hermes")
+    safe_profile = _safe_hindsight_profile(profile)
+    env = os.environ.copy()
+    hindsight_home = _hindsight_home_for_backup(hermes_root)
+
+    profile_env = _load_simple_env_file(
+        hindsight_home / ".hindsight" / "profiles" / f"{profile}.env"
+    )
+    configured_database_url = (
+        env.get("HINDSIGHT_API_DATABASE_URL")
+        or env.get("HINDSIGHT_EMBED_API_DATABASE_URL")
+        or profile_env.get("HINDSIGHT_API_DATABASE_URL")
+        or profile_env.get("HINDSIGHT_EMBED_API_DATABASE_URL")
+    )
+    env["HINDSIGHT_API_DATABASE_URL"] = (
+        configured_database_url or f"pg0://hindsight-embed-{safe_profile}"
+    )
+    env["HOME"] = str(hindsight_home)
+    return env
+
+
+def _hindsight_admin_error_detail(output: str, env: dict[str, str]) -> str:
+    """Return CLI diagnostic output with connection secrets redacted."""
+    detail = output.strip()
+    database_url = env.get("HINDSIGHT_API_DATABASE_URL")
+    if database_url:
+        detail = detail.replace(database_url, "<redacted-database-url>")
+    return detail
+
+
+def _create_hindsight_embedded_backup(
+    hermes_root: Path,
+    temp_dir: Path,
+) -> tuple[Optional[tuple[Path, Path]], Optional[str]]:
+    """Create a transactionally consistent Hindsight embedded backup.
+
+    Returns ``((abs_path, archive_path), None)`` when a backup artifact was
+    created, ``(None, None)`` when Hindsight is not configured for local
+    embedded mode, or ``(None, warning)`` when it is configured but could not be
+    backed up.
+    """
+    config = _load_hindsight_backup_config(hermes_root)
+    if not config or config.get("mode") != "local_embedded":
+        return None, None
+
+    admin = _find_hindsight_admin()
+    if not admin:
+        return None, "Hindsight local embedded backup skipped: hindsight-admin not found"
+
+    safe_profile = _safe_hindsight_profile(config.get("profile") or "hermes")
+    out_path = temp_dir / f"hindsight-embedded-{safe_profile}.zip"
+    env = _hindsight_admin_env(hermes_root, config)
+
+    try:
+        result = subprocess.run(
+            [admin, "backup", str(out_path)],
+            cwd=str(hermes_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return None, f"Hindsight local embedded backup failed: {exc}"
+
+    if result.returncode != 0 or not out_path.exists():
+        detail = _hindsight_admin_error_detail(result.stderr or result.stdout or "", env)
+        suffix = f": {detail}" if detail else ""
+        return None, f"Hindsight local embedded backup failed{suffix}"
+
+    archive_path = _HINDSIGHT_BACKUP_PREFIX / out_path.name
+    return (out_path, archive_path), None
+
+
+def _is_hindsight_embedded_backup_artifact(rel_path: str) -> bool:
+    rel = Path(rel_path)
+    return (
+        len(rel.parts) == 3
+        and rel.parts[0] == "hindsight"
+        and rel.parts[1] == "embedded-backups"
+        and rel.name.startswith("hindsight-embedded-")
+        and rel.suffix.lower() == ".zip"
+    )
+
+
+def _restore_hindsight_embedded_backup(
+    hermes_root: Path,
+    backup_path: Path,
+) -> Optional[str]:
+    """Restore a Hindsight admin backup artifact, returning a warning on failure."""
+    config = _load_hindsight_backup_config(hermes_root)
+    if not config or config.get("mode") != "local_embedded":
+        return None
+
+    admin = _find_hindsight_admin()
+    if not admin:
+        return "Hindsight local embedded restore skipped: hindsight-admin not found"
+    env = _hindsight_admin_env(hermes_root, config)
+
+    try:
+        result = subprocess.run(
+            [admin, "restore", str(backup_path), "--yes"],
+            cwd=str(hermes_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return f"Hindsight local embedded restore failed: {exc}"
+
+    if result.returncode != 0:
+        detail = _hindsight_admin_error_detail(result.stderr or result.stdout or "", env)
+        suffix = f": {detail}" if detail else ""
+        return f"Hindsight local embedded restore failed{suffix}"
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -169,68 +412,55 @@ def run_backup(args) -> None:
 
     # Collect files
     print(f"Scanning {display_hermes_home()} ...")
-    files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
-    skipped_dirs = set()
+    with tempfile.TemporaryDirectory(prefix="hermes-backup-") as tmp:
+        tmp_dir = Path(tmp)
+        hindsight_artifact, hindsight_warning = _create_hindsight_embedded_backup(
+            hermes_root, tmp_dir
+        )
+        errors = [f"  {hindsight_warning}"] if hindsight_warning else []
+        files_to_add, skipped_dirs = _collect_backup_files(
+            hermes_root,
+            out_path,
+            extra_files=[hindsight_artifact] if hindsight_artifact else None,
+            skip_hindsight_raw_store=hindsight_artifact is not None,
+        )
 
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-        dp = Path(dirpath)
-        rel_dir = dp.relative_to(hermes_root)
+        if not files_to_add:
+            print("No files to back up.")
+            return
 
-        # Prune excluded directories in-place so os.walk doesn't descend
-        orig_dirnames = dirnames[:]
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in _EXCLUDED_DIRS
-        ]
-        for removed in set(orig_dirnames) - set(dirnames):
-            skipped_dirs.add(str(rel_dir / removed))
+        # Create the zip
+        file_count = len(files_to_add)
+        print(f"Backing up {file_count} files ...")
 
-        for fname in filenames:
-            fpath = dp / fname
-            rel = fpath.relative_to(hermes_root)
+        total_bytes = 0
+        t0 = time.monotonic()
 
-            if _should_skip_backup_file(fpath, rel, out_path):
-                continue
-
-            files_to_add.append((fpath, rel))
-
-    if not files_to_add:
-        print("No files to back up.")
-        return
-
-    # Create the zip
-    file_count = len(files_to_add)
-    print(f"Backing up {file_count} files ...")
-
-    total_bytes = 0
-    errors = []
-    t0 = time.monotonic()
-
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
-            try:
-                # Safe copy for SQLite databases (handles WAL mode)
-                if abs_path.suffix == ".db":
-                    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-                        tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
-                        zf.write(tmp_db, arcname=str(rel_path))
-                        total_bytes += tmp_db.stat().st_size
-                        tmp_db.unlink(missing_ok=True)
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+                try:
+                    # Safe copy for SQLite databases (handles WAL mode)
+                    if abs_path.suffix == ".db":
+                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                            tmp_db = Path(tmp.name)
+                        if _safe_copy_db(abs_path, tmp_db):
+                            zf.write(tmp_db, arcname=str(rel_path))
+                            total_bytes += tmp_db.stat().st_size
+                            tmp_db.unlink(missing_ok=True)
+                        else:
+                            tmp_db.unlink(missing_ok=True)
+                            errors.append(f"  {rel_path}: SQLite safe copy failed")
+                            continue
                     else:
-                        tmp_db.unlink(missing_ok=True)
-                        errors.append(f"  {rel_path}: SQLite safe copy failed")
-                        continue
-                else:
-                    zf.write(abs_path, arcname=str(rel_path))
-                    total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"  {rel_path}: {exc}")
-                continue
+                        zf.write(abs_path, arcname=str(rel_path))
+                        total_bytes += abs_path.stat().st_size
+                except (PermissionError, OSError, ValueError) as exc:
+                    errors.append(f"  {rel_path}: {exc}")
+                    continue
 
-            # Progress every 500 files
-            if i % 500 == 0:
-                print(f"  {i}/{file_count} files ...")
+                # Progress every 500 files
+                if i % 500 == 0:
+                    print(f"  {i}/{file_count} files ...")
 
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
@@ -368,6 +598,7 @@ def run_import(args) -> None:
 
         errors = []
         restored = 0
+        hindsight_restore_paths: list[Path] = []
         t0 = time.monotonic()
 
         for member in members:
@@ -396,11 +627,21 @@ def run_import(args) -> None:
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1
+                if _is_hindsight_embedded_backup_artifact(rel):
+                    hindsight_restore_paths.append(target)
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel}: {exc}")
 
             if restored % 500 == 0:
                 print(f"  {restored}/{file_count} files ...")
+
+        hindsight_restored = 0
+        for backup_path in hindsight_restore_paths:
+            warning = _restore_hindsight_embedded_backup(hermes_root, backup_path)
+            if warning:
+                errors.append(f"  {warning}")
+            else:
+                hindsight_restored += 1
 
         elapsed = time.monotonic() - t0
 
@@ -408,6 +649,8 @@ def run_import(args) -> None:
         print()
         print(f"Import complete: {restored} files restored in {elapsed:.1f}s")
         print(f"  Target: {display_hermes_home()}")
+        if hindsight_restored:
+            print(f"  Hindsight embedded backups restored: {hindsight_restored}")
 
         if errors:
             print(f"\n  Warnings ({len(errors)} files skipped):")
@@ -823,51 +1066,42 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     Returns the output path on success, None on failure (nothing to back up,
     or write error — caller should surface the outcome but not raise).
     """
-    files_to_add: list[tuple[Path, Path]] = []
     try:
-        for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-            dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+        with tempfile.TemporaryDirectory(prefix="hermes-backup-") as tmp:
+            tmp_dir = Path(tmp)
+            hindsight_artifact, hindsight_warning = _create_hindsight_embedded_backup(
+                hermes_root, tmp_dir
+            )
+            if hindsight_warning:
+                logger.warning(hindsight_warning)
+            files_to_add, _ = _collect_backup_files(
+                hermes_root,
+                out_path,
+                extra_files=[hindsight_artifact] if hindsight_artifact else None,
+                skip_hindsight_raw_store=hindsight_artifact is not None,
+            )
 
-            for fname in filenames:
-                fpath = dp / fname
-                try:
-                    rel = fpath.relative_to(hermes_root)
-                except ValueError:
-                    continue
+            if not files_to_add:
+                return None
 
-                if _should_skip_backup_file(fpath, rel, out_path):
-                    continue
-
-                files_to_add.append((fpath, rel))
+            with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                for abs_path, rel_path in files_to_add:
+                    try:
+                        if abs_path.suffix == ".db":
+                            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_db_file:
+                                tmp_db = Path(tmp_db_file.name)
+                            try:
+                                if _safe_copy_db(abs_path, tmp_db):
+                                    zf.write(tmp_db, arcname=str(rel_path))
+                            finally:
+                                tmp_db.unlink(missing_ok=True)
+                        else:
+                            zf.write(abs_path, arcname=str(rel_path))
+                    except (PermissionError, OSError, ValueError) as exc:
+                        logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
+                        continue
     except OSError as exc:
-        logger.warning("Full-zip backup: walk failed: %s", exc)
-        return None
-
-    if not files_to_add:
-        return None
-
-    try:
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            for abs_path, rel_path in files_to_add:
-                try:
-                    if abs_path.suffix == ".db":
-                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-                            tmp_db = Path(tmp.name)
-                        try:
-                            if _safe_copy_db(abs_path, tmp_db):
-                                zf.write(tmp_db, arcname=str(rel_path))
-                        finally:
-                            tmp_db.unlink(missing_ok=True)
-                    else:
-                        zf.write(abs_path, arcname=str(rel_path))
-                except (PermissionError, OSError, ValueError) as exc:
-                    logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
-                    continue
-    except OSError as exc:
-        logger.warning("Full-zip backup: zip write failed: %s", exc)
-        # Best-effort cleanup of partial file
+        logger.warning("Full-zip backup: %s", exc)
         try:
             out_path.unlink(missing_ok=True)
         except OSError:

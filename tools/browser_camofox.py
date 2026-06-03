@@ -345,7 +345,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
         f"{base}/tabs",
         json={
             "userId": session["user_id"],
-            "sessionKey": session["session_key"],
+            "listItemId": session["session_key"],
             "url": url,
         },
         timeout=_DEFAULT_TIMEOUT,

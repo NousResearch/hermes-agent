@@ -729,11 +729,12 @@ canvas {
    prompt doesn't dominate the viewport while you read the response stuck
    beneath it. The clamp lifts on hover / focus (clicking the bubble opens the
    edit composer, which already shows the full text). --human-msg-full is the
-   measured content height (set in UserMessage) so hover expand uses the real
-   height instead of overshooting the cap. */
+   measured content height (set in UserMessage) so expand/collapse animates to
+   the real height instead of overshooting the cap. */
 .sticky-human-clamp {
   max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
+  transition: max-height 0.75s ease;
 }
 
 .sticky-human-clamp[data-clamped='true'] {

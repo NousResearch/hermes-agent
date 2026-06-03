@@ -14,7 +14,7 @@ description: "一个订阅，300+ 前沿模型，Tool Gateway，以及 Nous Chat
 hermes setup --portal
 ```
 
-这条命令会完成 Portal OAuth 认证，在 `config.yaml` 中将 Nous 设为推理提供商，并开启 Tool Gateway。完成后即可立即运行 `hermes chat`。
+这条命令会完成 Portal OAuth 认证，让你选择一个 Nous 模型，在 `config.yaml` 中将 Nous 设为推理提供商，并开启 Tool Gateway。完成后即可立即运行 `hermes chat`。
 
 还没有订阅？前往 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册，然后回来运行上面的命令。
 
@@ -95,9 +95,10 @@ hermes setup --portal
 
 1. 打开浏览器跳转至 portal.nousresearch.com 进行 OAuth 登录
 2. 将 refresh token 存储至 `~/.hermes/auth.json`
-3. 在 `~/.hermes/config.yaml` 中将 Nous 设为推理提供商
-4. 开启 Tool Gateway（网页、图像、TTS、浏览器路由）
-5. 返回终端，即可运行 `hermes chat`
+3. 让你从精选列表中选择一个 Nous 模型（也可跳过以保留当前模型）
+4. 在 `~/.hermes/config.yaml` 中将 Nous 设为推理提供商（当你选择模型时）
+5. 开启 Tool Gateway（网页、图像、TTS、浏览器路由）
+6. 返回终端，即可运行 `hermes chat`
 
 如果还没有订阅，请先在 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册。
 

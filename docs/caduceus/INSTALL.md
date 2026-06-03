@@ -42,9 +42,20 @@ or build it yourself later.
 python3 install_caduceus.py --list-targets   # show detected Hermes installs + versions
 python3 install_caduceus.py --dry-run        # preview every change, write nothing
 python3 install_caduceus.py /path/to/hermes  # target a specific install
+python3 install_caduceus.py --verify         # health-check an existing install (files, compile, wiring, desktop UI)
+python3 install_caduceus.py --repack-only    # repack an already-built renderer into app.asar (no node)
 python3 install_caduceus.py --force          # proceed despite a version mismatch
-python3 install_caduceus.py --uninstall      # restore the most recent backup (full revert)
+python3 install_caduceus.py --uninstall      # restore the original backup (full revert)
 ```
+
+Re-running the installer is **idempotent**: it refreshes the Caduceus files in
+place and keeps the original (pre-Caduceus) backup, so `--uninstall` always
+reverts cleanly to stock — even after several re-installs.
+
+The asar repack is **stdlib-only** (no `node`/`npx`): only the renderer build
+step in `--with-desktop` needs `node`/`npm`. If you build the desktop elsewhere
+(or `node` here is a Windows binary reached from WSL), build it and then run
+`--repack-only` to swap the new UI into the packaged app.
 
 ## Uninstall
 

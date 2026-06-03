@@ -91,6 +91,17 @@ small, guarded, and a no-op when the mode is off.
   network is unavailable. It builds + validates the archive before atomically
   replacing the original (keeping `app.asar.precaduceus.bak` + a timestamped
   backup), and falls back to `@electron/asar` only if needed.
+- **`--verify`** — a post-install health check: confirms every overlay file is
+  present, all Caduceus modules byte-compile, the `/caduceus` command + Workflow
+  toolset are wired, and (if packaged) the desktop `app.asar` actually carries
+  the Caduceus UI.
+- **`--repack-only`** — repack a renderer you built elsewhere into the packaged
+  app with no `node`; it refuses a stock (Caduceus-free) build so you can't
+  silently pack the wrong UI.
+- **Idempotent re-install** — re-running the installer refreshes files in place
+  and preserves the original pre-Caduceus backup, so `--uninstall` always
+  reverts cleanly to stock (verified for single install, double install, and
+  tamper→refresh).
 
 ---
 

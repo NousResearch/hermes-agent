@@ -175,6 +175,26 @@ export function GatewaySettings() {
     return state.remoteAuthMode
   }, [probe, probeStatus, state.remoteAuthMode])
 
+  // Whether we actually KNOW how this gateway authenticates yet. Until we do,
+  // neither the OAuth button nor the session-token box should render —
+  // `authMode` defaults to 'token', so without this gate the token box flashes
+  // for every gateway (including OAuth ones) during the idle/probing window
+  // before the first probe lands. The scheme is known when either:
+  //   * the live probe finished (probeStatus 'done'), or
+  //   * we're idle but showing a previously-saved remote config (re-opening
+  //     settings for a gateway already signed-in or with a saved token), so
+  //     its control appears immediately with no flicker.
+  // While probing (or after a probe error), the scheme is unknown and we show
+  // the probe status row instead of a control.
+  const hasSavedRemote = state.remoteTokenSet || state.remoteOauthConnected
+  const authResolved = useMemo(() => {
+    if (probeStatus === 'done') {
+      return true
+    }
+
+    return probeStatus === 'idle' && hasSavedRemote
+  }, [probeStatus, hasSavedRemote])
+
   const providerLabel = useMemo(() => {
     const providers: DesktopAuthProvider[] = probe?.providers ?? []
 
@@ -427,7 +447,7 @@ export function GatewaySettings() {
         ) : null}
 
         {/* OAuth gateways: present a sign-in button + connection status. */}
-        {state.mode === 'remote' && authMode === 'oauth' ? (
+        {state.mode === 'remote' && authResolved && authMode === 'oauth' ? (
           <ListRow
             action={
               oauthConnected ? (
@@ -457,7 +477,7 @@ export function GatewaySettings() {
         ) : null}
 
         {/* Session-token gateways: keep the existing token entry box. */}
-        {state.mode === 'remote' && authMode === 'token' ? (
+        {state.mode === 'remote' && authResolved && authMode === 'token' ? (
           <ListRow
             action={
               <Input

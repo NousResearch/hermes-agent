@@ -111,6 +111,7 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     assert {
         "kanban_list",
         "kanban_unblock",
+        "kanban_admit_ready",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
         f"{kanban & {'kanban_list', 'kanban_unblock'}}"
@@ -137,7 +138,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
-        "kanban_unblock",
+        "kanban_unblock", "kanban_admit_ready",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -2088,3 +2089,182 @@ def test_board_param_in_all_schemas():
         assert "board" not in schema["parameters"].get("required", []), (
             f"{schema['name']} marks board as required; must be optional"
         )
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle truth surface — BO-196
+# ---------------------------------------------------------------------------
+
+def test_show_and_list_expose_lifecycle_state_review_ready(monkeypatch, tmp_path):
+    """A review_ready blocked task must show lifecycle_state=review_ready,
+    not raw status=blocked, in both kanban_show and kanban_list."""
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="review-ready-test", assignee="test-worker")
+        # Set the task into a review_ready lifecycle state
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', review_phase = 'review_ready', "
+                "closeout_evidence = ? WHERE id = ?",
+                ('{"worker_evidence": {"done": true}, "verifier_verdict": {"verdict": "pass"}}', tid),
+            )
+    finally:
+        conn.close()
+
+    # --- kanban_show ---
+    out = kt._handle_show({"task_id": tid})
+    d = json.loads(out)
+
+    task = d["task"]
+    # Existing fields still present (backward compatibility)
+    assert task["id"] == tid
+    assert task["title"] == "review-ready-test"
+    assert task["status"] == "blocked"         # raw status is NOT renamed
+    assert task["assignee"] == "test-worker"
+
+    # New lifecycle fields
+    assert task["review_phase"] == "review_ready"
+    assert task["lifecycle_state"] == "review_ready", (
+        f"expected lifecycle_state=review_ready, got {task['lifecycle_state']}"
+    )
+    assert task["closeout_evidence_keys"] == ["verifier_verdict", "worker_evidence"]
+    assert task["goal_mode"] is False
+    assert task["goal_max_turns"] is None
+    assert task["ready_contract_present"] is False
+
+    # --- kanban_list (orchestrator surface) ---
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    list_out = kt._handle_list({})
+    list_d = json.loads(list_out)
+    tasks = list_d["tasks"]
+    match = [t for t in tasks if t["id"] == tid]
+    assert len(match) == 1, f"task {tid} not found in list output"
+    summary = match[0]
+
+    # List summary carries the same lifecycle fields
+    assert summary["lifecycle_state"] == "review_ready"
+    assert summary["review_phase"] == "review_ready"
+    assert summary["closeout_evidence_keys"] == ["verifier_verdict", "worker_evidence"]
+    assert summary["goal_mode"] is False
+    assert summary["ready_contract_present"] is False
+    # Existing list fields still present
+    assert summary["title"] == "review-ready-test"
+
+
+def test_show_and_list_expose_lifecycle_state_worker_done(monkeypatch, tmp_path):
+    """status=blocked + review_phase=worker_done → lifecycle_state=worker_done."""
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="worker-done-test", assignee="test-worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', review_phase = 'worker_done' "
+                "WHERE id = ?", (tid,)
+            )
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_show({"task_id": tid})
+    d = json.loads(out)
+    assert d["task"]["lifecycle_state"] == "worker_done"
+    assert d["task"]["status"] == "blocked"   # raw status untouched
+
+
+def test_show_lifecycle_fields_on_normal_task(worker_env):
+    """A normal running task (no review_phase) still gets lifecycle fields
+    without breaking backward compatibility."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_show({})
+    d = json.loads(out)
+
+    task = d["task"]
+    # Normal running task: lifecycle_state mirrors raw status
+    assert task["lifecycle_state"] == "running"
+    assert task["review_phase"] is None
+    assert task["goal_mode"] is False
+    assert task["closeout_evidence_keys"] == []
+    assert task["ready_contract_present"] is False
+
+    # All existing fields are still present
+    for key in ("id", "title", "status", "assignee", "body",
+                "tenant", "priority", "workspace_kind", "workspace_path",
+                "created_by", "created_at", "started_at", "completed_at",
+                "result", "current_run_id", "model_override"):
+        assert key in task, f"backward-compat field '{key}' missing from show"
+
+
+def test_list_lifecycle_fields_on_normal_task(monkeypatch, tmp_path):
+    """A normal running task appears in list with lifecycle fields."""
+    from pathlib import Path as _Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="normal-task", assignee="test-worker")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    list_out = kt._handle_list({})
+    list_d = json.loads(list_out)
+    tasks = list_d["tasks"]
+    match = [t for t in tasks if t["id"] == tid]
+    assert len(match) == 1
+    s = match[0]
+
+    assert s["lifecycle_state"] == "ready"  # new task, status=ready
+    assert s["review_phase"] is None
+    assert s["goal_mode"] is False
+    assert s["closeout_evidence_keys"] == []
+    assert s["ready_contract_present"] is False
+
+    # Backward compat: all existing list fields still present
+    for key in ("id", "title", "status", "assignee", "priority", "tenant",
+                "workspace_kind", "workspace_path", "created_by", "created_at",
+                "started_at", "completed_at", "current_run_id", "model_override",
+                "parents", "children", "parent_count", "child_count"):
+        assert key in s, f"backward-compat field '{key}' missing from list summary"

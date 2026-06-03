@@ -306,6 +306,53 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     return None
 
 
+def _task_lifecycle_fields(task) -> dict[str, Any]:
+    """Derive lifecycle display fields from a Task object.
+
+    These fields expose lifecycle truth that raw ``status`` alone does not —
+    e.g. ``status=blocked, review_phase=review_ready`` means the task is
+    actually in the ``review_ready`` lifecycle state, not a generic failure.
+    Both ``kanban_show`` and ``kanban_list`` use this same helper so agents
+    and operators see a consistent surface.
+    """
+    review_phase = getattr(task, "review_phase", None)
+    goal_mode = bool(getattr(task, "goal_mode", False))
+    goal_max_turns = getattr(task, "goal_max_turns", None)
+    status = getattr(task, "status", None)
+
+    # ---- lifecycle_state ----
+    # blocked + review_phase signals a structured lifecycle stop, not failure.
+    if status == "blocked" and review_phase == "worker_done":
+        lifecycle_state = "worker_done"
+    elif status == "blocked" and review_phase == "review_ready":
+        lifecycle_state = "review_ready"
+    else:
+        lifecycle_state = status
+
+    # ---- closeout_evidence_keys ----
+    ce = getattr(task, "closeout_evidence", None)
+    if isinstance(ce, dict):
+        closeout_evidence_keys = sorted(ce.keys())
+    else:
+        closeout_evidence_keys = []
+
+    # ---- ready_contract_present ----
+    admission = getattr(task, "admission_snapshot", None)
+    ready_contract_present = (
+        isinstance(admission, dict)
+        and "ready_contract" in admission
+    )
+
+    return {
+        "review_phase": review_phase,
+        "goal_mode": goal_mode,
+        "goal_max_turns": goal_max_turns,
+        "lifecycle_state": lifecycle_state,
+        "closeout_evidence_keys": closeout_evidence_keys,
+        "ready_contract_present": ready_contract_present,
+    }
+
+
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
     """Compact task shape for board-listing tools."""
     parents = kb.parent_ids(conn, task.id)
@@ -329,6 +376,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "children": children,
         "parent_count": len(parents),
         "child_count": len(children),
+        **_task_lifecycle_fields(task),
     }
 
 
@@ -537,6 +585,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    **_task_lifecycle_fields(t),
                 }
 
             def _run_dict(r):
@@ -1048,6 +1097,33 @@ def _handle_create(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")
+
+
+def _handle_admit_ready(args: dict, **kw) -> str:
+    guard = _require_orchestrator_tool("kanban_admit_ready")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    contract = args.get("ready_contract")
+    if not isinstance(contract, dict):
+        return tool_error("ready_contract must be a JSON object")
+    dry_run, bool_error = _parse_bool_arg(args, "dry_run")
+    if bool_error:
+        return tool_error(bool_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            return _ok(**kb.admit_ready_task(conn, str(tid), ready_contract=contract, apply=not dry_run))
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_admit_ready: {e}")
+    except Exception as e:
+        logger.exception("kanban_admit_ready failed")
+        return tool_error(f"kanban_admit_ready: {e}")
 
 
 def _handle_unblock(args: dict, **kw) -> str:
@@ -1563,6 +1639,26 @@ KANBAN_CREATE_SCHEMA = {
     },
 }
 
+KANBAN_ADMIT_READY_SCHEMA = {
+    "name": "kanban_admit_ready",
+    "description": (
+        "Validate and persist a structured kanban_ready_contract.v1 for a task, "
+        "promoting it to ready only when the executable contract passes. "
+        "Orchestrator-only; task workers should complete/block their own card."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task id or public id to admit."},
+            "ready_contract": {"type": "object", "description": "kanban_ready_contract.v1 object."},
+            "dry_run": {"type": "boolean", "description": "Validate without mutating state."},
+            "board": {"type": "string", "description": "Optional Kanban board slug."},
+        },
+        "required": ["task_id", "ready_contract"],
+    },
+}
+
+
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
@@ -1677,6 +1773,15 @@ registry.register(
     handler=_handle_create,
     check_fn=_check_kanban_mode,
     emoji="➕",
+)
+
+registry.register(
+    name="kanban_admit_ready",
+    toolset="kanban",
+    schema=KANBAN_ADMIT_READY_SCHEMA,
+    handler=_handle_admit_ready,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧾",
 )
 
 registry.register(

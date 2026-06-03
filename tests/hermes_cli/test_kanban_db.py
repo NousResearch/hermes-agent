@@ -374,7 +374,9 @@ def test_recompute_ready_strict_gate_blocks_incomplete_dependency_wakeup(kanban_
         events = kb.list_events(conn, c)
 
     assert child.status == "blocked"
-    assert child.assignee is None
+    assert child.assignee == "alice"
+    assert child.admission_snapshot["blocked_by"] == "ready_gate"
+    assert child.admission_snapshot["original_assignee"] == "alice"
     assert "ready_gate_blocked" in [event.kind for event in events]
 
 
@@ -1668,7 +1670,9 @@ def test_dispatch_strict_ready_gate_blocks_raw_ready_before_spawn(kanban_home, m
     assert t in res.auto_blocked
     assert not res.spawned
     assert task.status == "blocked"
-    assert task.assignee is None
+    assert task.assignee == "alice"
+    assert task.admission_snapshot["blocked_by"] == "ready_gate"
+    assert task.admission_snapshot["original_assignee"] == "alice"
     assert "ready_gate_blocked" in [event.kind for event in events]
 
 
@@ -1710,6 +1714,42 @@ def _structured_ready_contract(**overrides):
     }
     contract.update(overrides)
     return contract
+
+
+def test_admit_ready_task_persists_contract_and_promotes(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs admission", body="display", assignee="alice", goal_mode=True, triage=True)
+        result = kb.admit_ready_task(conn, t, ready_contract=_structured_ready_contract(), apply=True)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert result["autopilot_eligible"] is True
+    assert result["decision"] == "ready"
+    assert task.status == "ready"
+    assert task.admission_snapshot["ready_contract"]["schema"] == "kanban_ready_contract.v1"
+    assert task.admission_snapshot["routing_verdict"]["assignee"] == "alice"
+    assert task.admission_snapshot["ready_gate_source"] == "kanban_admit_ready"
+    assert "kanban_ready_contract.v1" in (task.body or "")
+    assert any(event.kind == "kanban_admit_ready" for event in events)
+
+
+def test_admit_ready_task_blocks_invalid_contract_without_promoting(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    contract = _structured_ready_contract(reviewer_loop={"required": True, "reviewer_profile": "verifier"})
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs goal mode", body="display", assignee="alice", triage=True)
+        result = kb.admit_ready_task(conn, t, ready_contract=contract, apply=True)
+        task = kb.get_task(conn, t)
+
+    assert result["autopilot_eligible"] is False
+    assert "ready_contract_reviewer_loop_requires_goal_mode" in result["reason_codes"]
+    assert task.status == "triage"
+    assert task.admission_snapshot["ready_gate_result"] == "blocked"
 
 
 def test_dispatch_strict_ready_gate_accepts_structured_ready_contract_without_markers(kanban_home, monkeypatch):
@@ -2083,6 +2123,46 @@ def test_autopilot_parent_report_does_not_show_done_child_as_autopilot_ready(kan
     assert report["autopilot_ready"] == []
     assert report["autopilot_blocked"][0]["task_id"] == child
     assert "non_dispatchable_status" in report["autopilot_blocked"][0]["ready_gate_reason_codes"]
+
+
+def test_parent_scoped_dispatch_enforces_ready_gate_even_when_global_strict_gate_off(kanban_home, monkeypatch):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: name in {"alice", "verifier"})
+    monkeypatch.setattr(kb, "recompute_ready", lambda *args, **kwargs: 0)
+    monkeypatch.setenv("HERMES_KANBAN_STRICT_READY_GATE", "false")
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, workspace))
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="autopilot parent", triage=True)
+        blocked_child = kb.create_task(
+            conn,
+            title="already in review child",
+            assignee="alice",
+            review_phase="worker_done",
+            closeout_evidence={"schema": "kanban_closeout_evidence.v1"},
+        )
+        kb.link_tasks(conn, parent, blocked_child, relation_type="hierarchy")
+        conn.execute("UPDATE tasks SET status='ready', assignee='alice' WHERE id=?", (blocked_child,))
+        conn.execute(
+            "UPDATE tasks SET admission_snapshot=? WHERE id=?",
+            (
+                json.dumps({"ready_contract": _structured_ready_contract(reviewer_loop={"required": False})}),
+                blocked_child,
+            ),
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, parent_task_id=parent)
+        after = kb.get_task(conn, blocked_child)
+
+    assert res.spawned == []
+    assert spawns == []
+    assert blocked_child in res.auto_blocked
+    assert after.status == "blocked"
+    assert after.review_phase == "worker_done"
 
 
 def _review_ready_child_evidence(child_id: str, *, summary: str = "child verified") -> dict:

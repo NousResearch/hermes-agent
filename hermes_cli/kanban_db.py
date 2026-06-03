@@ -747,6 +747,7 @@ class Task:
     session_id: Optional[str] = None
     review_phase: Optional[str] = None
     closeout_evidence: Optional[dict] = None
+    admission_snapshot: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -763,6 +764,9 @@ class Task:
         closeout_evidence = None
         if "closeout_evidence" in keys and row["closeout_evidence"]:
             closeout_evidence = _json_loads_maybe(row["closeout_evidence"])
+        admission_snapshot = None
+        if "admission_snapshot" in keys and row["admission_snapshot"]:
+            admission_snapshot = _json_loads_maybe(row["admission_snapshot"])
         return cls(
             id=row["id"],
             title=row["title"],
@@ -829,6 +833,7 @@ class Task:
                 row["review_phase"] if "review_phase" in keys else None
             ),
             closeout_evidence=closeout_evidence,
+            admission_snapshot=admission_snapshot,
         )
 
 
@@ -1236,6 +1241,10 @@ def _evaluate_autopilot_ready_gate_for_row(row: sqlite3.Row) -> dict[str, Any]:
     if str(candidate.get("status") or "").lower() != "ready":
         reason_codes.append("kanban_status_not_ready")
         missing_labels.append("Kanban status=ready")
+    if str(candidate.get("review_phase") or "").strip():
+        reason_codes.append("review_phase_not_empty")
+        missing_labels.append("empty review_phase")
+    structural_reason_codes = list(reason_codes)
 
     for code, markers, label in _READY_GATE_REQUIREMENTS:
         if not any(marker in haystack for marker in markers):
@@ -1273,7 +1282,7 @@ def _evaluate_autopilot_ready_gate_for_row(row: sqlite3.Row) -> dict[str, Any]:
     if not isinstance(admission_snapshot, dict):
         admission_snapshot = {}
     structured_ready_contract = admission_snapshot.get("ready_contract")
-    if structured_ready_contract:
+    if structured_ready_contract and not structural_reason_codes:
         from hermes_cli import profiles
         from hermes_cli.kanban_ready_contract import validate_ready_contract
 
@@ -1385,12 +1394,23 @@ def _block_for_ready_gate_failure(conn: sqlite3.Connection, row: sqlite3.Row, ga
         "to_status": "blocked",
         "reason": reason,
         "ready_gate": gate,
+        "blocked_by": "ready_gate",
+        "original_assignee": row["assignee"] if "assignee" in row.keys() else None,
     }
+    snapshot = None
+    if "admission_snapshot" in row.keys() and row["admission_snapshot"]:
+        snapshot = _json_loads_maybe(row["admission_snapshot"])
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    snapshot["blocked_by"] = "ready_gate"
+    snapshot["ready_gate"] = gate
+    snapshot["ready_gate_reason_codes"] = reason_codes
+    snapshot["original_assignee"] = row["assignee"] if "assignee" in row.keys() else None
     conn.execute(
-        "UPDATE tasks SET status = 'blocked', assignee = NULL, claim_lock = NULL, "
+        "UPDATE tasks SET status = 'blocked', admission_snapshot = ?, claim_lock = NULL, "
         "claim_expires = NULL, worker_pid = NULL, consecutive_failures = 0, "
         "last_failure_error = NULL WHERE id = ?",
-        (task_id,),
+        (json.dumps(snapshot), task_id),
     )
     _append_event(conn, task_id, "ready_gate_blocked", payload)
     _append_event(conn, task_id, "blocked", payload)
@@ -3415,6 +3435,111 @@ def _contract_requires_blocker(contract: Mapping[str, Any]) -> list[str]:
         if kind not in {"", "none", "clear", "cleared"}:
             reasons.append("dependency_blocked")
     return list(dict.fromkeys(reasons))
+
+
+def admit_ready_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    ready_contract: Mapping[str, Any],
+    apply: bool = True,
+) -> dict[str, Any]:
+    """Validate and persist a structured ready contract for one task.
+
+    This is the single-card admission path behind the agent-facing
+    ``kanban_admit_ready`` tool and ``hermes kanban admit-ready`` CLI.  It is
+    intentionally narrower than parent prepare: callers supply one explicit
+    contract, the validator decides whether the card is executable, and only an
+    accepted contract may promote the task to raw ``ready``.
+    """
+    task = resolve_task_ref(conn, task_id)
+    if task is None:
+        raise ValueError(f"no such task: {task_id}")
+    task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    public_expr = "public_id" if "public_id" in task_cols else "NULL AS public_id"
+    row = conn.execute(
+        f"SELECT id, {public_expr}, title, status, assignee, goal_mode, review_phase, admission_snapshot FROM tasks WHERE id = ?",
+        (task,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"no such task: {task_id}")
+    from hermes_cli import profiles
+    from hermes_cli.kanban_ready_contract import render_ready_contract_markdown, validate_ready_contract
+
+    validation = validate_ready_contract(
+        ready_contract,
+        goal_mode=bool(row["goal_mode"]),
+        assignee=str(row["assignee"] or "").strip() or _contract_assignee(ready_contract),
+        profile_exists=profiles.profile_exists,
+    )
+    reason_codes: list[str] = []
+    if validation.accepted:
+        reason_codes.extend(_contract_requires_blocker(validation.ready_contract or {}))
+    else:
+        reason_codes.extend(validation.reason_codes)
+    if row["review_phase"]:
+        reason_codes.append("review_phase_not_empty")
+    if str(row["status"] or "") not in {"triage", "todo", "blocked", "ready"}:
+        reason_codes.append("non_promotable_status")
+    reason_codes = list(dict.fromkeys(reason_codes))
+    accepted = not reason_codes
+    snapshot = _json_loads_maybe(row["admission_snapshot"]) or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    if validation.ready_contract:
+        snapshot["ready_contract"] = validation.ready_contract
+        routing = validation.ready_contract.get("routing_verdict")
+        if isinstance(routing, Mapping):
+            snapshot["routing_verdict"] = dict(routing)
+    snapshot["autopilot_eligible"] = accepted
+    snapshot["ready_gate_result"] = "accepted" if accepted else "blocked"
+    snapshot["ready_gate_reason_codes"] = reason_codes
+    snapshot["ready_gate_source"] = "kanban_admit_ready"
+    assignee = _contract_assignee(validation.ready_contract or {})
+    rendered_body = None
+    if validation.ready_contract:
+        rendered_body = render_ready_contract_markdown(validation.ready_contract)
+    if apply:
+        with write_txn(conn):
+            if accepted:
+                conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status = 'ready',
+                           assignee = COALESCE(NULLIF(assignee, ''), ?),
+                           body = COALESCE(?, body),
+                           admission_snapshot = ?,
+                           claim_lock = NULL,
+                           claim_expires = NULL,
+                           worker_pid = NULL
+                     WHERE id = ?
+                       AND status IN ('triage', 'todo', 'blocked', 'ready')
+                       AND (review_phase IS NULL OR review_phase = '')
+                    """,
+                    (assignee, rendered_body, json.dumps(snapshot), task),
+                )
+            else:
+                conn.execute("UPDATE tasks SET admission_snapshot = ? WHERE id = ?", (json.dumps(snapshot), task))
+            _append_event(
+                conn,
+                task,
+                "kanban_admit_ready",
+                {
+                    "decision": "ready" if accepted else "blocked",
+                    "autopilot_eligible": accepted,
+                    "reason_codes": reason_codes,
+                    "applied": True,
+                },
+            )
+    return {
+        "task_id": task,
+        "public_id": row["public_id"] or task,
+        "decision": "ready" if accepted else "blocked",
+        "autopilot_eligible": accepted,
+        "reason_codes": reason_codes,
+        "applied": bool(apply),
+        "contract_source": "provided",
+    }
 
 
 def autopilot_prepare_parent(
@@ -7941,7 +8066,8 @@ def dispatch_once(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
-        if _strict_ready_gate_enabled():
+        enforce_ready_gate = bool(parent_task_id) or _strict_ready_gate_enabled()
+        if enforce_ready_gate:
             gate = _evaluate_autopilot_ready_gate_for_row(row)
             if not gate.get("autopilot_ready"):
                 result.auto_blocked.append(row["id"])

@@ -647,6 +647,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit machine-readable JSON result",
     )
 
+    p_admit = sub.add_parser("admit-ready", help="Validate and persist one structured ready contract")
+    p_admit.add_argument("task_id")
+    p_admit.add_argument("--contract-json", required=True,
+                         help="JSON object or file path containing a kanban_ready_contract.v1 contract")
+    p_admit.add_argument("--dry-run", action="store_true",
+                         help="Validate without mutating the task")
+    p_admit.add_argument("--json", action="store_true")
+
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
@@ -1037,6 +1045,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
         "promote":  _cmd_promote,
+        "admit-ready": _cmd_admit_ready,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
         "dispatch": _cmd_dispatch,
@@ -2204,6 +2213,39 @@ def _cmd_promote(args: argparse.Namespace) -> int:
         else:
             print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
     return 0 if not failed else 1
+
+
+def _cmd_admit_ready(args: argparse.Namespace) -> int:
+    raw = getattr(args, "contract_json", None)
+    if not raw:
+        print("kanban admit-ready: --contract-json is required", file=sys.stderr)
+        return 2
+    source = str(raw)
+    try:
+        path = Path(source)
+        if path.exists():
+            contract = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            contract = json.loads(source)
+        if isinstance(contract, dict) and isinstance(contract.get("ready_contract"), dict):
+            contract = contract["ready_contract"]
+        if not isinstance(contract, dict):
+            raise ValueError("contract JSON must be an object")
+    except Exception as exc:
+        print(f"kanban admit-ready: invalid contract JSON: {exc}", file=sys.stderr)
+        return 1
+    with kb.connect_closing() as conn:
+        result = kb.admit_ready_task(
+            conn,
+            args.task_id,
+            ready_contract=contract,
+            apply=not bool(getattr(args, "dry_run", False)),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"{result['public_id']} {result['decision']} reason_codes={result['reason_codes']}")
+    return 0 if result.get("autopilot_eligible") else 1
 
 
 def _cmd_archive(args: argparse.Namespace) -> int:

@@ -73,6 +73,52 @@ def _profile_exists(name: str, checker: Callable[[str], bool] | None) -> bool:
         return False
 
 
+def render_ready_contract_markdown(contract: Mapping[str, Any]) -> str:
+    """Render a validated-ish ready contract into canonical human-facing body text."""
+    data = _as_mapping(contract)
+
+    def lines_for(value: Any) -> list[str]:
+        seq = _as_nonempty_sequence(value)
+        if not seq:
+            return ["- <none>"]
+        return [f"- {item}" for item in seq]
+
+    sections: list[str] = [
+        "# Structured Kanban Ready Contract",
+        "",
+        f"schema: {_text(data.get('schema')) or READY_CONTRACT_SCHEMA}",
+        "",
+        "## Goal",
+        _text(data.get("goal")) or "<missing>",
+        "",
+        "## End state",
+        _text(data.get("end_state")) or "<missing>",
+        "",
+        "## Scope",
+        *lines_for(data.get("scope")),
+        "",
+        "## Non-goals",
+        *lines_for(data.get("non_goals")),
+        "",
+        "## Acceptance criteria",
+        *lines_for(data.get("acceptance_criteria")),
+        "",
+        "## Done criteria",
+        *lines_for(data.get("done_criteria")),
+        "",
+        "## Verification requirements",
+        *lines_for(data.get("verification_requirements")),
+        "",
+        "## Structured contract JSON",
+        "```json",
+    ]
+    import json
+
+    sections.append(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
+    sections.extend(["```", ""])
+    return "\n".join(sections)
+
+
 def validate_ready_contract(
     value: Any,
     *,

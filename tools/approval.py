@@ -441,6 +441,20 @@ DANGEROUS_PATTERNS = [
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    # cp/mv/install OVERWRITING a sensitive credential/SSH/shell-rc/Hermes file.
+    # The tee/redirection patterns above already gate _SENSITIVE_WRITE_TARGET
+    # (~/.ssh/*, ~/.netrc/.pgpass/.npmrc/.pypirc, shell rc files,
+    # ~/.hermes/config.yaml/.env), but cp/mv/install was only paired for /etc and
+    # project-relative env/config — so `cp evil ~/.ssh/authorized_keys` (key
+    # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command
+    # injection) slipped through with auto-approve. Same unpaired-door rationale
+    # as #14639 / the sed-tee-redirect pairing on these targets.
+    # Anchor the sensitive target to the command tail so this fires on the
+    # DESTINATION (last arg) only — `cp evil ~/.ssh/authorized_keys` is gated,
+    # but reading OUT of a sensitive path (`cp ~/.ssh/config /tmp/x`) stays safe.
+    # The trailing `[^\s"\']*` consumes the rest of the destination filename
+    # (e.g. `authorized_keys` after the `~/.ssh/` fragment).
+    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or

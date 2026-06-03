@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
-import { Globe, Info, KeyRound, Package, Wrench } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Wrench } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -19,7 +19,7 @@ import { SEARCH_PLACEHOLDER, SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
-import { ToolsSettings } from './tools-settings'
+import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
@@ -27,11 +27,11 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'gateway',
   'keys',
   'mcp',
-  'tools',
+  'sessions',
   'about'
 ]
 
-export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPageProps) {
+export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
 
   const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
@@ -40,7 +40,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
     gateway: '',
     keys: '',
     mcp: '',
-    tools: ''
+    sessions: ''
   })
 
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -138,16 +138,16 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
-            active={activeView === 'tools'}
-            icon={Package}
-            label="Skills & Tools"
-            onClick={() => setActiveView('tools')}
-          />
-          <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
             label="MCP"
             onClick={() => setActiveView('mcp')}
+          />
+          <OverlayNavItem
+            active={activeView === 'sessions'}
+            icon={Archive}
+            label="Archived Chats"
+            onClick={() => setActiveView('sessions')}
           />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
@@ -194,6 +194,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
               activeSectionId={activeView.slice('config:'.length)}
               importInputRef={importInputRef}
               onConfigSaved={onConfigSaved}
+              onMainModelChanged={onMainModelChanged}
               query={queries.config}
             />
           ) : activeView === 'keys' ? (
@@ -201,7 +202,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved }: SettingsPagePr
           ) : activeView === 'mcp' ? (
             <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} query={queries.mcp} />
           ) : (
-            <ToolsSettings query={queries.tools} />
+            <SessionsSettings query={queries.sessions} />
           )}
         </OverlayMain>
       </OverlaySplitLayout>

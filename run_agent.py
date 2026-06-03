@@ -1206,6 +1206,21 @@ class AIAgent:
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
+    @staticmethod
+    def _requested_output_cap_from_api_kwargs(api_kwargs: Any) -> Optional[int]:
+        """Extract the outgoing response token cap from a prepared request."""
+        if not isinstance(api_kwargs, dict):
+            return None
+        for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+            raw = api_kwargs.get(key)
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any reasoning/thinking blocks.

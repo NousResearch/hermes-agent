@@ -3,37 +3,29 @@ import {
   IconBookmark,
   IconBookmarkFilled,
   IconDownload,
-  IconLoader2,
   IconRefresh,
-  IconSparkles,
   IconTrash
 } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getActionStatus,
-  getAuxiliaryModels,
-  getGlobalModelInfo,
-  getGlobalModelOptions,
   getLogs,
   getStatus,
   getUsageAnalytics,
   restartGateway,
   searchSessions,
-  setModelAssignment,
   updateHermes
 } from '@/hermes'
 import type {
   ActionStatusResponse,
   AnalyticsResponse,
-  AuxiliaryModelsResponse,
-  ModelOptionProvider,
   SessionInfo,
   SessionSearchResult as SessionSearchApiResult,
   StatusResponse
 } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Cpu, Pin } from '@/lib/icons'
+import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -47,30 +39,9 @@ import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from 
 import { OverlayView } from '../overlays/overlay-view'
 import { ARTIFACTS_ROUTE, MESSAGING_ROUTE, NEW_CHAT_ROUTE, SETTINGS_ROUTE, SKILLS_ROUTE } from '../routes'
 
-export type CommandCenterSection = 'models' | 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'sessions' | 'system' | 'usage'
 
-const SECTIONS = ['sessions', 'system', 'models', 'usage'] as const satisfies readonly CommandCenterSection[]
-
-// Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
-// hints make the assignments panel readable; raw task keys (vision, mcp, …)
-// are opaque to most users.
-interface AuxTaskMeta {
-  hint: string
-  key: string
-  label: string
-}
-
-const AUX_TASKS: readonly AuxTaskMeta[] = [
-  { key: 'vision', label: 'Vision', hint: 'Image analysis' },
-  { key: 'web_extract', label: 'Web extract', hint: 'Page summarization' },
-  { key: 'compression', label: 'Compression', hint: 'Context compaction' },
-  { key: 'session_search', label: 'Session search', hint: 'Recall queries' },
-  { key: 'skills_hub', label: 'Skills hub', hint: 'Skill search' },
-  { key: 'approval', label: 'Approval', hint: 'Smart auto-approve' },
-  { key: 'mcp', label: 'MCP', hint: 'MCP tool routing' },
-  { key: 'title_generation', label: 'Title gen', hint: 'Session titles' },
-  { key: 'curator', label: 'Curator', hint: 'Skill-usage review' }
-]
+const SECTIONS = ['sessions', 'system', 'usage'] as const satisfies readonly CommandCenterSection[]
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -79,7 +50,6 @@ interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
-  onMainModelChanged?: (provider: string, model: string) => void
   onNavigateRoute: (path: string) => void
   onOpenSession: (sessionId: string) => void
 }
@@ -87,14 +57,12 @@ interface CommandCenterViewProps {
 const SECTION_LABELS: Record<CommandCenterSection, string> = {
   sessions: 'Sessions',
   system: 'System',
-  models: 'Models',
   usage: 'Usage'
 }
 
 const SECTION_DESCRIPTIONS: Record<CommandCenterSection, string> = {
   sessions: 'Search and manage sessions',
   system: 'Status, logs, and system actions',
-  models: 'Global and auxiliary model controls',
   usage: 'Token, cost, and skill activity over time'
 }
 
@@ -115,7 +83,7 @@ interface SectionSearchEntry {
 const NAVIGATION_SEARCH_ENTRIES: readonly NavigationSearchEntry[] = [
   { id: 'nav-new-chat', route: NEW_CHAT_ROUTE, title: 'New session', detail: 'Start a fresh session' },
   { id: 'nav-settings', route: SETTINGS_ROUTE, title: 'Settings', detail: 'Configure Hermes desktop' },
-  { id: 'nav-skills', route: SKILLS_ROUTE, title: 'Skills', detail: 'Enable and inspect skills' },
+  { id: 'nav-skills', route: SKILLS_ROUTE, title: 'Skills & Tools', detail: 'Enable skills, toolsets, and providers' },
   {
     id: 'nav-messaging',
     route: MESSAGING_ROUTE,
@@ -128,7 +96,6 @@ const NAVIGATION_SEARCH_ENTRIES: readonly NavigationSearchEntry[] = [
 const SECTION_SEARCH_ENTRIES: readonly SectionSearchEntry[] = [
   { id: 'section-sessions', section: 'sessions', title: 'Sessions panel', detail: 'Search, pin, and manage sessions' },
   { id: 'section-system', section: 'system', title: 'System panel', detail: 'Gateway status, logs, restart/update' },
-  { id: 'section-models', section: 'models', title: 'Models panel', detail: 'Main and auxiliary model assignments' },
   { id: 'section-usage', section: 'usage', title: 'Usage panel', detail: 'Token, cost, and skill activity' }
 ]
 
@@ -216,7 +183,6 @@ export function CommandCenterView({
   initialSection,
   onClose,
   onDeleteSession,
-  onMainModelChanged,
   onNavigateRoute,
   onOpenSession
 }: CommandCenterViewProps) {
@@ -233,16 +199,6 @@ export function CommandCenterView({
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
   const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
-  const [modelsLoading, setModelsLoading] = useState(false)
-  const [modelsError, setModelsError] = useState('')
-  const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
-  const [providers, setProviders] = useState<ModelOptionProvider[]>([])
-  const [selectedProvider, setSelectedProvider] = useState('')
-  const [selectedModel, setSelectedModel] = useState('')
-  const [auxiliary, setAuxiliary] = useState<AuxiliaryModelsResponse | null>(null)
-  const [applyingModel, setApplyingModel] = useState(false)
-  const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
-  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -263,11 +219,6 @@ export function CommandCenterView({
         return right - left
       }),
     [sessions]
-  )
-
-  const selectedProviderModels = useMemo(
-    () => providers.find(provider => provider.slug === selectedProvider)?.models ?? [],
-    [providers, selectedProvider]
   )
 
   const searchProviders = useMemo<readonly CommandCenterSearchProvider[]>(
@@ -342,29 +293,6 @@ export function CommandCenterView({
     }
   }, [])
 
-  const refreshModels = useCallback(async () => {
-    setModelsLoading(true)
-    setModelsError('')
-
-    try {
-      const [modelInfo, modelOptions, auxiliaryModels] = await Promise.all([
-        getGlobalModelInfo(),
-        getGlobalModelOptions(),
-        getAuxiliaryModels()
-      ])
-
-      setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-      setProviders(modelOptions.providers || [])
-      setSelectedProvider(prev => prev || modelInfo.provider)
-      setSelectedModel(prev => prev || modelInfo.model)
-      setAuxiliary(auxiliaryModels)
-    } catch (error) {
-      setModelsError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setModelsLoading(false)
-    }
-  }, [])
-
   const refreshUsage = useCallback(async (days: UsagePeriod) => {
     const requestId = usageRequestRef.current + 1
     usageRequestRef.current = requestId
@@ -431,26 +359,10 @@ export function CommandCenterView({
   }, [refreshSystem, section, status, systemLoading])
 
   useEffect(() => {
-    if (section === 'models' && !mainModel && !modelsLoading) {
-      void refreshModels()
-    }
-  }, [mainModel, modelsLoading, refreshModels, section])
-
-  useEffect(() => {
     if (section === 'usage') {
       void refreshUsage(usagePeriod)
     }
   }, [refreshUsage, section, usagePeriod])
-
-  useEffect(() => {
-    if (!selectedProviderModels.length) {
-      return
-    }
-
-    if (!selectedProviderModels.includes(selectedModel)) {
-      setSelectedModel(selectedProviderModels[0])
-    }
-  }, [selectedModel, selectedProviderModels])
 
   const showGlobalSearchResults = debouncedQuery.length > 0
   const hasGlobalSearchResults = searchGroups.length > 0
@@ -497,128 +409,6 @@ export function CommandCenterView({
     [refreshSystem]
   )
 
-  const applyMainModel = useCallback(async () => {
-    if (!selectedProvider || !selectedModel) {
-      return
-    }
-
-    setApplyingModel(true)
-    setModelsError('')
-
-    try {
-      const result = await setModelAssignment({
-        model: selectedModel,
-        provider: selectedProvider,
-        scope: 'main'
-      })
-
-      const provider = result.provider || selectedProvider
-      const model = result.model || selectedModel
-      setMainModel({ provider, model })
-      onMainModelChanged?.(provider, model)
-      await refreshModels()
-    } catch (error) {
-      setModelsError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setApplyingModel(false)
-    }
-  }, [onMainModelChanged, refreshModels, selectedModel, selectedProvider])
-
-  const setAuxiliaryToMain = useCallback(
-    async (task: string) => {
-      if (!mainModel) {
-        return
-      }
-
-      setApplyingModel(true)
-      setModelsError('')
-
-      try {
-        await setModelAssignment({
-          model: mainModel.model,
-          provider: mainModel.provider,
-          scope: 'auxiliary',
-          task
-        })
-        await refreshModels()
-      } catch (error) {
-        setModelsError(error instanceof Error ? error.message : String(error))
-      } finally {
-        setApplyingModel(false)
-      }
-    },
-    [mainModel, refreshModels]
-  )
-
-  const applyAuxiliaryDraft = useCallback(
-    async (task: string) => {
-      if (!auxDraft.provider || !auxDraft.model) {
-        return
-      }
-
-      setApplyingModel(true)
-      setModelsError('')
-
-      try {
-        await setModelAssignment({
-          model: auxDraft.model,
-          provider: auxDraft.provider,
-          scope: 'auxiliary',
-          task
-        })
-        setEditingAuxTask(null)
-        await refreshModels()
-      } catch (error) {
-        setModelsError(error instanceof Error ? error.message : String(error))
-      } finally {
-        setApplyingModel(false)
-      }
-    },
-    [auxDraft, refreshModels]
-  )
-
-  const beginAuxiliaryEdit = useCallback(
-    (task: string) => {
-      const current = auxiliary?.tasks.find(entry => entry.task === task)
-
-      const initialProvider =
-        current?.provider && current.provider !== 'auto' ? current.provider : (mainModel?.provider ?? '')
-
-      const initialModel = current?.model || mainModel?.model || ''
-      setAuxDraft({ provider: initialProvider, model: initialModel })
-      setEditingAuxTask(task)
-    },
-    [auxiliary, mainModel]
-  )
-
-  const auxDraftProviderModels = useMemo(
-    () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
-    [auxDraft.provider, providers]
-  )
-
-  const resetAuxiliaryModels = useCallback(async () => {
-    if (!mainModel) {
-      return
-    }
-
-    setApplyingModel(true)
-    setModelsError('')
-
-    try {
-      await setModelAssignment({
-        model: mainModel.model,
-        provider: mainModel.provider,
-        scope: 'auxiliary',
-        task: '__reset__'
-      })
-      await refreshModels()
-    } catch (error) {
-      setModelsError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setApplyingModel(false)
-    }
-  }, [mainModel, refreshModels])
-
   const handleSearchSelect = useCallback(
     (result: CommandCenterSearchResult) => {
       if (result.kind === 'route') {
@@ -658,7 +448,7 @@ export function CommandCenterView({
           {SECTIONS.map(value => (
             <OverlayNavItem
               active={section === value}
-              icon={value === 'sessions' ? Pin : value === 'system' ? Activity : value === 'models' ? Cpu : BarChart3}
+              icon={value === 'sessions' ? Pin : value === 'system' ? Activity : BarChart3}
               key={value}
               label={SECTION_LABELS[value]}
               onClick={() => setSection(value)}
@@ -682,12 +472,6 @@ export function CommandCenterView({
               <OverlayActionButton disabled={usageLoading} onClick={() => void refreshUsage(usagePeriod)}>
                 <IconRefresh className={cn('mr-1.5 size-3.5', usageLoading && 'animate-spin')} />
                 {usageLoading ? 'Refreshing...' : 'Refresh'}
-              </OverlayActionButton>
-            )}
-            {section === 'models' && (
-              <OverlayActionButton disabled={modelsLoading} onClick={() => void refreshModels()}>
-                <IconRefresh className={cn('mr-1.5 size-3.5', modelsLoading && 'animate-spin')} />
-                {modelsLoading ? 'Refreshing...' : 'Refresh'}
               </OverlayActionButton>
             )}
           </header>
@@ -844,7 +628,7 @@ export function CommandCenterView({
               period={usagePeriod}
               usage={usage}
             />
-          ) : section === 'system' ? (
+          ) : (
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-3">
               <OverlayCard className="p-3 text-sm">
                 {status ? (
@@ -900,154 +684,6 @@ export function CommandCenterView({
                 <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
                   {logs.length ? logs.join('\n') : 'No logs loaded yet.'}
                 </pre>
-              </OverlayCard>
-            </div>
-          ) : (
-            <div className="grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3">
-              <OverlayCard className="p-3">
-                {mainModel ? (
-                  <>
-                    <div className="text-sm font-medium text-foreground">Main model</div>
-                    <div className="text-xs text-muted-foreground">
-                      {mainModel.provider} / {mainModel.model}
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-xs text-muted-foreground">Loading model state...</div>
-                )}
-              </OverlayCard>
-
-              <OverlayCard className="p-3">
-                <div className="mb-2 text-xs font-medium text-muted-foreground">Set global main model</div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    className="h-8 min-w-36 rounded-md border border-border bg-background px-2 text-xs text-foreground"
-                    onChange={event => setSelectedProvider(event.target.value)}
-                    value={selectedProvider}
-                  >
-                    {(providers.length ? providers : [{ name: '—', slug: '', models: [] }]).map(provider => (
-                      <option key={provider.slug || 'none'} value={provider.slug}>
-                        {provider.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    className="h-8 min-w-58 rounded-md border border-border bg-background px-2 text-xs text-foreground"
-                    onChange={event => setSelectedModel(event.target.value)}
-                    value={selectedModel}
-                  >
-                    {(selectedProviderModels.length ? selectedProviderModels : ['']).map(model => (
-                      <option key={model || 'none'} value={model}>
-                        {model || 'No models available'}
-                      </option>
-                    ))}
-                  </select>
-                  <OverlayActionButton
-                    disabled={!selectedProvider || !selectedModel || applyingModel}
-                    onClick={() => void applyMainModel()}
-                  >
-                    {applyingModel ? (
-                      <IconLoader2 className="mr-1.5 size-3.5 animate-spin" />
-                    ) : (
-                      <IconSparkles className="mr-1.5 size-3.5" />
-                    )}
-                    {applyingModel ? 'Applying...' : 'Apply'}
-                  </OverlayActionButton>
-                </div>
-                {modelsError && <div className="mt-2 text-xs text-destructive">{modelsError}</div>}
-              </OverlayCard>
-
-              <OverlayCard className="min-h-0 overflow-auto p-2">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">Auxiliary assignments</span>
-                  <OverlayActionButton
-                    disabled={!mainModel || applyingModel}
-                    onClick={() => void resetAuxiliaryModels()}
-                    tone="subtle"
-                  >
-                    Reset all
-                  </OverlayActionButton>
-                </div>
-                <div className="grid gap-1.5">
-                  {AUX_TASKS.map(meta => {
-                    const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
-                    const isAuto = !current || !current.provider || current.provider === 'auto'
-                    const isEditing = editingAuxTask === meta.key
-
-                    return (
-                      <OverlayCard className="px-2 py-1.5" key={meta.key}>
-                        <div className="flex items-center gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-baseline gap-2">
-                              <span className="text-xs font-medium text-foreground">{meta.label}</span>
-                              <span className="text-[0.62rem] text-muted-foreground/70">{meta.hint}</span>
-                            </div>
-                            <div className="truncate font-mono text-[0.62rem] text-muted-foreground">
-                              {isAuto
-                                ? 'auto · use main model'
-                                : `${current.provider} · ${current.model || '(provider default)'}`}
-                            </div>
-                          </div>
-                          {!isEditing && (
-                            <>
-                              <OverlayActionButton
-                                disabled={!mainModel || applyingModel}
-                                onClick={() => void setAuxiliaryToMain(meta.key)}
-                                tone="subtle"
-                              >
-                                Set to main
-                              </OverlayActionButton>
-                              <OverlayActionButton
-                                disabled={!providers.length || applyingModel}
-                                onClick={() => beginAuxiliaryEdit(meta.key)}
-                              >
-                                Change
-                              </OverlayActionButton>
-                            </>
-                          )}
-                        </div>
-
-                        {isEditing && (
-                          <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border/40 pt-2">
-                            <select
-                              className="h-7 min-w-28 rounded-md border border-border bg-background px-2 text-[0.7rem] text-foreground"
-                              onChange={event =>
-                                setAuxDraft(prev => ({ ...prev, provider: event.target.value, model: '' }))
-                              }
-                              value={auxDraft.provider}
-                            >
-                              {(providers.length ? providers : [{ name: '—', slug: '', models: [] }]).map(provider => (
-                                <option key={provider.slug || 'none'} value={provider.slug}>
-                                  {provider.name}
-                                </option>
-                              ))}
-                            </select>
-                            <select
-                              className="h-7 min-w-44 rounded-md border border-border bg-background px-2 text-[0.7rem] text-foreground"
-                              onChange={event => setAuxDraft(prev => ({ ...prev, model: event.target.value }))}
-                              value={auxDraft.model}
-                            >
-                              {(auxDraftProviderModels.length ? auxDraftProviderModels : ['']).map(model => (
-                                <option key={model || 'none'} value={model}>
-                                  {model || 'No models available'}
-                                </option>
-                              ))}
-                            </select>
-                            <OverlayActionButton
-                              disabled={!auxDraft.provider || !auxDraft.model || applyingModel}
-                              onClick={() => void applyAuxiliaryDraft(meta.key)}
-                            >
-                              {applyingModel ? 'Applying...' : 'Apply'}
-                            </OverlayActionButton>
-                            <OverlayActionButton onClick={() => setEditingAuxTask(null)} tone="subtle">
-                              Cancel
-                            </OverlayActionButton>
-                          </div>
-                        )}
-                      </OverlayCard>
-                    )
-                  })}
-                </div>
               </OverlayCard>
             </div>
           )}

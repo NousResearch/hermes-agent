@@ -188,7 +188,7 @@ def get_pending_for_session(
 
 
 def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
-    """Map typed numeric choice replies to the canonical choice text."""
+    """Map typed choice replies to canonical choice text, otherwise keep custom text."""
     text = str(response).strip()
     if entry.choices:
         try:

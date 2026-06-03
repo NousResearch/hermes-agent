@@ -109,6 +109,12 @@ def _make_fake_mautrix():
         def add_dispatcher(self, dispatcher_type):
             pass
 
+        def start(self, filter_id=None):
+            self.started_filter_id = filter_id
+
+        def stop(self):
+            self.stopped = True
+
     class InternalEventType:
         INVITE = "internal.invite"
 
@@ -1245,72 +1251,50 @@ class TestMatrixDeviceIdConfig:
 
 class TestMatrixSyncLoop:
     @pytest.mark.asyncio
-    async def test_sync_loop_dispatches_events_and_stores_token(self):
-        """_sync_loop should call handle_sync() and persist next_batch."""
+    async def test_sync_loop_refreshes_joined_rooms_without_manual_sync(self):
+        """_sync_loop should not compete with mautrix's dispatcher syncer."""
         adapter = _make_adapter()
         adapter._encryption = True
         adapter._closing = False
 
-        call_count = 0
-
-        async def _sync_once(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 1:
-                adapter._closing = True
-            return {"rooms": {"join": {"!room:example.org": {}}}, "next_batch": "s1234"}
-
         mock_crypto = MagicMock()
+        mock_crypto.share_keys = AsyncMock()
 
-        mock_sync_store = MagicMock()
-        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
-        mock_sync_store.put_next_batch = AsyncMock()
+        async def _refresh_once():
+            adapter._closing = True
 
         fake_client = MagicMock()
-        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.get_joined_rooms = AsyncMock(return_value=["!room:example.org"])
+        fake_client.sync = AsyncMock()
         fake_client.crypto = mock_crypto
-        fake_client.sync_store = mock_sync_store
         fake_client.handle_sync = MagicMock(return_value=[])
         adapter._client = fake_client
 
-        await adapter._sync_loop()
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()):
+            with patch.object(
+                adapter, "_refresh_dm_cache", AsyncMock(side_effect=_refresh_once)
+            ):
+                await adapter._sync_loop()
 
-        fake_client.sync.assert_awaited_once()
-        fake_client.handle_sync.assert_called_once()
-        mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
+        fake_client.sync.assert_not_awaited()
+        fake_client.handle_sync.assert_not_called()
+        mock_crypto.share_keys.assert_awaited_once()
+        assert "!room:example.org" in adapter._joined_rooms
 
     @pytest.mark.asyncio
-    async def test_sync_loop_reconciles_pending_invites(self):
-        """Pending rooms.invite entries should be joined if callbacks were missed."""
+    async def test_invite_handler_joins_rooms(self):
+        """mautrix's dispatcher should route invites to _on_invite()."""
         adapter = _make_adapter()
-        adapter._closing = False
-
-        async def _sync_once(**kwargs):
-            adapter._closing = True
-            return {
-                "rooms": {
-                    "join": {"!joined:example.org": {}},
-                    "invite": {"!invited:example.org": {}},
-                },
-                "next_batch": "s1234",
-            }
-
-        mock_sync_store = MagicMock()
-        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
-        mock_sync_store.put_next_batch = AsyncMock()
 
         fake_client = MagicMock()
-        fake_client.sync = AsyncMock(side_effect=_sync_once)
         fake_client.join_room = AsyncMock()
-        fake_client.sync_store = mock_sync_store
-        fake_client.handle_sync = MagicMock(return_value=[])
         adapter._client = fake_client
 
         with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
-            await adapter._sync_loop()
+            await adapter._on_invite(MagicMock(room_id="!invited:example.org"))
 
         fake_client.join_room.assert_awaited_once()
-        assert "!joined:example.org" in adapter._joined_rooms
         assert "!invited:example.org" in adapter._joined_rooms
 
 
@@ -1480,6 +1464,87 @@ class TestMatrixEncryptedEventHandler:
         assert len(handler_calls) >= 3
 
         await adapter.disconnect()
+
+
+class TestMatrixSyncerLifecycle:
+    @pytest.mark.asyncio
+    async def test_connect_starts_mautrix_syncer_after_initial_sync(self):
+        """connect() must start mautrix's syncer so event handlers dispatch."""
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(
+            return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123")
+        )
+        mock_client.sync = AsyncMock(
+            return_value={
+                "rooms": {"join": {"!room:server": {}}},
+                "next_batch": "s123",
+            }
+        )
+        mock_client.sync_store = MagicMock()
+        mock_client.sync_store.put_next_batch = AsyncMock()
+        mock_client.add_event_handler = MagicMock()
+        mock_client.add_dispatcher = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.start = MagicMock()
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    assert await adapter.connect() is True
+
+        mock_client.sync.assert_awaited_once_with(timeout=10000, full_state=True)
+        mock_client.start.assert_called_once_with(None)
+        assert adapter._client_sync_started is True
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_stops_started_mautrix_syncer(self):
+        """disconnect() should stop mautrix's background syncer."""
+        adapter = _make_adapter()
+        adapter._sync_task = None
+        adapter._client_sync_started = True
+
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
+
+        mock_api = MagicMock()
+        mock_api.session = mock_session
+
+        fake_client = MagicMock()
+        fake_client.api = mock_api
+        fake_client.stop = MagicMock()
+        adapter._client = fake_client
+
+        await adapter.disconnect()
+
+        fake_client.stop.assert_called_once_with()
+        mock_session.close.assert_awaited_once()
+        assert adapter._client_sync_started is False
+        assert adapter._client is None
 
     @pytest.mark.asyncio
     async def test_connect_fails_on_stale_otk_conflict(self):

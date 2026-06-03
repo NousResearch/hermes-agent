@@ -380,6 +380,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._sync_task: Optional[asyncio.Task] = None
+        self._client_sync_started = False
         self._closing = False
         self._startup_ts: float = 0.0
         # Clock-skew detection: count grace-check drops that happen well
@@ -958,7 +959,22 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("Matrix: initial key share failed: %s", exc)
 
-        # Start the sync loop.
+        # Start mautrix's own syncer. add_event_handler() callbacks are
+        # dispatched by this syncer; direct client.sync() calls only return
+        # raw sync data and do not drive the dispatcher.
+        try:
+            maybe_start = client.start(None)
+            if asyncio.iscoroutine(maybe_start):
+                await maybe_start
+            self._client_sync_started = True
+        except Exception as exc:
+            logger.error(
+                "Matrix: failed to start mautrix syncer: %s", exc, exc_info=True
+            )
+            await api.session.close()
+            return False
+
+        # Start the maintenance loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
         return True
@@ -990,6 +1006,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
 
         if self._client:
+            try:
+                if self._client_sync_started:
+                    maybe_stop = self._client.stop()
+                    if asyncio.iscoroutine(maybe_stop):
+                        await maybe_stop
+                    self._client_sync_started = False
+            except Exception as exc:
+                logger.debug("Matrix: could not stop mautrix syncer: %s", exc)
             try:
                 await self._client.api.session.close()
             except Exception:
@@ -1437,57 +1461,33 @@ class MatrixAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _sync_loop(self) -> None:
-        """Continuously sync with the homeserver."""
+        """Run periodic Matrix maintenance while mautrix dispatches events."""
         client = self._client
-        # Resume from the token stored during the initial sync.
-        next_batch = await client.sync_store.get_next_batch()
         while not self._closing:
             try:
-                # Wrap in asyncio.wait_for to guard against TCP-level hangs
-                # that the Matrix long-poll timeout cannot catch. Long-poll
-                # is 30s, so 45s gives 15s slack for network drain.
-                sync_data = await asyncio.wait_for(
-                    client.sync(
-                        since=next_batch,
-                        timeout=30000,
-                    ),
-                    timeout=45.0,
-                )
+                await asyncio.sleep(60)
+                if self._closing:
+                    return
 
-                # nio returns SyncError objects (not exceptions) for auth
-                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
-                _sync_msg = getattr(sync_data, "message", None)
-                if _sync_msg and isinstance(_sync_msg, str):
-                    _lower = _sync_msg.lower()
-                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
-                        logger.error(
-                            "Matrix: permanent auth error from sync: %s — stopping",
-                            _sync_msg,
-                        )
-                        return
-
-                if isinstance(sync_data, dict):
-                    # Update joined rooms from sync response.
-                    rooms_join = sync_data.get("rooms", {}).get("join", {})
-                    if rooms_join:
-                        self._joined_rooms.update(rooms_join.keys())
-
-                    # Advance the sync token so the next request is
-                    # incremental instead of a full initial sync.
-                    nb = sync_data.get("next_batch")
-                    if nb:
-                        next_batch = nb
-                        await client.sync_store.put_next_batch(nb)
-
-                    # Dispatch events to registered handlers so that
-                    # _on_room_message / _on_reaction / _on_invite fire.
+                get_joined_rooms = getattr(client, "get_joined_rooms", None)
+                if callable(get_joined_rooms):
                     try:
-                        tasks = client.handle_sync(sync_data)
-                        if tasks:
-                            await asyncio.gather(*tasks)
+                        joined = await get_joined_rooms()
+                        room_ids = getattr(joined, "joined_rooms", joined)
+                        if room_ids:
+                            self._joined_rooms.update(
+                                str(room_id) for room_id in room_ids
+                            )
                     except Exception as exc:
-                        logger.warning("Matrix: sync event dispatch error: %s", exc)
-                    await self._join_pending_invites(sync_data)
+                        logger.debug("Matrix: joined-room refresh failed: %s", exc)
+
+                await self._refresh_dm_cache()
+
+                if self._encryption and getattr(client, "crypto", None):
+                    try:
+                        await client.crypto.share_keys()
+                    except Exception as exc:
+                        logger.debug("Matrix: periodic key share failed: %s", exc)
 
             except asyncio.CancelledError:
                 return
@@ -1503,10 +1503,10 @@ class MatrixAdapter(BasePlatformAdapter):
                     or "forbidden" in err_str
                 ):
                     logger.error(
-                        "Matrix: permanent auth error: %s — stopping sync", exc
+                        "Matrix: permanent auth error: %s — stopping maintenance", exc
                     )
                     return
-                logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
+                logger.warning("Matrix: maintenance error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)
 
     # ------------------------------------------------------------------

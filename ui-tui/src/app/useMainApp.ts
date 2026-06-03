@@ -727,7 +727,6 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      clearSelection,
       composerActions.setInput,
       gateway,
       panel,

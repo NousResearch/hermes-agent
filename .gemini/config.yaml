@@ -1,0 +1,23 @@
+have_fun: false
+memory_config:
+  disabled: false
+code_review:
+  disable: false
+  comment_severity_threshold: LOW
+  max_review_comments: -1
+  pull_request_opened:
+    help: false
+    summary: true
+    code_review: true
+    include_drafts: false
+ignore_patterns:
+  - "*.md"
+  - "*.mdx"
+  - "*.patch"
+  - "*.lock"
+  - "uv.lock"
+  - "docs/**"
+  - "assets/**"
+  - "locales/**"
+  - "datagen-config-examples/**"
+  - "plans/**"

@@ -1,0 +1,29 @@
+name: AI Review
+
+# Triggered on the PULL-REQUEST lifecycle, not on raw pushes. The Claude
+# reviewer posts to an existing PR, so it must run when the PR is opened
+# (`opened`/`reopened`) and on every new commit (`synchronize`). A `push`-only
+# trigger silently skips the review on the common "push branch, then open PR"
+# flow — opening a PR is not a push event, so the reviewer would never fire for
+# that PR. `synchronize` already covers push-to-an-open-PR. (OST-626 canary;
+# reusable workflow pinned at @v1.)
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+concurrency:
+  group: ai-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ai-review:
+    uses: BeliyDym/.github/.github/workflows/ai-review.yml@v1
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    with:
+      project_label: "hermes-agent (self-improving multi-provider AI agent, Python)"
+      enforce_bugfix_ledger: false
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

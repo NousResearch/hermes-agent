@@ -5585,17 +5585,17 @@ def _define_discord_view_classes() -> None:
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
-            async def on_timeout(self):
-                """Disable all buttons and update the embed when the interaction times out."""
-                for item in self.children:
-                    item.disabled = True
+        async def on_timeout(self):
+             """Disable all buttons and update the embed when the interaction times out."""
+            for item in self.children:
+                item.disabled = True
         
                 # Mesajı güncelle
                 if hasattr(self, "message") and self.message:
                     try:
                         await self.message.edit(content="⚠️ [Interaction Expired / Süresi Doldu]", view=self)
                     except Exception:
-                        pass
+                        pass   
 
             for index, choice in enumerate(self.choices):
                 # Discord button labels are capped at 80 chars.

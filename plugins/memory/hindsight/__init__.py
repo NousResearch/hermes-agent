@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 
@@ -526,6 +527,58 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+_RETAIN_STRIP_BLOCK_PATTERNS = [
+    re.compile(r"(?is)<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>.*?<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"),
+    re.compile(r"(?is)<hindsight_memories\b[^>]*>.*?</hindsight_memories>"),
+    re.compile(r"(?is)<summary\b[^>]*>.*?</summary>"),
+    re.compile(r"(?is)^\s*Conversation info \(untrusted metadata\):\s*```json\s*\{.*?\}\s*```\s*", re.MULTILINE),
+    re.compile(r"(?is)^\s*Sender \(untrusted metadata\):\s*```json\s*\{.*?\}\s*```\s*", re.MULTILINE),
+    re.compile(r"(?is)\[context\].*?\[/context\]"),
+]
+_RETAIN_MESSAGE_ID_LINE_RE = re.compile(r"(?im)^\s*\[message_id:\s*[^\]]+\]\s*\n?")
+_RETAIN_LEADING_SENDER_RE = re.compile(
+    r"(?s)^\s*(?:ou_[A-Za-z0-9_]{8,}|oc_[A-Za-z0-9_]{8,}|om_[A-Za-z0-9_]{8,})\s*:\s*"
+)
+
+
+def _coerce_retain_text(value: Any) -> str:
+    """Extract user-visible text from Hermes/OpenAI-style message content."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+                continue
+            text = item.get("content")
+            if isinstance(text, str) and item.get("type") in {"text", "input_text"}:
+                parts.append(text)
+        return "\n".join(part for part in parts if part)
+    return str(value)
+
+
+def _sanitize_retain_content(value: Any) -> str:
+    """Remove runtime envelopes that should live in metadata, not retain content."""
+    text = _coerce_retain_text(value)
+    if not text:
+        return ""
+    for pattern in _RETAIN_STRIP_BLOCK_PATTERNS:
+        text = pattern.sub("", text)
+    text = _RETAIN_MESSAGE_ID_LINE_RE.sub("", text)
+    text = _RETAIN_LEADING_SENDER_RE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _embedded_profile_name(config: dict[str, Any]) -> str:
     """Return the Hindsight embedded profile name for this Hermes config."""
     profile = config.get("profile", "hermes")
@@ -729,11 +782,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
-        self._session_turns: list[str] = []  # accumulates ALL turns for the session
-        # How many turns the last append-mode retain already shipped. Used to
-        # send only the new delta on subsequent retains when the API supports
-        # update_mode='append' (legacy/overwrite path still sends everything).
-        self._last_retained_turn_count = 0
+        self._session_turns: list[str] = []  # pending turns since the last retain
 
         # Recall controls
         self._auto_recall = True
@@ -1955,15 +2004,17 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        user_text = _sanitize_retain_content(user_content)
+        assistant_text = _sanitize_retain_content(assistant_content)
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._retain_user_prefix}: {user_text}",
                 "timestamp": now,
             },
             {
                 "role": "assistant",
-                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "content": f"{self._retain_assistant_prefix}: {assistant_text}",
                 "timestamp": now,
             },
         ]
@@ -2075,24 +2126,10 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._turn_counter, self._turn_counter + (self._retain_every_n_turns - self._turn_counter % self._retain_every_n_turns))
             return
 
-        document_id, update_mode = self._resolve_retain_target(self._document_id)
-
-        # On append-capable APIs each retain only needs to ship the turns
-        # accumulated since the last retain — the server appends them to the
-        # existing document. On legacy/overwrite APIs we must resend the whole
-        # session because each retain replaces the document.
-        if update_mode == "append":
-            turns_to_retain = self._session_turns[self._last_retained_turn_count:]
-            if not turns_to_retain:
-                logger.debug("sync_turn: skipped append retain; no new turns since last retain")
-                return
-        else:
-            turns_to_retain = list(self._session_turns)
-
-        logger.debug("sync_turn: retaining %d/%d turns, payload %d chars",
-                     len(turns_to_retain), len(self._session_turns),
-                     sum(len(t) for t in turns_to_retain))
-        content = "[" + ",".join(turns_to_retain) + "]"
+        pending_turns = list(self._session_turns)
+        logger.debug("sync_turn: retaining %d pending turns, content %d chars",
+                     len(pending_turns), sum(len(t) for t in pending_turns))
+        content = "[" + ",".join(pending_turns) + "]"
 
         lineage_tags: list[str] = []
         if self._session_id:
@@ -2103,10 +2140,11 @@ class HindsightMemoryProvider(MemoryProvider):
         # Snapshot the state needed for the retain. The writer may run after
         # _session_turns / _turn_index are mutated by a later sync_turn().
         metadata_snapshot = self._build_metadata(
-            message_count=len(turns_to_retain) * 2,
+            message_count=len(pending_turns) * 2,
             turn_index=self._turn_index,
         )
-        num_turns = len(turns_to_retain)
+        num_turns = len(pending_turns)
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
         retain_context = self._summary_retain_context(self._retain_context)
@@ -2141,10 +2179,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._ensure_writer()
         self._register_atexit()
         self._retain_queue.put(_do_retain)
-        # Advance the append watermark only after the delta is queued, so a
-        # later retain doesn't re-ship turns we've already handed to the writer.
-        if update_mode == "append":
-            self._last_retained_turn_count = len(self._session_turns)
+        self._session_turns = []
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
@@ -2236,7 +2271,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
         Fires on /resume, /branch, /reset, /new, and context compression.
         Without this hook, initialize()-cached state (``_session_id``,
-        ``_document_id``, ``_session_turns``, ``_turn_counter``) would keep
+        ``_document_id``, pending ``_session_turns``, ``_turn_counter``) would keep
         pointing at the previous session and writes would land in the wrong
         document. See hermes-agent#6672.
 
@@ -2244,7 +2279,7 @@ class HindsightMemoryProvider(MemoryProvider):
         retains reflect the active session. Always mint a fresh
         ``_document_id`` so the new session's retain doesn't overwrite the
         old session's document on vectorize-io/hindsight#1303. Always clear
-        the accumulated batch buffers (``_session_turns``, ``_turn_counter``,
+        the pending batch buffers (``_session_turns``, ``_turn_counter``,
         ``_turn_index``) — even for /resume and /branch, the new session's
         batching must start from zero so an in-flight retain doesn't flush
         under the wrong ``_document_id``.

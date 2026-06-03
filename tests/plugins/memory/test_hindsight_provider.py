@@ -1026,13 +1026,18 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_accumulates_full_session_without_append_support(self, provider_with_config):
-        """Legacy/overwrite APIs (no update_mode=append) resend the ENTIRE session each retain."""
+    def test_sync_turn_retains_only_pending_batch(self, provider_with_config):
+        """Each retain sends only turns since the previous retain."""
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
         p.sync_turn("turn2-user", "turn2-asst")
         p._retain_queue.join()
+
+        first_content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "turn1-user" in first_content
+        assert "turn2-user" in first_content
+        assert p._session_turns == []
 
         p._client.aretain_batch.reset_mock()
 
@@ -1041,12 +1046,46 @@ class TestSyncTurn:
         p._retain_queue.join()
 
         content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Without append support the document is overwritten, so it must
-        # contain ALL turns from the session.
-        assert "turn1-user" in content
-        assert "turn2-user" in content
+        assert "turn1-user" not in content
+        assert "turn2-user" not in content
         assert "turn3-user" in content
         assert "turn4-user" in content
+        assert p._client.aretain_batch.call_args.kwargs["items"][0]["metadata"]["message_count"] == "4"
+
+    def test_sync_turn_strips_runtime_envelopes_from_retain_content(self, provider):
+        dirty_user = """
+Conversation info (untrusted metadata):
+```json
+{"chat_id":"user:ou_cb923a19782fe748cd9fff99454eee31","message_id":"om_x100b6d364e7e60a0c49f20c620fbbc6"}
+```
+
+Sender (untrusted metadata):
+```json
+{"id":"ou_cb923a19782fe748cd9fff99454eee31"}
+```
+
+[message_id: om_x100b6d364e7e60a0c49f20c620fbbc6]
+ou_cb923a19782fe748cd9fff99454eee31: 真实用户问题
+[context]
+sender: ou_cb923a19782fe748cd9fff99454eee31
+channel: feishu
+[/context]
+<hindsight_memories>old memory</hindsight_memories>
+<summary>old summary</summary>
+"""
+        provider.sync_turn(dirty_user, "正常回复")
+        provider._retain_queue.join()
+
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
+        assert "真实用户问题" in content
+        assert "正常回复" in content
+        assert "message_id" not in content
+        assert "ou_cb923a19782fe748cd9fff99454eee31:" not in content
+        assert "[context]" not in content
+        assert "sender:" not in content
+        assert "hindsight_memories" not in content
+        assert "old summary" not in content
 
     def test_sync_turn_appends_only_delta_when_append_supported(self, provider_with_config, monkeypatch):
         """On append-capable APIs each retain ships only the new turns, not the whole session."""

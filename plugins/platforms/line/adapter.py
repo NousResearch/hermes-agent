@@ -968,7 +968,7 @@ class LineAdapter(BasePlatformAdapter):
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=MessageType.TEXT if msg_type == "text" else MessageType.PHOTO,
             source=source_obj,
             raw_message=event,
             message_id=message_id,

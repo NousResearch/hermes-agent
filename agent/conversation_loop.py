@@ -3378,6 +3378,12 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _final_summary,
+                        # Surface the classified reason so callers (notably the
+                        # kanban worker path in cli.py) can distinguish a
+                        # transient throttle from a real failure and choose a
+                        # different exit code. ``rate_limit`` / ``billing`` here
+                        # mean "quota wall, not a task error".
+                        "failure_reason": classified.reason.value,
                     }
 
                 # For rate limits, respect the Retry-After header if present

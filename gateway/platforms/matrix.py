@@ -113,35 +113,55 @@ _MATRIX_BANG_COMMAND_RE = re.compile(
 )
 
 
-def _is_known_matrix_bang_command(name: str) -> bool:
-    """Return True when *name* is a Hermes command worth normalizing.
+def _resolve_matrix_bang_command(name: str) -> str | None:
+    """Resolve a ``!command`` token to a dispatchable Hermes command token.
 
     Matrix clients often reserve leading ``/`` for local client commands.
     Hermes accepts ``!command`` as a Matrix-friendly alias, but only for
     commands that the gateway can actually dispatch so ordinary exclamations
     remain normal chat text.
+
+    Returns the token form that actually resolves (which may differ from
+    *name* only by underscore→hyphen normalization, e.g. ``reload_skills`` →
+    ``reload-skills``) so the emitted ``/command`` always resolves downstream,
+    or ``None`` when *name* is not a known command. Aliases are intentionally
+    left as-is — the gateway dispatcher resolves them to their canonical name.
     """
     if not name:
-        return False
-    candidates = {name.lower(), name.lower().replace("_", "-")}
+        return None
+    # Try the raw lowercased token first, then its hyphenated variant, so
+    # forms like ``!reload_skills`` resolve against ``reload-skills``. We emit
+    # whichever candidate resolved (not a forced canonical form) to preserve
+    # alias passthrough — the gateway dispatcher canonicalizes aliases itself.
+    candidates = [name.lower()]
+    hyphenated = name.lower().replace("_", "-")
+    if hyphenated != candidates[0]:
+        candidates.append(hyphenated)
+
     try:
         from hermes_cli.commands import is_gateway_known_command
 
-        if any(is_gateway_known_command(candidate) for candidate in candidates):
-            return True
+        for candidate in candidates:
+            if is_gateway_known_command(candidate):
+                return candidate
     except Exception:
-        pass
+        logger.debug(
+            "Matrix: is_gateway_known_command failed for %r", name, exc_info=True
+        )
 
     try:
         from agent.skill_commands import get_skill_commands
 
         skill_commands = get_skill_commands() or {}
-        if any(candidate in skill_commands for candidate in candidates):
-            return True
+        # Skill command keys are stored slash-prefixed (e.g. "/arxiv"), so
+        # compare against the "/candidate" form, not the bare token.
+        for candidate in candidates:
+            if f"/{candidate}" in skill_commands:
+                return candidate
     except Exception:
-        pass
+        logger.debug("Matrix: get_skill_commands failed for %r", name, exc_info=True)
 
-    return False
+    return None
 
 
 def _normalize_matrix_bang_command(text: str) -> str:
@@ -151,10 +171,10 @@ def _normalize_matrix_bang_command(text: str) -> str:
     match = _MATRIX_BANG_COMMAND_RE.match(text)
     if not match:
         return text
-    command = match.group(1).lower()
-    if not _is_known_matrix_bang_command(command):
+    resolved = _resolve_matrix_bang_command(match.group(1))
+    if resolved is None:
         return text
-    return f"/{command}{match.group(2) or ''}"
+    return f"/{resolved}{match.group(2) or ''}"
 
 
 @dataclass
@@ -1900,6 +1920,11 @@ class MatrixAdapter(BasePlatformAdapter):
                     past_fallback = True
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
+
+        # Re-run bang normalization after reply-fallback stripping so a quoted
+        # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
+        # is treated as a command, matching how ``/command`` is recognized below.
+        body = _normalize_matrix_bang_command(body)
 
         msg_type = MessageType.TEXT
         if body.startswith("/"):

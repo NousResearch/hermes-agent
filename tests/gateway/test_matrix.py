@@ -567,6 +567,30 @@ class TestMatrixBangCommandAlias:
         )
         return captured_event
 
+    async def _dispatch_text_reply(self, body: str, *, is_dm: bool = True):
+        """Dispatch a message that is a Matrix reply (m.in_reply_to set), so
+        the reply-fallback quote stripping path runs before command detection.
+        """
+        captured_event = None
+        self.adapter._is_dm_room = AsyncMock(return_value=is_dm)
+        self.adapter._require_mention = True
+        self.adapter._free_rooms = set()
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+        await self.adapter._handle_text_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$matrix-reply-command-test",
+            event_ts=0.0,
+            source_content={"msgtype": "m.text", "body": body},
+            relates_to={"m.in_reply_to": {"event_id": "$parent-event"}},
+        )
+        return captured_event
+
     def test_known_bang_command_normalizes_to_slash_command(self):
         from gateway.platforms.matrix import _normalize_matrix_bang_command
 
@@ -638,6 +662,68 @@ class TestMatrixBangCommandAlias:
         captured_event = await self._dispatch_text("!important note", is_dm=False)
 
         assert captured_event is None
+
+    def test_bang_alias_underscore_resolves_to_hyphen_form(self):
+        """!set_home must emit a dispatchable token even though set_home is
+        not itself registered — the hyphenated alias set-home is."""
+        from gateway.platforms.matrix import _normalize_matrix_bang_command
+
+        # set_home (underscore) is NOT a registered command/alias, but
+        # set-home (hyphen) is. The normalizer must emit the resolvable form.
+        assert _normalize_matrix_bang_command("!set_home") == "/set-home"
+        # The hyphen alias passes through unchanged.
+        assert _normalize_matrix_bang_command("!set-home") == "/set-home"
+        # The canonical command resolves directly.
+        assert _normalize_matrix_bang_command("!sethome") == "/sethome"
+
+    def test_bang_skill_command_normalizes(self):
+        """The get_skill_commands() branch normalizes installed skill
+        commands, not just built-in gateway commands. Skill keys are stored
+        slash-prefixed (e.g. "/arxiv"), which the resolver must account for."""
+        import agent.skill_commands as skill_commands_mod
+
+        fake_skills = {"/arxiv": {}, "/obsidian": {}}
+        with patch.object(
+            skill_commands_mod, "get_skill_commands", return_value=fake_skills
+        ):
+            from gateway.platforms.matrix import _normalize_matrix_bang_command
+
+            # is_gateway_known_command won't know these; the skill branch must.
+            assert _normalize_matrix_bang_command("!arxiv") == "/arxiv"
+            assert (
+                _normalize_matrix_bang_command("!obsidian search foo")
+                == "/obsidian search foo"
+            )
+            # A name in neither registry stays plain text.
+            assert (
+                _normalize_matrix_bang_command("!definitelynotacommand")
+                == "!definitelynotacommand"
+            )
+
+    @pytest.mark.asyncio
+    async def test_bang_command_in_quoted_reply_normalizes(self):
+        """A bang command that follows a Matrix reply-fallback quote is
+        normalized after the quote is stripped, matching /command behavior."""
+        captured_event = await self._dispatch_text_reply(
+            "> <@bob:example.org> earlier message\n\n!model"
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == "/model"
+        assert captured_event.message_type == MessageType.COMMAND
+        assert captured_event.get_command() == "model"
+
+    @pytest.mark.asyncio
+    async def test_slash_command_in_quoted_reply_normalizes(self):
+        """Sanity: the slash equivalent already works post-strip — the bang
+        form above must reach parity with this."""
+        captured_event = await self._dispatch_text_reply(
+            "> <@bob:example.org> earlier message\n\n/model"
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == "/model"
+        assert captured_event.message_type == MessageType.COMMAND
 
 
 # ---------------------------------------------------------------------------

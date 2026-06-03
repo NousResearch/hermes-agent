@@ -622,7 +622,7 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
         return "continue", "missing verification evidence", False
 
-    monkeypatch.setattr("hermes_cli.goals.judge_goal", mock_judge_goal)
+    monkeypatch.setattr("tools.kanban_tools.judge_goal", mock_judge_goal)
 
     # Attempt to complete should be rejected
     out = kt._handle_complete({"summary": "I did some stuff but not X"})

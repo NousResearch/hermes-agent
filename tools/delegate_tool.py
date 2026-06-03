@@ -942,7 +942,9 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    if toolsets is not None:
+        # toolsets=[] explicitly means "no tools" (pure-reasoning subagent).
+        # toolsets=None (default) falls through to inherit from parent.
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.

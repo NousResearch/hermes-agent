@@ -41,17 +41,142 @@ HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
 PENDING_AUTH_PATH = HERMES_HOME / "google_oauth_pending.json"
+SCOPES_CONFIG_PATH = HERMES_HOME / "google_scopes.json"
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/contacts.readonly",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/documents",
-]
+SCOPE_API_BASE = "https://www.googleapis.com/auth"
+SERVICE_SCOPES = {
+    "gmail": {
+        "readonly": [f"{SCOPE_API_BASE}/gmail.readonly"],
+        "readwrite": [
+            f"{SCOPE_API_BASE}/gmail.readonly",
+            f"{SCOPE_API_BASE}/gmail.send",
+            f"{SCOPE_API_BASE}/gmail.modify",
+        ],
+    },
+    "calendar": {
+        "readonly": [f"{SCOPE_API_BASE}/calendar.readonly"],
+        "readwrite": [f"{SCOPE_API_BASE}/calendar"],
+    },
+    "drive": {
+        "readonly": [f"{SCOPE_API_BASE}/drive.readonly"],
+        "readwrite": [f"{SCOPE_API_BASE}/drive"],
+    },
+    "sheets": {
+        "readonly": [f"{SCOPE_API_BASE}/spreadsheets.readonly"],
+        "readwrite": [f"{SCOPE_API_BASE}/spreadsheets"],
+    },
+    "docs": {
+        "readonly": [f"{SCOPE_API_BASE}/documents.readonly"],
+        "readwrite": [f"{SCOPE_API_BASE}/documents"],
+    },
+    "contacts": {
+        # This skill never calls a contacts-write API, so the two modes
+        # are intentionally identical — keeps the config schema uniform.
+        "readonly": [f"{SCOPE_API_BASE}/contacts.readonly"],
+        "readwrite": [f"{SCOPE_API_BASE}/contacts"],
+    },
+}
+
+ALL_SERVICES = SERVICE_SCOPES.keys()
+SERVICE_ALIASES = {"email": "gmail"}
+
+# Legacy full-access scope list. Used as the fallback when no
+# google_scopes.json exists — preserves the pre-config behavior for
+# existing installs that haven't opted into per-service modes.
+DEFAULT_SCOPES = list(
+    dict.fromkeys(
+        scope for svc in ALL_SERVICES for scope in SERVICE_SCOPES[svc]["readwrite"]
+    )
+)
+
+
+def _parse_services_spec(spec: str) -> dict:
+    """Parse a ``--services`` value into {service: 'readonly'|'readwrite'}.
+
+    Forms accepted:
+      ``all``                          → every service, readwrite
+      ``all=ro``                       → every service, readonly
+      ``gmail,calendar``               → those services, readwrite each
+      ``gmail=ro,calendar=rw``         → explicit modes per service
+      ``email`` (alias for gmail)      → handled via SERVICE_ALIASES
+    """
+    result: dict = {}
+    for raw_token in spec.split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if "=" in token:
+            name, mode = token.split("=", 1)
+            name, mode = name.strip().lower(), mode.strip().lower()
+        else:
+            name, mode = token.lower(), "rw"
+
+        name = SERVICE_ALIASES.get(name, name)
+
+        if mode in {"ro", "readonly", "read-only", "r"}:
+            mode_norm = "readonly"
+        elif mode in {"rw", "readwrite", "read-write", "w"}:
+            mode_norm = "readwrite"
+        else:
+            raise ValueError(
+                f"Invalid mode '{mode}' for service '{name}'; expected ro or rw"
+            )
+
+        if name == "all":
+            for svc in ALL_SERVICES:
+                result[svc] = mode_norm
+        elif name in SERVICE_SCOPES:
+            result[name] = mode_norm
+        else:
+            valid = ", ".join(sorted({*SERVICE_SCOPES, "all", *SERVICE_ALIASES}))
+            raise ValueError(f"Unknown service '{name}'; valid: {valid}")
+
+    if not result:
+        raise ValueError("--services value parsed to an empty set")
+
+    return result
+
+
+def _load_scope_config() -> dict | None:
+    """Read ~/.hermes/google_scopes.json; return None if absent/unreadable.
+
+    Returning None (rather than a default) preserves legacy behavior:
+    callers fall back to the full SCOPES list, so installs that never
+    set a config behave exactly as before.
+    """
+    if not SCOPES_CONFIG_PATH.exists():
+        return None
+    try:
+        raw = json.loads(SCOPES_CONFIG_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    cleaned = {
+        k: v
+        for k, v in raw.items()
+        if k in SERVICE_SCOPES and v in {"readonly", "readwrite"}
+    }
+    return cleaned or None
+
+
+def _save_scope_config(config: dict) -> None:
+    SCOPES_CONFIG_PATH.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+
+
+def _active_scopes() -> list:
+    """OAuth scopes to request, derived from google_scopes.json.
+
+    If no config exists, returns the full legacy SCOPES list so behavior
+    matches the pre-config code path.
+    """
+    config = _load_scope_config()
+    if config is None:
+        return list(DEFAULT_SCOPES)
+    scopes: list = []
+    for svc, mode in config.items():
+        scopes.extend(SERVICE_SCOPES[svc][mode])
+    return list(dict.fromkeys(scopes))
 
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
@@ -80,7 +205,8 @@ def _missing_scopes_from_payload(payload: dict) -> list[str]:
     if not raw:
         return []
     granted = {s.strip() for s in (raw.split() if isinstance(raw, str) else raw) if s.strip()}
-    return sorted(scope for scope in SCOPES if scope not in granted)
+    expected = _active_scopes()
+    return sorted(scope for scope in expected if scope not in granted)
 
 
 def _format_missing_scopes(missing_scopes: list[str]) -> str:
@@ -300,7 +426,7 @@ def _extract_code_and_state(code_or_url: str) -> tuple[str, str | None]:
     return params["code"][0], state
 
 
-def get_auth_url():
+def get_auth_url(format_json: bool = False):
     """Print the OAuth authorization URL. User visits this in a browser."""
     if not CLIENT_SECRET_PATH.exists():
         print("ERROR: No client secret stored. Run --client-secret first.")
@@ -309,9 +435,10 @@ def get_auth_url():
     _ensure_deps()
     from google_auth_oauthlib.flow import Flow
 
+    scopes = _active_scopes()
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
+        scopes=scopes,
         redirect_uri=REDIRECT_URI,
         autogenerate_code_verifier=True,
     )
@@ -320,8 +447,11 @@ def get_auth_url():
         prompt="consent",
     )
     _save_pending_auth(state=state, code_verifier=flow.code_verifier)
-    # Print just the URL so the agent can extract it cleanly
-    print(auth_url)
+    if format_json:
+        print(json.dumps({"auth_url": auth_url, "scopes": scopes}))
+    else:
+        # Print just the URL so the agent can extract it cleanly
+        print(auth_url)
 
 
 def exchange_auth_code(code: str):
@@ -341,8 +471,9 @@ def exchange_auth_code(code: str):
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
+    requested_scopes = _active_scopes()
     # Extract granted scopes from the callback URL if the user pasted the full redirect URL.
-    granted_scopes = list(SCOPES)
+    granted_scopes = list(requested_scopes)
     if isinstance(raw_callback, str) and raw_callback.startswith("http"):
         params = parse_qs(urlparse(raw_callback).query)
         scope_val = (params.get("scope") or [""])[0].strip()
@@ -375,7 +506,7 @@ def exchange_auth_code(code: str):
     actually_granted = list(creds.granted_scopes or []) if hasattr(creds, "granted_scopes") and creds.granted_scopes else []
     if actually_granted:
         token_payload["scopes"] = actually_granted
-    elif granted_scopes != SCOPES:
+    elif granted_scopes != requested_scopes:
         # granted_scopes was extracted from the callback URL
         token_payload["scopes"] = granted_scopes
 
@@ -401,7 +532,7 @@ def revoke():
     from google.auth.transport.requests import Request
 
     try:
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), _active_scopes())
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
 
@@ -423,6 +554,31 @@ def revoke():
     print(f"Deleted {TOKEN_PATH}")
 
 
+def show_mode(format_json: bool = False):
+    """Print the current scope config and the scopes that would be requested."""
+    config = _load_scope_config()
+    scopes = _active_scopes()
+    if format_json:
+        print(json.dumps({
+            "config": config,
+            "config_path": str(SCOPES_CONFIG_PATH),
+            "config_present": SCOPES_CONFIG_PATH.exists(),
+            "scopes": scopes,
+        }, indent=2))
+        return
+
+    if config is None:
+        print(f"No scope config at {SCOPES_CONFIG_PATH} — falling back to legacy full-access defaults.")
+    else:
+        print(f"Current scope config ({SCOPES_CONFIG_PATH}):")
+        for svc in ALL_SERVICES:
+            if svc in config:
+                print(f"  {svc:9s} {config[svc]}")
+    print(f"\nScopes that would be requested ({len(scopes)}):")
+    for scope in scopes:
+        print(f"  {scope}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace OAuth setup for Hermes")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -433,7 +589,34 @@ def main():
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
     group.add_argument("--revoke", action="store_true", help="Revoke and delete stored token")
     group.add_argument("--install-deps", action="store_true", help="Install Python dependencies")
+    group.add_argument("--show-mode", action="store_true", help="Print current per-service scope config")
+    # Modifiers — used with --auth-url or --show-mode.
+    parser.add_argument(
+        "--services",
+        metavar="SPEC",
+        help=(
+            "Per-service scope spec, e.g. 'gmail=ro,calendar=rw,drive=ro'. "
+            "Bare names default to rw ('all' means every service). "
+            "Saved to ~/.hermes/google_scopes.json and used for --auth-url. "
+            "Examples: 'all', 'all=ro', 'gmail,calendar', 'gmail=ro,calendar=rw'."
+        ),
+    )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format for --auth-url and --show-mode (default: text)",
+    )
     args = parser.parse_args()
+
+    # Process --services modifier before any action that reads scope config.
+    if args.services:
+        try:
+            parsed = _parse_services_spec(args.services)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        _save_scope_config(parsed)
 
     if args.check:
         sys.exit(0 if check_auth() else 1)
@@ -442,13 +625,15 @@ def main():
     elif args.client_secret:
         store_client_secret(args.client_secret)
     elif args.auth_url:
-        get_auth_url()
+        get_auth_url(format_json=(args.format == "json"))
     elif args.auth_code:
         exchange_auth_code(args.auth_code)
     elif args.revoke:
         revoke()
     elif args.install_deps:
         sys.exit(0 if install_deps() else 1)
+    elif getattr(args, "show_mode", False):
+        show_mode(format_json=(args.format == "json"))
 
 
 if __name__ == "__main__":

@@ -71,6 +71,12 @@ Calendar/Drive/Sheets/Docs?"**
 - **Full Workspace access** → Continue with this skill and use the default
   `all` service set.
 
+Each named service is requested as **read-write** by default. To restrict any
+service to read-only, append `=ro` (e.g. `--services gmail=ro,calendar=rw`).
+See the "Modes" section below for the full table. Read-only is enforced at
+the OAuth grant — once the token lacks `gmail.send`, no code path the agent
+can reach (bash, python, raw HTTP) can send mail through that account.
+
 **Question 2: "Does your Google account use Advanced Protection (hardware
 security keys required to sign in)? If you're not sure, you probably don't
 — it's something you would have explicitly enrolled in."**
@@ -122,10 +128,16 @@ Use the service set chosen in Step 1. Examples:
 $GSETUP --auth-url --services email,calendar --format json
 $GSETUP --auth-url --services calendar,drive,sheets,docs --format json
 $GSETUP --auth-url --services all --format json
+
+# Per-service read-only — recommended when the user wants the agent to
+# read but not act. Token cannot send mail / write events / modify Drive.
+$GSETUP --auth-url --services 'gmail=ro,calendar=rw,drive=ro' --format json
+$GSETUP --auth-url --services 'all=ro' --format json
 ```
 
-This returns JSON with an `auth_url` field and also saves the exact URL to
-`~/.hermes/google_oauth_last_url.txt`.
+`--format json` returns a JSON object with `auth_url` and `scopes` fields.
+The chosen services + modes are persisted to `~/.hermes/google_scopes.json`
+and reused by future `--auth-url` / `--check` calls.
 
 Agent rules for this step:
 - Extract the `auth_url` field and send that exact URL to the user as a single line.
@@ -141,7 +153,7 @@ pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:
 
 ```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
+$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
 ```
 
 If `--auth-code` fails because the code expired, was already used, or came from
@@ -163,6 +175,43 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
 - To revoke: `$GSETUP --revoke`
+
+## Modes
+
+Each service can be granted in **read-only** (`=ro`) or **read-write** (`=rw`,
+the default) mode. The choice is recorded in `~/.hermes/google_scopes.json`
+and embedded in the OAuth grant — write subcommands are refused early when
+the token lacks the corresponding scope, and Google's auth server rejects
+them outright regardless of what code path is used.
+
+| Service | `=ro` grants | `=rw` adds |
+|---------|--------------|-----------|
+| gmail (alias: email) | read mail, search, list labels | send, reply, modify labels, trash |
+| calendar | list events | create / update / delete events |
+| drive | search, read, download | upload, share, create folder, delete |
+| sheets | read values | update, append, create |
+| docs | read content | create, append |
+| contacts | list (only mode in this skill) | — |
+
+```bash
+# Show the current config and the scopes that would be requested.
+$GSETUP --show-mode
+$GSETUP --show-mode --format json
+
+# Switch an existing install to read-only gmail (re-auth required).
+$GSETUP --revoke
+$GSETUP --auth-url --services 'gmail=ro,calendar=rw,drive=ro,sheets=ro,docs=ro' --format json
+# Send URL to user, then exchange the returned code:
+$GSETUP --auth-code "THE_URL_OR_CODE"
+$GSETUP --show-mode   # sanity check
+```
+
+**Security note for the agent**: read-only is a hard boundary. Do not attempt
+to "work around" a `READONLY_MODE: <action> blocked ...` error by writing a
+Python script, calling the REST API directly, or any other route — Google's
+auth server enforces the scope check on the token, not Hermes. The correct
+response is to tell the user the action is blocked and offer to re-run
+`$GSETUP --auth-url --services <service>=rw` if they want to enable it.
 
 ## Usage
 
@@ -327,6 +376,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |
+| `READONLY_MODE: <action> blocked` | Token was issued without the write scope for that service. Tell the user and offer `$GSETUP --revoke && $GSETUP --auth-url --services <service>=rw` if they want to enable writes. Do not try to bypass — Google enforces the scope. |
 
 ## Revoking Access
 

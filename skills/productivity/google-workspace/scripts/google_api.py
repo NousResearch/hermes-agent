@@ -79,6 +79,39 @@ def _stored_token_scopes() -> list[str]:
     return list(SCOPES)
 
 
+# Per-action scope URLs. Used by _require_scope to refuse early when the
+# token (issued under a reduced scope set per ~/.hermes/google_scopes.json)
+# lacks the scope a given write action needs. Without this gate the call
+# would still fail — Google's auth server rejects it — but with a more
+# opaque 403 instead of a clear READONLY_MODE message.
+SCOPE_API_BASE = "https://www.googleapis.com/auth"
+GMAIL_SEND_SCOPE = f"{SCOPE_API_BASE}/gmail.send"
+GMAIL_MODIFY_SCOPE = f"{SCOPE_API_BASE}/gmail.modify"
+CALENDAR_WRITE_SCOPE = f"{SCOPE_API_BASE}/calendar"
+DRIVE_WRITE_SCOPE = f"{SCOPE_API_BASE}/drive"
+SHEETS_WRITE_SCOPE = f"{SCOPE_API_BASE}/spreadsheets"
+DOCS_WRITE_SCOPE = f"{SCOPE_API_BASE}/documents"
+
+
+def _require_scope(scope_url: str, action: str) -> None:
+    """Refuse a write action if the stored token lacks the needed scope.
+
+    The real defense is Google's auth server (which rejects the call
+    regardless). This function turns that rejection into a readable
+    READONLY_MODE error so the agent doesn't waste a round trip.
+    """
+    if scope_url in set(_stored_token_scopes()):
+        return
+    print(
+        f"READONLY_MODE: {action} blocked — current OAuth token lacks "
+        f"'{scope_url}'. To enable this action, re-authorize with the "
+        f"relevant service in read-write mode, e.g.:\n"
+        f"  setup.py --revoke && setup.py --auth-url --services <service>=rw",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _gws_binary() -> str | None:
     override = os.getenv("HERMES_GWS_BIN")
     if override:
@@ -316,6 +349,7 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    _require_scope(GMAIL_SEND_SCOPE, "gmail send")
     if _gws_binary():
         message = MIMEText(args.body, "html" if args.html else "plain")
         message["To"] = args.to
@@ -359,6 +393,7 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    _require_scope(GMAIL_SEND_SCOPE, "gmail reply")
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -436,6 +471,7 @@ def gmail_labels(args):
 
 
 def gmail_modify(args):
+    _require_scope(GMAIL_MODIFY_SCOPE, "gmail modify")
     body = {}
     if args.add_labels:
         body["addLabelIds"] = args.add_labels.split(",")
@@ -516,6 +552,7 @@ def calendar_list(args):
 
 
 def calendar_create(args):
+    _require_scope(CALENDAR_WRITE_SCOPE, "calendar create")
     event = {
         "summary": args.summary,
         "start": {"dateTime": args.start},
@@ -554,6 +591,7 @@ def calendar_create(args):
 
 
 def calendar_delete(args):
+    _require_scope(CALENDAR_WRITE_SCOPE, "calendar delete")
     if _gws_binary():
         _run_gws(["calendar", "events", "delete"], params={"calendarId": args.calendar, "eventId": args.event_id})
         print(json.dumps({"status": "deleted", "eventId": args.event_id}))
@@ -609,6 +647,7 @@ def drive_get(args):
 
 def drive_upload(args):
     """Upload a local file to Drive. Falls through to Python client even when gws
+    _require_scope(DRIVE_WRITE_SCOPE, "drive upload")
     is installed, because gws doesn't do multipart uploads."""
     import mimetypes
     from googleapiclient.http import MediaFileUpload
@@ -689,6 +728,7 @@ def drive_download(args):
 
 
 def drive_create_folder(args):
+    _require_scope(DRIVE_WRITE_SCOPE, "drive create_folder")
     body = {
         "name": args.name,
         "mimeType": "application/vnd.google-apps.folder",
@@ -721,6 +761,7 @@ def drive_create_folder(args):
 
 
 def drive_share(args):
+    _require_scope(DRIVE_WRITE_SCOPE, "drive share")
     permission = {
         "type": args.type,
         "role": args.role,
@@ -772,6 +813,7 @@ def drive_share(args):
 
 def drive_delete(args):
     """Trash or permanently delete a Drive file. Defaults to trash (reversible)."""
+    _require_scope(DRIVE_WRITE_SCOPE, "drive delete")
     if args.permanent:
         if _gws_binary():
             _run_gws(["drive", "files", "delete"], params={"fileId": args.file_id})
@@ -868,6 +910,7 @@ def sheets_get(args):
 
 
 def sheets_update(args):
+    _require_scope(SHEETS_WRITE_SCOPE, "sheets update")
     values = json.loads(args.values)
     body = {"values": values}
 
@@ -894,6 +937,7 @@ def sheets_update(args):
 
 
 def sheets_append(args):
+    _require_scope(SHEETS_WRITE_SCOPE, "sheets append")
     values = json.loads(args.values)
     body = {"values": values}
 
@@ -921,6 +965,7 @@ def sheets_append(args):
 
 def sheets_create(args):
     """Create a new spreadsheet. Returns the new spreadsheet ID and URL."""
+    _require_scope(SHEETS_WRITE_SCOPE, "sheets create")
     body = {"properties": {"title": args.title}}
     if args.sheet_name:
         body["sheets"] = [{"properties": {"title": args.sheet_name}}]
@@ -975,6 +1020,7 @@ def docs_get(args):
 
 def docs_create(args):
     """Create a new Doc. Optionally seed it with initial body text."""
+    _require_scope(DOCS_WRITE_SCOPE, "docs create")
     body = {"title": args.title}
 
     if _gws_binary():
@@ -998,6 +1044,7 @@ def docs_create(args):
 
 def docs_append(args):
     """Append text to the end of an existing Doc."""
+    _require_scope(DOCS_WRITE_SCOPE, "docs append")
     if _gws_binary():
         doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
     else:
@@ -1028,6 +1075,7 @@ def docs_append(args):
 
 def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
     """Send a batchUpdate with a single insertText request."""
+    _require_scope(DOCS_WRITE_SCOPE, "docs insert text")
     requests = [{
         "insertText": {
             "location": {"index": index},

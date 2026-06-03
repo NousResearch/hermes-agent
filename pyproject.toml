@@ -276,6 +276,15 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
+    "xdist_group(name): serialize tests that share process-global app/server state under pytest-xdist",
+    "ssh: marks tests that require an SSH-capable test environment",
+]
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # discord.py imports stdlib audioop from discord.player on Python <3.13.
+    # audioop-lts covers 3.13+, but 3.11/3.12 still emit this dependency-owned
+    # deprecation during collection/import; keep our test suite warning-clean.
+    "ignore:.*audioop.*deprecated.*:DeprecationWarning",
 ]
 # pytest-timeout: per-test 30s hard cap with signal method.
 # This is the fallback inside each per-file pytest subprocess (see

@@ -2372,6 +2372,14 @@ class GatewayRunner:
             # as a new independent lane below instead of hijacking the latest
             # existing topic binding.
             return None
+        # A completely absent thread_id means the message came from the root
+        # "All Messages" view — a genuine new-lane intent. Do NOT recover it
+        # into the last-used topic; let _telegram_topic_source_for_root_prompt
+        # create a fresh topic for it instead. Only recover when thread_id is
+        # "1" (General topic header), which is Telegram's ambiguous signal for
+        # a reply that lost its thread context.
+        if not inbound:
+            return None
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return None

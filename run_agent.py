@@ -3411,6 +3411,19 @@ class AIAgent:
             )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+
+            # Consume pending approval records and attach them to matching
+            # tool result messages.  Approvals are strictly ordered — the
+            # N-th tool result carrying an "approval" key pairs with the
+            # N-th pending record.
+            pending = getattr(self, '_pending_approval_records', None) or []
+            pending_idx = 0
+            if pending:
+                logger.debug(
+                    "开始写入审批记录：session=%s 待匹配=%d 消息范围[%d:%d]",
+                    self.session_id, len(pending), flush_from, len(messages),
+                )
+
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -3422,6 +3435,33 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+
+                message_type = msg.get("message_type")
+                message_meta = msg.get("message_meta")
+
+                # Match pending approval records to tool results that carry
+                # an "approval" key in their JSON content.
+                if (role == "tool" and content and pending_idx < len(pending)
+                        and isinstance(content, str)):
+                    try:
+                        content_data = json.loads(content)
+                        if (isinstance(content_data, dict)
+                                and "approval" in content_data):
+                            rec = pending[pending_idx]
+                            message_type = "tool_approval"
+                            message_meta = json.dumps({
+                                "approval_options": rec["options"],
+                                "approval_selection": rec["action"],
+                            })
+                            pending_idx += 1
+                            logger.debug(
+                                "审批记录已附加：%d/%d tool=%s action=%s",
+                                pending_idx, len(pending),
+                                msg.get("tool_name", "?"), rec["action"],
+                            )
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
@@ -3435,6 +3475,14 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    message_type=message_type,
+                    message_meta=message_meta,
+                )
+            if pending_idx < len(pending):
+                logger.warning(
+                    "审批记录未完全匹配：session=%s 已匹配=%d/%d 丢弃=%d",
+                    self.session_id, pending_idx, len(pending),
+                    len(pending) - pending_idx,
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:

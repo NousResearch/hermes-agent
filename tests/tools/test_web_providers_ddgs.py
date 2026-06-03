@@ -27,6 +27,8 @@ def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None):
     fake = types.ModuleType("ddgs")
 
     class _FakeDDGS:
+        def __init__(self, **kwargs):
+            pass  # accept timeout= and any other constructor kwargs
         def __enter__(self):
             return self
         def __exit__(self, *_a):

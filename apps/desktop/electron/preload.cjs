@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
+  getDesktopState: key => ipcRenderer.invoke('hermes:desktop-state:get', key),
+  setDesktopState: (key, value) => ipcRenderer.invoke('hermes:desktop-state:set', key, value),
   settings: {
     getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),

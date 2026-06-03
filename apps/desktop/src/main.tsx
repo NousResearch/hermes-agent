@@ -10,6 +10,14 @@ import { ErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { installClipboardShim } from './lib/clipboard'
 import { ThemeProvider } from './themes/context'
+import { hydrateDesktopState } from './lib/desktop-state'
+
+// Seed renderer localStorage from durable main-process filesystem state
+// before any nanostore atom reads its initial value. This is fire-and-forget;
+// on local SSD the IPC round-trip completes in <1ms, well before the first
+// React render finishes module resolution. If hydration does race past render,
+// storage-rehydration.ts catches up the atoms afterwards.
+hydrateDesktopState()
 
 installClipboardShim()
 

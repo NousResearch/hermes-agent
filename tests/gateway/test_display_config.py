@@ -54,6 +54,20 @@ class TestResolveDisplaySetting:
         # Unknown platform, no config → global default "all"
         assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
 
+    def test_notifications_can_be_configured_per_platform(self):
+        """display.platforms.<platform>.notifications controls push noise."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "discord": {"notifications": "important"},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "discord", "notifications") == "important"
+        assert resolve_display_setting({}, "discord", "notifications") == "all"
+
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
         from gateway.display_config import resolve_display_setting

@@ -84,6 +84,69 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
 
 
 @pytest.mark.asyncio
+async def test_send_suppresses_push_notifications_in_important_mode():
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"notifications": "important"},
+        )
+    )
+
+    sent_msg = SimpleNamespace(id=1234)
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "progress update")
+
+    assert result.success is True
+    assert channel.send.await_args.kwargs["silent"] is True
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_suppress_push_when_notify_metadata_is_set():
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"notifications": "important"},
+        )
+    )
+
+    sent_msg = SimpleNamespace(id=1234)
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "final answer", metadata={"notify": True})
+
+    assert result.success is True
+    assert "silent" not in channel.send.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_send_uses_legacy_push_notifications_by_default():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=1234)
+    channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "normal message")
+
+    assert result.success is True
+    assert "silent" not in channel.send.await_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_send_retries_without_reference_when_reply_target_is_deleted():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
 

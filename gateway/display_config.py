@@ -46,6 +46,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Push-notification delivery mode for platforms that support per-message
+    # notification flags. "all" preserves legacy behavior; "important" sends
+    # progress/status messages silently while final/blocked messages notify.
+    "notifications": "all",
 }
 
 # ---------------------------------------------------------------------------

@@ -615,6 +615,16 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._notifications_mode: str = str(
+            self.config.extra.get("notifications", "all") or "all"
+        ).strip().lower()
+        if self._notifications_mode not in {"all", "important"}:
+            logger.warning(
+                "[%s] Invalid notifications mode %r; using 'all'",
+                self.name,
+                self._notifications_mode,
+            )
+            self._notifications_mode = "all"
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
@@ -1402,6 +1412,24 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
+    def _notification_kwargs(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return Discord send kwargs for the configured notification mode.
+
+        ``notifications: important`` mirrors Telegram's important-notification
+        mode: intermediate progress/status messages are still sent to the
+        channel/thread, but Discord receives ``silent=True`` so clients do not
+        emit push notifications.  Final responses pass ``metadata["notify"]``
+        from the shared gateway delivery path and therefore notify normally.
+        """
+        if self._notifications_mode != "important":
+            return {}
+        if (metadata or {}).get("notify"):
+            return {}
+        return {"silent": True}
+
     async def send(
         self,
         chat_id: str,
@@ -1448,6 +1476,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            notification_kwargs = self._notification_kwargs(metadata)
 
             message_ids = []
             reference = None
@@ -1471,6 +1500,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        **notification_kwargs,
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1493,6 +1523,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            **notification_kwargs,
                         )
                     else:
                         raise

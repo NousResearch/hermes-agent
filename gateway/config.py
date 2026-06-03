@@ -817,6 +817,20 @@ def load_gateway_config() -> GatewayConfig:
 
             _merge_platform_map(gateway_platforms)
             _merge_platform_map(yaml_cfg.get("platforms"))
+
+            # Display notification settings are consumed by platform adapters
+            # at startup, so bridge them into the platform ``extra`` dict here.
+            # Runtime display resolution still owns the defaults/precedence;
+            # this only makes explicit config visible to adapters.
+            display_cfg = yaml_cfg.get("display")
+            display_platforms = display_cfg.get("platforms") if isinstance(display_cfg, dict) else None
+            if isinstance(display_platforms, dict):
+                for plat_name, display_platform_cfg in display_platforms.items():
+                    if not isinstance(display_platform_cfg, dict) or "notifications" not in display_platform_cfg:
+                        continue
+                    plat_data, extra = _ensure_platform_extra_dict(platforms_data, str(plat_name))
+                    extra["notifications"] = display_platform_cfg["notifications"]
+
             if platforms_data:
                 gw_data["platforms"] = platforms_data
             # Iterate built-in platforms plus any registered plugin platforms
@@ -903,6 +917,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "notifications" in platform_cfg:
+                    bridged["notifications"] = platform_cfg["notifications"]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

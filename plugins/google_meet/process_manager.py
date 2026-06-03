@@ -183,7 +183,20 @@ def start(
         "log_path": str(log_path),
         "mode": mode,
     }
-    _write_active(record)
+    try:
+        _write_active(record)
+    except Exception:
+        # The active pointer is the only handle later status()/stop() calls
+        # have on this bot (we communicate via files only). If we fail to
+        # persist it — e.g. disk full or a permission error on the state
+        # file — the subprocess we just spawned would become an unreachable
+        # orphan that can't be monitored or torn down. Kill it before
+        # propagating so we don't leak a runaway Chromium-driving process.
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        raise
     return {"ok": True, **record}
 
 

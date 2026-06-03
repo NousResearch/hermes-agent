@@ -1,0 +1,20 @@
+name: hermes-ade
+version: 0.1.0
+description: "ADE (Agent Delivery Engineering) — BCP protocol, CADVP verification, and three-level gates for reliable agent execution delivery"
+author: qijing-tech
+license: MIT
+hooks:
+  - post_llm_call
+commands:
+  - name: bcp
+    description: "Execute BCP Phase 1 reverse confirmation"
+    usage: /bcp <task description>
+  - name: bcp-verify
+    description: "Run L1+L2 gate verification on delivered files"
+    usage: /bcp-verify <file_path> [file_path...]
+  - name: bcp-report
+    description: "Show ADE protocol metrics and verification history"
+    usage: /bcp-report
+  - name: bcp-validate
+    description: "Validate ADE compliance of current execution"
+    usage: /bcp-validate

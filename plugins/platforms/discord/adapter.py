@@ -5585,8 +5585,9 @@ def _define_discord_view_classes() -> None:
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            
         async def on_timeout(self):
-             """Disable all buttons and update the embed when the interaction times out."""
+            """Disable all buttons and update the embed when the interaction times out."""
             for item in self.children:
                 item.disabled = True
         

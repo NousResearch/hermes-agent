@@ -1020,6 +1020,7 @@
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
+          columns: boardData.columns,
           laneByProfile,
           selectedIds,
           failedIds,
@@ -2233,6 +2234,7 @@
         return h(Column, {
           key: col.name,
           column: col,
+          columns: props.columns || [],
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
@@ -2350,8 +2352,9 @@
       ),
       h("div", { className: "hermes-kanban-column-sub" },
         colHelp || ""),
-      showCreate ? h(InlineCreate, {
+      showCreate ? h(CreateTaskModal, {
         columnName: props.column.name,
+        columns: props.columns || [],
         allTasks: props.allTasks,
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
@@ -2584,187 +2587,344 @@
   }
 
   // -------------------------------------------------------------------------
-  // Inline create (with parent selector)
+  // Create task modal — replaces the old inline creator with a proper
+  // overlay dialog that includes lane picker, assignee and skills
+  // autocomplete, and all the previous advanced options.
   // -------------------------------------------------------------------------
 
-  function InlineCreate(props) {
+  // Autocomplete dropdown — shared by assignee and skills inputs.
+  // Fetches options from the API on first mount, filters on input
+  // change, positions a dropdown below the input, and supports
+  // keyboard navigation (arrow keys + Enter).
+  function AutocompleteDropdown(props) {
+    const { value, onChange, onSelect, fetchUrl, placeholder, className, title } = props;
+    const [options, setOptions] = useState([]);
+    const [filtered, setFiltered] = useState([]);
+    const [open, setOpen] = useState(false);
+    const [activeIdx, setActiveIdx] = useState(-1);
+    const [loaded, setLoaded] = useState(false);
+    const inputRef = useRef(null);
+    const listRef = useRef(null);
+
+    useEffect(function () {
+      if (!loaded) {
+        SDK.fetchJSON(fetchUrl)
+          .then(function (data) {
+            // Handle both {profiles: [...]} and {skills: [...]} response shapes
+            const items = data.profiles || data.skills || [];
+            setOptions(items);
+            setFiltered(items);
+            setLoaded(true);
+          })
+          .catch(function () { setLoaded(true); });  // silent fail
+      }
+    }, [fetchUrl, loaded]);
+
+    // Filter on input change
+    useEffect(function () {
+      if (!value || !value.trim()) {
+        setFiltered(options);
+        setOpen(false);
+        return;
+      }
+      var q = value.toLowerCase().trim();
+      var f = options.filter(function (opt) {
+        return typeof opt === 'string' && opt.toLowerCase().indexOf(q) !== -1;
+      });
+      setFiltered(f);
+      setOpen(f.length > 0);
+      setActiveIdx(-1);
+    }, [value, options]);
+
+    function handleKeyDown(e) {
+      if (!open) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIdx(function (prev) {
+          return prev < filtered.length - 1 ? prev + 1 : 0;
+        });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIdx(function (prev) {
+          return prev > 0 ? prev - 1 : filtered.length - 1;
+        });
+      } else if (e.key === 'Enter' && activeIdx >= 0 && activeIdx < filtered.length) {
+        e.preventDefault();
+        onSelect(filtered[activeIdx]);
+        setOpen(false);
+      } else if (e.key === 'Escape') {
+        setOpen(false);
+      }
+    }
+
+    function handleBlur() {
+      // Delay hiding so click on dropdown items registers first
+      setTimeout(function () { setOpen(false); }, 150);
+    }
+
+    return h("div", { className: "hermes-kanban-autocomplete-wrap" },
+      h(Input, {
+        ref: inputRef,
+        value: value,
+        onChange: function (e) { onChange(e.target.value); setOpen(true); },
+        onKeyDown: handleKeyDown,
+        onFocus: function () { if (value && value.trim() && filtered.length > 0) setOpen(true); },
+        onBlur: handleBlur,
+        placeholder: placeholder,
+        className: (className || "") + " hermes-kanban-autocomplete-input",
+        title: title,
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        spellCheck: false,
+      }),
+      open ? h("ul", {
+        ref: listRef,
+        className: "hermes-kanban-autocomplete-list",
+        role: "listbox",
+      }, filtered.map(function (opt, i) {
+        return h("li", {
+          key: opt,
+          className: i === activeIdx ? "hermes-kanban-autocomplete-item hermes-kanban-autocomplete-item--active" : "hermes-kanban-autocomplete-item",
+          "data-index": i,
+          onMouseDown: function (e) { e.preventDefault(); onSelect(opt); setOpen(false); },
+          onMouseEnter: function () { setActiveIdx(i); },
+          role: "option",
+          "aria-selected": i === activeIdx,
+        }, opt);
+      })) : null,
+    );
+  }
+
+  function CreateTaskModal(props) {
     const { t } = useI18n();
     const [title, setTitle] = useState("");
+    const [lane, setLane] = useState(props.columnName || "todo");
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
-    // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
-    // takes a path (dispatcher derives one from the assignee profile otherwise);
-    // `dir` requires a path. Backend enforces the rule — we only hide/show the
-    // input here to save vertical space in the common `scratch` case.
     const [workspaceKind, setWorkspaceKind] = useState("scratch");
     const [workspacePath, setWorkspacePath] = useState("");
-    // Goal-mode: when on, the dispatched worker runs the Ralph-style /goal
-    // loop — a judge re-checks the card after each turn and the worker keeps
-    // going in the same session until done, or the turn budget runs out
-    // (which blocks the card for review). goalMaxTurns is optional; blank
-    // = backend default.
     const [goalMode, setGoalMode] = useState(false);
     const [goalMaxTurns, setGoalMaxTurns] = useState("");
 
+    // Escape to close
+    useEffect(function () {
+      function onKey(e) { if (e.key === "Escape") props.onCancel(); }
+      window.addEventListener("keydown", onKey);
+      return function () { window.removeEventListener("keydown", onKey); };
+    }, [props.onCancel]);
+
+    const columnNames = (props.columns || []).map(function (c) { return c.name; });
+
     const submit = function () {
-      const trimmed = title.trim();
+      var trimmed = title.trim();
       if (!trimmed) return;
-      const body = {
+      var body = {
         title: trimmed,
-        assignee: assignee.trim() || null,
+        // Fix: if assignee is blank, default to "default" instead of null
+        assignee: assignee.trim() || "default",
         priority: Number(priority) || 0,
-        triage: props.columnName === "triage",
+        status: lane,
       };
       if (parent) body.parents = [parent];
-      // Parse comma-separated skills into a clean list. Blank = no
-      // extras (omit key so backend leaves it null). The dispatcher
-      // always auto-loads kanban-worker; these are extras on top.
-      const skillList = skills
+      var skillList = skills
         .split(",")
         .map(function (s) { return s.trim(); })
         .filter(function (s) { return s.length > 0; });
       if (skillList.length > 0) body.skills = skillList;
-      // Only send workspace_kind when it's non-default. Keeps the request
-      // shape small and interoperable with older dispatcher versions.
       if (workspaceKind && workspaceKind !== "scratch") {
         body.workspace_kind = workspaceKind;
       }
-      const wpTrim = workspacePath.trim();
+      var wpTrim = workspacePath.trim();
       if (wpTrim) body.workspace_path = wpTrim;
-      // Goal-mode toggle. Only send the keys when enabled so the request
-      // shape stays small and old dispatchers ignore it cleanly.
       if (goalMode) {
         body.goal_mode = true;
-        const gmt = parseInt(goalMaxTurns, 10);
+        var gmt = parseInt(goalMaxTurns, 10);
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind("scratch"); setWorkspacePath("");
-      setGoalMode(false); setGoalMaxTurns("");
     };
 
-    const showPathInput = workspaceKind !== "scratch";
-    const pathPlaceholder = workspaceKind === "dir"
+    var showPathInput = workspaceKind !== "scratch";
+    var pathPlaceholder = workspaceKind === "dir"
       ? tx(t, "workspacePathDir", "workspace path (required, e.g. ~/projects/my-app)")
       : tx(t, "workspacePathOptional",
           "workspace path (optional, derived from assignee if blank)");
 
-    return h("div", { className: "hermes-kanban-inline-create" },
-      h("textarea", {
-        value: title,
-        onChange: function (e) { setTitle(e.target.value); },
-        onKeyDown: function (e) {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-          if (e.key === "Escape") props.onCancel();
-        },
-        placeholder: props.columnName === "triage"
-          ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it…")
-          : tx(t, "taskTitlePlaceholder", "New task title…"),
-        autoFocus: true,
-        className: "text-sm min-h-[2rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
-        rows: 2,
-      }),
-      h("div", { className: "flex gap-2" },
-        h(Input, {
-          value: assignee,
-          onChange: function (e) { setAssignee(e.target.value); },
-          placeholder: props.columnName === "triage"
-            ? tx(t, "specifier", "specifier")
-            : tx(t, "assigneePlaceholder", "assignee"),
-          className: "h-7 text-xs flex-1",
-          title: props.columnName === "triage"
-            ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
-            : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
-          style: { textTransform: "none" },
-          autoCapitalize: "none",
-          autoCorrect: "off",
-          spellCheck: false,
-        }),
-        h(Input, {
-          type: "number",
-          value: priority,
-          onChange: function (e) { setPriority(e.target.value); },
-          placeholder: "pri",
-          className: "h-7 text-xs w-16",
-          title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
-        }),
-      ),
-      h(Input, {
-        value: skills,
-        onChange: function (e) { setSkills(e.target.value); },
-        placeholder: tx(t, "skillsPlaceholder",
-          "skills (optional, comma-separated): translation, github-code-review"),
-        title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
-        className: "h-7 text-xs",
-      }),
-      h("div", { className: "flex gap-2 items-center" },
-        h("label", {
-          className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
-          title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
-        },
-          h("input", {
-            type: "checkbox",
-            checked: goalMode,
-            onChange: function (e) { setGoalMode(!!e.target.checked); },
-            className: "h-3.5 w-3.5 accent-current",
-          }),
-          tx(t, "goalMode", "goal mode"),
+    return h("div", {
+      className: "hermes-kanban-modal-shade",
+      onClick: function (e) { if (e.target.className === "hermes-kanban-modal-shade") props.onCancel(); },
+    },
+      h("div", { className: "hermes-kanban-modal" },
+        h("div", { className: "hermes-kanban-modal-head" },
+          h("span", { className: "hermes-kanban-modal-title" },
+            tx(t, "createTask", "Create task")),
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-modal-close",
+            onClick: props.onCancel,
+          }, "\u2715"),
         ),
-        goalMode ? h(Input, {
-          type: "number",
-          value: goalMaxTurns,
-          onChange: function (e) { setGoalMaxTurns(e.target.value); },
-          placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
-          className: "h-7 text-xs w-40",
-          title: "Turn budget for the goal loop. Blank = backend default (20).",
-          min: 1,
-        }) : null,
-      ),
-      h("div", { className: "flex gap-2" },
-        h(Select, Object.assign({
-          value: workspaceKind,
-          title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
-          className: "h-7 text-xs w-28",
-        }, selectChangeHandler(setWorkspaceKind)),
-          h(SelectOption, { value: "scratch" }, "scratch"),
-          h(SelectOption, { value: "worktree" }, "worktree"),
-          h(SelectOption, { value: "dir" }, "dir"),
+        h("div", { className: "hermes-kanban-modal-body" },
+          // Title
+          h("label", { className: "hermes-kanban-modal-field" },
+            h("span", { className: "hermes-kanban-modal-label" },
+              tx(t, "title", "Title")),
+            h("textarea", {
+              value: title,
+              onChange: function (e) { setTitle(e.target.value); },
+              onKeyDown: function (e) {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+              },
+              placeholder: props.columnName === "triage"
+                ? tx(t, "triagePlaceholder", "Rough idea — AI will spec it…")
+                : tx(t, "taskTitlePlaceholder", "New task title…"),
+              autoFocus: true,
+              className: "text-sm min-h-[2.5rem] max-h-32 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+              rows: 2,
+            }),
+          ),
+          // Lane selector
+          h("label", { className: "hermes-kanban-modal-field" },
+            h("span", { className: "hermes-kanban-modal-label" },
+              tx(t, "lane", "Lane")),
+            h(Select, Object.assign({
+              value: lane,
+              className: "h-8 text-sm",
+              title: "Which column/lane to place this task in",
+            }, selectChangeHandler(setLane)),
+              columnNames.map(function (cname) {
+                return h(SelectOption, { key: cname, value: cname },
+                  getColumnLabel(t, cname) || cname);
+              }),
+            ),
+          ),
+          // Assignee with autocomplete
+          h("label", { className: "hermes-kanban-modal-field" },
+            h("span", { className: "hermes-kanban-modal-label" },
+              tx(t, "assignee", "Assignee")),
+            h(AutocompleteDropdown, {
+              value: assignee,
+              onChange: setAssignee,
+              onSelect: setAssignee,
+              fetchUrl: withBoard(API + "/profiles", readSelectedBoard()),
+              placeholder: tx(t, "assigneePlaceholder", "profile name or leave blank for default"),
+              className: "h-8 text-sm",
+              title: "Hermes profile to assign. Leave blank to assign to 'default'.",
+            }),
+          ),
+          // Skills with autocomplete
+          h("label", { className: "hermes-kanban-modal-field" },
+            h("span", { className: "hermes-kanban-modal-label" },
+              tx(t, "skills", "Skills")),
+            h(AutocompleteDropdown, {
+              value: skills,
+              onChange: setSkills,
+              onSelect: function (v) {
+                // Append to existing comma-separated value
+                var existing = skills ? skills.split(",").map(function (s) { return s.trim(); }).filter(Boolean) : [];
+                if (existing.indexOf(v) === -1) {
+                  existing.push(v);
+                }
+                setSkills(existing.join(", "));
+              },
+              fetchUrl: withBoard(API + "/skills", readSelectedBoard()),
+              placeholder: tx(t, "skillsPlaceholder",
+                "skills (optional, comma-separated or pick from dropdown)"),
+              className: "h-8 text-sm",
+              title: "Force-load these skills into the worker.",
+            }),
+          ),
+          // Priority + Workspace row
+          h("div", { className: "hermes-kanban-modal-row" },
+            h("label", { className: "hermes-kanban-modal-field hermes-kanban-modal-field--inline" },
+              h("span", { className: "hermes-kanban-modal-label" },
+                tx(t, "priority", "Priority")),
+              h(Input, {
+                type: "number",
+                value: priority,
+                onChange: function (e) { setPriority(e.target.value); },
+                placeholder: "0",
+                className: "h-8 text-sm w-20",
+                title: "Priority. Higher-priority tasks are claimed first by the dispatcher. 0 = default.",
+              }),
+            ),
+            h("label", { className: "hermes-kanban-modal-field hermes-kanban-modal-field--inline" },
+              h("span", { className: "hermes-kanban-modal-label" },
+                tx(t, "workspace", "Workspace")),
+              h(Select, Object.assign({
+                value: workspaceKind,
+                className: "h-8 text-sm w-28",
+                title: "scratch: isolated temp dir (default). worktree: git worktree. dir: exact path.",
+              }, selectChangeHandler(setWorkspaceKind)),
+                h(SelectOption, { value: "scratch" }, "scratch"),
+                h(SelectOption, { value: "worktree" }, "worktree"),
+                h(SelectOption, { value: "dir" }, "dir"),
+              ),
+            ),
+          ),
+          showPathInput ? h("label", { className: "hermes-kanban-modal-field" },
+            h("span", { className: "hermes-kanban-modal-label" },
+              tx(t, "workspacePath", "Workspace path")),
+            h(Input, {
+              value: workspacePath,
+              onChange: function (e) { setWorkspacePath(e.target.value); },
+              placeholder: pathPlaceholder,
+              className: "h-8 text-sm",
+            }),
+          ) : null,
+          // Goal mode
+          h("label", { className: "hermes-kanban-modal-field hermes-kanban-modal-field--checkbox" },
+            h("input", {
+              type: "checkbox",
+              checked: goalMode,
+              onChange: function (e) { setGoalMode(!!e.target.checked); },
+              className: "h-4 w-4 accent-current",
+            }),
+            h("span", { className: "hermes-kanban-modal-label" },
+              tx(t, "goalMode", "Goal mode")),
+            goalMode ? h(Input, {
+              type: "number",
+              value: goalMaxTurns,
+              onChange: function (e) { setGoalMaxTurns(e.target.value); },
+              placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
+              className: "h-7 text-xs w-32 ml-2",
+              title: "Turn budget for the goal loop.",
+              min: 1,
+            }) : null,
+          ),
+          // Parent task selector
+          h("label", { className: "hermes-kanban-modal-field" },
+            h("span", { className: "hermes-kanban-modal-label" },
+              tx(t, "parent", "Parent task")),
+            h(Select, Object.assign({
+              value: parent,
+              className: "h-8 text-sm",
+              title: "Optional parent task. A child stays blocked until the parent is done.",
+            }, selectChangeHandler(setParent)),
+              h(SelectOption, { value: "" }, tx(t, "noParent", "— no parent —")),
+              (props.allTasks || []).map(function (task) {
+                return h(SelectOption, { key: task.id, value: task.id },
+                  task.id + " — " + (task.title || "").slice(0, 60));
+              }),
+            ),
+          ),
         ),
-        showPathInput ? h(Input, {
-          value: workspacePath,
-          onChange: function (e) { setWorkspacePath(e.target.value); },
-          placeholder: pathPlaceholder,
-          className: "h-7 text-xs flex-1",
-        }) : null,
-      ),
-      h(Select, Object.assign({
-        value: parent,
-        className: "h-7 text-xs",
-        title: "Optional parent task. A child stays blocked in its current column until the parent is marked done.",
-      }, selectChangeHandler(setParent)),
-        h(SelectOption, { value: "" }, tx(t, "noParent", "— no parent —")),
-        (props.allTasks || []).map(function (task) {
-          return h(SelectOption, { key: task.id, value: task.id },
-            `${task.id} — ${(task.title || "").slice(0, 50)}`);
-        }),
-      ),
-      h("div", { className: "flex gap-2" },
-        h(Button, {
-          onClick: submit,
-          size: "sm",
-        }, "Create"),
-        h(Button, {
-          onClick: props.onCancel,
-          size: "sm",
-        }, tx(t, "cancel", "Cancel")),
+        h("div", { className: "hermes-kanban-modal-actions" },
+          h(Button, {
+            onClick: submit,
+            size: "sm",
+          }, tx(t, "create", "Create")),
+          h(Button, {
+            onClick: props.onCancel,
+            variant: "outline",
+            size: "sm",
+          }, tx(t, "cancel", "Cancel")),
+        ),
       ),
     );
-  }
-
-  // -------------------------------------------------------------------------
+  }  // -------------------------------------------------------------------------
   // Task drawer
   // -------------------------------------------------------------------------
 

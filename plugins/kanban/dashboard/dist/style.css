@@ -320,6 +320,145 @@
   min-width: 0;
 }
 
+/* ---- Create task modal override --------------------------------------- */
+
+.hermes-kanban-modal-shade {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hermes-kanban-modal {
+  width: min(520px, 92vw);
+  max-height: 85vh;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 0.5rem);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  animation: hermes-kanban-modal-in 150ms ease-out;
+}
+
+@keyframes hermes-kanban-modal-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.hermes-kanban-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.hermes-kanban-modal-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--color-foreground);
+}
+
+.hermes-kanban-modal-close {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+.hermes-kanban-modal-close:hover { color: var(--color-foreground); }
+
+.hermes-kanban-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.hermes-kanban-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.hermes-kanban-modal-field--inline {
+  flex: 1;
+  flex-direction: column;
+}
+
+.hermes-kanban-modal-field--checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.hermes-kanban-modal-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--color-foreground);
+}
+
+.hermes-kanban-modal-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.hermes-kanban-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--color-border);
+}
+
+/* ---- Autocomplete dropdown --------------------------------------------- */
+
+.hermes-kanban-autocomplete-wrap {
+  position: relative;
+}
+
+.hermes-kanban-autocomplete-input {
+  width: 100%;
+}
+
+.hermes-kanban-autocomplete-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 70;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  margin-top: 2px;
+  padding: 0.25rem 0;
+  list-style: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.hermes-kanban-autocomplete-item {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: var(--color-foreground);
+}
+.hermes-kanban-autocomplete-item:hover,
+.hermes-kanban-autocomplete-item--active {
+  background: color-mix(in srgb, var(--color-ring) 18%, transparent);
+}
+
+
 /* ---- Drawer (task detail side panel) --------------------------------- */
 
 .hermes-kanban-drawer-shade {

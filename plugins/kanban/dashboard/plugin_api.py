@@ -2136,6 +2136,26 @@ def list_profile_roster():
     }
 
 
+@router.get("/skills")
+def list_available_skills():
+    """Return every available skill name for autocomplete.
+
+    Consumed by the dashboard's task creation modal and settings UI.
+    Returns a flat deduplicated list of skill names that are installed
+    and not disabled.
+    """
+    try:
+        from hermes_cli.banner import get_available_skills
+        grouped = get_available_skills()
+        names = set()
+        for cat_list in grouped.values():
+            for name in cat_list:
+                names.add(name)
+        return {"skills": sorted(names)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to list skills: {exc}")
+
+
 @router.patch("/profiles/{profile_name}")
 def update_profile_description(profile_name: str, payload: DescribeBody):
     """Set or clear the description of a profile.

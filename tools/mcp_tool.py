@@ -1840,6 +1840,11 @@ class MCPServerTask:
                 # Reset the session reference; _run_http/_run_stdio will
                 # repopulate it on successful re-entry.
                 self.session = None
+                # Successful transport cycle — a future outage should get a
+                # fresh fast-retry budget, not inherit counters from a prior
+                # incident.  (#38488)
+                retries = 0
+                backoff = 1.0
                 # Keep _ready set across reconnects so tool handlers can
                 # still detect a transient in-flight state — it'll be
                 # re-set after the fresh session initializes.
@@ -1911,12 +1916,32 @@ class MCPServerTask:
 
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
-                    logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
-                    )
-                    return
+                    # Fast-retry budget exhausted.  Do NOT permanently give
+                    # up — a backend that comes back later (e.g. after a
+                    # power blip / reboot longer than the ~30s fast budget)
+                    # should self-heal the same way LLM API calls do.
+                    # Drop into a slow re-probe loop with a long fixed
+                    # backoff until either the transport reconnects or the
+                    # gateway shuts the server down.  (#38488)
+                    slow_backoff = _MAX_BACKOFF_SECONDS
+                    if retries == _MAX_RECONNECT_RETRIES + 1:
+                        logger.warning(
+                            "MCP server '%s' exhausted fast reconnect budget "
+                            "after %d attempts; entering slow re-probe "
+                            "(every %.0fs) until reachable: %s",
+                            self.name, _MAX_RECONNECT_RETRIES,
+                            slow_backoff, exc,
+                        )
+                    else:
+                        logger.debug(
+                            "MCP server '%s' slow re-probe attempt %d failed, "
+                            "retrying in %.0fs: %s",
+                            self.name, retries, slow_backoff, exc,
+                        )
+                    await asyncio.sleep(slow_backoff)
+                    if self._shutdown_event.is_set():
+                        return
+                    continue
 
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "

@@ -56,6 +56,47 @@ from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
+def _build_exec_approval_text(command: str, description: str, approval_id: str = "") -> str:
+    """Build a plain-text approval prompt usable across gateway platforms."""
+    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    if approval_id:
+        approve = f"/approve {approval_id}"
+        approve_session = f"/approve {approval_id} session"
+        approve_always = f"/approve {approval_id} always"
+        deny = f"/deny {approval_id}"
+    else:
+        approve = "/approve"
+        approve_session = "/approve session"
+        approve_always = "/approve always"
+        deny = "/deny"
+    return (
+        f"⚠️ **Dangerous command requires approval:**\n"
+        f"```\n{cmd_preview}\n```\n"
+        f"Reason: {description}\n\n"
+        f"Reply `{approve}` to execute, `{approve_session}` to approve this pattern "
+        f"for the session, `{approve_always}` to approve permanently, or `{deny}` to cancel."
+    )
+
+
+def _approval_notify_platform() -> str:
+    """Return optional cross-platform approval mirror target from config."""
+    try:
+        from hermes_cli.config import load_config
+        approvals = (load_config().get("approvals", {}) or {})
+    except Exception:
+        return ""
+    notify = approvals.get("notify", {}) or {}
+    if notify is False:
+        return ""
+    if isinstance(notify, str):
+        return notify.strip().lower()
+    if isinstance(notify, dict):
+        if str(notify.get("enabled", "true")).strip().lower() in {"0", "false", "no", "off"}:
+            return ""
+        return str(notify.get("platform", "") or "").strip().lower()
+    return str(approvals.get("notify_platform", "") or "").strip().lower()
+
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -14708,18 +14749,17 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval_by_id,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
-
-        # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
-        resolve_all = "all" in args
-        remaining = [a for a in args if a != "all"]
+        # Parse args: support "all", "all session", "all always", "session",
+        # "always", and cross-channel IDs: `/approve Ab3_xYz9`.
+        raw_args = event.get_command_args().strip().split()
+        lowered_args = [a.lower() for a in raw_args]
+        resolve_all = "all" in lowered_args
+        remaining = [a for a in lowered_args if a != "all"]
+        approval_id = next((raw_args[i] for i, a in enumerate(lowered_args)
+                            if a not in {"all", "always", "permanent", "permanently", "session", "ses"}), None)
 
         if any(a in {"always", "permanent", "permanently"} for a in remaining):
             choice = "always"
@@ -14728,7 +14768,15 @@ class GatewayRunner:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        if approval_id:
+            count = resolve_gateway_approval_by_id(approval_id, choice)
+        else:
+            if not has_blocking_approval(session_key):
+                if session_key in self._pending_approvals:
+                    self._pending_approvals.pop(session_key)
+                    return t("gateway.approval_expired")
+                return t("gateway.approve.no_pending")
+            count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -14754,18 +14802,23 @@ class GatewayRunner:
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval_by_id,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
+        raw_args = event.get_command_args().strip().split()
+        lowered_args = [a.lower() for a in raw_args]
+        resolve_all = "all" in lowered_args
+        approval_id = next((raw_args[i] for i, a in enumerate(lowered_args) if a != "all"), None)
 
-        args = event.get_command_args().strip().lower()
-        resolve_all = "all" in args
-
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
+        if approval_id:
+            count = resolve_gateway_approval_by_id(approval_id, "deny")
+        else:
+            if not has_blocking_approval(session_key):
+                if session_key in self._pending_approvals:
+                    self._pending_approvals.pop(session_key)
+                    return t("gateway.deny.stale")
+                return t("gateway.deny.no_pending")
+            count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
         if not count:
             return t("gateway.deny.no_pending")
 
@@ -17927,6 +17980,35 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                approval_id = approval_data.get("approval_id", "")
+
+                def _send_approval_mirror() -> None:
+                    """Mirror approval prompts to the configured out-of-thread platform."""
+                    platform_name = _approval_notify_platform()
+                    if platform_name != "whatsapp":
+                        return
+                    try:
+                        mirror_platform = Platform.WHATSAPP
+                        mirror_adapter = self.adapters.get(mirror_platform)
+                        mirror_home = self.config.get_home_channel(mirror_platform)
+                        if mirror_adapter is None or mirror_home is None or not mirror_home.chat_id:
+                            logger.warning("Approval mirror requested for WhatsApp but no WhatsApp home channel/adapter is available")
+                            return
+                        if source.platform == mirror_platform and str(source.chat_id) == str(mirror_home.chat_id):
+                            return
+                        mirror_msg = _build_exec_approval_text(cmd, desc, approval_id)
+                        mirror_fut = safe_schedule_threadsafe(
+                            mirror_adapter.send(mirror_home.chat_id, mirror_msg),
+                            _loop_for_step,
+                            logger=logger,
+                            log_message="Approval WhatsApp mirror scheduling error",
+                        )
+                        if mirror_fut is not None:
+                            mirror_fut.result(timeout=15)
+                    except Exception as _e:
+                        logger.warning("Failed to mirror approval request to WhatsApp: %s", _e)
+
+                _send_approval_mirror()
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -17960,14 +18042,7 @@ class GatewayRunner:
                         )
 
                 # Fallback: plain text approval prompt
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
-                msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
-                )
+                msg = _build_exec_approval_text(cmd, desc, approval_id="")
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
                         _status_adapter.send(

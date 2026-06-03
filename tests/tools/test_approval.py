@@ -1379,6 +1379,142 @@ class TestEtcPatternsUnaffectedByRefactor:
 # =========================================================================
 
 
+class TestPolicyApprovalMode:
+    SESSION_KEY = "test-policy-session"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+        if hasattr(mod, "_approval_id_index"):
+            mod._approval_id_index.clear()
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        if hasattr(mod, "_approval_id_index"):
+            mod._approval_id_index.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_policy_default_approve_skips_prompt_for_non_lifecycle_danger(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {
+                "mode": "policy",
+                "gateway_timeout": 1,
+                "policy": {
+                    "default": "approve",
+                    "require_manual": ["stop/restart hermes gateway", "hermes update"],
+                },
+            },
+        )
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert result["approved"] is True
+        assert notified == []
+        assert result.get("policy_approved") is True
+
+    def test_policy_requires_manual_for_hermes_update(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {
+                "mode": "policy",
+                "gateway_timeout": 1,
+                "policy": {
+                    "default": "approve",
+                    "require_manual": ["stop/restart hermes gateway", "hermes update"],
+                },
+            },
+        )
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("hermes update", "local")
+        t = threading.Thread(target=_check)
+        t.start()
+        for _ in range(50):
+            if notified:
+                break
+            time.sleep(0.02)
+
+        assert notified, "policy-gated Hermes update did not request approval"
+        assert notified[0]["approval_id"]
+        assert notified[0]["description"] == "hermes update (restarts gateway, kills running agents)"
+
+        resolved = mod.resolve_gateway_approval_by_id(notified[0]["approval_id"], "once")
+        t.join(timeout=5)
+
+        assert resolved == 1
+        assert result_holder["r"]["approved"] is True
+
+    def test_approval_id_can_be_resolved_from_other_gateway_session(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "manual", "gateway_timeout": 1})
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("hermes gateway restart", "local")
+        t = threading.Thread(target=_check)
+        t.start()
+        for _ in range(50):
+            if notified:
+                break
+            time.sleep(0.02)
+
+        other_session = "agent:main:whatsapp:dm:home"
+        assert other_session != self.SESSION_KEY
+        resolved = mod.resolve_gateway_approval_by_id(notified[0]["approval_id"], "once")
+        t.join(timeout=5)
+
+        assert resolved == 1
+        assert result_holder["r"]["approved"] is True
+
+    def test_policy_default_approve_skips_execute_code_prompt(self, monkeypatch):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {
+                "mode": "policy",
+                "gateway_timeout": 1,
+                "policy": {"default": "approve", "require_manual": ["hermes update"]},
+            },
+        )
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_execute_code_guard("print('safe')", "local")
+
+        assert result["approved"] is True
+        assert notified == []
+        assert result.get("policy_approved") is True
+
+
 class TestApprovalTimeoutIsNotConsent:
     """The gateway approval contract: silence is not consent (#24912)."""
 

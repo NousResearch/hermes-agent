@@ -1784,6 +1784,7 @@ DEFAULT_CONFIG = {
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   policy — deterministic policy: approve/deny by default, manually prompt matching commands
     #   off    — skip all approval prompts (equivalent to --yolo)
     #
     # cron_mode — what to do when a cron job hits a dangerous command:
@@ -1793,6 +1794,14 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        "policy": {
+            "default": "manual",
+            "require_manual": [],
+        },
+        "notify": {
+            "enabled": False,
+            "platform": "",
+        },
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

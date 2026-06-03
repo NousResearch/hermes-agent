@@ -58,6 +58,26 @@ def _make_adapter():
 
 
 # ===========================================================================
+# Cross-platform approval prompt text
+# ===========================================================================
+
+def test_plain_approval_prompt_includes_cross_channel_approval_id():
+    from gateway.run import _build_exec_approval_text
+
+    msg = _build_exec_approval_text(
+        "hermes update",
+        "hermes update (restarts gateway, kills running agents)",
+        approval_id="Ab3_xYz9",
+    )
+
+    assert "/approve Ab3_xYz9" in msg
+    assert "/approve Ab3_xYz9 session" in msg
+    assert "/approve Ab3_xYz9 always" in msg
+    assert "/deny Ab3_xYz9" in msg
+    assert "hermes update" in msg
+
+
+# ===========================================================================
 # send_exec_approval — Block Kit buttons
 # ===========================================================================
 

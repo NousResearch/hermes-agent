@@ -11,6 +11,7 @@ This module is the single source of truth for the dangerous command system:
 import contextvars
 import logging
 import os
+import secrets
 import re
 import sys
 import threading
@@ -566,16 +567,25 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    __slots__ = ("approval_id", "session_key", "event", "data", "result")
 
-    def __init__(self, data: dict):
+    def __init__(self, session_key: str, data: dict):
+        self.approval_id = _new_approval_id()
+        self.session_key = session_key
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
+        self.data = dict(data, approval_id=self.approval_id)  # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_approval_id_index: dict[str, _ApprovalEntry] = {}  # short id → _ApprovalEntry
+
+
+def _new_approval_id() -> str:
+    """Return a short human-copyable id for cross-channel approval replies."""
+    # 8 chars is enough for the tiny live pending set while staying WhatsApp-friendly.
+    return secrets.token_urlsafe(6).replace("-", "_")[:8]
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -599,6 +609,8 @@ def unregister_gateway_notify(session_key: str) -> None:
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
+        for entry in entries:
+            _approval_id_index.pop(entry.approval_id, None)
     for entry in entries:
         entry.event.set()
 
@@ -623,6 +635,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
             queue.clear()
         else:
             targets = [queue.pop(0)]
+        for entry in targets:
+            _approval_id_index.pop(entry.approval_id, None)
         if not queue:
             _gateway_queues.pop(session_key, None)
 
@@ -630,6 +644,31 @@ def resolve_gateway_approval(session_key: str, choice: str,
         entry.result = choice
         entry.event.set()
     return len(targets)
+
+
+def resolve_gateway_approval_by_id(approval_id: str, choice: str) -> int:
+    """Resolve one pending approval by id, regardless of the replying session.
+
+    This lets an approval request mirrored to a second platform (for example
+    WhatsApp) unblock the original Slack/Telegram/etc. agent turn without
+    requiring the user to be watching that original thread.
+    """
+    approval_id = (approval_id or "").strip()
+    if not approval_id:
+        return 0
+    with _lock:
+        entry = _approval_id_index.pop(approval_id, None)
+        if entry is None:
+            return 0
+        queue = _gateway_queues.get(entry.session_key, [])
+        if entry in queue:
+            queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(entry.session_key, None)
+
+    entry.result = choice
+    entry.event.set()
+    return 1
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -675,6 +714,8 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
+        for entry in entries:
+            _approval_id_index.pop(entry.approval_id, None)
     for entry in entries:
         # Session-boundary cleanup should cancel any blocked approval waits
         # immediately so the old run can unwind instead of idling until timeout.
@@ -914,6 +955,36 @@ def _get_approval_timeout() -> int:
         return 60
 
 
+def _get_policy_approval_config() -> dict:
+    """Return normalized policy-mode approval settings."""
+    config = _get_approval_config()
+    policy = config.get("policy", {}) or {}
+    if not isinstance(policy, dict):
+        policy = {}
+    default = str(policy.get("default", config.get("policy_default", "manual"))).lower().strip()
+    if default in {"approve", "allow", "yes", "off"}:
+        default = "approve"
+    elif default in {"deny", "block", "no"}:
+        default = "deny"
+    else:
+        default = "manual"
+    require_manual = policy.get("require_manual", config.get("policy_require_manual", [])) or []
+    if isinstance(require_manual, str):
+        require_manual = [require_manual]
+    require_manual = [str(item).lower().strip() for item in require_manual if str(item).strip()]
+    return {"default": default, "require_manual": require_manual}
+
+
+def _policy_decision_for_warnings(command: str, warnings: list[tuple[str, str, bool]]) -> str:
+    """Return approve/manual/deny for policy mode."""
+    policy = _get_policy_approval_config()
+    haystack = " ".join([command] + [desc for _, desc, _ in warnings]).lower()
+    for needle in policy["require_manual"]:
+        if needle and needle in haystack:
+            return "manual"
+    return policy["default"]
+
+
 def _get_cron_approval_mode() -> str:
     """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
     try:
@@ -1129,15 +1200,18 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
-    entry = _ApprovalEntry(approval_data)
+    entry = _ApprovalEntry(session_key, approval_data)
+    approval_data = entry.data
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
+        _approval_id_index[entry.approval_id] = entry
 
     def _drop_entry() -> None:
         with _lock:
             queue = _gateway_queues.get(session_key, [])
             if entry in queue:
                 queue.remove(entry)
+            _approval_id_index.pop(entry.approval_id, None)
             if not queue:
                 _gateway_queues.pop(session_key, None)
 
@@ -1314,6 +1388,27 @@ def check_all_command_guards(command: str, env_type: str,
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
+
+    # --- Phase 2.5: Policy approval (deterministic allow/manual/deny) ---
+    # When approvals.mode=policy, use configured manual-only matchers instead
+    # of prompting for every pattern false-positive. Hardline/runtime/sudo
+    # blocks above remain non-bypassable.
+    if approval_mode == "policy":
+        decision = _policy_decision_for_warnings(command, warnings)
+        combined_desc_for_policy = "; ".join(desc for _, desc, _ in warnings)
+        if decision == "approve":
+            logger.debug("Policy approval: auto-approved '%s' (%s)",
+                         command[:60], combined_desc_for_policy)
+            return {"approved": True, "message": None,
+                    "policy_approved": True,
+                    "description": combined_desc_for_policy}
+        if decision == "deny":
+            return {
+                "approved": False,
+                "message": f"BLOCKED by approval policy: {combined_desc_for_policy}. Do NOT retry.",
+                "policy_denied": True,
+            }
+        # decision == "manual" → fall through to gateway/CLI prompt
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
@@ -1574,6 +1669,26 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # Built only now (past the early-return gates) so the common non-approval
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
+
+    # Policy mode: deterministic approval for the whole script. Per-call
+    # terminal() guards still run for shell commands issued from the script.
+    if approval_mode == "policy":
+        decision = _policy_decision_for_warnings(command, [(pattern_key, description, False)])
+        if decision == "approve":
+            logger.debug("Policy approval: auto-approved execute_code for session %s", session_key)
+            return {"approved": True, "message": None,
+                    "policy_approved": True, "description": description}
+        if decision == "deny":
+            return {
+                "approved": False,
+                "message": "BLOCKED by approval policy: execute_code script execution. Do NOT retry.",
+                "policy_denied": True,
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+        # decision == "manual" → fall through to manual approval
 
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()

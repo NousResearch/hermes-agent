@@ -396,6 +396,10 @@ def get_board(
             workflow_template_id=workflow_template_id,
             current_step_key=current_step_key,
         )
+        if not include_archived:
+            # Completed cards leave the active board/list automatically.
+            # They are still retrievable from the completed/history view.
+            tasks = [t for t in tasks if t.status not in {"done", "archived"}]
         # Pre-fetch link counts per task (cheap: one query).
         link_counts: dict[str, dict[str, int]] = {}
         for row in conn.execute(
@@ -426,7 +430,7 @@ def get_board(
         ).fetchall():
             p = progress.setdefault(row["pid"], {"done": 0, "total": 0})
             p["total"] += 1
-            if row["cstatus"] == "done":
+            if row["cstatus"] in {"done", "archived"}:
                 p["done"] += 1
 
         # Diagnostics rollup for this board — see kanban_diagnostics.

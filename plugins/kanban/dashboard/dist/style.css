@@ -91,6 +91,12 @@
   max-width: 920px;
 }
 
+.hermes-kanban-priority-mode {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
 .hermes-kanban-priority-row {
   display: grid;
   grid-template-columns: 2.4rem minmax(0, 1fr);

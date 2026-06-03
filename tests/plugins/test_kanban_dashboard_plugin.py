@@ -112,6 +112,55 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_completed_tasks_hidden_by_default_but_available_in_history(client):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "finish me", "priority": 4})
+    assert r.status_code == 200, r.text
+    task_id = r.json()["task"]["id"]
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "summary": "finished"},
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    data = r.json()
+    assert task_id not in {
+        t["id"] for col in data["columns"] for t in col["tasks"]
+    }
+
+    r = client.get("/api/plugins/kanban/board?include_archived=true")
+    assert r.status_code == 200
+    data = r.json()
+    done = next(c for c in data["columns"] if c["name"] == "done")
+    assert [t["id"] for t in done["tasks"]] == [task_id]
+    assert done["tasks"][0]["completed_at"] is not None
+
+
+def test_archived_children_count_as_completed_progress(client):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "parent"})
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["task"]["id"]
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [parent_id]},
+    )
+    assert r.status_code == 200, r.text
+    child_id = r.json()["task"]["id"]
+
+    r = client.patch(f"/api/plugins/kanban/tasks/{child_id}", json={"status": "archived"})
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/plugins/kanban/board?include_archived=true")
+    assert r.status_code == 200
+    data = r.json()
+    parent = next(
+        t for col in data["columns"] for t in col["tasks"] if t["id"] == parent_id
+    )
+    assert parent["progress"] == {"done": 1, "total": 1}
+
+
 def test_claude_context_endpoint_returns_manual_copy_launch(client, tmp_path):
     workspace = tmp_path / "work dir"
     workspace.mkdir()
@@ -243,6 +292,11 @@ def test_dashboard_has_simple_columns_and_priority_list_route():
     assert 'href: "/kanban/board"' in js
     assert 'href: "/kanban"' in js
     assert 'task.status !== "done" && task.status !== "archived"' in js
+    assert "h(OrchestrationPanel, null)" not in js
+    assert 'tx(t, "nudgeDispatcher", "Nudge dispatcher")' not in js
+    assert "Ready cards are prepared for manual execution" in js
+    assert "assign a profile when you are ready to run this manually" in js
+    assert "Higher-priority cards appear earlier in the priority list" in js
     assert 'className: "hermes-kanban-priority-list"' in js
     assert ".hermes-kanban-priority-list" in css
 
@@ -449,12 +503,17 @@ def test_patch_status_complete(client):
     assert r.status_code == 200
     assert r.json()["task"]["status"] == "done"
 
-    # Board reflects the move.
-    done = next(
+    # Completed cards leave the active board automatically, but remain in history.
+    default_done = next(
         c for c in client.get("/api/plugins/kanban/board").json()["columns"]
         if c["name"] == "done"
     )
-    assert any(x["id"] == t["id"] for x in done["tasks"])
+    assert not any(x["id"] == t["id"] for x in default_done["tasks"])
+    history_done = next(
+        c for c in client.get("/api/plugins/kanban/board?include_archived=true").json()["columns"]
+        if c["name"] == "done"
+    )
+    assert any(x["id"] == t["id"] for x in history_done["tasks"])
 
 
 def test_patch_block_then_unblock(client):
@@ -830,8 +889,8 @@ def test_board_progress_rollup(client):
         t = client.get(f"/api/plugins/kanban/tasks/{cid}").json()["task"]
         assert t["status"] == "ready", f"{cid} should be ready after parent done"
 
-    # 0/2 done.
-    r = client.get("/api/plugins/kanban/board")
+    # 0/2 done (visible from the completed/history view because the parent is done).
+    r = client.get("/api/plugins/kanban/board?include_archived=true")
     parent_row = next(
         t for col in r.json()["columns"] for t in col["tasks"]
         if t["id"] == parent["id"]
@@ -844,7 +903,7 @@ def test_board_progress_rollup(client):
         json={"status": "done"},
     )
     assert r.status_code == 200
-    r = client.get("/api/plugins/kanban/board")
+    r = client.get("/api/plugins/kanban/board?include_archived=true")
     parent_row = next(
         t for col in r.json()["columns"] for t in col["tasks"]
         if t["id"] == parent["id"]

@@ -555,6 +555,7 @@
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
     const [includeArchived, setIncludeArchived] = useState(false);
+    const [priorityShowCompleted, setPriorityShowCompleted] = useState(false);
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
@@ -609,6 +610,10 @@
         })
         .catch(function () { setConfig({ render_markdown: true }); });
     }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(function () {
+      if (!isPriorityListRoute && priorityShowCompleted) setPriorityShowCompleted(false);
+    }, [isPriorityListRoute, priorityShowCompleted]);
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
@@ -743,11 +748,8 @@
         }
         return true;
       };
-      const byName = {};
-      for (const col of boardData.columns || []) byName[col.name] = col;
       return Object.assign({}, boardData, {
-        columns: COLUMN_ORDER.map(function (name) {
-          const col = byName[name] || { name, tasks: [] };
+        columns: (boardData.columns || []).map(function (col) {
           return Object.assign({}, col, { tasks: (col.tasks || []).filter(filterTask) });
         }),
       });
@@ -996,6 +998,7 @@
       setTenantFilter("");
       setAssigneeFilter("");
       setIncludeArchived(false);
+      setPriorityShowCompleted(false);
       clearSelected();
     }, [board, clearSelected]);
 
@@ -1120,6 +1123,11 @@
           toggleSelected,
           toggleRange,
           onOpen: openTask,
+          showCompleted: priorityShowCompleted,
+          onShowCompletedChange: function (show) {
+            setPriorityShowCompleted(show === true);
+            if (show === true && !includeArchived) setIncludeArchived(true);
+          },
         }) : h(BoardColumns, {
           board: filteredBoard,
           laneByProfile,
@@ -2178,14 +2186,6 @@
       }, tx(t, "complete", "Complete")),
       h(Button, {
         onClick: function () {
-          props.onApply({ archive: true },
-            tx(t, "markArchived", "Archive {n} task(s)?", { n: props.count }));
-        },
-        size: "sm",
-        title: "Archive selected tasks. They disappear from the default board view but remain in the database.",
-      }, tx(t, "archive", "Archive")),
-      h(Button, {
-        onClick: function () {
           props.onDelete(props.count);
         },
         size: "sm",
@@ -2318,15 +2318,25 @@
   // Columns
   // -------------------------------------------------------------------------
 
-  function priorityOrderedTasks(boardData) {
+  function priorityOrderedTasks(boardData, showCompleted) {
     if (!boardData || !boardData.columns) return [];
     const tasks = [];
     for (const col of boardData.columns) {
       for (const task of col.tasks || []) {
-        if (task && task.status !== "done" && task.status !== "archived") tasks.push(task);
+        if (!task) continue;
+        if (showCompleted) {
+          if ((task.status === "done" || task.status === "archived") && task.completed_at) tasks.push(task);
+        } else if (task.status !== "done" && task.status !== "archived") {
+          tasks.push(task);
+        }
       }
     }
     return tasks.sort(function (a, b) {
+      if (showCompleted) {
+        const ac = Number(a.completed_at || 0);
+        const bc = Number(b.completed_at || 0);
+        if (ac !== bc) return bc - ac;
+      }
       const ap = Number(a.priority || 0);
       const bp = Number(b.priority || 0);
       if (ap !== bp) return bp - ap;
@@ -2336,11 +2346,24 @@
 
   function PriorityList(props) {
     const tasks = useMemo(function () {
-      return priorityOrderedTasks(props.board);
-    }, [props.board]);
+      return priorityOrderedTasks(props.board, props.showCompleted);
+    }, [props.board, props.showCompleted]);
     return h("div", { className: "hermes-kanban-priority-list" },
+      h("div", { className: "hermes-kanban-priority-mode" },
+        h(Button, {
+          onClick: function () { props.onShowCompletedChange(false); },
+          size: "sm",
+          className: !props.showCompleted ? "hermes-kanban-view-tab--active" : "",
+        }, "Active"),
+        h(Button, {
+          onClick: function () { props.onShowCompletedChange(true); },
+          size: "sm",
+          className: props.showCompleted ? "hermes-kanban-view-tab--active" : "",
+          title: "Completed tasks, newest first.",
+        }, "Completed"),
+      ),
       tasks.length === 0
-        ? h("div", { className: "hermes-kanban-empty" }, "— no cards —")
+        ? h("div", { className: "hermes-kanban-empty" }, props.showCompleted ? "— no completed cards —" : "— no cards —")
         : tasks.map(function (tk, idx) {
             return h("div", { key: tk.id, className: "hermes-kanban-priority-row" },
               h("div", { className: "hermes-kanban-priority-rank" }, String(idx + 1)),
@@ -4126,8 +4149,6 @@
         b(tx(t, "complete", "Complete"),  { status: "done" },
           task.status !== "done" && task.status !== "archived",
           getDestructiveConfirm(t, "done")),
-        b(tx(t, "archive", "Archive"),   { status: "archived" }, task.status !== "archived",
-          getDestructiveConfirm(t, "archived")),
       ),
       specifyMsg ? h("div", {
         className: specifyMsg.ok

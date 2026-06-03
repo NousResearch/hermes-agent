@@ -1626,6 +1626,77 @@ def _normalize_tui_toolsets(toolsets: object) -> list[str]:
         return [item for item in normalized if item]
 
 
+def _read_cgroup_memory_limit() -> Optional[int]:
+    """Return the container memory limit in bytes, or None if unconstrained.
+
+    Node's V8 heap is NOT cgroup-aware: with a flat ``--max-old-space-size=8192``
+    it happily grows the heap toward 8GB regardless of the container's real
+    memory limit.  In a Docker/k8s container capped below ~9-10GB, the cgroup
+    OOM-killer SIGKILLs Node before V8's own heap monitor ever fires — which
+    runs no JS handler, writes no ``[tui-parent]`` breadcrumb, and the user
+    sees only a bare gateway ``stdin EOF``.  Reading the real cgroup limit lets
+    us size the heap cap below it so V8 GCs/exits gracefully instead of being
+    reaped silently.
+
+    Checks cgroup v2 (``/sys/fs/cgroup/memory.max``) then v1
+    (``/sys/fs/cgroup/memory/memory.limit_in_bytes``).  A literal ``max`` (v2)
+    or the v1 "unlimited" sentinel (a huge near-INT64 value) means no limit.
+    """
+    candidates = (
+        "/sys/fs/cgroup/memory.max",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
+    )
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+        except (OSError, ValueError):
+            continue
+        if raw == "max":
+            return None
+        if not raw:
+            # Blank/empty file: no usable value here. Fall through to the next
+            # candidate (don't mistake an empty v2 file for "unlimited").
+            continue
+        try:
+            limit = int(raw)
+        except ValueError:
+            continue
+        if limit <= 0:
+            continue
+        # cgroup v1 reports "unlimited" as a huge value (often
+        # 0x7FFFFFFFFFFFF000 ≈ 9.2 EB, sometimes PAGE_COUNTER_MAX). Anything
+        # at/above ~1 PB is effectively unconstrained — treat as no limit.
+        if limit >= (1 << 50):
+            return None
+        return limit
+    return None
+
+
+def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
+    """Pick a V8 ``--max-old-space-size`` (MB) that fits the container.
+
+    Returns ``default_mb`` (8192) when unconstrained or when the box is large
+    enough that 8GB fits.  In a memory-limited container, returns ~75% of the
+    cgroup limit so the heap + non-heap RSS stays under the cgroup ceiling,
+    clamped to a sane floor (1536MB — below this V8 GC-thrashes and the TUI
+    is barely usable).  Never exceeds ``default_mb``.
+    """
+    limit = _read_cgroup_memory_limit()
+    if not limit:
+        return default_mb
+    limit_mb = limit // (1024 * 1024)
+    # Leave headroom for non-heap RSS (Node internals, buffers, the Python
+    # gateway child shares the same cgroup): cap the heap at 75% of the limit.
+    sized = int(limit_mb * 0.75)
+    if sized >= default_mb:
+        return default_mb
+    # Floor so a tiny limit doesn't drive V8 into constant GC. If the container
+    # is smaller than the floor, honor the limit-derived value anyway (better a
+    # graceful V8 exit than a silent cgroup kill).
+    return max(1536, sized) if limit_mb > 2048 else sized
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -1721,16 +1792,23 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
-    # Guarantee an 8GB V8 heap for the TUI. Default node cap is ~1.5–4GB
+    # Guarantee a generous V8 heap for the TUI. Default node cap is ~1.5–4GB
     # depending on version and can fatal-OOM on long sessions with large
-    # transcripts / reasoning blobs. Token-level merge: respect any
+    # transcripts / reasoning blobs. We target 8GB on an unconstrained host,
+    # but V8 is NOT cgroup-aware: in a memory-limited Docker/k8s container a
+    # flat 8GB heap grows past the container limit and the cgroup OOM-killer
+    # SIGKILLs Node — running no JS handler, writing no breadcrumb, leaving the
+    # user with only a bare gateway `stdin EOF`. _resolve_tui_heap_mb() reads
+    # the real cgroup limit and sizes the cap below it so V8 GCs/exits
+    # gracefully (and the memory monitor's onCritical breadcrumb can fire)
+    # instead of being reaped silently. Token-level merge: respect any
     # user-supplied --max-old-space-size (they may have set it higher).
     # --expose-gc is *not* added here: Node rejects it in NODE_OPTIONS
     # ("--expose-gc is not allowed in NODE_OPTIONS") and refuses to start.
     # It is passed as a direct argv flag in _make_tui_argv() instead.
     _tokens = env.get("NODE_OPTIONS", "").split()
     if not any(t.startswith("--max-old-space-size=") for t in _tokens):
-        _tokens.append("--max-old-space-size=8192")
+        _tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
     env["NODE_OPTIONS"] = " ".join(_tokens)
     # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
     # Ink app.  Because we start from os.environ.copy(), an exported/stale value

@@ -104,6 +104,87 @@ _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
 
+# ---------------------------------------------------------------------------
+# sync_back path-safety helpers
+# ---------------------------------------------------------------------------
+
+def _sensitive_host_dirs() -> list[Path]:
+    """Return resolved paths that sync_back must NEVER write into.
+
+    Evaluated at sync-back time so get_hermes_home() reflects any
+    runtime overrides set after module import.
+    """
+    home = get_hermes_home()
+    candidates = [
+        home / "skills",
+        home / "plugins",
+    ]
+    resolved = []
+    for p in candidates:
+        try:
+            resolved.append(p.resolve())
+        except OSError:
+            resolved.append(p.absolute())
+    return resolved
+
+
+def _sensitive_host_files() -> list[Path]:
+    """Return resolved paths of host files sync_back must not write."""
+    home = get_hermes_home()
+    candidates = [
+        home / "config.yaml",
+        home / ".env",
+    ]
+    resolved = []
+    for p in candidates:
+        try:
+            resolved.append(p.resolve())
+        except OSError:
+            resolved.append(p.absolute())
+    return resolved
+
+
+def _is_safe_sync_back_target(host_path: str) -> bool:
+    """Return True iff *host_path* is safe for sync_back to write.
+
+    Rejects paths that:
+
+    * Contain ``..`` components anywhere (path-traversal attempt).
+    * Resolve into a sensitive host directory
+      (``~/.hermes/skills/``, ``~/.hermes/plugins/``).
+    * Match a sensitive individual file
+      (``~/.hermes/config.yaml``, ``~/.hermes/.env``).
+    * Cannot be resolved due to an OS error (treated as unsafe).
+    """
+    # Reject raw ``..`` traversal before any resolution.
+    try:
+        raw = Path(host_path)
+        if any(part == ".." for part in raw.parts):
+            return False
+    except Exception:
+        return False
+
+    try:
+        resolved = Path(host_path).resolve()
+    except OSError:
+        return False
+
+    # Check against sensitive directories (includes symlink-resolved paths).
+    for sensitive_dir in _sensitive_host_dirs():
+        try:
+            resolved.relative_to(sensitive_dir)
+            # relative_to() succeeded → inside the sensitive directory.
+            return False
+        except ValueError:
+            pass
+
+    # Check against sensitive individual files.
+    for sensitive_file in _sensitive_host_files():
+        if resolved == sensitive_file:
+            return False
+
+    return True
+
 
 class FileSyncManager:
     """Tracks local file changes and syncs to a remote environment.
@@ -354,6 +435,32 @@ class FileSyncManager:
                                     remote_path,
                                 )
                                 continue
+
+                        # Security: reject sensitive dirs/files and traversal
+                        # attempts (CVE-class: #38026).
+                        if not _is_safe_sync_back_target(host_path):
+                            logger.warning(
+                                "sync_back: SECURITY: refusing to write "
+                                "sensitive host path %s (remote: %s)",
+                                host_path, remote_path,
+                            )
+                            continue
+
+                        # Security: verify the resolved path stays inside the
+                        # inferred parent dir (guards symlink-based escapes).
+                        try:
+                            resolved_target = Path(host_path).resolve()
+                            resolved_parent = Path(
+                                os.path.dirname(host_path)
+                            ).resolve()
+                            resolved_target.relative_to(resolved_parent)
+                        except (ValueError, OSError):
+                            logger.warning(
+                                "sync_back: SECURITY: path %s escapes its "
+                                "mapped directory — skipping (remote: %s)",
+                                host_path, remote_path,
+                            )
+                            continue
 
                         if os.path.exists(host_path) and pushed_hash is not None:
                             host_hash = _sha256_file(host_path)

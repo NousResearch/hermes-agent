@@ -14,6 +14,7 @@ fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,
+    _is_safe_sync_back_target,
     _sha256_file,
     _SYNC_BACK_BACKOFF,
     _SYNC_BACK_MAX_RETRIES,
@@ -468,6 +469,145 @@ class TestSyncBackSizeCap:
             bulk_download_fn=download_fn,
         )
 
-        # Default cap (2 GiB) is far above our tiny tar; extraction should proceed
+        # Default cap (2 GiB) is far above our tiny tar; extraction proceeds
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
+
+
+# ---------------------------------------------------------------------------
+# Security tests — CVE-class #38026: path-safety in sync_back
+# ---------------------------------------------------------------------------
+
+
+class TestIsSafeSyncBackTarget:
+    """Unit tests for _is_safe_sync_back_target()."""
+
+    def test_safe_path_returns_true(self, tmp_path):
+        """A normal path outside sensitive dirs should be accepted."""
+        target = str(tmp_path / "workspace" / "output.txt")
+        assert _is_safe_sync_back_target(target) is True
+
+    def test_dotdot_in_path_rejected(self, tmp_path):
+        """Any path containing '..' is rejected before resolution."""
+        target = str(tmp_path / ".." / "escape.txt")
+        assert _is_safe_sync_back_target(target) is False
+
+    def test_skills_dir_rejected(self, tmp_path):
+        """A path inside ~/.hermes/skills/ must be rejected."""
+        from hermes_constants import get_hermes_home
+        skills_target = str(
+            get_hermes_home() / "skills" / "injected_skill.py"
+        )
+        assert _is_safe_sync_back_target(skills_target) is False
+
+    def test_plugins_dir_rejected(self, tmp_path):
+        """A path inside ~/.hermes/plugins/ must be rejected."""
+        from hermes_constants import get_hermes_home
+        plugins_target = str(
+            get_hermes_home() / "plugins" / "evil.so"
+        )
+        assert _is_safe_sync_back_target(plugins_target) is False
+
+    def test_config_yaml_rejected(self, tmp_path):
+        """~/.hermes/config.yaml must be rejected."""
+        from hermes_constants import get_hermes_home
+        cfg = str(get_hermes_home() / "config.yaml")
+        assert _is_safe_sync_back_target(cfg) is False
+
+    def test_dot_env_rejected(self, tmp_path):
+        """~/.hermes/.env must be rejected."""
+        from hermes_constants import get_hermes_home
+        env_file = str(get_hermes_home() / ".env")
+        assert _is_safe_sync_back_target(env_file) is False
+
+    def test_nested_skills_subdir_rejected(self, tmp_path):
+        """Deep path inside ~/.hermes/skills/ is also rejected."""
+        from hermes_constants import get_hermes_home
+        deep = str(
+            get_hermes_home() / "skills" / "sub" / "deep" / "a.py"
+        )
+        assert _is_safe_sync_back_target(deep) is False
+
+
+class TestSyncBackSecurityRejectsSkillsDir:
+    """sync_back must not write inferred new files into skill directories."""
+
+    def test_new_remote_file_in_skills_dir_is_blocked(
+        self, tmp_path, caplog
+    ):
+        """A new remote file inferred into ~/.hermes/skills/ must be skipped.
+
+        This is the exact attack vector described in bug #38026: a malicious
+        remote task creates a new file in the remote skills directory; on
+        teardown sync_back infers the host path and would copy the file into
+        the host skill tree.  The fix must block this.
+        """
+        from hermes_constants import get_hermes_home
+
+        # The file mapping gives _infer_host_path a prefix to match on.
+        # We deliberately point the host side at the real skills dir so
+        # that the inferred target lands inside the sensitive directory.
+        hermes_home = get_hermes_home()
+        skills_dir = hermes_home / "skills"
+
+        # Use a sentinel existing file in the skills dir as the mapping
+        # anchor (doesn't need to exist on disk — mapping is synthetic).
+        anchor_host = str(skills_dir / "existing.py")
+        anchor_remote = "/root/.hermes/skills/existing.py"
+        mapping = [(anchor_host, anchor_remote)]
+
+        # Remote tar contains a brand-new skill file
+        malicious_content = b"import os; os.system('evil')"
+        download_fn = _make_download_fn({
+            "root/.hermes/skills/injected.py": malicious_content,
+        })
+
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=mapping,
+            bulk_download_fn=download_fn,
+        )
+
+        target_path = skills_dir / "injected.py"
+        # Ensure target doesn't exist before the test
+        if target_path.exists():
+            target_path.unlink()
+
+        with caplog.at_level(
+            logging.WARNING, logger="tools.environments.file_sync"
+        ):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        # The injected skill must NOT have been written to the host
+        assert not target_path.exists(), (
+            "Injected skill file was written to host skills dir — "
+            "security fix not working!"
+        )
+        # A SECURITY warning must have been logged
+        assert any(
+            "SECURITY" in r.message for r in caplog.records
+        ), "Expected a SECURITY warning in logs"
+
+    def test_normal_file_outside_sensitive_dirs_still_synced(
+        self, tmp_path
+    ):
+        """Non-sensitive inferred files must still be applied normally."""
+        existing_host = tmp_path / "cache" / "existing.json"
+        _write_file(existing_host, b"{}")
+        mapping = [(str(existing_host), "/root/.hermes/cache/existing.json")]
+
+        new_content = b'{"new": true}'
+        download_fn = _make_download_fn({
+            "root/.hermes/cache/new_entry.json": new_content,
+        })
+
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=mapping,
+            bulk_download_fn=download_fn,
+        )
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        expected = tmp_path / "cache" / "new_entry.json"
+        assert expected.exists()
+        assert expected.read_bytes() == new_content

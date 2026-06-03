@@ -6929,7 +6929,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     r1 = _run_npm_install_deterministic(
         npm,
         _workspace_root(web_dir),
-        extra_args=("--silent",),
+        extra_args=("--silent", "--workspace", "web"),
     )
     if r1.returncode != 0:
         _say(

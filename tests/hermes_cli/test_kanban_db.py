@@ -1174,6 +1174,78 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
 
+    def test_per_profile_worker_hermes_home_injection(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: two tasks for different assignees spawn via
+        _default_spawn (via dispatch_once) with distinct HERMES_HOME values
+        (from resolve_profile_env per assignee) and NO ``-p`` / profile flag
+        in the captured cmd argv. Verifies pure env-driven profile activation
+        for workers (the hardening). Both spawns succeed with distinct
+        claim_locks / pids (no collision).
+        """
+        from hermes_cli.profiles import resolve_profile_env
+
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir(parents=True)
+        alpha_home = default_home / "profiles" / "alpha"
+        beta_home = default_home / "profiles" / "beta"
+        alpha_home.mkdir(parents=True)
+        beta_home.mkdir(parents=True)
+
+        self._set_home(monkeypatch, tmp_path, default_home)
+        kb.init_db()
+
+        captured = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                env = kwargs.get("env", {})
+                captured.append(
+                    {"cmd": list(cmd), "env": dict(env), "pid": 4242 + len(captured)}
+                )
+                self.pid = 4242 + len(captured)
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        with kb.connect() as conn:
+            t1 = kb.create_task(conn, title="alpha task", assignee="alpha")
+            t2 = kb.create_task(conn, title="beta task", assignee="beta")
+            res = kb.dispatch_once(conn)
+
+        assert len(captured) == 2, f"expected 2 spawns, got {len(captured)}"
+
+        homes = [c["env"].get("HERMES_HOME") for c in captured]
+        assert homes[0] != homes[1], (
+            "HERMES_HOME values must differ for tasks with different assignees"
+        )
+
+        expected_alpha = resolve_profile_env("alpha")
+        expected_beta = resolve_profile_env("beta")
+        assert homes[0] == expected_alpha or homes[0] == str(alpha_home)
+        assert homes[1] == expected_beta or homes[1] == str(beta_home)
+
+        for c in captured:
+            cmd = c["cmd"]
+            assert "-p" not in cmd, f"worker cmd must not contain -p flag: {cmd}"
+            assert "alpha" not in cmd and "beta" not in cmd, (
+                f"worker cmd must not contain profile name as flag: {cmd}"
+            )
+            assert isinstance(c["pid"], int)
+
+        assert len(res.spawned) == 2
+        spawned_ids = {s[0] for s in res.spawned}
+        assert t1 in spawned_ids and t2 in spawned_ids
+
+        with kb.connect() as conn:
+            task1 = kb.get_task(conn, t1)
+            task2 = kb.get_task(conn, t2)
+            assert task1 is not None and task1.status == "running"
+            assert task2 is not None and task2.status == "running"
+            assert task1.claim_lock and task2.claim_lock  # both claimed (no collision error)
+            assert task1.worker_pid is not None
+            assert task2.worker_pid is not None
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

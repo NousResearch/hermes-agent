@@ -3963,7 +3963,9 @@ def _default_spawn(
     *,
     board: Optional[str] = None,
 ) -> Optional[int]:
-    """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
+    """Fire-and-forget ``hermes chat -q ...`` subprocess with HERMES_HOME
+    injected for the assignee's profile (pure env-driven activation; no
+    ``-p`` flag is passed in the worker command line).
 
     Returns the spawned child's PID so the dispatcher can detect crashes
     before the claim TTL expires. The child's completion is still observed
@@ -3989,8 +3991,11 @@ def _default_spawn(
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's
-    # env, and when the child process starts `hermes -p <name>` the
-    # _apply_profile_override() runs *before* hermes_constants is imported.
+    # env, and the child would resolve to the default profile root.
+    # Setting HERMES_HOME explicitly (via resolve_profile_env) ensures
+    # get_hermes_home() and _apply_profile_override() use the assignee's
+    # profile home for this worker (profile activation is now purely via
+    # the env var; no ``-p`` argv flag is used for kanban workers).
     # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
     # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
     # profile-specific config entirely.  Fixes profile-scoped fallback_providers
@@ -4013,9 +4018,10 @@ def _default_spawn(
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
     # Pin the shared board + workspaces root the dispatcher resolved, so
-    # that even when the worker activates a profile (`hermes -p <name>`
-    # rewrites HERMES_HOME), its kanban paths still match the
-    # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
+    # that the worker's kanban paths still match the dispatcher's (the
+    # assignee profile is activated purely via the HERMES_HOME env var
+    # injected above; no ``-p`` flag is passed to the worker cmd).
+    # Belt-and-braces with the `get_default_hermes_root()`
     # resolution in `kanban_home()` — symmetric resolution is the norm,
     # but unusual symlink / Docker layouts are caught here too.
     env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
@@ -4026,14 +4032,14 @@ def _default_spawn(
     resolved_board = _normalize_board_slug(board) or get_current_board()
     env["HERMES_KANBAN_BOARD"] = resolved_board
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
-    # `hermes -p <assignee>` activates the profile, but the env var is
+    # The assignee's profile is activated for the worker via the injected
+    # HERMES_HOME (from resolve_profile_env, not a -p flag); the env var is
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
     cmd = [
         *_resolve_hermes_argv(),
-        "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry
         # diagnostics, block-reason examples) in its context, even if
@@ -4043,6 +4049,12 @@ def _default_spawn(
         # at a different/additional skill via config if they want —
         # --skills is additive to the profile's default skill set.
         "--skills", "kanban-worker",
+        # Worker subprocesses use the profile-scoped HERMES_HOME injected
+        # in env above (no ``-p`` flag), so they see that profile's
+        # shell-hook allowlist instead of the dispatcher's root allowlist.
+        # Pass --accept-hooks explicitly so profile-local worker sessions
+        # still register configured hooks.
+        "--accept-hooks",
     ]
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI

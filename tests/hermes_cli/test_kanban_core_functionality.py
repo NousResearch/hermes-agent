@@ -2672,8 +2672,12 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert cmd[idx + 1] == "kanban-worker", (
         f"expected 'kanban-worker', got {cmd[idx + 1]!r}"
     )
-    # Assignee + task env are still present
-    assert "some-profile" in cmd
+    # Profile identity now flows purely through the injected HERMES_HOME /
+    # HERMES_PROFILE env (no ``-p`` flag on the worker argv).
+    assert "-p" not in cmd, f"worker argv must not pass -p flag: {cmd}"
+    assert "some-profile" not in cmd, (
+        f"assignee should not appear as an argv token (env-only now): {cmd}"
+    )
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid
     assert env.get("HERMES_PROFILE") == "some-profile"

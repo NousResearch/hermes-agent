@@ -1024,6 +1024,37 @@ class TestEnvironmentHints:
         result = _pb.build_environment_hints()
         assert "Host:" in result
 
+    def test_build_environment_hints_includes_profile_scope_when_non_default(self, monkeypatch):
+        """Under a non-default profile, the agent is told it is profile-scoped."""
+        from pathlib import Path
+        import agent.prompt_builder as _pb
+        import agent.file_safety as _fs
+        import hermes_constants as _hc
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setattr(_fs, "_resolve_active_profile_name", lambda: "coder")
+        monkeypatch.setattr(_pb, "get_hermes_home", lambda: Path("/srv/hermes/profiles/coder"))
+        monkeypatch.setattr(_hc, "get_default_hermes_root", lambda: Path("/srv/hermes"))
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Hermes profile: coder" in result
+        assert "Profile home (HERMES_HOME): /srv/hermes/profiles/coder" in result
+        assert "Shared Hermes root (all profiles): /srv/hermes" in result
+        assert "Do NOT override HOME or HERMES_HOME" in result
+        # The factual host block must still come first.
+        assert result.index("Host:") < result.index("Hermes profile:")
+
+    def test_build_environment_hints_omits_profile_scope_for_default(self, monkeypatch):
+        """The default profile is not profile-scoped — no profile block is added."""
+        import agent.prompt_builder as _pb
+        import agent.file_safety as _fs
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setattr(_fs, "_resolve_active_profile_name", lambda: "default")
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Hermes profile:" not in result
+
 
 # =========================================================================
 # Conditional skill activation

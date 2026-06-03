@@ -764,6 +764,52 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _build_profile_scope_hint() -> Optional[str]:
+    """Describe Hermes profile isolation so the agent doesn't fork shared state.
+
+    Hermes profiles are isolated ``HERMES_HOME`` directories under
+    ``<root>/profiles/<name>``. The host/backend block above reports the
+    OS-level home and cwd, but says nothing about profile scoping — so an
+    agent (or a tool/subprocess that resolves paths from ``$HOME`` / ``~``)
+    can silently read or write the *wrong* profile and fork shared state.
+
+    Emitted only under a non-default profile; returns ``None`` for the
+    default profile or on any resolution failure, leaving the environment
+    block unchanged otherwise. This derives the same awareness automatically
+    that an operator could supply by hand via ``HERMES_ENVIRONMENT_HINT``,
+    and mirrors the cross-profile write guard in ``agent.file_safety`` and
+    the ``HERMES_HOME`` fallback warning in ``hermes_constants`` (see #18594),
+    on the agent-facing prompt side.
+    """
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+        from hermes_constants import get_default_hermes_root
+
+        profile = _resolve_active_profile_name()
+        if not profile or profile == "default":
+            return None
+        profile_home = get_hermes_home().resolve()
+        root = get_default_hermes_root().resolve()
+    except Exception as e:
+        logger.debug("Could not build profile-scope hint: %s", e)
+        return None
+
+    return (
+        f"Hermes profile: {profile} — you are running under an isolated, "
+        f"per-profile Hermes home, not the shared root.\n"
+        f"Profile home (HERMES_HOME): {profile_home}\n"
+        f"Shared Hermes root (all profiles): {root}\n"
+        "Per-profile state (skills, plugins, cron, memories) lives under the "
+        "profile home; shared or cross-profile resources live under the shared "
+        "root. Tools and subprocesses may run with a per-profile HOME, so paths "
+        "built from $HOME / ~ can resolve INTO this profile rather than the "
+        "shared root. Do NOT override HOME or HERMES_HOME at runtime to work "
+        "around a path that looks wrong — that masks a real path bug and can "
+        "silently fork shared state. Use absolute paths under the shared root "
+        "for shared resources, and report path bugs instead."
+    )
+
+
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
@@ -846,6 +892,10 @@ def build_environment_hints() -> str:
                 f"them, probe directly with a terminal call like "
                 f"`uname -a && whoami && pwd`."
             )
+
+    profile_hint = _build_profile_scope_hint()
+    if profile_hint:
+        hints.append(profile_hint)
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)

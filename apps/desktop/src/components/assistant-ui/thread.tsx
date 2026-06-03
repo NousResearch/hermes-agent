@@ -44,7 +44,7 @@ import {
   renderComposerContents,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
-import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import { detectTrigger, shouldSkipTriggerRefreshOnKeyUp, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
@@ -997,8 +997,15 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     setTrigger(detected)
-    setTriggerActive(0)
-  }, [])
+
+    // Only reset the highlight when the trigger actually changed (opened, or
+    // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
+    // caret move (mouseup) or a stray refresh — must preserve the user's
+    // current selection instead of snapping back to the first item.
+    if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
+      setTriggerActive(0)
+    }
+  }, [trigger])
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -1275,6 +1282,18 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
   }
 
+  const handleKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Arrow/Enter/Tab/Escape while the trigger menu is open are fully handled
+    // in keydown and never edit text. Refreshing the trigger here would reset
+    // the highlight to the top (breaking ArrowDown/ArrowUp) and re-open a menu
+    // that Escape just closed, so skip it.
+    if (shouldSkipTriggerRefreshOnKeyUp(event.key, trigger !== null)) {
+      return
+    }
+
+    window.setTimeout(refreshTrigger, 0)
+  }
+
   return (
     <ComposerPrimitive.Root className="contents" data-slot="aui_edit-composer-root">
       <StickyHumanMessageContainer>
@@ -1325,7 +1344,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onFocus={() => markActiveComposer('edit')}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
-              onKeyUp={() => window.setTimeout(refreshTrigger, 0)}
+              onKeyUp={handleKeyUp}
               onMouseUp={refreshTrigger}
               onPaste={handlePaste}
               ref={editorRef}

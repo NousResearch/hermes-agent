@@ -126,7 +126,7 @@ export interface DesktopUpdateApplyResult {
   hermesRoot?: string
 }
 
-export type DesktopUpdateStage = 'idle' | 'prepare' | 'fetch' | 'pull' | 'pydeps' | 'restart' | 'manual' | 'error'
+export type DesktopUpdateStage = 'idle' | 'prepare' | 'fetch' | 'pull' | 'pydeps' | 'restart' | 'manual' | 'error' | 'done'
 
 export interface DesktopUpdateProgress {
   stage: DesktopUpdateStage

@@ -294,17 +294,35 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS memories (
+    id              TEXT PRIMARY KEY,
+    section         TEXT NOT NULL,
+    category        TEXT NOT NULL DEFAULT '',
+    key             TEXT NOT NULL,
+    value           TEXT NOT NULL,
+    chars           INTEGER DEFAULT 0,
+    access_count    INTEGER DEFAULT 0,
+    last_accessed   INTEGER DEFAULT 0,
+    is_active       INTEGER DEFAULT 1,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    UNIQUE(section, category, key)
+);
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
     acquired_at REAL NOT NULL,
     expires_at REAL NOT NULL
+
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_memories_section  ON memories(section);
+CREATE INDEX IF NOT EXISTS idx_memories_active   ON memories(is_active) WHERE is_active=1;
+CREATE INDEX IF NOT EXISTS idx_memories_access   ON memories(access_count, last_accessed);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
 
@@ -315,6 +333,7 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+
 """
 
 FTS_SQL = """
@@ -969,6 +988,41 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def get_recent_active_session(self, source: str) -> Optional[Dict[str, Any]]:
+        """Find the most recent session for a given source with no end_reason.
+
+        Used by gateway restart to restore an interrupted session that was
+        never recorded in sessions.json (e.g. because it was created before
+        sessions.json existed for that session_key, or after a crash/restart).
+
+        Returns a dict with session row columns, or None if nothing found.
+        """
+        try:
+            cursor = self._conn.execute(
+                """SELECT id, source, user_id, model, started_at, message_count,
+                          tool_call_count, input_tokens, output_tokens
+                     FROM sessions
+                     WHERE source = ? AND ended_at IS NULL AND (end_reason IS NULL OR end_reason = 'session_reset')
+                     ORDER BY started_at DESC
+                     LIMIT 1""",
+                (source,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "id": row[0],
+                "source": row[1],
+                "user_id": row[2],
+                "model": row[3],
+                "started_at": row[4],
+                "message_count": row[5],
+                "tool_call_count": row[6],
+                "input_tokens": row[7],
+                "output_tokens": row[8],
+            }
+        except sqlite3.Error:
+            return None
     def update_session_cwd(self, session_id: str, cwd: str) -> None:
         """Persist the session working directory when a frontend knows it."""
         if not session_id or not cwd:
@@ -1103,6 +1157,7 @@ class SessionDB:
         if row is None:
             return None
         return row["holder"] if isinstance(row, sqlite3.Row) else row[0]
+
 
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
@@ -3126,26 +3181,17 @@ class SessionDB:
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.
 
-        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
-        ``request_dump_{session_id}_*.json`` files left by the gateway.
+        Cleans up the session subdirectory ``sessions/<sid>/`` containing
+        ``meta.json``, ``messages.jsonl``, and any ``request_dumps/`` files.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
         """
         if sessions_dir is None:
             return
-        for suffix in (".json", ".jsonl"):
-            p = sessions_dir / f"{session_id}{suffix}"
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
-        # request_dump files use session_id as a prefix component
+        session_subdir = sessions_dir / session_id
         try:
-            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
-                try:
-                    p.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            import shutil
+            shutil.rmtree(session_subdir)
         except OSError:
             pass
 
@@ -4023,6 +4069,150 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
+
+    def memory_upsert(
+        self,
+        id: str,
+        section: str,
+        category: str,
+        key: str,
+        value: str,
+    ) -> bool:
+        """Insert or update a memory entry. Returns True if a new row was inserted."""
+        def _do(conn: sqlite3.Connection) -> bool:
+            now = int(time.time())
+            chars = len(value)
+            # Try UPDATE first
+            n = conn.execute(
+                """UPDATE memories
+                   SET category=?, key=?, value=?, chars=?,
+                       updated_at=?, is_active=1
+                   WHERE section=? AND category=? AND key=? AND is_active=1""",
+                (category, key, value, chars, now, section, category, key),
+            ).rowcount
+            if n > 0:
+                return False
+            # Not found — INSERT
+            conn.execute(
+                """INSERT INTO memories
+                   (id, section, category, key, value, chars,
+                    access_count, last_accessed, is_active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?)""",
+                (id, section, category, key, value, chars, now, now),
+            )
+            return True
+        return self._execute_write(_do)
+
+    def memory_delete(self, section: str, category: str, key: str) -> bool:
+        """Soft-delete a memory entry by marking it inactive. Returns True if found."""
+        def _do(conn: sqlite3.Connection) -> bool:
+            n = conn.execute(
+                """UPDATE memories SET is_active=0, updated_at=?
+                   WHERE section=? AND category=? AND key=? AND is_active=1""",
+                (int(time.time()), section, category, key),
+            ).rowcount
+            return n > 0
+        return self._execute_write(_do)
+
+    def memory_get_active(self, section: str) -> List[Dict[str, Any]]:
+        """Return all active memory entries for a section, ordered by access_count desc."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id, section, category, key, value, chars,
+                          access_count, last_accessed, created_at, updated_at
+                   FROM memories
+                   WHERE section=? AND is_active=1
+                   ORDER BY access_count DESC, last_accessed ASC""",
+                (section,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def memory_touch(self, id: str) -> None:
+        """Increment access_count and update last_accessed for a memory entry."""
+        def _do(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """UPDATE memories
+                   SET access_count = access_count + 1,
+                       last_accessed = ?
+                   WHERE id=?""",
+                (int(time.time()), id),
+            )
+        self._execute_write(_do)
+
+    def memory_evict_for_section(
+        self,
+        section: str,
+        chars_needed: int,
+        max_chars: int,
+        exclude_id: str = None,
+    ) -> List[Dict[str, Any]]:
+        """Evict lowest-value entries from section until total chars <= max_chars.
+        Returns a list of evicted entry dicts (each with id, value, chars, section).
+
+        exclude_id: if provided, that entry is skipped during eviction selection
+        (used by add() to prevent the newly-inserted entry from evicting itself).
+        """
+        def _do(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+            # Get current total chars (excludes the just-inserted entry if exclude_id is set,
+            # because the caller inserted it before calling evict)
+            where_clause = "section=? AND is_active=1"
+            params = (section,)
+            if exclude_id:
+                where_clause += " AND id!=?"
+                params = (section, exclude_id)
+            total = conn.execute(
+                f"SELECT COALESCE(SUM(chars),0) FROM memories WHERE {where_clause}",
+                params,
+            ).fetchone()[0]
+            if total + chars_needed <= max_chars:
+                return []  # No eviction needed
+            evicted_rows: List[Dict[str, Any]] = []
+            now = int(time.time())
+            # Time-decay eviction: prioritize evicting entries with low access_count
+            # relative to their age. Score = access_count / (age_in_days^0.5 + 1).
+            # High value = survive. Low value = evicted first.
+            # Exclusion is applied in both the score subquery and the outer SELECT.
+            while total + chars_needed > max_chars:
+                row = conn.execute(
+                    f"""SELECT id, value, chars, section FROM memories
+                       WHERE section=? AND is_active=1
+                       {"AND id!=?" if exclude_id else ""}
+                       ORDER BY
+                          (access_count + 1.0) / ((1.0 + (CAST(? AS REAL) - last_accessed) / 86400.0) ** 0.5) ASC,
+                          last_accessed ASC,
+                          id ASC
+                       LIMIT 1""",
+                    (section, exclude_id, now) if exclude_id else (section, now),
+                ).fetchone()
+                if not row:
+                    break
+                evicted_rows.append(dict(row))
+                conn.execute(
+                    "UPDATE memories SET is_active=0, updated_at=? WHERE id=?",
+                    (now, row["id"]),
+                )
+                total -= row["chars"]
+            return evicted_rows
+        return self._execute_write(_do)
+
+    def memory_total_chars(self, section: str) -> int:
+        """Return total chars of active entries in a section."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(chars),0) FROM memories WHERE section=? AND is_active=1",
+                (section,),
+            ).fetchone()
+        return row[0] if row else 0
+
+    def memory_get_all_categories(self, section: str) -> List[str]:
+        """Return distinct categories for a section."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT category FROM memories "
+                "WHERE section=? AND is_active=1 ORDER BY category",
+                (section,),
+            ).fetchall()
+        return [r[0] for r in rows]
 
     # ── Handoff (cross-platform session transfer) ──────────────────────────
     #

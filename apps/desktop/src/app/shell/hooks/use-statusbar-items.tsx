@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { Activity, AlertCircle, Clock, Command, Cpu, Hash, Loader2, Sparkles } from '@/lib/icons'
+import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Sparkles } from '@/lib/icons'
+import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -11,8 +13,10 @@ import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $busy,
+  $currentFastMode,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffort,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
@@ -34,6 +38,7 @@ interface StatusbarItemsOptions {
   gatewayLogLines: readonly string[]
   gatewayState: string
   inferenceStatus: RuntimeReadinessResult | null
+  modelMenuContent?: ReactNode
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   statusSnapshot: StatusResponse | null
@@ -48,14 +53,17 @@ export function useStatusbarItems({
   gatewayLogLines,
   gatewayState,
   inferenceStatus,
+  modelMenuContent,
   openAgents,
   openCommandCenterSection,
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
   const busy = useStore($busy)
+  const currentFastMode = useStore($currentFastMode)
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
+  const currentReasoningEffort = useStore($currentReasoningEffort)
   const currentUsage = useStore($currentUsage)
   const desktopActionTasks = useStore($desktopActionTasks)
   const previewServerRestartStatus = useStore($previewServerRestartStatus)
@@ -269,17 +277,51 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: currentProvider || '',
-        icon: <Cpu className="size-3" />,
         id: 'model-summary',
-        label: currentModel || 'No model selected',
-        onSelect: () => setModelPickerOpen(true),
-        title: currentProvider ? `Switch model · ${currentProvider}: ${currentModel || ''}` : 'Open model picker',
-        variant: 'action'
+        label: (
+          <span className="inline-flex min-w-0 items-center gap-0.5">
+            <span className="truncate">
+              {formatModelStatusLabel(currentModel, {
+                fastMode: currentFastMode,
+                reasoningEffort: currentReasoningEffort
+              })}
+            </span>
+            <ChevronDown className="size-2.5 shrink-0 opacity-50" />
+          </span>
+        ),
+        ...(modelMenuContent
+          ? {
+              menuAlign: 'end' as const,
+              menuClassName: 'w-64',
+              menuContent: modelMenuContent,
+              title: currentProvider
+                ? `Model · ${currentProvider}: ${currentModel || 'none'}`
+                : 'Switch model',
+              variant: 'menu' as const
+            }
+          : {
+              onSelect: () => setModelPickerOpen(true),
+              title: currentProvider
+                ? `${currentProvider} · ${currentModel || 'no model'}`
+                : 'Open model picker',
+              variant: 'action' as const
+            })
       },
       versionItem
     ],
-    [busy, contextBar, contextUsage, currentModel, currentProvider, sessionStartedAt, turnStartedAt, versionItem]
+    [
+      busy,
+      contextBar,
+      contextUsage,
+      currentFastMode,
+      currentModel,
+      currentProvider,
+      currentReasoningEffort,
+      modelMenuContent,
+      sessionStartedAt,
+      turnStartedAt,
+      versionItem
+    ]
   )
 
   const leftStatusbarItems = useMemo(

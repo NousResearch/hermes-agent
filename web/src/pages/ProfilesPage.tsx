@@ -414,7 +414,7 @@ export default function ProfilesPage() {
             (c) => `${c.provider}\u0000${c.model}` === modelChoice,
           )
         : undefined;
-      await api.createProfile({
+      const res = await api.createProfile({
         name,
         clone_from_default: cloneAll ? false : cloneFromDefault,
         clone_all: cloneAll,
@@ -424,6 +424,12 @@ export default function ProfilesPage() {
         model: picked?.model,
       });
       showToast(`${t.profiles.created}: ${name}`, "success");
+      if (picked && res.model_set === false) {
+        showToast(
+          `Profile created, but the model could not be saved — set it from the profile editor.`,
+          "error",
+        );
+      }
       setNewName("");
       setNewDescription("");
       setNoSkills(false);

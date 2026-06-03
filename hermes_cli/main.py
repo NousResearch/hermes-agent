@@ -15192,7 +15192,7 @@ Examples:
     logs_parser = subparsers.add_parser(
         "logs",
         help="View and filter Hermes log files",
-        description="View, tail, and filter agent.log / errors.log / gateway.log / gui.log",
+        description="View, tail, and filter agent.log / errors.log / gateway.log / gui.log / desktop.log",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -15201,6 +15201,7 @@ Examples:
     hermes logs errors             Show last 50 lines of errors.log
     hermes logs gateway -n 100     Show last 100 lines of gateway.log
     hermes logs gui -f             Follow gui.log in real time
+    hermes logs desktop -f         Follow desktop.log (Electron app boot/backend)
     hermes logs --level WARNING    Only show WARNING and above
     hermes logs --session abc123   Filter by session ID
     hermes logs --component tools  Only show tool-related lines

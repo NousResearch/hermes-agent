@@ -5351,14 +5351,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         term_width = shutil.get_terminal_size().columns
         use_compact = self.compact or term_width < 80
         
+        enabled_toolsets = getattr(self, "enabled_toolsets", None) or []
+        disabled_toolsets = getattr(self, "disabled_toolsets", None) or []
+
         if use_compact:
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
             # Get tools for display
             tools = get_tool_definitions(
-                enabled_toolsets=self.enabled_toolsets,
-                disabled_toolsets=self.disabled_toolsets,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
                 quiet_mode=True,
             )
             
@@ -5371,8 +5374,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 model=self.model,
                 cwd=cwd,
                 tools=tools,
-                enabled_toolsets=self.enabled_toolsets,
-                disabled_toolsets=self.disabled_toolsets,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
             )
@@ -5677,13 +5680,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     
     def _show_status(self):
         """Show compact startup status line."""
+        enabled_toolsets = getattr(self, "enabled_toolsets", None) or []
+        disabled_toolsets = getattr(self, "disabled_toolsets", None) or []
+
         # Avoid pulling the full tool registry into the bare Termux prompt path.
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1":
             tool_status = "tools deferred"
         else:
             tools = get_tool_definitions(
-                enabled_toolsets=self.enabled_toolsets,
-                disabled_toolsets=self.disabled_toolsets,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
                 quiet_mode=True,
             )
             tool_count = len(tools) if tools else 0
@@ -5710,8 +5716,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             separator_color, accent_color, label_color = "#B8860B", "#FFBF00", "cyan"
         toolsets_info = ""
-        if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim {separator_color}]·[/] [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
+        if enabled_toolsets and "all" not in enabled_toolsets:
+            toolsets_info = f" [dim {separator_color}]·[/] [{label_color}]toolsets: {', '.join(enabled_toolsets)}[/]"
 
         provider_info = f" [dim {separator_color}]·[/] [dim]provider: {self.provider}[/]"
         if self._provider_source:

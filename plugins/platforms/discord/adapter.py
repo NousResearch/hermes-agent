@@ -5585,7 +5585,11 @@ def _define_discord_view_classes() -> None:
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
-            
+            for index, choice in enumerate(self.choices):
+                # Discord button labels are capped at 80 chars.
+                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
+                button = discord.ui.Button(
+
         async def on_timeout(self):
             """Disable all buttons and update the embed when the interaction times out."""
             for item in self.children:
@@ -5598,10 +5602,7 @@ def _define_discord_view_classes() -> None:
                     except Exception:
                         pass   
 
-            for index, choice in enumerate(self.choices):
-                # Discord button labels are capped at 80 chars.
-                label_body = choice if len(choice) <= 75 else choice[:72] + "..."
-                button = discord.ui.Button(
+            
                     label=f"{index + 1}. {label_body}",
                     style=discord.ButtonStyle.primary,
                     custom_id=f"clarify:{clarify_id}:{index}",

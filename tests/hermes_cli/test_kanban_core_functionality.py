@@ -3034,6 +3034,42 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     )
 
 
+def test_default_spawn_passes_task_model_override(kanban_home, monkeypatch):
+    """Dispatcher argv must carry a persisted per-task model override."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    captured = {}
+
+    class FakeProc:
+        pid = 42
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="model worker",
+            assignee="specialist",
+            model_override="openai/gpt-5.3",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    chat_idx = cmd.index("chat")
+    assert cmd[chat_idx - 2:chat_idx] == ["-m", "openai/gpt-5.3"], (
+        f"model override must be the final global option before 'chat': {cmd}"
+    )
+
+
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
@@ -3090,6 +3126,18 @@ def test_cli_create_without_skill_flag_leaves_none(kanban_home):
     with kb.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task.skills is None
+
+
+def test_cli_create_model_flag_persists_override(kanban_home):
+    """`hermes kanban create --model MODEL` must persist the worker override."""
+    out = run_slash("create 'model-task' --assignee x --model openai/gpt-5.3 --json")
+    created = json.loads(out)
+    tid = created["id"]
+    assert created["model_override"] == "openai/gpt-5.3"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.model_override == "openai/gpt-5.3"
 
 
 def test_cli_show_renders_skills(kanban_home):

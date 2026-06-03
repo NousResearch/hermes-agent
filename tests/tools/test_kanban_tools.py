@@ -798,6 +798,28 @@ def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_persists_model_override(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "model-specific child",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "model_override": "gpt-5.3",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child is not None
+        assert child.model_override == "gpt-5.3"
+    finally:
+        conn.close()
+
+
 def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
     """An explicit workspace arg overrides worker-task inheritance."""
     from tools import kanban_tools as kt
@@ -845,6 +867,11 @@ def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_schema_includes_model_override():
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    props = KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert props["model_override"]["type"] == "string"
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``

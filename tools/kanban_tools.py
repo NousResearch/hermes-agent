@@ -762,6 +762,7 @@ def _handle_create(args: dict, **kw) -> str:
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
     skills = args.get("skills")
+    model_override = args.get("model_override")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
         skills = [skills]
@@ -809,6 +810,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=model_override,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -1298,6 +1300,15 @@ KANBAN_CREATE_SCHEMA = {
                     "continuation turns the worker may take before the task "
                     "is blocked for review. Ignored unless goal_mode is "
                     "true. Defaults to the goal-engine default (20)."
+                ),
+            },
+            "model_override": {
+                "type": "string",
+                "description": (
+                    "Optional model name for the dispatcher-spawned worker. "
+                    "When set, the dispatcher passes it through as the "
+                    "worker's --model override instead of relying only on "
+                    "the assignee profile default."
                 ),
             },
             "board": _board_schema_prop(),

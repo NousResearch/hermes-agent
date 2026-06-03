@@ -110,6 +110,9 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+_ollama_context_cache: Dict[str, Optional[int]] = {}
+_ollama_context_cache_time: Dict[str, float] = {}
+_OLLAMA_CONTEXT_CACHE_TTL = 3600
 
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
@@ -1076,6 +1079,15 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
     """
     import httpx
 
+    # In-memory TTL cache: per model+base_url, avoids repeated disk reads and
+    # network calls within the same process lifetime.
+    global _ollama_context_cache, _ollama_context_cache_time
+    cache_key = f"{model}@{base_url}"
+    now = time.time()
+    cached_at = _ollama_context_cache_time.get(cache_key, 0)
+    if cache_key in _ollama_context_cache and (now - cached_at) < _OLLAMA_CONTEXT_CACHE_TTL:
+        return _ollama_context_cache[cache_key]
+
     server_url = base_url.rstrip("/")
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
@@ -1086,6 +1098,8 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
         with httpx.Client(timeout=5.0, headers=headers) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": model})
             if resp.status_code != 200:
+                _ollama_context_cache[cache_key] = None
+                _ollama_context_cache_time[cache_key] = now
                 return None
             data = resp.json()
 
@@ -1096,6 +1110,8 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
                 if "context_length" in key and isinstance(value, (int, float)):
                     ctx = int(value)
                     if ctx >= 1024:
+                        _ollama_context_cache[cache_key] = ctx
+                        _ollama_context_cache_time[cache_key] = now
                         return ctx
 
             # Fall back to num_ctx from Modelfile parameters (rare on Cloud)
@@ -1108,11 +1124,16 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
                             try:
                                 ctx = int(parts[-1])
                                 if ctx >= 1024:
+                                    _ollama_context_cache[cache_key] = ctx
+                                    _ollama_context_cache_time[cache_key] = now
                                     return ctx
                             except ValueError:
                                 pass
     except Exception:
         pass
+
+    _ollama_context_cache[cache_key] = None
+    _ollama_context_cache_time[cache_key] = now
     return None
 
 
@@ -1581,6 +1602,17 @@ def get_model_context_length(
             else:
                 return cached
 
+    # 1a. Hardcoded defaults for known model families — run BEFORE any live
+    # network probe so common local models (llama, qwen, gemma, etc.) never
+    # hit Ollama or any other endpoint.  This is a fast substring match
+    # (longest key first for specificity).
+    model_lower = model.lower()
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if default_model in model_lower:
+            return length
+
     # 1b. AWS Bedrock — use static context length table.
     # Bedrock's ListFoundationModels API doesn't expose context window sizes,
     # so we maintain a curated table in bedrock_adapter.py that reflects
@@ -1744,16 +1776,7 @@ def get_model_context_length(
 
     # 7. (reserved)
 
-    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
-    # Only check `default_model in model` (is the key a substring of the input).
-    # The reverse (`model in default_model`) causes shorter names like
-    # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
-    model_lower = model.lower()
-    for default_model, length in sorted(
-        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
-    ):
-        if default_model in model_lower:
-            return length
+    # 8. (moved to step 1a — hardcoded defaults now run before any live probe)
 
     # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):

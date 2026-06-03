@@ -12665,7 +12665,11 @@ class HermesCLI:
                 goodbye = get_active_goodbye("Goodbye! ⚕")
             except Exception:
                 goodbye = "Goodbye! ⚕"
-            print(goodbye)
+            # Skin branding may include Rich markup (for example
+            # ``[#BFA46A]Loops closed.[/]``). Route it through the same
+            # console path as the welcome line so colors render instead of
+            # leaking literal tags on exit.
+            self._console_print(goodbye)
 
     def _get_tui_prompt_symbols(self) -> tuple[str, str]:
         """Return ``(normal_prompt, state_suffix)`` for the active skin.

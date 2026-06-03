@@ -6,6 +6,9 @@ from unittest.mock import MagicMock, patch
 from cli import HermesCLI
 
 
+MARKUP_GOODBYE = "[#BFA46A]Loops closed.[/] [#FFD37A]Engine halted.[/]"
+
+
 def _make_cli(session_id="20260524_000001_abc123"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.session_id = session_id
@@ -81,3 +84,21 @@ class TestExitSummaryResumeHint:
         # Resume hint still printed without -p.
         assert "hermes --resume 20260524_000001_abc123" in out
         assert " -p " not in out
+
+    def test_empty_session_goodbye_uses_rich_console_path(self, capsys):
+        """Skin goodbye strings can contain Rich color markup.
+
+        Empty sessions print only the skin goodbye line, so that path must use
+        HermesCLI._console_print instead of raw print(); otherwise users see
+        literal tags like ``[#BFA46A]Loops closed.[/]`` on exit.
+        """
+        cli_obj = _make_cli()
+        cli_obj.conversation_history = []
+        cli_obj.console = MagicMock()
+
+        with patch("hermes_cli.skin_engine.get_active_goodbye", return_value=MARKUP_GOODBYE):
+            cli_obj._print_exit_summary()
+
+        out = capsys.readouterr().out
+        assert MARKUP_GOODBYE not in out
+        cli_obj.console.print.assert_called_once_with(MARKUP_GOODBYE)

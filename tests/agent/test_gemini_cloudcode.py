@@ -1026,6 +1026,22 @@ class TestGeminiHttpErrorParsing:
         message = str(err)
         assert "quota" in message.lower()
 
+    def test_resource_exhausted_capacity_message_without_reason(self):
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": "You have exhausted your capacity on this model. Your quota will reset after 6s.",
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        message = str(err)
+        assert "capacity exhausted" in message.lower()
+        assert "not daily quota" in message.lower()
+
     def test_404_model_not_found_produces_model_retired_message(self):
         from agent.gemini_cloudcode_adapter import _gemini_http_error
 

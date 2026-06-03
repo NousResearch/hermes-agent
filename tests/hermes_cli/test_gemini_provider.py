@@ -270,6 +270,40 @@ class TestGeminiAgentInit:
             resolve_provider_client("gemini")
         mock_openai.assert_called_once()
 
+    def test_google_gemini_cli_resolve_provider_client_uses_cloudcode_client(self):
+        """Auxiliary google-gemini-cli should use the Cloud Code adapter, not OpenAI."""
+        creds = {
+            "provider": "google-gemini-cli",
+            "api_key": "ya29.test-token",
+            "base_url": "cloudcode-pa://google",
+        }
+        with patch("hermes_cli.auth.resolve_gemini_oauth_runtime_credentials", return_value=creds), \
+             patch("agent.gemini_cloudcode_adapter.GeminiCloudCodeClient") as mock_client, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client.return_value = MagicMock(api_key="ya29.test-token", base_url="cloudcode-pa://google")
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("google-gemini-cli", model="gemini-2.5-flash")
+        mock_client.assert_called_once_with(api_key="ya29.test-token", base_url="cloudcode-pa://google")
+        mock_openai.assert_not_called()
+        assert client is mock_client.return_value
+        assert model == "gemini-2.5-flash"
+
+    def test_google_gemini_cli_resolve_provider_client_async_wraps_cloudcode_client(self):
+        creds = {
+            "provider": "google-gemini-cli",
+            "api_key": "ya29.test-token",
+            "base_url": "cloudcode-pa://google",
+        }
+        with patch("hermes_cli.auth.resolve_gemini_oauth_runtime_credentials", return_value=creds):
+            from agent.auxiliary_client import resolve_provider_client, AsyncSyncAuxiliaryClient
+            client, model = resolve_provider_client("google-gemini-cli", model="gemini-2.5-flash", async_mode=True)
+        try:
+            assert isinstance(client, AsyncSyncAuxiliaryClient)
+            assert model == "gemini-2.5-flash"
+        finally:
+            if client is not None:
+                client._sync_client.close()
+
 
 # ── models.dev Integration ──
 

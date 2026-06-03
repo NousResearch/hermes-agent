@@ -863,11 +863,19 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
     if isinstance(error_metadata, dict):
         model_hint = str(error_metadata.get("model") or error_metadata.get("modelId") or "").strip()
 
-    if status == 429 and error_reason == "MODEL_CAPACITY_EXHAUSTED":
+    capacity_like = (
+        status == 429
+        and (
+            error_reason == "MODEL_CAPACITY_EXHAUSTED"
+            or "capacity" in err_message.lower()
+            or "no capacity available" in body_text.lower()
+        )
+    )
+    if capacity_like:
         target = model_hint or "this Gemini model"
         message = (
             f"Gemini capacity exhausted for {target} (Google-side throttle, "
-            f"not a Hermes issue). Try a different Gemini model or set a "
+            f"not daily quota exhaustion). Try a different Gemini model or set a "
             f"fallback_providers entry to a non-Gemini provider."
         )
         if retry_delay_seconds is not None:

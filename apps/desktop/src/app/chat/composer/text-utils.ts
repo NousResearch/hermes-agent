@@ -8,6 +8,25 @@ export interface TriggerState {
 
 const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
 
+/**
+ * Keys that the open-trigger keydown handler fully consumes to drive the
+ * completion popover (move highlight, accept, dismiss). None of them mutate
+ * the editor text, so re-running `refreshTrigger` on their *keyup* is both
+ * useless and actively harmful: `refreshTrigger` re-detects the trigger and
+ * resets `triggerActive` to 0 (snapping the highlight back to the top after
+ * every ArrowDown/ArrowUp) and re-opens a trigger that Escape just closed.
+ */
+const TRIGGER_NAV_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'])
+
+/**
+ * True when a keyup event should NOT trigger a completion-popover refresh.
+ * Only applies while a trigger menu is open and the key is one the keydown
+ * handler already handled — guarding against the highlight-reset / reopen race.
+ */
+export function shouldSkipTriggerRefreshOnKeyUp(key: string, triggerOpen: boolean): boolean {
+  return triggerOpen && TRIGGER_NAV_KEYS.has(key)
+}
+
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
   const seen = new Set<Blob>()

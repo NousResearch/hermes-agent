@@ -22,7 +22,7 @@
  *   { type: 'manifest',  stages: [{name, title, category, needs_user_input}, ...] }
  *   { type: 'stage',     name, state: 'running'|'succeeded'|'skipped'|'failed',
  *                        json?, durationMs?, error? }
- *   { type: 'log',       stage?, line }      // raw line from install.ps1
+ *   { type: 'log',       stage?, line, stream: 'stdout'|'stderr' } // raw line from install.ps1
  *   { type: 'complete',  marker: <written marker payload> }
  *   { type: 'failed',    stage?, error }     // bootstrap aborted
  *
@@ -229,7 +229,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
       }
     })
 
@@ -241,7 +241,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${line}` })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
       }
     })
 
@@ -253,8 +253,8 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
     child.on('close', (code, signal) => {
       if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
       // Flush any trailing bytes
-      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf })
-      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${stderrBuf}` })
+      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
       resolve({ stdout, stderr, code, signal, killed })
     })
   })
@@ -299,7 +299,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
         const line = stdoutBuf.slice(0, nl).replace(/\r$/, '')
         stdoutBuf = stdoutBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stdout' })
       }
     })
 
@@ -311,7 +311,7 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
       while ((nl = stderrBuf.indexOf('\n')) !== -1) {
         const line = stderrBuf.slice(0, nl).replace(/\r$/, '')
         stderrBuf = stderrBuf.slice(nl + 1)
-        if (line) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${line}` })
+        if (line) emit && emit({ type: 'log', stage: stageName, line, stream: 'stderr' })
       }
     })
 
@@ -322,8 +322,8 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 
     child.on('close', (code, signal) => {
       if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
-      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf })
-      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: `stderr: ${stderrBuf}` })
+      if (stdoutBuf) emit && emit({ type: 'log', stage: stageName, line: stdoutBuf, stream: 'stdout' })
+      if (stderrBuf) emit && emit({ type: 'log', stage: stageName, line: stderrBuf, stream: 'stderr' })
       resolve({ stdout, stderr, code, signal, killed })
     })
   })

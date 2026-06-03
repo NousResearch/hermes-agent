@@ -722,7 +722,7 @@ function broadcastBootstrapEvent(ev) {
       error: ev.error ?? null
     }
   } else if (ev.type === 'log') {
-    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line })
+    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line, stream: ev.stream || 'stdout' })
     if (bootstrapState.log.length > BOOTSTRAP_LOG_RING_MAX) {
       bootstrapState.log.splice(0, bootstrapState.log.length - BOOTSTRAP_LOG_RING_MAX)
     }

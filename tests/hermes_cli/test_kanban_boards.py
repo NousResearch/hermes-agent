@@ -428,6 +428,9 @@ class TestWorkerSpawnEnv:
         assert env["HERMES_KANBAN_DB"] == str(expected_db)
         expected_ws = fresh_home / "kanban" / "boards" / "spawntest" / "workspaces"
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(expected_ws)
+        assert env["HERMES_AGENT_DIR"] == str(_WORKTREE)
+        assert env["HERMES_VENV_DIR"] == str(Path(sys.executable).parent.parent)
+        assert "kanban-worker" not in captured["cmd"]
 
     def test_default_board_spawn_keeps_legacy_paths(self, fresh_home, monkeypatch):
         captured = {}

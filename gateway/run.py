@@ -6454,6 +6454,30 @@ class GatewayRunner:
             )
             return
 
+        raw_dispatch_boards = kanban_cfg.get("dispatch_boards")
+
+        def _configured_dispatch_board_slugs() -> "Optional[set[str]]":
+            """Return the configured dispatch board allowlist, or None for all."""
+            raw = raw_dispatch_boards
+            if raw is None:
+                return None
+            if isinstance(raw, str):
+                items = [x.strip() for x in raw.split(",")]
+            elif isinstance(raw, (list, tuple, set)):
+                items = [str(x).strip() for x in raw]
+            else:
+                logger.warning(
+                    "kanban dispatcher: invalid dispatch_boards=%r; dispatching all boards",
+                    raw,
+                )
+                return None
+            slugs = {x for x in items if x}
+            return slugs or None
+
+        dispatch_board_slugs = _configured_dispatch_board_slugs()
+        if dispatch_board_slugs is not None:
+            logger.info("kanban dispatcher: dispatch_boards=%s", sorted(dispatch_board_slugs))
+
         try:
             from hermes_cli import kanban_db as _kb
         except Exception:
@@ -6711,6 +6735,8 @@ class GatewayRunner:
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if dispatch_board_slugs is not None and slug not in dispatch_board_slugs:
+                    continue
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
@@ -6732,6 +6758,8 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if dispatch_board_slugs is not None and slug not in dispatch_board_slugs:
+                    continue
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
@@ -6785,6 +6813,8 @@ class GatewayRunner:
             successes = 0
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if dispatch_board_slugs is not None and slug not in dispatch_board_slugs:
+                    continue
                 if attempted >= auto_decompose_per_tick:
                     break
                 # Pin this board for the duration of the call — same

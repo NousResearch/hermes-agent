@@ -6625,6 +6625,14 @@ def _default_spawn(
     )
     if foreground_timeout is not None:
         env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
+    # Profile-scoped workers run with HERMES_HOME pointing at the assignee's
+    # profile. Tyler's local ``~/.local/bin/hermes`` launcher uses HERMES_HOME
+    # only when it lacks an explicit install root, which makes workers look for
+    # ``<profile>/home/.hermes/hermes-agent/venv`` and crash before the agent
+    # loop. Pin the live source checkout + interpreter venv for child launchers
+    # while still letting ``-p <assignee>`` select the worker profile.
+    env.setdefault("HERMES_AGENT_DIR", str(Path(__file__).resolve().parents[1]))
+    env.setdefault("HERMES_VENV_DIR", str(Path(sys.executable).parent.parent))
     # Pin the shared board + workspaces root the dispatcher resolved, so
     # that even when the worker activates a profile (`hermes -p <name>`
     # rewrites HERMES_HOME), its kanban paths still match the
@@ -6662,7 +6670,8 @@ def _default_spawn(
     # at a different/additional skill via config if they want —
     # --skills is additive to the profile's default skill set.
     #
-    cmd.extend(["--skills", "kanban-worker"])
+    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
+        cmd.extend(["--skills", "kanban-worker"])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but

@@ -271,9 +271,15 @@ def _resolver_command(prompt: str, cfg: UpdateConflictResolverConfig) -> list[st
     return cmd
 
 
-def _resolver_env(cfg: UpdateConflictResolverConfig) -> dict[str, str]:
+def _resolver_env(
+    cfg: UpdateConflictResolverConfig,
+    *,
+    worktree: Path | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     env["HERMES_UPDATE_RESOLVER"] = "1"
+    if worktree is not None:
+        env["HERMES_UPDATE_RESOLVER_WORKTREE"] = str(worktree)
     if cfg.reasoning_effort:
         env["HERMES_REASONING_EFFORT"] = cfg.reasoning_effort
     env.setdefault("HERMES_MAX_ITERATIONS", str(cfg.max_turns))
@@ -386,10 +392,15 @@ def run_patched_main_conflict_resolver(
                 push_enabled=cfg.push,
             )
             try:
+                # Run the resolver agent from the stable live checkout, not from
+                # the conflicted temp worktree.  The temp worktree can contain
+                # conflict markers in hermes_cli/main.py; using it as cwd makes
+                # ``python -m hermes_cli.main`` import broken code before the
+                # resolver ever gets a chance to fix anything.
                 agent = subprocess.run(
                     _resolver_command(prompt, cfg),
-                    cwd=worktree,
-                    env=_resolver_env(cfg),
+                    cwd=cwd,
+                    env=_resolver_env(cfg, worktree=worktree),
                     timeout=cfg.timeout_seconds,
                 )
             except subprocess.TimeoutExpired:

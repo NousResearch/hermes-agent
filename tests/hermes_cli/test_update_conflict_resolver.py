@@ -94,7 +94,9 @@ def test_run_conflict_resolver_uses_temp_worktree_pushes_and_fast_forwards(monke
             return SimpleNamespace(stdout=("hermes_cli/main.py\n" if count == 1 else ""), stderr="", returncode=0)
         if cmd[0].endswith("python") or cmd[0] == "python":
             assert kwargs["timeout"] == 1800
+            assert Path(kwargs["cwd"]) == tmp_path / "repo"
             assert kwargs["env"]["HERMES_REASONING_EFFORT"] == "high"
+            assert kwargs["env"]["HERMES_UPDATE_RESOLVER_WORKTREE"] == str(worktree_path)
             return SimpleNamespace(stdout="done\n", stderr="", returncode=0)
         if cwd == worktree_path and cmd[1:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)

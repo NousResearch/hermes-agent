@@ -265,6 +265,8 @@ _MAX_BACKOFF_SECONDS = 60
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
+    # MiniMax MCP server
+    "MINIMAX_API_KEY", "MINIMAX_API_HOST",
 })
 
 # Regex for credential patterns to strip from error messages

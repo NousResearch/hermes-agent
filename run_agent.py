@@ -116,7 +116,9 @@ from agent.model_metadata import (
 from agent.usage_pricing import normalize_usage
 from agent.durable_continuation import (
     DurableContinuationPacket,
+    DurableContinuationWriteResult,
     build_durable_continuation_packet_from_todos,
+    write_durable_continuation,
 )
 # Re-exported for tests that monkeypatch these symbols on run_agent.
 from agent.context_compressor import ContextCompressor  # noqa: F401
@@ -2788,6 +2790,54 @@ class AIAgent:
             do_not_repeat=do_not_repeat or (),
             last_updated=last_updated,
         )
+
+    def persist_durable_continuation(
+        self,
+        *,
+        project_root: str | Path,
+        job_name: str,
+        docs_dir: str | Path = "docs",
+        current_phase: str = "IN_PROGRESS",
+        exact_next_action: str | None = None,
+        completed_tasks: List[str] | None = None,
+        blockers: List[str] | None = None,
+        changed_files: List[str] | None = None,
+        evidence_links: List[str] | None = None,
+        verification_completed: List[str] | None = None,
+        remaining_verification: List[str] | None = None,
+        do_not_repeat: List[str] | None = None,
+        last_updated: str | None = None,
+    ) -> DurableContinuationWriteResult:
+        """Persist this agent's durable continuation packet to explicit project docs.
+
+        This method is intentionally opt-in. Callers must supply a known safe
+        existing ``project_root`` and optional docs path. Hermes does not infer a
+        project root, scan the current directory, or persist automatically from
+        the conversation loop.
+        """
+        if not str(project_root).strip():
+            raise ValueError("project_root is required")
+        if not str(job_name).strip():
+            raise ValueError("job_name is required")
+
+        root = Path(project_root).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError("project_root must be an existing directory")
+
+        packet = self.build_durable_continuation_packet(
+            job_name=job_name,
+            current_phase=current_phase,
+            exact_next_action=exact_next_action,
+            completed_tasks=completed_tasks,
+            blockers=blockers,
+            changed_files=changed_files,
+            evidence_links=evidence_links,
+            verification_completed=verification_completed,
+            remaining_verification=remaining_verification,
+            do_not_repeat=do_not_repeat,
+            last_updated=last_updated,
+        )
+        return write_durable_continuation(root, packet, docs_dir=docs_dir)
 
     @property
     def is_interrupted(self) -> bool:

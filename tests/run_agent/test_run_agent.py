@@ -132,6 +132,126 @@ def test_aiagent_build_durable_continuation_packet_does_not_revive_completed_sta
 
 
 
+def test_aiagent_persist_durable_continuation_writes_project_docs_from_active_todos(agent, tmp_path):
+    agent._todo_store.write(
+        [
+            {"id": "done", "content": "Implement lifecycle packet builder", "status": "completed"},
+            {"id": "persist", "content": "Write project handoff docs", "status": "in_progress"},
+            {"id": "verify", "content": "Run durable continuation tests", "status": "pending"},
+            {"id": "stale", "content": "Repeat completed lifecycle work", "status": "cancelled"},
+        ]
+    )
+
+    result = agent.persist_durable_continuation(
+        project_root=tmp_path,
+        job_name="Explicit persistence slice",
+        current_phase="BLOCKED",
+        completed_tasks=["Lifecycle packet builder accepted"],
+        blockers=["Need explicit safe project root before writing docs"],
+        changed_files=["run_agent.py"],
+        evidence_links=["pytest durable continuation"],
+        verification_completed=["Targeted persistence tests passed"],
+        remaining_verification=["Run git diff checks"],
+        do_not_repeat=["Do not rediscover lifecycle packet builder"],
+        last_updated="2026-06-03",
+    )
+
+    job_ledger_path = tmp_path / "docs" / "Job Ledger.md"
+    next_run_path = tmp_path / "docs" / "NEXT_RUN.md"
+    assert result.job_ledger_path == job_ledger_path
+    assert result.next_run_path == next_run_path
+
+    job_ledger = job_ledger_path.read_text(encoding="utf-8")
+    next_run = next_run_path.read_text(encoding="utf-8")
+
+    assert "Job name: Explicit persistence slice" in job_ledger
+    assert "Current phase: `BLOCKED`" in job_ledger
+    assert "- Lifecycle packet builder accepted" in job_ledger
+    assert "1. persist: Write project handoff docs" in job_ledger
+    assert "2. verify: Run durable continuation tests" in job_ledger
+    assert "- Need explicit safe project root before writing docs" in job_ledger
+    assert "- run_agent.py" in job_ledger
+    assert "- pytest durable continuation" in job_ledger
+    assert "- Targeted persistence tests passed" in job_ledger
+    assert "- Run git diff checks" in job_ledger
+    assert "- Do not rediscover lifecycle packet builder" in job_ledger
+    assert "done: Implement lifecycle packet builder" not in job_ledger
+    assert "stale: Repeat completed lifecycle work" not in job_ledger
+
+    assert "Status: `BLOCKED`" in next_run
+    assert "- persist: Write project handoff docs" in next_run
+    assert "- verify: Run durable continuation tests" in next_run
+    assert "Continue now: Write project handoff docs." in next_run
+
+
+
+def test_aiagent_persist_durable_continuation_requires_explicit_project_root(agent):
+    with pytest.raises(ValueError, match="project_root is required"):
+        agent.persist_durable_continuation(project_root="", job_name="Explicit persistence slice")
+
+
+
+def test_aiagent_persist_durable_continuation_requires_existing_project_root(agent, tmp_path):
+    missing_root = tmp_path / "missing-project"
+
+    with pytest.raises(ValueError, match="project_root must be an existing directory"):
+        agent.persist_durable_continuation(
+            project_root=missing_root,
+            job_name="Explicit persistence slice",
+        )
+
+    assert not missing_root.exists()
+
+
+
+def test_aiagent_persist_durable_continuation_requires_job_name_before_writes(agent, tmp_path):
+    with pytest.raises(ValueError, match="job_name is required"):
+        agent.persist_durable_continuation(project_root=tmp_path, job_name=" ")
+
+    assert not (tmp_path / "docs").exists()
+
+
+
+def test_aiagent_persist_durable_continuation_rejects_docs_dir_outside_project(agent, tmp_path):
+    outside_docs = tmp_path.parent / "outside-docs"
+
+    with pytest.raises(ValueError, match="docs_dir must stay inside project_root"):
+        agent.persist_durable_continuation(
+            project_root=tmp_path,
+            docs_dir=outside_docs,
+            job_name="Explicit persistence slice",
+        )
+
+    assert not outside_docs.exists()
+
+
+
+def test_aiagent_persist_durable_continuation_rejects_relative_docs_traversal(agent, tmp_path):
+    outside_docs = tmp_path.parent / "outside-docs"
+
+    with pytest.raises(ValueError, match="docs_dir must stay inside project_root"):
+        agent.persist_durable_continuation(
+            project_root=tmp_path,
+            docs_dir="../outside-docs",
+            job_name="Explicit persistence slice",
+        )
+
+    assert not outside_docs.exists()
+
+
+
+def test_aiagent_persist_durable_continuation_accepts_custom_relative_docs_dir(agent, tmp_path):
+    result = agent.persist_durable_continuation(
+        project_root=tmp_path,
+        docs_dir="handoffs/current",
+        job_name="Explicit persistence slice",
+    )
+
+    assert result.job_ledger_path == tmp_path / "handoffs" / "current" / "Job Ledger.md"
+    assert result.next_run_path == tmp_path / "handoffs" / "current" / "NEXT_RUN.md"
+
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

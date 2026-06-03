@@ -105,6 +105,58 @@ def _set_process_title() -> None:
         pass
 
 
+# Cheap, dependency-free read of `display.interface` from config.yaml for the
+# earliest hot-path decisions (mouse-residue suppression, Termux fast launch)
+# that run *before* hermes_cli.config is importable. Mirrors the explicit
+# precedence used everywhere else: `--cli` always wins, then `--tui`/env, then
+# this config value. Cached so the multiple early callers don't re-parse YAML.
+_EARLY_INTERFACE_CACHE: "list | None" = None
+
+
+def _config_default_interface_early() -> str:
+    """Return the configured default interface ("cli"/"tui") via a minimal
+    YAML read. Best-effort: any error falls back to "cli" (legacy behavior)."""
+    global _EARLY_INTERFACE_CACHE
+    if _EARLY_INTERFACE_CACHE is not None:
+        return _EARLY_INTERFACE_CACHE[0]
+    value = "cli"
+    try:
+        home = os.environ.get("HERMES_HOME")
+        if home:
+            cfg_path = os.path.join(home, "config.yaml")
+        else:
+            cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
+        if os.path.exists(cfg_path):
+            import yaml as _yaml_iface
+
+            with open(cfg_path, encoding="utf-8") as _f:
+                raw = _yaml_iface.safe_load(_f) or {}
+            disp = raw.get("display", {})
+            if isinstance(disp, dict):
+                iface = disp.get("interface")
+                if isinstance(iface, str) and iface.strip().lower() == "tui":
+                    value = "tui"
+    except Exception:
+        value = "cli"  # best-effort — default to classic REPL on any error
+    _EARLY_INTERFACE_CACHE = [value]
+    return value
+
+
+def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
+    """Earliest TUI decision, usable before argparse/config imports.
+
+    Precedence: explicit ``--cli`` wins (forces classic REPL), then
+    ``--tui``/``HERMES_TUI=1``, then ``display.interface`` in config.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--cli" in argv:
+        return False
+    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+        return True
+    return _config_default_interface_early() == "tui"
+
+
 # Mouse-tracking residue suppression — runs BEFORE every other import on the
 # TUI hot path so the terminal stops emitting SGR/X10 mouse reports while the
 # Python launcher is still doing imports (≈100–300ms in cooked + echo mode,
@@ -116,7 +168,7 @@ def _set_process_title() -> None:
 def _suppress_mouse_residue_early() -> None:
     if os.environ.get("HERMES_TUI_NO_EARLY_DISABLE") == "1":
         return
-    if not (os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]):
+    if not _wants_tui_early():
         return
     try:
         # Skip when stdout is redirected (`hermes --tui … >log`, CI capture):
@@ -1768,9 +1820,34 @@ def _sync_bundled_skills_quietly() -> None:
         pass
 
 
+def _resolve_use_tui(args) -> bool:
+    """Decide whether to launch the TUI for a chat/bare invocation.
+
+    Precedence (highest first):
+      1. ``--cli`` flag         → always classic REPL
+      2. ``--tui`` flag / ``HERMES_TUI=1`` → always TUI
+      3. ``display.interface`` config value ("cli" | "tui")
+      4. default → classic REPL
+
+    Explicit flags always win over config so muscle memory and scripts keep
+    working regardless of the configured default.
+    """
+    if getattr(args, "cli", False):
+        return False
+    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        iface = (load_config().get("display", {}) or {}).get("interface", "cli")
+        return isinstance(iface, str) and iface.strip().lower() == "tui"
+    except Exception:
+        return False
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
+    use_tui = _resolve_use_tui(args)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -11984,7 +12061,10 @@ def _try_termux_fast_cli_launch() -> bool:
     argv = sys.argv[1:]
     if "-h" in argv or "--help" in argv:
         return False
-    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+    # Let the TUI fast path (or full dispatch) handle anything that resolves to
+    # the TUI — explicit --tui/env or display.interface=tui. `--cli` forces this
+    # to stay False so the classic fast path still runs.
+    if _wants_tui_early(argv):
         return False
 
     if _is_termux_fast_version_argv(argv):
@@ -12059,7 +12139,7 @@ def _try_termux_fast_tui_launch() -> bool:
     if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
         return False
 
-    wants_tui = os.environ.get("HERMES_TUI") == "1" or "--tui" in sys.argv[1:]
+    wants_tui = _wants_tui_early(sys.argv[1:])
     if not wants_tui:
         return False
 
@@ -12078,7 +12158,7 @@ def _try_termux_fast_tui_launch() -> bool:
         return False
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
-    if not (getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"):
+    if not _resolve_use_tui(args):
         return False
 
     cmd_chat(args)

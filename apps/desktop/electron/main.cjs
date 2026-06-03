@@ -1510,8 +1510,12 @@ function readJson(filePath) {
 // Marker schema (version 1):
 //   {
 //     schemaVersion: 1,
-//     pinnedCommit: "<40-char SHA>",       // what install.ps1 was driven against
+//     pinnedCommit: "<40-char SHA>" | null, // what install.ps1 was driven against;
+//                                           // may be null for adopted installs
 //     pinnedBranch: "<branch name>" | null,
+//     adopted: <bool>,                      // true when we adopted a pre-existing
+//                                           // install rather than bootstrapping it;
+//                                           // treated as authoritative even sans commit
 //     completedAt:  "<ISO 8601>",
 //     desktopVersion: "<app.getVersion()>"  // for forensics
 //   }
@@ -4052,7 +4056,7 @@ function maybePinToDock() {
   // tile is silently dropped when the Dock rewrites persistent-apps on restart.
   const url = pathToFileURL(bundle.endsWith('/') ? bundle : `${bundle}/`).href
 
-  const done = note => {
+  const done = (note = {}) => {
     try {
       fs.writeFileSync(marker, JSON.stringify({ bundle, pinnedAt: new Date().toISOString(), ...note }) + '\n')
     } catch {

@@ -1994,6 +1994,11 @@ def run_conversation(
                                 if cost_result.status == "included" else None,
                                 model=agent.model,
                                 api_call_count=1,
+                                last_turn_input_tokens=canonical_usage.input_tokens,
+                                last_turn_output_tokens=canonical_usage.output_tokens,
+                                last_turn_cache_read_tokens=canonical_usage.cache_read_tokens,
+                                last_turn_cache_write_tokens=canonical_usage.cache_write_tokens,
+                                last_turn_reasoning_tokens=canonical_usage.reasoning_tokens,
                             )
                         except Exception as e:
                             # Log token persistence failures so they're

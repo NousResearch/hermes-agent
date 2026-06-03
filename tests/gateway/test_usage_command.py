@@ -212,6 +212,7 @@ class TestUsageAccountSection:
     async def test_usage_command_uses_persisted_provider_when_agent_not_running(self, monkeypatch):
         runner = _make_runner(SK)
         runner._session_db = MagicMock()
+        runner._session_db.get_last_turn_usage.return_value = None
         runner._session_db.get_session.return_value = {
             "billing_provider": "openai-codex",
             "billing_base_url": "https://chatgpt.com/backend-api/codex",
@@ -250,3 +251,71 @@ class TestUsageAccountSection:
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
+
+
+class TestUsageLastTurnSnapshot:
+    """Between-turn /usage reads the persisted last-turn snapshot (eviction-safe).
+
+    When the agent has been evicted (no running/cached agent) but the sessions
+    row holds a last_turn_* snapshot, /usage should surface real last-turn token
+    numbers instead of falling through to only a rough history estimate.
+    """
+
+    @pytest.mark.asyncio
+    async def test_last_turn_snapshot_shown_when_no_agent(self):
+        runner = _make_runner(SK)
+        runner._session_db = MagicMock()
+        runner._session_db.get_session.return_value = {
+            "billing_provider": None,
+            "model": "anthropic/claude-opus-4-8",
+            "input_tokens": 350_000,
+            "output_tokens": 40_000,
+            "total_tokens": 390_000,
+            "api_call_count": 7,
+        }
+        runner._session_db.get_last_turn_usage.return_value = {
+            "input_tokens": 120_000,
+            "output_tokens": 8_000,
+            "cache_read_tokens": 110_000,
+            "cache_write_tokens": 2_000,
+            "reasoning_tokens": 1_500,
+        }
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-evicted"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "reply"},
+        ]
+
+        event = MagicMock()
+        with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=500):
+            result = await runner._handle_usage_command(event)
+
+        # Real last-turn numbers must appear (not just the rough ~500 estimate).
+        assert "120,000" in result   # last-turn input
+        assert "8,000" in result     # last-turn output
+        assert "110,000" in result   # last-turn cache read
+        assert "Last turn" in result or "last turn" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_snapshot_still_falls_to_history(self):
+        """When there is no persisted snapshot, behavior is unchanged."""
+        runner = _make_runner(SK)
+        runner._session_db = MagicMock()
+        runner._session_db.get_session.return_value = {"billing_provider": None}
+        runner._session_db.get_last_turn_usage.return_value = None
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-nosnap"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "hello"},
+        ]
+
+        event = MagicMock()
+        with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=500):
+            result = await runner._handle_usage_command(event)
+
+        assert "Session Info" in result
+        assert "~500" in result
+

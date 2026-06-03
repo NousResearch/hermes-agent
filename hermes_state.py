@@ -250,6 +250,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_write_tokens INTEGER DEFAULT 0,
     reasoning_tokens INTEGER DEFAULT 0,
     cwd TEXT,
+    last_turn_input_tokens INTEGER,
+    last_turn_output_tokens INTEGER,
+    last_turn_cache_read_tokens INTEGER,
+    last_turn_cache_write_tokens INTEGER,
+    last_turn_reasoning_tokens INTEGER,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -1195,6 +1200,11 @@ class SessionDB:
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
+        last_turn_input_tokens: Optional[int] = None,
+        last_turn_output_tokens: Optional[int] = None,
+        last_turn_cache_read_tokens: Optional[int] = None,
+        last_turn_cache_write_tokens: Optional[int] = None,
+        last_turn_reasoning_tokens: Optional[int] = None,
     ) -> None:
         """Update token counters and backfill model if not already set.
 
@@ -1217,6 +1227,11 @@ class SessionDB:
                    cache_read_tokens = ?,
                    cache_write_tokens = ?,
                    reasoning_tokens = ?,
+                   last_turn_input_tokens = COALESCE(?, last_turn_input_tokens),
+                   last_turn_output_tokens = COALESCE(?, last_turn_output_tokens),
+                   last_turn_cache_read_tokens = COALESCE(?, last_turn_cache_read_tokens),
+                   last_turn_cache_write_tokens = COALESCE(?, last_turn_cache_write_tokens),
+                   last_turn_reasoning_tokens = COALESCE(?, last_turn_reasoning_tokens),
                    estimated_cost_usd = COALESCE(?, 0),
                    actual_cost_usd = CASE
                        WHEN ? IS NULL THEN actual_cost_usd
@@ -1238,6 +1253,11 @@ class SessionDB:
                    cache_read_tokens = cache_read_tokens + ?,
                    cache_write_tokens = cache_write_tokens + ?,
                    reasoning_tokens = reasoning_tokens + ?,
+                   last_turn_input_tokens = COALESCE(?, last_turn_input_tokens),
+                   last_turn_output_tokens = COALESCE(?, last_turn_output_tokens),
+                   last_turn_cache_read_tokens = COALESCE(?, last_turn_cache_read_tokens),
+                   last_turn_cache_write_tokens = COALESCE(?, last_turn_cache_write_tokens),
+                   last_turn_reasoning_tokens = COALESCE(?, last_turn_reasoning_tokens),
                    estimated_cost_usd = COALESCE(estimated_cost_usd, 0) + COALESCE(?, 0),
                    actual_cost_usd = CASE
                        WHEN ? IS NULL THEN actual_cost_usd
@@ -1258,6 +1278,11 @@ class SessionDB:
             cache_read_tokens,
             cache_write_tokens,
             reasoning_tokens,
+            last_turn_input_tokens,
+            last_turn_output_tokens,
+            last_turn_cache_read_tokens,
+            last_turn_cache_write_tokens,
+            last_turn_reasoning_tokens,
             estimated_cost_usd,
             actual_cost_usd,
             actual_cost_usd,
@@ -1274,6 +1299,36 @@ class SessionDB:
         def _do(conn):
             conn.execute(sql, params)
         self._execute_write(_do)
+
+    def get_last_turn_usage(self, session_id: str) -> Optional[Dict[str, int]]:
+        """Return the most recent turn's token split for a session, or None.
+
+        The per-turn snapshot is persisted to the sessions row by
+        update_token_counts(), so it survives idle-sweep eviction of the
+        in-memory AIAgent instance (unlike agent.last_turn_usage). Returns
+        None if the session is unknown or no turn has been recorded yet.
+        """
+        def _do(conn):
+            row = conn.execute(
+                """SELECT last_turn_input_tokens, last_turn_output_tokens,
+                          last_turn_cache_read_tokens, last_turn_cache_write_tokens,
+                          last_turn_reasoning_tokens
+                   FROM sessions WHERE id = ?""",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            vals = tuple(row)
+            # No turn recorded yet (all snapshot columns still NULL).
+            if all(v is None for v in vals):
+                return None
+            keys = (
+                "input_tokens", "output_tokens", "cache_read_tokens",
+                "cache_write_tokens", "reasoning_tokens",
+            )
+            return {k: (v or 0) for k, v in zip(keys, vals)}
+        with self._lock:
+            return _do(self._conn)
 
     def ensure_session(
         self,

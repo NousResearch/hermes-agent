@@ -14176,6 +14176,47 @@ class GatewayRunner:
 
         # No agent at all -- check session history for a rough count
         session_entry = self.session_store.get_or_create_session(source)
+
+        # Eviction-safe last-turn snapshot: even with no resident agent, the
+        # sessions row persists the last turn's token split (see
+        # SessionDB.update_token_counts / get_last_turn_usage). Surface it so
+        # /usage shows real last-turn numbers between turns instead of only a
+        # rough transcript estimate.
+        last_turn_lines: list[str] = []
+        if getattr(self, "_session_db", None) is not None:
+            try:
+                snap = self._session_db.get_last_turn_usage(session_entry.session_id)
+            except Exception:
+                snap = None
+            if snap:
+                def _as_int(v):
+                    try:
+                        return int(v or 0)
+                    except (TypeError, ValueError):
+                        return 0
+                lt_in = _as_int(snap.get("input_tokens"))
+                lt_out = _as_int(snap.get("output_tokens"))
+                lt_cr = _as_int(snap.get("cache_read_tokens"))
+                lt_cw = _as_int(snap.get("cache_write_tokens"))
+                lt_rsn = _as_int(snap.get("reasoning_tokens"))
+                last_turn_lines.append("📊 **Last turn** (persisted; agent not resident)")
+                last_turn_lines.append(
+                    t("gateway.usage.label_input_tokens", count=f"{lt_in:,}")
+                )
+                if lt_cr:
+                    last_turn_lines.append(
+                        t("gateway.usage.label_cache_read", count=f"{lt_cr:,}")
+                    )
+                if lt_cw:
+                    last_turn_lines.append(
+                        t("gateway.usage.label_cache_write", count=f"{lt_cw:,}")
+                    )
+                last_turn_lines.append(
+                    t("gateway.usage.label_output_tokens", count=f"{lt_out:,}")
+                )
+                if lt_rsn:
+                    last_turn_lines.append(f"Reasoning tokens: {lt_rsn:,}")
+
         history = self.session_store.load_transcript(session_entry.session_id)
         if history:
             from agent.model_metadata import estimate_messages_tokens_rough
@@ -14187,10 +14228,18 @@ class GatewayRunner:
                 t("gateway.usage.label_estimated_context", count=f"{approx:,}"),
                 t("gateway.usage.detailed_after_first"),
             ]
+            if last_turn_lines:
+                lines.append("")
+                lines.extend(last_turn_lines)
             if account_lines:
                 lines.append("")
                 lines.extend(account_lines)
             return "\n".join(lines)
+        if last_turn_lines:
+            if account_lines:
+                last_turn_lines.append("")
+                last_turn_lines.extend(account_lines)
+            return "\n".join(last_turn_lines)
         if account_lines:
             return "\n".join(account_lines)
         return t("gateway.usage.no_data")

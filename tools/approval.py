@@ -19,6 +19,7 @@ import unicodedata
 from typing import Optional
 from hermes_cli.config import cfg_get
 
+from tools.interrupt import is_interrupted
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -1234,6 +1235,17 @@ def check_all_command_guards(command: str, env_type: str,
             _activity_state = {"last_touch": _now, "start": _now}
             resolved = False
             while True:
+                # Respect interrupt signals (e.g. /stop from user) so the
+                # approval wait doesn't keep the session blocked until timeout.
+                if is_interrupted():
+                    logger.info(
+                        "Approval wait interrupted by user signal — "
+                        "returning deny for session %s", session_key
+                    )
+                    entry.result = "deny"
+                    entry.event.set()
+                    resolved = True
+                    break
                 _remaining = _deadline - time.monotonic()
                 if _remaining <= 0:
                     break

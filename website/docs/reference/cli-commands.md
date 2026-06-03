@@ -29,7 +29,8 @@ hermes [global-options] <command> [subcommand/options]
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. |
-| `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. |
+| `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. Always wins over `display.interface`. |
+| `--cli` | Force the classic prompt_toolkit REPL. Use this to override `display.interface: tui` for a single invocation. |
 | `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
 
 ## Top-level commands
@@ -834,6 +835,8 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `agent` (default) | `agent.log` | All agent activity — API calls, tool dispatch, session lifecycle (INFO and above) |
 | `errors` | `errors.log` | Warnings and errors only — a filtered subset of agent.log |
 | `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
+| `gui` | `gui.log` | Dashboard / TUI-gateway / PTY-bridge / websocket events |
+| `desktop` | `desktop.log` | Electron desktop app — boot, backend spawn output, and recent Python tracebacks |
 
 ### Options
 

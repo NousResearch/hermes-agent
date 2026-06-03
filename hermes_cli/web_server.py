@@ -1165,6 +1165,72 @@ async def update_hermes():
     }
 
 
+@app.get("/api/hermes/update/check")
+async def check_hermes_update(force: bool = False):
+    """Report whether a Hermes update is available, without applying it.
+
+    Powers the dashboard's "check before you update" flow: the System page
+    shows the commit-behind count and asks the user to confirm before
+    ``POST /api/hermes/update`` actually runs ``hermes update``.
+
+    Returns:
+        install_method: 'git' | 'pip' | 'docker' | 'nixos' | 'homebrew' | ...
+        current_version: installed Hermes version string
+        behind: commits behind upstream (>=1), 0 if up to date,
+                -1 if behind by an unknown count (nix/pypi), or null if the
+                check could not run (offline, no remote, etc.)
+        update_available: convenience bool (behind is non-zero and not null)
+        can_apply: True when the dashboard's update button can apply it
+                   in place (git/pip); False for docker/nix/homebrew where the
+                   user must update out-of-band
+        update_command: the recommended command for this install method
+        message: human-readable guidance for non-applyable methods
+    """
+    install_method = detect_install_method(PROJECT_ROOT)
+    update_command = recommended_update_command_for_method(install_method)
+
+    payload: Dict[str, Any] = {
+        "install_method": install_method,
+        "current_version": __version__,
+        "behind": None,
+        "update_available": False,
+        "can_apply": install_method in ("git", "pip"),
+        "update_command": update_command,
+        "message": None,
+    }
+
+    if install_method == "docker":
+        payload["message"] = format_docker_update_message()
+        return payload
+
+    # banner.check_for_updates() handles git / pypi / nix-revision paths and
+    # caches the result for 6h. ``force`` busts the cache so the "Check now"
+    # button reflects reality immediately.
+    try:
+        from hermes_cli.banner import check_for_updates
+
+        if force:
+            try:
+                (get_hermes_home() / ".update_check").unlink()
+            except OSError:
+                pass
+
+        behind = await asyncio.to_thread(check_for_updates)
+    except Exception:
+        _log.exception("Update check failed")
+        behind = None
+
+    payload["behind"] = behind
+    if behind is None:
+        payload["message"] = "Couldn't reach the update source — try again later."
+    elif behind == 0:
+        payload["message"] = "You're on the latest version."
+    else:
+        payload["update_available"] = True
+
+    return payload
+
+
 @app.post("/api/audio/transcribe")
 async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     data_url = (payload.data_url or "").strip()
@@ -1665,7 +1731,9 @@ def get_model_options():
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        return build_models_payload(load_picker_context(), max_models=50, pricing=True)
+        return build_models_payload(
+            load_picker_context(), max_models=50, pricing=True, capabilities=True
+        )
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
@@ -6603,13 +6671,26 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
 
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
-        # Packaged Electron loads the desktop renderer over file://, so its
-        # WebSocket handshake carries a non-web Origin such as file:// or null.
-        # DNS-rebinding attacks originate from an http(s) site; they cannot
-        # forge a file:// origin and still hold the loopback session token.
-        # Public/gated binds have no legitimate non-web client, so keep
-        # rejecting these origins there.
-        return bound_host.lower() in _LOOPBACK_HOST_VALUES
+        # Packaged Electron loads the desktop renderer over a non-web origin
+        # such as file://, null, or a custom app:// scheme. This helper is
+        # called only AFTER _ws_auth_ok has already accepted the WS credential,
+        # which is the real auth boundary in every mode:
+        #   * loopback bind          → legacy dashboard session token
+        #   * non-loopback --insecure → legacy session token (Tailscale / LAN)
+        #   * OAuth-gated public bind → single-use, 30s-TTL, identity-bound
+        #     ?ticket= minted at the cookie-authed POST /api/auth/ws-ticket
+        # A non-web origin can only be produced by a native client (the desktop
+        # shell); a DNS-rebinding attack always arrives from an http(s) origin
+        # and is still match-checked against the bound host below. So once the
+        # credential check upstream has passed, the Origin guard adds nothing
+        # for a non-web origin — trust it in every mode.
+        #
+        # (Earlier revisions restricted this to loopback, then to non-gated
+        # binds; both excluded the packaged desktop talking to a remote
+        # OAuth-gated gateway, whose file:// renderer origin then got rejected
+        # at the WS upgrade even with a valid ticket. The ticket is the gate,
+        # not the origin.)
+        return True
 
     if not parsed.netloc:
         return False
@@ -6628,10 +6709,21 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
     parameter, constant-time compared.
 
-    Gated (public bind, no ``--insecure``): ``?ticket=<single-use>`` query
-    parameter consumed against the dashboard-auth ticket store. The legacy
-    token path is unconditionally rejected in this mode (the SPA bundle
-    isn't carrying the token any longer).
+    Gated (public bind, no ``--insecure``): one of two credentials —
+
+    * ``?ticket=<single-use>`` — a browser-minted, single-use, 30s-TTL ticket
+      consumed against the dashboard-auth ticket store. This is what the SPA
+      (and native clients) use.
+    * ``?internal=<process-credential>`` — the process-lifetime internal
+      credential, used only by WS clients the server spawns itself (the
+      embedded-TUI PTY child attaching to ``/api/ws`` and ``/api/pub``). It
+      is multi-use and never expires so the child can reconnect, and is never
+      injected into the SPA — see ``dashboard_auth.ws_tickets`` for the
+      threat model.
+
+    The legacy ``?token=`` path is unconditionally rejected in gated mode
+    (the SPA bundle isn't carrying the token any longer, and a leaked
+    ``_SESSION_TOKEN`` must not grant WS access once the gate is engaged).
 
     Returns True if the WS should be accepted; callers close with the
     appropriate WS code (4401) on False. Audit-logs the rejection so
@@ -6639,16 +6731,35 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     """
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
-        ticket = ws.query_params.get("ticket", "")
-        if not ticket:
-            return False
         # Lazy import — keeps this function importable in test harnesses
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
         from hermes_cli.dashboard_auth.ws_tickets import (
             TicketInvalid,
+            consume_internal_credential,
             consume_ticket,
         )
+
+        # Server-spawned children (PTY child → /api/ws, /api/pub) present the
+        # multi-use internal credential rather than a single-use ticket, so
+        # they survive reconnects and slow cold boots.
+        internal = ws.query_params.get("internal", "")
+        if internal:
+            try:
+                consume_internal_credential(internal)
+                return True
+            except TicketInvalid as exc:
+                audit_log(
+                    AuditEvent.WS_TICKET_REJECTED,
+                    reason=f"internal: {exc}",
+                    ip=(ws.client.host if ws.client else ""),
+                    path=ws.url.path,
+                )
+                return False
+
+        ticket = ws.query_params.get("ticket", "")
+        if not ticket:
+            return False
 
         try:
             consume_ticket(ticket)
@@ -6725,7 +6836,16 @@ def _resolve_chat_argv(
 
 
 def _build_gateway_ws_url() -> Optional[str]:
-    """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic."""
+    """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
+
+    Loopback / ``--insecure``: ``?token=<_SESSION_TOKEN>``.
+
+    Gated mode: the legacy token path is rejected by ``_ws_auth_ok``, so the
+    server-spawned PTY child authenticates with the process-lifetime internal
+    credential (``?internal=``). It must NOT use a single-use browser ticket:
+    the child reads this URL once at startup and reuses it on every reconnect,
+    and a 30s-TTL ticket can expire before a slow cold boot even dials.
+    """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
 
@@ -6737,7 +6857,13 @@ def _build_gateway_ws_url() -> Optional[str]:
         if ":" in host and not host.startswith("[")
         else f"{host}:{port}"
     )
-    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
+
+    if getattr(app.state, "auth_required", False):
+        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
+
+        qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
+    else:
+        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
 
     return f"ws://{netloc}/api/ws?{qs}"
 
@@ -6747,16 +6873,14 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
     Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
 
-    Gated mode: mints a single-use ticket via the dashboard-auth ticket
-    store (server-side mint, no HTTP round trip — the PTY child is a
-    server-spawned process and we trust it). The ticket binds to the
-    pseudo-user ``"pty-sidecar"`` so audit logs can distinguish these from
-    browser-initiated tickets.
-
-    The single-use lifetime means the PTY child cannot reconnect without a
-    new sidecar URL. PTY children open ``/api/pub`` once at startup; if
-    reconnect semantics ever become important, this should be upgraded to
-    a long-lived process-scoped token.
+    Gated mode: authenticates with the process-lifetime internal credential
+    (``?internal=``), the same one ``_build_gateway_ws_url`` uses. The PTY
+    child is a server-spawned process we trust; the credential is multi-use
+    and never expires, so the child can reconnect ``/api/pub`` without a new
+    URL. (This previously minted a single-use 30s ticket, which meant the
+    child could not reconnect and could miss the window on a slow cold boot.)
+    Connections authenticated this way are recorded under the
+    ``server-internal`` identity in the audit log.
     """
     host = getattr(app.state, "bound_host", None)
     port = getattr(app.state, "bound_port", None)
@@ -6767,11 +6891,13 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
 
     if getattr(app.state, "auth_required", False):
-        # Gated mode — mint a ticket so the WS upgrade survives _ws_auth_ok.
-        from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+        # Gated mode — use the internal credential so the WS upgrade survives
+        # _ws_auth_ok and the child can reconnect.
+        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        ticket = mint_ticket(user_id="pty-sidecar", provider="server-internal")
-        qs = urllib.parse.urlencode({"ticket": ticket, "channel": channel})
+        qs = urllib.parse.urlencode(
+            {"internal": internal_ws_credential(), "channel": channel}
+        )
     else:
         qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 

@@ -26,6 +26,7 @@ export interface StatusbarItem {
   disabled?: boolean
   hidden?: boolean
   href?: string
+  menuAlign?: 'center' | 'end' | 'start'
   menuClassName?: string
   menuContent?: ReactNode
   menuItems?: readonly StatusbarMenuItem[]
@@ -104,7 +105,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          align="start"
+          align={item.menuAlign ?? 'start'}
           className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
           side="top"
           sideOffset={8}

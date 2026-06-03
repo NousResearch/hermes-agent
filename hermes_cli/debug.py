@@ -191,10 +191,10 @@ _PRIVACY_NOTICE = """\
 ⚠️  This will upload the following to a public paste service:
   • System info (OS, Python version, Hermes version, provider, which API keys
     are configured — NOT the actual keys)
-  • Recent log lines (agent.log, errors.log, gateway.log — may contain
-    conversation fragments and file paths)
-  • Full agent.log and gateway.log (up to 512 KB each — likely contains
-    conversation content, tool outputs, and file paths)
+  • Recent log lines (agent.log, errors.log, gateway.log, desktop.log — may
+    contain conversation fragments and file paths)
+  • Full agent.log, gateway.log, and desktop.log (up to 512 KB each — likely
+    contains conversation content, tool outputs, and file paths)
 
 Pastes auto-delete after 6 hours.
 """
@@ -503,6 +503,9 @@ def _capture_default_log_snapshots(
         "gateway": _capture_log_snapshot(
             "gateway", tail_lines=errors_lines, redact=redact
         ),
+        "desktop": _capture_log_snapshot(
+            "desktop", tail_lines=errors_lines, redact=redact
+        ),
     }
 
 
@@ -569,6 +572,10 @@ def collect_debug_report(
 
     buf.write(f"--- gateway.log (last {errors_lines} lines) ---\n")
     buf.write(log_snapshots["gateway"].tail_text)
+    buf.write("\n\n")
+
+    buf.write(f"--- desktop.log (last {errors_lines} lines) ---\n")
+    buf.write(log_snapshots["desktop"].tail_text)
     buf.write("\n")
 
     return buf.getvalue()
@@ -611,12 +618,15 @@ def run_debug_share(args):
     )
     agent_log = log_snapshots["agent"].full_text
     gateway_log = log_snapshots["gateway"].full_text
+    desktop_log = log_snapshots["desktop"].full_text
 
     # Prepend dump header to each full log so every paste is self-contained.
     if agent_log:
         agent_log = dump_text + "\n\n--- full agent.log ---\n" + agent_log
     if gateway_log:
         gateway_log = dump_text + "\n\n--- full gateway.log ---\n" + gateway_log
+    if desktop_log:
+        desktop_log = dump_text + "\n\n--- full desktop.log ---\n" + desktop_log
 
     # Visible banner so reviewers reading the public paste know redaction
     # was applied at upload time. Banner is omitted under --no-redact.
@@ -626,6 +636,8 @@ def run_debug_share(args):
             agent_log = _REDACTION_BANNER + agent_log
         if gateway_log:
             gateway_log = _REDACTION_BANNER + gateway_log
+        if desktop_log:
+            desktop_log = _REDACTION_BANNER + desktop_log
 
     if local_only:
         print(report)
@@ -639,6 +651,11 @@ def run_debug_share(args):
             print("FULL gateway.log")
             print(f"{'=' * 60}\n")
             print(gateway_log)
+        if desktop_log:
+            print(f"\n\n{'=' * 60}")
+            print("FULL desktop.log")
+            print(f"{'=' * 60}\n")
+            print(desktop_log)
         return
 
     print("Uploading...")
@@ -667,6 +684,13 @@ def run_debug_share(args):
             urls["gateway.log"] = upload_to_pastebin(gateway_log, expiry_days=expiry)
         except Exception as exc:
             failures.append(f"gateway.log: {exc}")
+
+    # 4. Full desktop.log (optional — Electron app boot + backend output)
+    if desktop_log:
+        try:
+            urls["desktop.log"] = upload_to_pastebin(desktop_log, expiry_days=expiry)
+        except Exception as exc:
+            failures.append(f"desktop.log: {exc}")
 
     # Print results
     label_width = max(len(k) for k in urls)

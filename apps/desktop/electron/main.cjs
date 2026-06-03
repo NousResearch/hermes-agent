@@ -23,7 +23,7 @@ const net = require('node:net')
 const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
-const { isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
+const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const {
@@ -73,6 +73,26 @@ const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
 const APP_ROOT = app.getAppPath()
+
+// Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
+// compositor flicker — accelerated layers can't be presented cleanly over the
+// wire, so the window flashes during scroll/streaming/animation. Local
+// Windows/macOS (and WSLg, which renders locally via vGPU) composite on the
+// GPU and never see it. Fall back to software rendering when a remote display
+// is detected; it's rock-steady over the wire and the CPU cost is negligible
+// next to the connection's latency. Must run before app `ready` — these
+// switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
+// (1/true → always disable, 0/false → keep GPU on).
+const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
+if (REMOTE_DISPLAY_REASON) {
+  app.disableHardwareAcceleration()
+  // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
+  // with only --disable-gpu: force compositing onto the CPU too.
+  app.commandLine.appendSwitch('disable-gpu-compositing')
+  console.log(
+    `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
+  )
+}
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
 // Build-time install stamp -- the git ref this .exe was built against.
@@ -1390,6 +1410,18 @@ async function applyUpdatesPosixInApp(opts = {}) {
   const env = {
     HERMES_HOME,
     PATH: [extraPath, process.env.PATH].filter(Boolean).join(path.delimiter)
+  }
+
+  // `hermes update` reaps stale `hermes dashboard` backends (a code update
+  // leaves the running process serving old Python against the freshly-updated
+  // JS bundle). But OUR backend is one of those processes, and killing it
+  // mid-update produces the boot→kill→crash loop in #37532 — the desktop
+  // already restarts its own backend via the rebuild+relaunch below, so the
+  // reap must spare it. Hand the live backend's PID to the update process;
+  // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
+  // it while still reaping any genuinely-orphaned dashboards. (#37532)
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
+    env.HERMES_DESKTOP_CHILD_PID = String(hermesProcess.pid)
   }
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and self-heal
@@ -2731,9 +2763,31 @@ function buildApplicationMenu() {
       { role: 'forceReload' },
       { role: 'toggleDevTools' },
       { type: 'separator' },
-      { role: 'resetZoom' },
-      { role: 'zoomIn' },
-      { role: 'zoomOut' },
+      {
+        label: 'Actual Size',
+        accelerator: 'CommandOrControl+0',
+        click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0) }
+      },
+      {
+        label: 'Zoom In',
+        accelerator: 'CommandOrControl+Plus',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            const next = Math.min(mainWindow.webContents.getZoomLevel() + 0.1, 9)
+            mainWindow.webContents.setZoomLevel(next)
+          }
+        }
+      },
+      {
+        label: 'Zoom Out',
+        accelerator: 'CommandOrControl+-',
+        click: () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            const next = Math.max(mainWindow.webContents.getZoomLevel() - 0.1, -9)
+            mainWindow.webContents.setZoomLevel(next)
+          }
+        }
+      },
       { type: 'separator' },
       { role: 'togglefullscreen' }
     ]
@@ -2789,6 +2843,32 @@ function installPreviewShortcut(window) {
 
     event.preventDefault()
     sendClosePreviewRequested()
+  })
+}
+
+function installZoomShortcuts(window) {
+  // Override Ctrl/Cmd + +/-/0 with half the default zoom step (0.1 vs 0.2).
+  // The menu items handle this on macOS (where the menu is always present),
+  // but on Linux/Windows the menu is null and Chromium's default handler
+  // would use the full 0.2 step, so we intercept here for consistency.
+  const ZOOM_STEP = 0.1
+  window.webContents.on('before-input-event', (event, input) => {
+    const mod = IS_MAC ? input.meta : input.control
+    if (!mod || input.alt || input.shift) return
+
+    const key = input.key
+    if (key === '0') {
+      event.preventDefault()
+      window.webContents.setZoomLevel(0)
+    } else if (key === '=' || key === '+') {
+      event.preventDefault()
+      const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
+      window.webContents.setZoomLevel(next)
+    } else if (key === '-') {
+      event.preventDefault()
+      const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
+      window.webContents.setZoomLevel(next)
+    }
   })
 }
 
@@ -3378,6 +3458,7 @@ function createWindow() {
 
   installPreviewShortcut(mainWindow)
   installDevToolsShortcut(mainWindow)
+  installZoomShortcuts(mainWindow)
   installContextMenu(mainWindow)
   mainWindow.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)

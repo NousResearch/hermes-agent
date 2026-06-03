@@ -31,6 +31,7 @@ import {
   enqueueQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
+  shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $messages } from '@/store/session'
@@ -124,6 +125,12 @@ export function ChatBar({
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
+  // Set when the user explicitly interrupts the running turn via the Stop
+  // button (busy + empty composer). It suppresses the next busy→false
+  // auto-drain so an explicit Stop actually halts instead of immediately
+  // firing the head of the queue. The queue is preserved; the user resumes
+  // it deliberately via Cmd/Ctrl+K, Enter, or the per-row "send now" arrow.
+  const userInterruptedRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
@@ -414,6 +421,14 @@ export function ChatBar({
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  // Set synchronously in keydown when the open trigger popover consumes a
+  // navigation/control key (Arrow/Enter/Tab/Escape). The subsequent keyup must
+  // NOT run refreshTrigger for that keypress: it never edits text, and for
+  // Escape the keydown has already set trigger=null, so a keyup refresh would
+  // re-detect the still-present `/` and instantly reopen the menu. A ref is
+  // used instead of reading `trigger` in keyup because by keyup time React has
+  // re-rendered and the handler closure sees the post-keydown state.
+  const triggerKeyConsumedRef = useRef(false)
 
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current
@@ -442,7 +457,14 @@ export function ChatBar({
     const detected = detectTrigger(before ?? composerPlainText(editor))
 
     setTrigger(detected)
-    setTriggerActive(0)
+
+    // Only reset the highlight when the trigger actually changed (opened, or
+    // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
+    // caret move (mouseup) or a stray refresh — must preserve the user's
+    // current selection instead of snapping back to the first item.
+    if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
+      setTriggerActive(0)
+    }
   }, [trigger])
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
@@ -558,6 +580,7 @@ export function ChatBar({
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx + 1) % triggerItems.length)
 
         return
@@ -565,6 +588,7 @@ export function ChatBar({
 
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
 
         return
@@ -572,6 +596,7 @@ export function ChatBar({
 
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
 
         if (item) {
@@ -583,6 +608,7 @@ export function ChatBar({
 
       if (event.key === 'Escape') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         closeTrigger()
 
         return
@@ -603,6 +629,18 @@ export function ChatBar({
   }
 
   const handleEditorKeyUp = () => {
+    // If this keyup belongs to a key the open trigger popover already consumed
+    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
+    // edit text, and for Escape the keydown already closed the menu — a refresh
+    // here would re-detect the still-present `/` and instantly reopen it. We
+    // read a ref set during keydown rather than `trigger`, because by keyup
+    // time React has re-rendered and `trigger` may already be null.
+    if (triggerKeyConsumedRef.current) {
+      triggerKeyConsumedRef.current = false
+
+      return
+    }
+
     window.setTimeout(refreshTrigger, 0)
   }
 
@@ -844,26 +882,42 @@ export function ChatBar({
     [queueEdit, runDrain]
   )
 
-  const interruptAndSendNextQueued = useCallback(async () => {
-    if (queuedPrompts.length === 0) {
-      return false
-    }
-
-    await Promise.resolve(onCancel())
-
-    return drainNextQueued()
-  }, [drainNextQueued, onCancel, queuedPrompts.length])
-
-  // Auto-drain on busy → false (turn settled).
+  // Auto-drain on busy → false (turn settled). An explicit user interrupt
+  // (Stop button) sets userInterruptedRef so we skip exactly one auto-drain:
+  // the user asked to halt, so we must not immediately re-send the queue.
+  // The queued turns stay intact and the user resumes them on demand.
   useEffect(() => {
     const wasBusy = previousBusyRef.current
     previousBusyRef.current = busy
 
-    if (busy || !wasBusy || queuedPrompts.length === 0) {
+    // Clear the interrupt latch when a new turn starts (false → true). This
+    // guards the sub-frame race where a Stop click lands after busy already
+    // flipped false (button not yet unmounted): the stale latch can no longer
+    // survive into the next turn and wrongly suppress its natural auto-drain.
+    if (busy && !wasBusy) {
+      userInterruptedRef.current = false
+
       return
     }
 
-    void drainNextQueued()
+    const interrupted = userInterruptedRef.current
+
+    // Consume the interrupt latch on any settle so a later natural completion
+    // is not wrongly suppressed.
+    if (!busy && wasBusy && interrupted) {
+      userInterruptedRef.current = false
+    }
+
+    if (
+      shouldAutoDrainOnSettle({
+        isBusy: busy,
+        queueLength: queuedPrompts.length,
+        userInterrupted: interrupted,
+        wasBusy
+      })
+    ) {
+      void drainNextQueued()
+    }
   }, [busy, drainNextQueued, queuedPrompts.length])
 
   // Clean up queue edit when its target disappears (session swap or external delete).
@@ -886,9 +940,13 @@ export function ChatBar({
     } else if (busy) {
       if (hasComposerPayload) {
         queueCurrentDraft()
-      } else if (queuedPrompts.length > 0) {
-        void interruptAndSendNextQueued()
       } else {
+        // Stop button: an explicit interrupt must actually halt the running
+        // turn. Mark the interrupt so the busy→false auto-drain effect skips
+        // re-sending the queue — otherwise a queued follow-up would fire the
+        // instant we cancel and Stop would appear to "never work". Queued
+        // turns are preserved; the user sends them on demand.
+        userInterruptedRef.current = true
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }

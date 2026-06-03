@@ -148,6 +148,7 @@ def test_run_conversation_codex_responses_websocket_multi_turn_e2e(monkeypatch):
         skip_memory=True,
         load_soul_identity=False,
         session_id="codex-responses-ws-e2e",
+        thread_id="codex-responses-ws-thread-e2e",
         reasoning_config={"enabled": False},
         max_tokens=80,
     )
@@ -206,6 +207,12 @@ def test_run_conversation_codex_responses_websocket_multi_turn_e2e(monkeypatch):
     connection = connections[0]
     assert connection["uri"] == "wss://sub2api.tegical.com/responses"
     assert connection["headers"].get("Authorization") == "Bearer sk-test"
+    assert connection["headers"].get("session-id") == "codex-responses-ws-e2e"
+    assert connection["headers"].get("thread-id") == "codex-responses-ws-thread-e2e"
+    assert (
+        connection["headers"].get("x-client-request-id")
+        == "codex-responses-ws-thread-e2e"
+    )
 
     sends = connection["sends"]
     assert len(sends) == 3

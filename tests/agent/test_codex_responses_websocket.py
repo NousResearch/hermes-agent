@@ -76,6 +76,96 @@ def test_codex_websocket_headers_append_responses_websockets_beta():
     assert beta_values == {"assistants=v2", "responses_websockets=2026-02-06"}
 
 
+def test_codex_websocket_headers_include_codex_session_affinity_headers():
+    agent = SimpleNamespace(
+        api_key="sk-test",
+        session_id="hermes-session-123",
+        _thread_id="hermes-thread-456",
+    )
+
+    headers = codex_runtime._codex_websocket_headers(agent, {})
+
+    assert headers["session-id"] == "hermes-session-123"
+    assert headers["thread-id"] == "hermes-thread-456"
+    assert headers["x-client-request-id"] == "hermes-thread-456"
+
+
+def test_codex_websocket_headers_fall_back_to_session_id_for_thread_id():
+    agent = SimpleNamespace(
+        api_key="sk-test",
+        session_id="hermes-session-123",
+        _thread_id="",
+    )
+
+    headers = codex_runtime._codex_websocket_headers(agent, {})
+
+    assert headers["session-id"] == "hermes-session-123"
+    assert headers["thread-id"] == "hermes-session-123"
+    assert headers["x-client-request-id"] == "hermes-session-123"
+
+
+def test_codex_websocket_headers_fall_back_to_session_id_when_thread_id_missing():
+    agent = SimpleNamespace(
+        api_key="sk-test",
+        session_id="hermes-session-123",
+    )
+
+    headers = codex_runtime._codex_websocket_headers(agent, {})
+
+    assert headers["session-id"] == "hermes-session-123"
+    assert headers["thread-id"] == "hermes-session-123"
+    assert headers["x-client-request-id"] == "hermes-session-123"
+
+
+def test_codex_websocket_headers_preserve_explicit_session_affinity_headers():
+    agent = SimpleNamespace(
+        api_key="sk-test",
+        session_id="derived-session",
+        _thread_id="derived-thread",
+    )
+
+    headers = codex_runtime._codex_websocket_headers(
+        agent,
+        {
+            "extra_headers": {
+                "session-id": "explicit-session",
+                "thread-id": "explicit-thread",
+                "x-client-request-id": "explicit-request",
+            }
+        },
+    )
+
+    assert headers["session-id"] == "explicit-session"
+    assert headers["thread-id"] == "explicit-thread"
+    assert headers["x-client-request-id"] == "explicit-request"
+
+
+def test_codex_websocket_headers_preserve_explicit_session_headers_case_insensitively():
+    agent = SimpleNamespace(
+        api_key="sk-test",
+        session_id="derived-session",
+        _thread_id="derived-thread",
+    )
+
+    headers = codex_runtime._codex_websocket_headers(
+        agent,
+        {
+            "extra_headers": {
+                "Session-ID": "explicit-session",
+                "Thread-ID": "explicit-thread",
+                "X-Client-Request-ID": "explicit-request",
+            }
+        },
+    )
+
+    assert headers["Session-ID"] == "explicit-session"
+    assert headers["Thread-ID"] == "explicit-thread"
+    assert headers["X-Client-Request-ID"] == "explicit-request"
+    assert "session-id" not in headers
+    assert "thread-id" not in headers
+    assert "x-client-request-id" not in headers
+
+
 def test_provider_config_does_not_stop_at_same_url_without_switch(monkeypatch):
     config = {
         "providers": {

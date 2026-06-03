@@ -403,6 +403,23 @@ def _codex_websocket_response_body(api_kwargs: Dict[str, Any]) -> Dict[str, Any]
     return body
 
 
+def _header_present(headers: Dict[str, str], name: str) -> bool:
+    target = name.lower()
+    return any(str(key).lower() == target for key in headers)
+
+
+def _set_header_if_missing(headers: Dict[str, str], name: str, value: str) -> None:
+    if not value or _header_present(headers, name):
+        return
+    headers[name] = value
+
+
+def _codex_responses_session_header_values(agent) -> tuple[str, str]:
+    session_id = str(getattr(agent, "session_id", "") or "").strip()
+    thread_id = str(getattr(agent, "_thread_id", "") or "").strip() or session_id
+    return session_id, thread_id
+
+
 def _codex_websocket_headers(agent, api_kwargs: Dict[str, Any]) -> Dict[str, str]:
     headers: Dict[str, str] = {}
     extra_headers = api_kwargs.get("extra_headers")
@@ -412,6 +429,11 @@ def _codex_websocket_headers(agent, api_kwargs: Dict[str, Any]) -> Dict[str, str
             for key, value in extra_headers.items()
             if key and value is not None
         })
+
+    session_id, thread_id = _codex_responses_session_header_values(agent)
+    _set_header_if_missing(headers, "session-id", session_id)
+    _set_header_if_missing(headers, "thread-id", thread_id)
+    _set_header_if_missing(headers, "x-client-request-id", thread_id)
 
     beta_key = next((key for key in headers if key.lower() == "openai-beta"), "OpenAI-Beta")
     beta_values = [

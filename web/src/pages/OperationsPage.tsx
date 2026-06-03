@@ -445,9 +445,9 @@ export default function OperationsPage() {
 
 
   useEffect(() => {
-    setTitle("Operations");
+    setTitle(t.operations?.title ?? "Agent Operations");
     return () => setTitle(null);
-  }, [setTitle]);
+  }, [setTitle, t.operations?.title]);
 
   const load = useCallback(async () => {
     setLoading(true);

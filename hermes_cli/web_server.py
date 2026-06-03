@@ -1402,6 +1402,7 @@ async def get_sessions(
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "created",
+    include_children: bool = False,
 ):
     """List sessions.
 
@@ -1435,16 +1436,25 @@ async def get_sessions(
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
+                include_children=include_children,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
             )
-            total = db.session_count(
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-            )
+            if hasattr(db, "count_sessions_rich"):
+                total = db.count_sessions_rich(
+                    include_children=include_children,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                )
+            else:
+                total = db.session_count(
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                )
             now = time.time()
             for s in sessions:
                 s["is_active"] = (

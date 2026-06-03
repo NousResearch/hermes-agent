@@ -32,6 +32,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
@@ -117,13 +118,23 @@ export async function listSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
-  const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
+  const result = await window.hermesDesktop.api<
+    PaginatedSessions & { data?: SessionInfo[]; has_more?: boolean }
+  >({
+    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}&include_children=true`
   })
+  const sessions = result.sessions ?? result.data ?? []
+  const total =
+    typeof result.total === 'number'
+      ? result.total
+      : result.has_more
+        ? Math.max(limit + 1, sessions.length)
+        : sessions.length
 
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions: sessions.slice(0, limit),
+    total,
     offset: 0
   }
 }

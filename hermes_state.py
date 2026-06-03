@@ -1753,6 +1753,56 @@ class SessionDB:
 
         return sessions
 
+    def count_sessions_rich(
+        self,
+        source: str = None,
+        exclude_sources: List[str] = None,
+        include_children: bool = False,
+        min_message_count: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
+    ) -> int:
+        """Count rows that would be eligible for ``list_sessions_rich``.
+
+        This mirrors the list filter contract so paginated desktop clients can
+        show an accurate "loaded / total" label and decide whether "load more"
+        should be visible.
+        """
+        where_clauses = []
+        params = []
+
+        if not include_children:
+            where_clauses.append(
+                "(s.parent_session_id IS NULL"
+                " OR EXISTS (SELECT 1 FROM sessions p"
+                "            WHERE p.id = s.parent_session_id"
+                "            AND p.end_reason = 'branched'"
+                "            AND s.started_at >= p.ended_at))"
+            )
+
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if exclude_sources:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
+        if min_message_count > 0:
+            where_clauses.append("s.message_count >= ?")
+            params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        with self._lock:
+            cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s {where_sql}", params)
+            row = cursor.fetchone()
+
+        return int(row[0] if row else 0)
+
     def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the

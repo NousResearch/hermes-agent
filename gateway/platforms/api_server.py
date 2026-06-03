@@ -1314,21 +1314,40 @@ class APIServerAdapter(BasePlatformAdapter):
 
         limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
+        min_messages = self._parse_nonnegative_int(request.query.get("min_messages"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
+        archived = (request.query.get("archived") or "exclude").strip().lower()
+        if archived not in {"exclude", "include", "only"}:
+            return web.json_response(_openai_error("Invalid archived filter", code="invalid_archived_filter"), status=400)
+        order = (request.query.get("order") or "recent").strip().lower()
+        if order not in {"created", "recent"}:
+            return web.json_response(_openai_error("Invalid session order", code="invalid_session_order"), status=400)
         sessions = db.list_sessions_rich(
             source=source,
             limit=limit,
             offset=offset,
             include_children=include_children,
-            order_by_last_active=True,
+            min_message_count=min_messages,
+            order_by_last_active=(order == "recent"),
+            include_archived=(archived == "include"),
+            archived_only=(archived == "only"),
+        )
+        total = db.count_sessions_rich(
+            source=source,
+            include_children=include_children,
+            min_message_count=min_messages,
+            include_archived=(archived == "include"),
+            archived_only=(archived == "only"),
         )
         return web.json_response({
             "object": "list",
+            "sessions": [self._session_response(s) for s in sessions],
             "data": [self._session_response(s) for s in sessions],
             "limit": limit,
             "offset": offset,
-            "has_more": len(sessions) == limit,
+            "total": total,
+            "has_more": offset + len(sessions) < total,
         })
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":

@@ -279,12 +279,14 @@ class TestWebServerEndpoints:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def list_sessions_rich(self, limit, offset, min_message_count=0, **kwargs):
+            def list_sessions_rich(self, limit, offset, min_message_count=0, include_children=False, **kwargs):
                 captured["list"] = min_message_count
+                captured["include_children"] = include_children
                 return []
 
-            def session_count(self, min_message_count=0, **kwargs):
+            def count_sessions_rich(self, min_message_count=0, include_children=False, **kwargs):
                 captured["count"] = min_message_count
+                captured["count_include_children"] = include_children
                 return 0
 
             def close(self):
@@ -292,10 +294,12 @@ class TestWebServerEndpoints:
 
         monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
 
-        resp = self.client.get("/api/sessions?limit=5&offset=0&min_messages=3")
+        resp = self.client.get("/api/sessions?limit=5&offset=0&min_messages=3&include_children=true")
         assert resp.status_code == 200
         assert captured["list"] == 3
         assert captured["count"] == 3
+        assert captured["include_children"] is True
+        assert captured["count_include_children"] is True
 
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route

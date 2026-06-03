@@ -4223,6 +4223,12 @@ app.on('before-quit', () => {
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
   }
+
+  // Explicitly destroy mainWindow to prevent orphaned renderer processes
+  // (backgroundThrottling: false can keep renderer alive during app quit)
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy()
+  }
 })
 
 app.on('window-all-closed', () => {

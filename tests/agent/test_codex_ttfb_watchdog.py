@@ -109,12 +109,13 @@ def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
-def test_ttfb_kill_disables_websocket_for_current_turn(tmp_path, monkeypatch):
-    """A no-byte WebSocket watchdog kill should make the current turn retry
-    over the same provider's HTTP/SSE path, not reopen the failed WebSocket."""
+def test_ttfb_kill_marks_websocket_retry_with_full_input(tmp_path, monkeypatch):
+    """A no-byte WebSocket watchdog kill should make the retry loop reopen
+    WebSocket with full input; HTTP fallback happens only after retry exhaustion."""
     from agent import chat_completion_helpers as h
     from agent.codex_runtime import (
         codex_responses_websocket_enabled,
+        is_codex_responses_websocket_error,
         reset_codex_responses_websocket_turn_fallback,
     )
 
@@ -149,9 +150,10 @@ providers:
     monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
 
     try:
-        with pytest.raises(TimeoutError):
+        with pytest.raises(TimeoutError) as excinfo:
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
-        assert codex_responses_websocket_enabled(agent) is False
+        assert codex_responses_websocket_enabled(agent) is True
+        assert is_codex_responses_websocket_error(excinfo.value) is True
         assert getattr(agent, "_codex_responses_websocket_chain_invalidated_key") == (
             "openai-codex",
             "https://chatgpt.com/backend-api/codex",

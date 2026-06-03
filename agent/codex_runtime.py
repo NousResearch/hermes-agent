@@ -226,6 +226,8 @@ _WEBSOCKET_TRANSPORT_VALUES = frozenset({
 })
 
 _RESPONSES_WEBSOCKETS_BETA_VALUE = "responses_websockets=2026-02-06"
+_WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
+_WEBSOCKET_ERROR_MARKER = "_hermes_codex_responses_websocket_error"
 
 _WEBSOCKET_BODY_EXCLUDED_KEYS = frozenset({
     "timeout",
@@ -615,19 +617,54 @@ def close_codex_responses_websocket_session(agent) -> None:
 
 
 def reset_codex_responses_websocket_turn_fallback(agent) -> None:
-    """Clear one-turn HTTP fallback state while preserving chain invalidation."""
-    agent._codex_responses_websocket_http_fallback_key = None
-    agent._codex_responses_websocket_http_fallback_reason = None
+    """Reset per-turn stream state while preserving session-scoped HTTP fallback."""
     agent._codex_responses_websocket_output_committed = False
 
 
-def disable_codex_responses_websocket_for_turn(
+def mark_codex_responses_websocket_error(exc: BaseException) -> None:
+    """Tag an exception as coming from the codex_responses WebSocket transport."""
+    try:
+        setattr(exc, _WEBSOCKET_ERROR_MARKER, True)
+    except Exception:
+        pass
+
+
+def is_codex_responses_websocket_error(exc: BaseException) -> bool:
+    return bool(getattr(exc, _WEBSOCKET_ERROR_MARKER, False))
+
+
+def prepare_codex_responses_websocket_retry(
     agent,
     *,
     reason: str,
     error: BaseException | None = None,
 ) -> None:
-    """Disable WebSocket for this provider for the current turn.
+    """Close the failed socket and force the next WebSocket attempt to send full input."""
+    if error is not None:
+        mark_codex_responses_websocket_error(error)
+    key = _codex_websocket_transport_key(agent)
+    close_codex_responses_websocket_session(agent)
+    agent._codex_responses_websocket_chain_invalidated_key = key
+    agent._codex_responses_websocket_output_committed = False
+    logger.warning(
+        "codex_responses_websocket_event=retry_transport_error "
+        "Codex Responses WebSocket transport failed before output; retrying with a fresh "
+        "WebSocket connection and full input (reason=%s code=%s param=%s). %s error=%s",
+        reason,
+        getattr(error, "code", None),
+        getattr(error, "param", None),
+        getattr(agent, "_client_log_context", lambda: "")(),
+        error,
+    )
+
+
+def disable_codex_responses_websocket_for_session(
+    agent,
+    *,
+    reason: str,
+    error: BaseException | None = None,
+) -> None:
+    """Disable WebSocket for this provider for the current agent session.
 
     The continuation chain is also invalidated so the next WebSocket attempt
     for the same provider starts with full input instead of reusing stale
@@ -638,14 +675,49 @@ def disable_codex_responses_websocket_for_turn(
     agent._codex_responses_websocket_http_fallback_key = key
     agent._codex_responses_websocket_http_fallback_reason = reason
     agent._codex_responses_websocket_chain_invalidated_key = key
+    agent._codex_responses_websocket_output_committed = False
     logger.warning(
         "codex_responses_websocket_event=http_fallback "
-        "Codex Responses WebSocket disabled for current turn; falling back to HTTP "
+        "Codex Responses WebSocket disabled for this session; falling back to HTTP "
         "(reason=%s). %s error=%s",
         reason,
         getattr(agent, "_client_log_context", lambda: "")(),
         error,
     )
+
+
+def disable_codex_responses_websocket_for_turn(
+    agent,
+    *,
+    reason: str,
+    error: BaseException | None = None,
+) -> None:
+    """Backward-compatible wrapper for the now session-scoped HTTP fallback."""
+    disable_codex_responses_websocket_for_session(agent, reason=reason, error=error)
+
+
+def should_immediately_fallback_codex_responses_websocket_to_http(
+    exc: BaseException,
+) -> bool:
+    """Return True for WebSocket handshake errors Codex routes directly to HTTP."""
+    return getattr(exc, "status_code", None) == 426
+
+
+def switch_codex_responses_websocket_to_http_after_retries(
+    agent,
+    exc: BaseException,
+    *,
+    reason: str,
+) -> bool:
+    """Activate Codex-style session HTTP fallback after WebSocket retry exhaustion."""
+    if not is_codex_responses_websocket_error(exc):
+        return False
+    if not codex_responses_websocket_enabled(agent):
+        return False
+    if not should_fallback_codex_responses_websocket_to_http(agent, exc):
+        return False
+    disable_codex_responses_websocket_for_session(agent, reason=reason, error=exc)
+    return True
 
 
 def clear_codex_responses_websocket_chain_invalidated(agent) -> None:
@@ -822,26 +894,6 @@ def run_codex_websocket(
             )
             final, _used_continuation = _send_once(recovery_session, force_full=True)
             return final
-        if (
-            not force_full_input
-            and send_state["used_continuation"]
-            and should_fallback_codex_responses_websocket_to_http(agent, exc)
-        ):
-            logger.warning(
-                "codex_responses_websocket_event=continuation_reopen_before_http_fallback "
-                "Codex Responses WebSocket continuation failed before output; "
-                "reopening with full input before HTTP fallback. %s error=%s",
-                getattr(agent, "_client_log_context", lambda: "")(),
-                exc,
-            )
-            recovery_session = _get_codex_responses_websocket_session(
-                agent,
-                uri=websocket_url,
-                headers=headers,
-                open_timeout=open_timeout,
-            )
-            final, _used_continuation = _send_once(recovery_session, force_full=True)
-            return final
         raise
 
     return final
@@ -904,6 +956,11 @@ def should_fallback_codex_responses_websocket_to_http(agent, exc: BaseException)
         return True
     if _is_previous_response_missing_error(exc):
         return False
+    code = str(getattr(exc, "code", "") or "").strip().lower()
+    if code == _WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE:
+        return True
+    if should_immediately_fallback_codex_responses_websocket_to_http(exc):
+        return True
     if getattr(exc, "status_code", None) is not None:
         return False
     if getattr(exc, "code", None) or getattr(exc, "param", None):
@@ -1279,8 +1336,14 @@ __all__ = [
     "close_codex_responses_websocket_session",
     "codex_responses_websocket_enabled",
     "codex_responses_websocket_url",
+    "disable_codex_responses_websocket_for_session",
     "disable_codex_responses_websocket_for_turn",
+    "is_codex_responses_websocket_error",
+    "mark_codex_responses_websocket_error",
+    "prepare_codex_responses_websocket_retry",
     "reset_codex_responses_websocket_turn_fallback",
+    "should_immediately_fallback_codex_responses_websocket_to_http",
     "should_fallback_codex_responses_websocket_to_http",
+    "switch_codex_responses_websocket_to_http_after_retries",
     "_consume_codex_event_stream",
 ]

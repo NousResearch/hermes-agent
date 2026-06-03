@@ -3280,6 +3280,25 @@ def run_conversation(
                     }
 
                 if retry_count >= max_retries:
+                    if agent.api_mode == "codex_responses":
+                        try:
+                            from agent.codex_runtime import (
+                                switch_codex_responses_websocket_to_http_after_retries,
+                            )
+                            if switch_codex_responses_websocket_to_http_after_retries(
+                                agent,
+                                api_error,
+                                reason="websocket_transport_error",
+                            ):
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                        except Exception:
+                            logger.debug(
+                                "Failed to switch Codex Responses WebSocket to HTTP fallback",
+                                exc_info=True,
+                            )
                     # Before falling back, try rebuilding the primary
                     # client once for transient transport errors (stale
                     # connection pool, TCP reset).  Only attempted once

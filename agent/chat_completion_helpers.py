@@ -190,21 +190,34 @@ def interruptible_api_call(agent, api_kwargs: dict):
         except Exception:
             pass
 
-    def _disable_codex_websocket_for_turn_once(reason: str, error: BaseException | None = None) -> None:
+    def _prepare_codex_websocket_retry_once(reason: str, error: BaseException | None = None) -> None:
         if agent.api_mode != "codex_responses":
             return
         try:
             from agent.codex_runtime import (
                 close_codex_responses_websocket_session,
                 codex_responses_websocket_output_committed,
-                disable_codex_responses_websocket_for_turn,
+                codex_responses_websocket_enabled,
+                prepare_codex_responses_websocket_retry,
             )
             if codex_responses_websocket_output_committed(agent):
                 close_codex_responses_websocket_session(agent)
                 return
-            disable_codex_responses_websocket_for_turn(agent, reason=reason, error=error)
+            if codex_responses_websocket_enabled(agent):
+                prepare_codex_responses_websocket_retry(agent, reason=reason, error=error)
+            else:
+                close_codex_responses_websocket_session(agent)
         except Exception:
             _close_codex_websocket_session_once()
+
+    def _mark_codex_websocket_error_once(error: BaseException) -> None:
+        if agent.api_mode != "codex_responses":
+            return
+        try:
+            from agent.codex_runtime import mark_codex_responses_websocket_error
+            mark_codex_responses_websocket_error(error)
+        except Exception:
+            pass
 
     def _call():
         try:
@@ -226,34 +239,49 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     except Exception as ws_error:
                         try:
                             from agent.codex_runtime import (
-                                disable_codex_responses_websocket_for_turn,
+                                disable_codex_responses_websocket_for_session,
+                                prepare_codex_responses_websocket_retry,
+                                should_immediately_fallback_codex_responses_websocket_to_http,
                                 should_fallback_codex_responses_websocket_to_http,
                             )
-                            should_http_fallback = should_fallback_codex_responses_websocket_to_http(
+                            should_immediate_http_fallback = (
+                                should_immediately_fallback_codex_responses_websocket_to_http(ws_error)
+                            )
+                            should_websocket_retry = should_fallback_codex_responses_websocket_to_http(
                                 agent,
                                 ws_error,
                             )
                         except Exception:
-                            should_http_fallback = False
-                        if not should_http_fallback:
+                            should_immediate_http_fallback = False
+                            should_websocket_retry = False
+                        if not should_websocket_retry:
                             raise
 
-                        disable_codex_responses_websocket_for_turn(
+                        if should_immediate_http_fallback:
+                            disable_codex_responses_websocket_for_session(
+                                agent,
+                                reason="websocket_upgrade_required",
+                                error=ws_error,
+                            )
+                            request_client = _set_request_client(
+                                agent._create_request_openai_client(
+                                    reason="codex_stream_http_fallback",
+                                    api_kwargs=api_kwargs,
+                                )
+                            )
+                            result["response"] = agent._run_codex_stream(
+                                api_kwargs,
+                                client=request_client,
+                                on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+                            )
+                            return
+
+                        prepare_codex_responses_websocket_retry(
                             agent,
                             reason="websocket_transport_error",
                             error=ws_error,
                         )
-                        request_client = _set_request_client(
-                            agent._create_request_openai_client(
-                                reason="codex_stream_http_fallback",
-                                api_kwargs=api_kwargs,
-                            )
-                        )
-                        result["response"] = agent._run_codex_stream(
-                            api_kwargs,
-                            client=request_client,
-                            on_first_delta=getattr(agent, "_codex_on_first_delta", None),
-                        )
+                        raise
                 else:
                     request_client = _set_request_client(
                         agent._create_request_openai_client(
@@ -461,7 +489,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             try:
                 _close_request_client_once("codex_ttfb_kill")
-                _disable_codex_websocket_for_turn_once("codex_ttfb_kill")
+                _prepare_codex_websocket_retry_once("codex_ttfb_kill")
             except Exception:
                 pass
             agent._touch_activity(
@@ -480,6 +508,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
                         f"(TTFB threshold: {int(_ttfb_timeout)}s)"
                     )
+                _mark_codex_websocket_error_once(result["error"])
             break
 
         # Stream-idle detector: the Codex backend emitted at least one SSE
@@ -508,7 +537,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             try:
                 _close_request_client_once("codex_stream_idle_kill")
-                _disable_codex_websocket_for_turn_once("codex_stream_idle_kill")
+                _prepare_codex_websocket_retry_once("codex_stream_idle_kill")
             except Exception:
                 pass
             agent._touch_activity(
@@ -520,6 +549,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     f"Codex stream produced no SSE events for {int(_event_stale_elapsed)}s "
                     f"after first byte (threshold: {int(_codex_idle_timeout)}s)"
                 )
+                _mark_codex_websocket_error_once(result["error"])
             break
 
         # Stale-call detector: kill the connection if no response
@@ -557,7 +587,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     agent._rebuild_anthropic_client()
                 else:
                     _close_request_client_once("stale_call_kill")
-                    _disable_codex_websocket_for_turn_once("stale_call_kill")
+                    _prepare_codex_websocket_retry_once("stale_call_kill")
             except Exception:
                 pass
             agent._touch_activity(
@@ -577,6 +607,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
                         f"with no response (threshold: {int(_stale_timeout)}s)"
                     )
+                _mark_codex_websocket_error_once(result["error"])
             break
 
         if agent._interrupt_requested:

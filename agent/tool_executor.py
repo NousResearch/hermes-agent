@@ -72,9 +72,7 @@ def _emit_terminal_post_tool_call(
     error_message: str | None = None,
 ) -> None:
     try:
-        from model_tools import _emit_post_tool_call_hook, _tool_result_observer_fields
-        if status is None:
-            status, error_type, error_message = _tool_result_observer_fields(result)
+        from model_tools import _emit_post_tool_call_hook
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,

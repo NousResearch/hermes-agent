@@ -5459,3 +5459,155 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+
+
+# ── Tests for slash worker zombie leak fix (#38095) ─────────────────────
+
+
+def test_finalize_session_closes_slash_worker(monkeypatch):
+    """_finalize_session() must close the slash worker to prevent zombies."""
+    closed = {"called": False}
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+            self.model = model
+
+        def close(self):
+            closed["called"] = True
+
+    session = {
+        "agent": types.SimpleNamespace(session_id="skey", model="x"),
+        "session_key": "skey",
+        "history": [{"role": "user", "content": "hi"}],
+        "history_lock": threading.Lock(),
+        "slash_worker": _FakeWorker("skey", "x"),
+    }
+
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: types.SimpleNamespace(end_session=lambda *a, **kw: None),
+    )
+
+    server._finalize_session(session)
+    assert closed["called"] is True, "_finalize_session() did not close slash_worker"
+
+
+def test_finalize_session_handles_missing_worker(monkeypatch):
+    """_finalize_session() must not fail when slash_worker is None."""
+    session = {
+        "agent": types.SimpleNamespace(session_id="skey", model="x"),
+        "session_key": "skey",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "slash_worker": None,
+    }
+
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    # Must not raise
+    server._finalize_session(session)
+    assert session.get("_finalized") is True
+
+
+def test_session_close_jsonrpc_closes_worker(monkeypatch):
+    """The session.close JSON-RPC handler must close the slash worker."""
+    closed = {"count": 0}
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            closed["count"] += 1
+
+    agent = types.SimpleNamespace(session_id="close-sid")
+    agent.commit_memory_session = lambda history: None
+    agent.close = lambda: None
+
+    server._sessions["close-sid"] = _session(
+        agent=agent,
+        session_key="close-key",
+        slash_worker=_FakeWorker("close-key", "x"),
+    )
+
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: types.SimpleNamespace(end_session=lambda *a, **kw: None),
+    )
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "unregister_gateway_notify", lambda key: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "close-sid"}}
+        )
+        assert resp["result"]["closed"] is True
+        # Worker should have been closed at least once (via _finalize_session).
+        assert closed["count"] >= 1, f"worker.close() called {closed['count']} times, expected >= 1"
+    finally:
+        server._sessions.pop("close-sid", None)
+
+
+def test_restart_slash_worker_clears_old_reference(monkeypatch):
+    """_restart_slash_worker must close old worker and clear reference before creating new."""
+    closed = {"old": False}
+    created = {"count": 0}
+
+    class _OldWorker:
+        def close(self):
+            closed["old"] = True
+
+    class _NewWorker:
+        def __init__(self, key, model):
+            self.key = key
+            self.model = model
+            created["count"] += 1
+
+    session = {
+        "agent": types.SimpleNamespace(session_id="rk", model="x"),
+        "session_key": "rk",
+        "slash_worker": _OldWorker(),
+    }
+
+    monkeypatch.setattr(server, "_SlashWorker", _NewWorker)
+
+    server._restart_slash_worker(session)
+
+    assert closed["old"] is True, "old worker was not closed"
+    assert created["count"] == 1, f"new worker created {created['count']} times"
+    assert session["slash_worker"].key == "rk"
+    assert session["slash_worker"].model == "x"
+
+
+def test_slash_worker_close_reaps_process(monkeypatch):
+    """_SlashWorker.close() must terminate, drain pipes, and reap the process."""
+    import subprocess
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(300)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    # Confirm it's alive
+    assert proc.poll() is None
+
+    # Bypass __init__ and attach proc directly
+    import types as _types
+    w = _types.SimpleNamespace()
+    w.proc = proc
+    w.close = server._SlashWorker.close.__get__(w, server._SlashWorker)
+
+    w.close()
+
+    # Process must be reaped (poll() returns exit code, not None)
+    assert w.proc.poll() is not None, "worker process was not reaped after close()"

@@ -258,12 +258,29 @@ class _SlashWorker:
         try:
             if self.proc.poll() is None:
                 self.proc.terminate()
-                self.proc.wait(timeout=1)
+                self.proc.wait(timeout=5)
         except Exception:
             try:
                 self.proc.kill()
             except Exception:
                 pass
+        try:
+            self.proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            self.proc.stderr.close()
+        except Exception:
+            pass
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        # Final reap to avoid zombies.
+        try:
+            self.proc.wait(timeout=2)
+        except Exception:
+            pass
 
 
 def _load_busy_input_mode() -> str:
@@ -319,6 +336,15 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             db = _get_db()
             if db is not None:
                 db.end_session(session_id, end_reason)
+        except Exception:
+            pass
+
+    # Close the slash worker subprocess to prevent zombie accumulation.
+    # Fix for #38095.
+    worker = session.get("slash_worker")
+    if worker:
+        try:
+            worker.close()
         except Exception:
             pass
 
@@ -1215,6 +1241,7 @@ def _restart_slash_worker(session: dict):
             worker.close()
         except Exception:
             pass
+        session["slash_worker"] = None
     try:
         session["slash_worker"] = _SlashWorker(
             session["session_key"],

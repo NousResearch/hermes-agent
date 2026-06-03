@@ -12028,7 +12028,7 @@ def cmd_logs(args):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "acp-client", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -15033,6 +15033,46 @@ Examples:
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
+
+    # =========================================================================
+    # acp-client command (Phase 1: library-only self-test)
+    # =========================================================================
+    acp_client_parser = subparsers.add_parser(
+        "acp-client",
+        help="Self-test the Hermes ACP client subsystem (library-only, opt-in)",
+        description="Verify the opt-in Hermes-as-ACP-client modules import. "
+                    "Phase 1 is library-only: no server, no external CLI launch, "
+                    "no runtime wiring.",
+    )
+    acp_client_parser.add_argument(
+        "--version",
+        action="store_true",
+        dest="acp_client_version",
+        help="Print Hermes version and exit",
+    )
+    acp_client_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify the acp dependency and acp_client modules import, then exit",
+    )
+
+    def cmd_acp_client(args):
+        """Run the ACP client self-test (no server, no external launch)."""
+        try:
+            from acp_client.entry import main as acp_client_main
+
+            acp_client_argv = []
+            if getattr(args, "acp_client_version", False):
+                acp_client_argv.append("--version")
+            if getattr(args, "check", False):
+                acp_client_argv.append("--check")
+            acp_client_main(acp_client_argv)
+        except ImportError:
+            print("ACP dependencies not installed.", file=sys.stderr)
+            print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+            sys.exit(1)
+
+    acp_client_parser.set_defaults(func=cmd_acp_client)
 
     # =========================================================================
     # profile command

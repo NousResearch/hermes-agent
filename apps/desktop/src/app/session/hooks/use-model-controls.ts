@@ -3,7 +3,7 @@ import { useCallback } from 'react'
 
 import { getGlobalModelInfo, setGlobalModel } from '@/hermes'
 import { notifyError } from '@/store/notifications'
-import { setCurrentModel, setCurrentProvider } from '@/store/session'
+import { $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -48,38 +48,53 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     }
   }, [])
 
+  // Returns whether the switch succeeded so callers can await it before
+  // applying follow-up changes (e.g. editing a model's reasoning/fast must land
+  // on the right active model — bail rather than write to the previous one).
   const selectModel = useCallback(
-    (selection: ModelSelection) => {
+    async (selection: ModelSelection): Promise<boolean> => {
+      const includeGlobal = selection.persistGlobal || !activeSessionId
+      // Snapshot for rollback: the switch is applied optimistically, so a
+      // failure must restore the prior model/provider (store + query cache)
+      // rather than leave the UI showing a model the backend never selected.
+      const prevModel = $currentModel.get()
+      const prevProvider = $currentProvider.get()
+
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
-      updateModelOptionsCache(selection.provider, selection.model, selection.persistGlobal || !activeSessionId)
+      updateModelOptionsCache(selection.provider, selection.model, includeGlobal)
 
-      void (async () => {
-        try {
-          if (activeSessionId) {
-            await requestGateway('slash.exec', {
-              session_id: activeSessionId,
-              command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
-            })
+      try {
+        if (activeSessionId) {
+          await requestGateway('slash.exec', {
+            session_id: activeSessionId,
+            command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
+          })
 
-            if (selection.persistGlobal) {
-              void refreshCurrentModel()
-            }
-
-            void queryClient.invalidateQueries({
-              queryKey: selection.persistGlobal ? ['model-options'] : ['model-options', activeSessionId]
-            })
-
-            return
+          if (selection.persistGlobal) {
+            void refreshCurrentModel()
           }
 
-          await setGlobalModel(selection.provider, selection.model)
-          void refreshCurrentModel()
-          void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-        } catch (err) {
-          notifyError(err, 'Model switch failed')
+          void queryClient.invalidateQueries({
+            queryKey: selection.persistGlobal ? ['model-options'] : ['model-options', activeSessionId]
+          })
+
+          return true
         }
-      })()
+
+        await setGlobalModel(selection.provider, selection.model)
+        void refreshCurrentModel()
+        void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+
+        return true
+      } catch (err) {
+        setCurrentModel(prevModel)
+        setCurrentProvider(prevProvider)
+        updateModelOptionsCache(prevProvider, prevModel, includeGlobal)
+        notifyError(err, 'Model switch failed')
+
+        return false
+      }
     },
     [activeSessionId, queryClient, refreshCurrentModel, requestGateway, updateModelOptionsCache]
   )

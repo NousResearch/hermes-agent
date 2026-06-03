@@ -1180,7 +1180,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._client_kwargs = {}
         else:
             # Swap OpenAI client and config in-place
-            agent.api_key = fb_client.api_key
+            # Recover the original api_key, which may be a callable
+            # token provider (e.g. Entra ID bearer).  The OpenAI SDK
+            # exposes client.api_key as "" for callable providers;
+            # using that empty string in _client_kwargs causes every
+            # per-request client clone to be built with api_key="" → 401.
+            _effective_api_key = (
+                getattr(fb_client, '_hermes_original_api_key', None)
+                or fb_client.api_key
+            )
+            agent.api_key = _effective_api_key
             agent.client = fb_client
             # Preserve provider-specific headers that
             # resolve_provider_client() may have baked into
@@ -1194,7 +1203,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if not fb_headers:
                 fb_headers = getattr(fb_client, "default_headers", None)
             agent._client_kwargs = {
-                "api_key": fb_client.api_key,
+                "api_key": _effective_api_key,
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }

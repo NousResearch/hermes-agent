@@ -2072,6 +2072,13 @@ def _try_azure_foundry(
 
     client = OpenAI(api_key=api_key, base_url=_clean_base, **extra)
 
+    # Preserve the original api_key on the client so that downstream
+    # code (_client_kwargs rebuild in try_activate_fallback) can recover
+    # callable token providers.  The OpenAI SDK exposes client.api_key
+    # as an empty string when a callable was passed, causing per-request
+    # client clones to be built with api_key="" → 401.
+    client._hermes_original_api_key = api_key
+
     if runtime_api_mode == "codex_responses":
         # GPT-5.x / o-series / codex models on Azure Foundry are
         # Responses-API-only — wrap so chat.completions.create() is

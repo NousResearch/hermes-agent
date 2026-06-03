@@ -135,3 +135,23 @@ def test_one_shot_delegates_to_model_flow_nous(monkeypatch):
         "`hermes portal` must route through _model_flow_nous so the model "
         "picker runs every time (matching quick setup)."
     )
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, EOFError, SystemExit])
+def test_one_shot_swallows_cancel_and_systemexit(monkeypatch, exc):
+    """A cancel/abort from the delegated Nous flow must NOT escape and kill the
+    CLI. `_login_nous` raises SystemExit(130)/(1) on cancel/failure, and the
+    expired-session re-login path inside `_model_flow_nous` only catches
+    Exception — so SystemExit could otherwise propagate out. The portal handler
+    must treat KeyboardInterrupt/EOFError/SystemExit as a graceful cancel.
+    """
+    import hermes_cli.setup as setup_mod
+
+    def boom(config):
+        raise exc
+
+    monkeypatch.setattr("hermes_cli.main._model_flow_nous", boom)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+    # Must return normally (None), not propagate the exception.
+    assert setup_mod._run_portal_one_shot({}) is None

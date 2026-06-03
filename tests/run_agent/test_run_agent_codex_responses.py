@@ -1028,6 +1028,49 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     assert isinstance(agent.client, _RebuiltClient)
 
 
+def test_create_request_openai_client_adopts_shared_codex_cli_login(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    captured = {"kwargs": None}
+
+    class _RequestClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        captured["kwargs"] = kwargs
+        return _RequestClient()
+
+    def _fake_resolve(refresh_if_expiring=True, **_):
+        return {
+            "provider": "openai-codex",
+            "source": "codex-cli-shared",
+            "auth_mode": "codex_cli_shared",
+            "api_key": "fresh-codex-cli-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "auth_path": "/home/jasper/.codex/auth.json",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_cli_shared_auth_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        _fake_resolve,
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    request_client = agent._create_request_openai_client(
+        reason="test_shared_codex_cli_login",
+        api_kwargs=_codex_request_kwargs(),
+    )
+
+    assert isinstance(request_client, _RequestClient)
+    assert agent.api_key == "fresh-codex-cli-token"
+    assert agent._client_kwargs["api_key"] == "fresh-codex-cli-token"
+    assert captured["kwargs"]["api_key"] == "fresh-codex-cli-token"
+    assert captured["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
 def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     closed = {"value": False}

@@ -3082,6 +3082,7 @@ class AIAgent:
     def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
         from unittest.mock import Mock
 
+        self._sync_shared_codex_cli_credentials()
         primary_client = self._ensure_primary_openai_client(reason=reason)
         if isinstance(primary_client, Mock):
             return primary_client
@@ -3104,6 +3105,64 @@ class AIAgent:
         ):
             request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
         return self._create_openai_client(request_kwargs, reason=reason, shared=False)
+
+    def _sync_shared_codex_cli_credentials(self) -> bool:
+        """Adopt the current ``codex login`` token before a Codex request.
+
+        Long-lived gateway agents keep ``api_key`` and ``_client_kwargs`` in
+        memory.  Shared Codex auth intentionally points every Hermes profile at
+        ``~/.codex/auth.json``, so a fresh ``codex login`` should become visible
+        on the next request without restarting the gateway.
+        """
+        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+            return False
+
+        try:
+            from hermes_cli.auth import (
+                _codex_cli_shared_auth_enabled,
+                resolve_codex_runtime_credentials,
+            )
+
+            if not _codex_cli_shared_auth_enabled():
+                return False
+            creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        except Exception as exc:
+            logger.debug("Shared Codex CLI credential sync skipped: %s", exc)
+            return False
+
+        if creds.get("source") != "codex-cli-shared":
+            return False
+        api_key = creds.get("api_key")
+        base_url = creds.get("base_url")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+        if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        api_key = api_key.strip()
+        base_url = base_url.strip().rstrip("/")
+        with self._openai_client_lock():
+            changed = (
+                self.api_key != api_key
+                or self.base_url != base_url
+                or (self._client_kwargs or {}).get("api_key") != api_key
+                or (self._client_kwargs or {}).get("base_url") != base_url
+            )
+            if not changed:
+                return False
+            self.api_key = api_key
+            self.base_url = base_url
+            if not isinstance(getattr(self, "_client_kwargs", None), dict):
+                self._client_kwargs = {}
+            self._client_kwargs["api_key"] = api_key
+            self._client_kwargs["base_url"] = base_url
+            if getattr(self, "client", None) is not None and hasattr(self.client, "api_key"):
+                self.client.api_key = api_key
+            logger.info(
+                "Adopted refreshed shared Codex CLI credentials from %s",
+                creds.get("auth_path") or "~/.codex/auth.json",
+            )
+        return True
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)

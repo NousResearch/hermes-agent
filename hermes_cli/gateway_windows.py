@@ -29,6 +29,7 @@ Design notes
 from __future__ import annotations
 
 import ctypes
+import locale
 import os
 import re
 import shlex
@@ -50,6 +51,20 @@ _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IG
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+
+
+def _schtasks_encoding() -> str:
+    """Best-effort console encoding for decoding ``schtasks.exe`` output.
+
+    On localized Windows (e.g. Chinese), ``schtasks`` emits text in the OEM/ANSI
+    code page rather than UTF-8. Decoding with the wrong codec raised
+    ``UnicodeDecodeError`` inside ``subprocess``' reader threads. Prefer the
+    locale's preferred encoding and fall back to UTF-8.
+    """
+    try:
+        return locale.getpreferredencoding(False) or "utf-8"
+    except Exception:
+        return "utf-8"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +127,12 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
             [schtasks, *args],
             capture_output=True,
             text=True,
+            # Localized Windows emits schtasks output in the console code page,
+            # not UTF-8. Decode with the locale encoding and replace undecodable
+            # bytes so a non-UTF-8 status line never surfaces a UnicodeDecodeError
+            # traceback from subprocess' reader threads (issue #38172).
+            encoding=_schtasks_encoding(),
+            errors="replace",
             timeout=_SCHTASKS_TIMEOUT_S,
             # CREATE_NO_WINDOW avoids a flashing console window when the CLI
             # is itself hosted in a TUI. See tools/browser_tool.py for the

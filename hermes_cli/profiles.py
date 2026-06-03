@@ -58,6 +58,8 @@ _CLONE_CONFIG_FILES = [
     "SOUL.md",
 ]
 
+_ENV_ASSIGNMENT_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
 # Subdirectory files copied during --clone (path relative to profile root).
 # Memory files are part of the agent's curated identity — just as important
 # as SOUL.md for continuity when cloning a profile.
@@ -114,6 +116,27 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
         return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
     except OSError:
         return False
+
+
+def _runtime_location_env_names() -> frozenset[str]:
+    """Return denylisted HERMES_* runtime-location env names."""
+    from hermes_cli.config import _ENV_VAR_NAME_DENYLIST
+
+    return frozenset(
+        name for name in _ENV_VAR_NAME_DENYLIST if name.startswith("HERMES_")
+    )
+
+
+def _copy_clone_env_file(src: Path, dst: Path) -> None:
+    """Copy .env for profile clone, dropping runtime profile-routing vars."""
+    denied_names = _runtime_location_env_names()
+    filtered_lines = []
+    for line in src.read_text(encoding="utf-8").splitlines(keepends=True):
+        match = _ENV_ASSIGNMENT_RE.match(line)
+        if match and match.group(1) in denied_names:
+            continue
+        filtered_lines.append(line)
+    dst.write_text("".join(filtered_lines), encoding="utf-8")
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
@@ -737,7 +760,11 @@ def create_profile(
             profile_dir,
             ignore=_clone_all_copytree_ignore(source_dir),
         )
-        # Strip runtime files
+        # Strip runtime files and profile-routing env vars that should not
+        # carry over to the cloned HERMES_HOME.
+        env_file = profile_dir / ".env"
+        if env_file.exists():
+            _copy_clone_env_file(env_file, env_file)
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
     else:
@@ -752,11 +779,15 @@ def create_profile(
                 src = source_dir / filename
                 if src.exists():
                     dst = profile_dir / filename
-                    shutil.copy2(src, dst)
+                    if filename == ".env":
+                        _copy_clone_env_file(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
                     # Tighten .env to owner-only after copy. shutil.copy2
-                    # preserves source mode bits, but if the source's .env
-                    # was loose (host umask 0o022 leaving 0o644), tighten
-                    # explicitly so the clone doesn't inherit weak perms.
+                    # preserves source mode bits for regular copies, but if
+                    # the source's .env was loose (host umask 0o022 leaving
+                    # 0o644), tighten explicitly so the clone doesn't inherit
+                    # weak perms.
                     if filename == ".env":
                         try:
                             os.chmod(str(dst), 0o600)

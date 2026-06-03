@@ -185,6 +185,31 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_config_strips_reserved_runtime_env_vars(self, profile_env):
+        source_profile = create_profile("source", no_alias=True)
+        (source_profile / "config.yaml").write_text("model: test")
+        (source_profile / ".env").write_text(
+            "# keep comments\n"
+            "OPENAI_API_KEY=x\n"
+            f"HERMES_HOME={source_profile}\n"
+            "export HERMES_PROFILE=source\n"
+            "HERMES_CONFIG=/tmp/source-config.yaml\n"
+            "export HERMES_ENV=/tmp/source.env\n"
+            "HERMES_GEMINI_CLIENT_ID=keep\n"
+            "export OPENROUTER_API_KEY=y\n"
+        )
+
+        profile_dir = create_profile(
+            "coder", clone_from="source", clone_config=True, no_alias=True
+        )
+
+        assert (profile_dir / ".env").read_text() == (
+            "# keep comments\n"
+            "OPENAI_API_KEY=x\n"
+            "HERMES_GEMINI_CLIENT_ID=keep\n"
+            "export OPENROUTER_API_KEY=y\n"
+        )
+
     def test_clone_config_copies_source_skills(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -209,6 +234,11 @@ class TestCreateProfile:
         (default_home / "memories").mkdir(exist_ok=True)
         (default_home / "memories" / "note.md").write_text("remember this")
         (default_home / "config.yaml").write_text("model: gpt-4")
+        (default_home / ".env").write_text(
+            "OPENAI_API_KEY=x\n"
+            f"HERMES_HOME={default_home}\n"
+            "HERMES_GEMINI_CLIENT_ID=keep\n"
+        )
         # Runtime files that should be stripped
         (default_home / "gateway.pid").write_text("12345")
         (default_home / "gateway_state.json").write_text("{}")
@@ -219,6 +249,10 @@ class TestCreateProfile:
         # Content should be copied
         assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        assert (profile_dir / ".env").read_text() == (
+            "OPENAI_API_KEY=x\n"
+            "HERMES_GEMINI_CLIENT_ID=keep\n"
+        )
         # Runtime files should be stripped
         assert not (profile_dir / "gateway.pid").exists()
         assert not (profile_dir / "gateway_state.json").exists()

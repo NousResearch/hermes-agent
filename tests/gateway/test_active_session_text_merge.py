@@ -108,6 +108,11 @@ def _make_adapter() -> BasePlatformAdapter:
     adapter._auto_tts_enabled_chats = set()
     adapter._auto_tts_disabled_chats = set()
     adapter._typing_paused = set()
+    # Multi-agent routing context (set by the real __init__ which this
+    # helper bypasses). handle_message() -> _attach_agent_id() reads these.
+    adapter._gateway_routes = []
+    adapter._default_agent_id = "main"
+    adapter._gateway_ref = None
     return adapter
 
 

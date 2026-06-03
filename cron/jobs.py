@@ -34,22 +34,49 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home().resolve()
-CRON_DIR = HERMES_DIR / "cron"
-JOBS_FILE = CRON_DIR / "jobs.json"
-
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.Lock()
-OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+# Backwards-compatible module-level paths.
+# Tests monkeypatch these; production code should use _get_cron_dir().
+HERMES_DIR = get_hermes_home().resolve()
+CRON_DIR = HERMES_DIR / "cron"
+JOBS_FILE = CRON_DIR / "jobs.json"
+OUTPUT_DIR = CRON_DIR / "output"
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+
+
+def _get_cron_dir() -> Path:
+    """Resolve cron directory dynamically via get_hermes_home so per-agent
+    ContextVar overrides are honoured.
+
+    Falls back to the module-level CRON_DIR constant when it has been
+    monkey-patched by tests (detected by mismatch with the default).
+    """
+    try:
+        if CRON_DIR != get_hermes_home() / "cron":
+            return CRON_DIR
+    except Exception:
+        pass
+    return get_hermes_home() / "cron"
+
+
+def _get_jobs_file() -> Path:
+    """Resolve jobs.json path dynamically."""
+    return _get_cron_dir() / "jobs.json"
+
+
+def _get_output_dir() -> Path:
+    """Resolve cron output directory dynamically."""
+    return _get_cron_dir() / "output"
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -65,7 +92,7 @@ def _job_output_dir(job_id: str) -> Path:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     if Path(text).is_absolute() or Path(text).drive:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
-    return OUTPUT_DIR / text
+    return _get_output_dir() / text
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -175,10 +202,12 @@ def _secure_file(path: Path):
 
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    cron_dir = _get_cron_dir()
+    output_dir = _get_output_dir()
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(cron_dir)
+    _secure_dir(output_dir)
 
 
 # =============================================================================
@@ -426,19 +455,20 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
-    if not JOBS_FILE.exists():
+    jobs_file = _get_jobs_file()
+    if not jobs_file.exists():
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
 
     try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+        with open(jobs_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         _strict_retry = True
         try:
-            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+            with open(jobs_file, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
@@ -474,14 +504,15 @@ def load_jobs() -> List[Dict[str, Any]]:
 def save_jobs(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage."""
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+    jobs_file = _get_jobs_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        atomic_replace(tmp_path, jobs_file)
+        _secure_file(jobs_file)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -669,6 +700,7 @@ def create_job(
 
     prompt_text = _coerce_job_text(prompt)
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -901,6 +933,7 @@ def remove_job(job_id: str) -> bool:
         job_output_dir = _job_output_dir(canonical_id)
         save_jobs(jobs)
         # Clean up output directory to prevent orphaned dirs accumulating
+        job_output_dir = _job_output_dir(canonical_id)
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         return True
@@ -1137,6 +1170,74 @@ def save_job_output(job_id: str, output: str):
         raise
     
     return output_file
+
+
+# =============================================================================
+# Multi-agent job loading (gateway-wide tick)
+# =============================================================================
+
+def load_all_jobs(registry: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Load jobs from ALL agent profiles for a gateway-wide tick.
+
+    When the gateway runs multiple agents, each profile has its own
+    cron/jobs.json.  This function visits every profile directory,
+    temporarily switches the ContextVar, loads that profile's jobs,
+    stamps each with its agent_id, and returns the combined list.
+
+    Args:
+        registry: Optional agent registry (Dict[str, AgentProfile]).
+                  If omitted, falls back to loading from the current
+                  profile only (backward-compatible single-agent mode).
+
+    Returns:
+        Combined list of job dicts, each with an ``agent_id`` key.
+    """
+    if registry is None:
+        # Backward-compatible single-profile path
+        jobs = load_jobs()
+        for j in jobs:
+            if "agent_id" not in j:
+                j["agent_id"] = "main"
+        return jobs
+
+    all_jobs: List[Dict[str, Any]] = []
+    for agent_id, profile in registry.items():
+        try:
+            from agent.profile import use_profile
+            with use_profile(profile):
+                jobs = load_jobs()
+                for j in jobs:
+                    if "agent_id" not in j:
+                        j["agent_id"] = agent_id
+                all_jobs.extend(jobs)
+        except Exception as e:
+            logger.warning("Failed to load cron jobs for agent '%s': %s", agent_id, e)
+    return all_jobs
+
+
+def get_all_due_jobs(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Get due jobs from ALL agent profiles.
+
+    Iterates every profile, switches the ContextVar, and calls
+    ``get_due_jobs()`` (which handles grace windows, fast-forward,
+    and file-locking) inside that profile's context.  Returns the
+    combined list of due jobs with ``agent_id`` already stamped.
+
+    This is the multi-agent equivalent of ``get_due_jobs()``.
+    """
+    all_due: List[Dict[str, Any]] = []
+    for agent_id, profile in registry.items():
+        try:
+            from agent.profile import use_profile
+            with use_profile(profile):
+                due = get_due_jobs()
+                for j in due:
+                    if "agent_id" not in j:
+                        j["agent_id"] = agent_id
+                all_due.extend(due)
+        except Exception as e:
+            logger.warning("Failed to get due jobs for agent '%s': %s", agent_id, e)
+    return all_due
 
 
 # =============================================================================

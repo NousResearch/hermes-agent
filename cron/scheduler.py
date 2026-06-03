@@ -391,12 +391,15 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if deliver_value == "local":
         return None
 
+    _agent_id = job.get("agent_id")
+
     if deliver_value == "origin":
         if origin:
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
+                "agent_id": _agent_id or origin.get("agent_id"),
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
@@ -412,6 +415,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                     "platform": platform_name,
                     "chat_id": chat_id,
                     "thread_id": _get_home_target_thread_id(platform_name),
+                    "agent_id": _agent_id,
                 }
         return None
 
@@ -446,6 +450,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
+            "agent_id": _agent_id,
         }
 
     platform_name = deliver_value
@@ -454,6 +459,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
             "thread_id": origin.get("thread_id"),
+            "agent_id": _agent_id,
         }
 
     if not _is_known_delivery_platform(platform_name):
@@ -466,6 +472,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         "platform": platform_name,
         "chat_id": chat_id,
         "thread_id": _get_home_target_thread_id(platform_name),
+        "agent_id": _agent_id,
     }
 
 
@@ -1045,7 +1052,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import _get_output_dir
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
@@ -1060,7 +1067,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 continue
             try:
-                job_output_dir = OUTPUT_DIR / source_job_id
+                job_output_dir = _get_output_dir() / source_job_id
                 if not job_output_dir.exists():
                     continue  # silent skip — no output yet
                 output_files = sorted(
@@ -1888,18 +1895,21 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None) -> int:
+def tick(verbose: bool = True, adapters=None, loop=None, registry=None) -> int:
     """
     Check and run all due jobs.
-    
+
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
-    
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+        registry: Optional agent registry (Dict[str, AgentProfile]) for multi-
+                  agent gateway mode. When provided, jobs are loaded from ALL
+                  agent profiles and each job runs under its profile's context.
+
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
@@ -1921,19 +1931,31 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return 0
 
     try:
-        due_jobs = get_due_jobs()
+        if registry is not None:
+            from cron.jobs import get_all_due_jobs
+            all_jobs = get_all_due_jobs(registry)
+        else:
+            all_jobs = get_due_jobs()
 
-        if verbose and not due_jobs:
+        if verbose and not all_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
             return 0
 
         if verbose:
-            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
+            logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(all_jobs))
 
         # Advance next_run_at for all recurring jobs FIRST, under the file lock,
         # before any execution begins.  This preserves at-most-once semantics.
-        for job in due_jobs:
-            advance_next_run(job["id"])
+        # For multi-agent mode, advance_next_run must run in the job's profile
+        # context so it writes back to the correct jobs.json.
+        for job in all_jobs:
+            _job_agent_id = job.get("agent_id", "main")
+            if registry and _job_agent_id in registry:
+                from agent.profile import use_profile
+                with use_profile(registry[_job_agent_id]):
+                    advance_next_run(job["id"])
+            else:
+                advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -1958,16 +1980,29 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info(
                 "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
+                len(all_jobs),
                 _max_workers if _max_workers else "unbounded",
             )
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            _job_agent_id = job.get("agent_id", "main")
+            _profile = registry.get(_job_agent_id) if registry else None
             try:
-                success, output, final_response, error = run_job(job)
+                if _profile is not None:
+                    from agent.profile import use_profile
+                    with use_profile(_profile):
+                        success, output, final_response, error = run_job(job)
+                else:
+                    success, output, final_response, error = run_job(job)
 
-                output_file = save_job_output(job["id"], output)
+                # Save output under the job's profile directory
+                if _profile is not None:
+                    from agent.profile import use_profile
+                    with use_profile(_profile):
+                        output_file = save_job_output(job["id"], output)
+                else:
+                    output_file = save_job_output(job["id"], output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
@@ -1986,7 +2021,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        if _profile is not None:
+                            from agent.profile import use_profile
+                            with use_profile(_profile):
+                                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        else:
+                            delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -1998,12 +2038,26 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                # mark_job_run must write back to the correct profile's jobs.json
+                if _profile is not None:
+                    from agent.profile import use_profile
+                    with use_profile(_profile):
+                        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                else:
+                    mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+                try:
+                    if _profile is not None:
+                        from agent.profile import use_profile
+                        with use_profile(_profile):
+                            mark_job_run(job["id"], False, str(e))
+                    else:
+                        mark_job_run(job["id"], False, str(e))
+                except Exception:
+                    pass
                 return False
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
@@ -2014,11 +2068,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         # sequentially to avoid corrupting each other. Jobs without either field
         # stay parallel-safe.
         sequential_jobs = [
-            j for j in due_jobs
+            j for j in all_jobs
             if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
         ]
         parallel_jobs = [
-            j for j in due_jobs
+            j for j in all_jobs
             if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
         ]
 

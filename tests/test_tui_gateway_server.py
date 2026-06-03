@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -5473,3 +5474,62 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+
+
+def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
+    """TUI /save (session.save RPC) must snapshot under the Hermes profile
+    home — not the project/workspace CWD — and include the system prompt,
+    mirroring the classic CLI /save and the dashboard save export.
+
+    Regression: the gateway handler wrote ``hermes_conversation_*.json`` to
+    ``os.path.abspath(...)`` (the workspace CWD) and only exported ``model``
+    and ``messages``, so ``system_prompt`` was missing.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    # Run from a different CWD to prove the snapshot does NOT leak there.
+    work = tmp_path / "workspace"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    sid = "save-sid"
+    agent = types.SimpleNamespace(
+        model="hermes-test",
+        session_id="20260101_120000_abc123",
+        session_start=datetime(2026, 1, 1, 12, 0, 0),
+        _cached_system_prompt="You are Hermes.",
+    )
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    server._sessions[sid] = {
+        "agent": agent,
+        "session_key": "save-key",
+        "history": history,
+        "history_lock": threading.Lock(),
+        "created_at": 1735732800.0,
+    }
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    saved_file = Path(resp["result"]["file"])
+
+    # Must NOT leak into the workspace/project CWD.
+    assert not list(work.glob("hermes_conversation_*.json"))
+
+    saved_dir = home / "sessions" / "saved"
+    assert saved_file.parent == saved_dir
+    assert saved_file.exists()
+
+    payload = json.loads(saved_file.read_text())
+    assert payload["model"] == "hermes-test"
+    assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
+    assert payload["system_prompt"] == "You are Hermes."
+    assert payload["messages"] == history

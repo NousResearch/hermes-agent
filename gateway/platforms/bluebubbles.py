@@ -31,7 +31,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
-from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Suppress true webhook replays for the same inbound message. Status
+        # `updated-message` echoes are filtered before this cache so an update
+        # that arrives before the richer `new-message` cannot steal routing.
+        self._dedup = MessageDeduplicator(max_size=2000, ttl_seconds=300)
 
     # ------------------------------------------------------------------
     # API helpers
@@ -921,6 +925,34 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or ""
         )
 
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+            payload.get("messageGuid"),
+        )
+
+        # BlueBubbles emits `updated-message` for receipt/status changes for an
+        # already-delivered inbound message. The adapter does not implement true
+        # edit/retraction semantics yet (`SUPPORTS_MESSAGE_EDITING = False`), so
+        # treating update echoes as fresh conversational input creates duplicate
+        # replies. Importantly, skip before GUID dedup: if an update echo arrives
+        # first with only a sender/chatIdentifier, it must not cause the later
+        # `new-message` carrying the group chat GUID to be dropped.
+        if event_type == "updated-message":
+            logger.debug(
+                "[bluebubbles] ignoring updated-message webhook for message %s",
+                _redact(message_id or ""),
+            )
+            return web.Response(text="ok")
+
+        if message_id and self._dedup.is_duplicate(message_id):
+            logger.info(
+                "[bluebubbles] ignoring duplicate inbound message %s",
+                _redact(message_id),
+            )
+            return web.Response(text="ok")
+
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
         media_urls: List[str] = []
@@ -964,17 +996,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
-        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
-        # the chat GUID is nested under data.chats[0].guid instead.
-        if not chat_guid:
-            _chats = record.get("chats") or []
-            if _chats and isinstance(_chats[0], dict):
-                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        # Fallback: BlueBubbles v1.9+ webhook payloads often omit top-level
+        # chatGuid/chatIdentifier. The chat identity is nested under
+        # data.chats[0]; for group chats the stable routing GUID may appear as
+        # the private-api "[auth-key]" (for example: any;+;<group-id>).
+        _chats = record.get("chats") or []
+        _first_chat = _chats[0] if _chats and isinstance(_chats[0], dict) else {}
+        if not chat_guid and _first_chat:
+            chat_guid = self._value(
+                _first_chat.get("guid"),
+                _first_chat.get("chatGuid"),
+                _first_chat.get("[auth-key]"),
+            )
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),
             payload.get("chatIdentifier"),
             payload.get("identifier"),
+            _first_chat.get("chatIdentifier"),
+            _first_chat.get("identifier"),
+            _first_chat.get("displayName"),
         )
         sender = (
             self._value(
@@ -994,7 +1035,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return web.json_response({"error": "missing message fields"}, status=400)
 
         session_chat_id = chat_guid or chat_identifier
-        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        is_group = (
+            bool(record.get("isGroup"))
+            or (";+;" in (chat_guid or ""))
+            or any(
+                isinstance(chat, dict) and int(chat.get("style") or 0) >= 43
+                for chat in _chats
+            )
+        )
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(
@@ -1015,11 +1063,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

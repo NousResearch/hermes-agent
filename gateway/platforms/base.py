@@ -2233,7 +2233,7 @@ class BasePlatformAdapter(ABC):
         try:
             from gateway.agent_routing import resolve_agent_id  # lazy
             route_match = resolve_agent_id(
-                source, self._gateway_routes, default=None,
+                source, getattr(self, "_gateway_routes", []) or [], default=None,
             )
         except Exception as exc:  # never break dispatch on a routing bug
             logger.debug("[%s] route resolution failed: %s", self.name, exc)
@@ -2244,7 +2244,7 @@ class BasePlatformAdapter(ABC):
             results = invoke_hook(
                 "select_agent",
                 event=event,
-                gateway=self._gateway_ref,
+                gateway=getattr(self, "_gateway_ref", None),
                 route_match=route_match,
                 # Note: intentionally NOT passing agent_id — this hook's
                 # purpose is to DECIDE the agent_id. The resolved value
@@ -2257,7 +2257,12 @@ class BasePlatformAdapter(ABC):
         except Exception as exc:
             logger.debug("[%s] select_agent hook failed: %s", self.name, exc)
 
-        agent_id = hook_pick or route_match or self._default_agent_id or "main"
+        agent_id = (
+            hook_pick
+            or route_match
+            or getattr(self, "_default_agent_id", None)
+            or "main"
+        )
         try:
             import dataclasses
             event.source = dataclasses.replace(source, agent_id=agent_id)

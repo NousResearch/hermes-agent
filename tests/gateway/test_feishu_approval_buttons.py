@@ -379,7 +379,9 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_unauthorized_click_does_not_resolve(self):
         adapter = _make_adapter()
-        adapter._admins = {"ou_admin"}
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._allowed_group_users = {"ou_admin"}
         adapter._approval_state[5] = {
             "session_key": "sess-5",
             "message_id": "msg_005",
@@ -391,6 +393,23 @@ class TestResolveApproval:
 
         mock_resolve.assert_not_called()
         assert 5 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_open_group_policy_resolves_even_when_allowed_users_is_for_dm_admission(self):
+        adapter = _make_adapter()
+        adapter._group_policy = "open"
+        adapter._allowed_group_users = {"ou_someone_else"}
+        adapter._approval_state[7] = {
+            "session_key": "sess-7",
+            "message_id": "msg_007",
+            "chat_id": "oc_open_group",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._resolve_approval(7, "always", "Bob", open_id="ou_bob", chat_id="oc_open_group")
+
+        mock_resolve.assert_called_once_with("sess-7", "always")
+        assert 7 not in adapter._approval_state
 
     @pytest.mark.asyncio
     async def test_chat_mismatch_does_not_resolve(self):
@@ -598,6 +617,7 @@ class TestCardActionCallbackResponse:
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._allowed_group_users = {"ou_allowed"}
+        adapter._default_group_policy = "allowlist"
         adapter._approval_state[5] = {
             "session_key": "sess-5",
             "message_id": "msg-5",
@@ -739,6 +759,8 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
         adapter._update_prompt_state[1] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_006",
@@ -761,6 +783,8 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
         adapter._update_prompt_state[7] = {
             "session_key": "sess-up-7",
             "message_id": "msg_up_007",

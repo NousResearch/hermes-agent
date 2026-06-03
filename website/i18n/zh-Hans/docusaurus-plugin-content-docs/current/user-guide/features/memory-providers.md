@@ -535,14 +535,67 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **ByteRover** | 本地/云端 | 免费/付费 | 3 | `brv` CLI | 预压缩提取 |
 | **Supermemory** | 云端 | 付费 | 4 | `supermemory` | 上下文隔离 + 会话图谱导入 + 多容器 |
 
+---
+
+## 社区独立提供者
+
+以下提供者由社区独立维护，可接入 Hermes，但不随 Hermes 一同安装。
+
+### Nowledge Mem
+
+将 Hermes 连接到 Nowledge Mem，让决策、资料和对话历史可以在 Hermes、其他 Agent、聊天助手和你的个人资料库之间继续使用。
+
+| | |
+|---|---|
+| **适合场景** | 希望自己的 AI 工作、资料知识和会话历史能跨工具使用的用户 |
+| **依赖** | 正在运行的 Nowledge Mem 应用或服务器、`nmem` CLI，以及独立提供者包 |
+| **数据存储** | Nowledge Mem 本地数据库或已配置的远程 Nowledge Mem 服务器 |
+| **费用** | 有免费档；更高本地额度和托管服务需付费 |
+
+**工具：** `nmem_search`（搜索记忆）、`nmem_save`（保存决策和洞察）、`nmem_update`、`nmem_delete`、`nmem_thread_search`、`nmem_thread_messages`
+
+**macOS / Linux：**
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/nowledge-co/community/main/nowledge-mem-hermes/setup.sh)
+hermes memory status
+```
+
+**Windows PowerShell：**
+
+```powershell
+irm https://raw.githubusercontent.com/nowledge-co/community/main/nowledge-mem-hermes/setup.ps1 | iex
+hermes memory status
+```
+
+安装程序会解析当前 profile 的 Hermes home，将提供者复制到 `$HERMES_HOME/plugins/nowledge-mem/`；当当前 memory provider 为空或已经是 Nowledge Mem 时，再将 `memory.provider` 设置为 `"nowledge-mem"`。如果已有其他 provider，它会停止并请你手动确认是否切换。安装后请重启 Hermes。
+
+如果 Nowledge Mem 服务器运行在另一台机器上，请先配置本机的 `nmem` 客户端：
+
+```bash
+nmem config client set url https://your-server
+nmem config client set api-key your-key
+```
+
+**主要特性：**
+- 用户拥有的记忆层，让重要工作不被锁在某一个 AI 工具里
+- 将 Hermes 与其他 Agent、聊天助手、资料库和历史对话中的知识连接起来
+- 本地优先存储，也可通过共享的 `nmem` 客户端配置连接远程服务器
+- 在 Hermes 会话中召回相关内容，让过去的决策和上下文在有用时出现
+- 将 Hermes 对话捕获为可搜索的 Nowledge Mem 线程
+- 可通过 `$HERMES_HOME/nowledge-mem.json` 或 `NMEM_SPACE` 配置空间路由
+
+**文档：** [Nowledge Mem Hermes 指南](https://mem.nowledge.co/docs/integrations/hermes) · [提供者源码](https://github.com/nowledge-co/community/tree/main/nowledge-mem-hermes)
+
 ## Profile 隔离
 
-每个提供者的数据按 [profile](/user-guide/profiles) 隔离：
+内置提供者按以下方式为每个 [profile](/user-guide/profiles) 隔离数据。社区独立提供者可能采用自己的存储范围。
 
 - **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
 - **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
 - **云端提供者**（RetainDB）自动派生 profile 范围的项目名称
 - **环境变量提供者**（OpenViking）通过每个 profile 的 `.env` 文件配置
+- **Nowledge Mem** 将提供者配置存放在 `$HERMES_HOME/nowledge-mem.json` 中；如需隔离 Nowledge 数据，请为每个 profile 在该文件中设置不同的 `space`
 
 ## 构建记忆提供者
 

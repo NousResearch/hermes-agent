@@ -627,14 +627,67 @@ hermes memory setup
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
 
+---
+
+## Community Standalone Providers
+
+These externally maintained providers integrate with Hermes but are not bundled with it.
+
+### Nowledge Mem
+
+Connects Hermes to Nowledge Mem so decisions, sources, and conversation history can be reused across Hermes, other agents, chat assistants, and your personal library.
+
+| | |
+|---|---|
+| **Best for** | People who want their AI work, source knowledge, and session history available across tools |
+| **Requires** | Running Nowledge Mem app or server, `nmem` CLI, and the standalone provider package |
+| **Data storage** | Nowledge Mem local database or a configured remote Nowledge Mem server |
+| **Cost** | Free tier; paid plans for higher local limits and managed services |
+
+**Tools:** `nmem_search` (search memories), `nmem_save` (save decisions and insights), `nmem_update`, `nmem_delete`, `nmem_thread_search`, `nmem_thread_messages`
+
+**macOS / Linux:**
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/nowledge-co/community/main/nowledge-mem-hermes/setup.sh)
+hermes memory status
+```
+
+**Windows PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/nowledge-co/community/main/nowledge-mem-hermes/setup.ps1 | iex
+hermes memory status
+```
+
+The installer resolves the active Hermes profile home, copies the provider into `$HERMES_HOME/plugins/nowledge-mem/`, and sets `memory.provider: "nowledge-mem"` when the current provider is empty or already Nowledge Mem. If another provider is active, it stops and asks you to confirm the change manually. Restart Hermes after installation.
+
+If the Nowledge Mem server runs on another machine, configure the local `nmem` client first:
+
+```bash
+nmem config client set url https://your-server
+nmem config client set api-key your-key
+```
+
+**Key features:**
+- A user-owned memory layer for work that should outlive any one AI tool
+- Brings Hermes together with knowledge captured from other agents, chat assistants, library sources, and past conversations
+- Local-first storage, with optional remote server access through the shared `nmem` client config
+- Relevant recall inside Hermes sessions, so past decisions and context appear when useful
+- Hermes transcript capture into searchable Nowledge Mem threads
+- Optional space routing through `$HERMES_HOME/nowledge-mem.json` or `NMEM_SPACE`
+
+**Docs:** [Nowledge Mem Hermes guide](https://mem.nowledge.co/docs/integrations/hermes) · [provider source](https://github.com/nowledge-co/community/tree/main/nowledge-mem-hermes)
+
 ## Profile Isolation
 
-Each provider's data is isolated per [profile](/user-guide/profiles):
+Bundled providers isolate their data per [profile](/user-guide/profiles) as follows. Community standalone providers may define their own storage scope.
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
+- **Nowledge Mem** keeps its provider config in `$HERMES_HOME/nowledge-mem.json`; set a different `space` there for each profile when you want separate Nowledge data
 
 ## Building a Memory Provider
 

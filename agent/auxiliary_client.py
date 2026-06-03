@@ -4899,7 +4899,10 @@ def call_llm(
         extra_body: Additional request body fields.
 
     Returns:
-        Response object with .choices[0].message.content
+        Response object with .choices[0].message.content.
+        Returns ``None`` when the SessionModelPool auxiliary slot is
+        blocked (pool enabled + model saturated). Callers should check
+        for ``None`` before accessing response attributes.
 
     Raises:
         RuntimeError: If no provider is configured.
@@ -5394,7 +5397,7 @@ async def async_call_llm(
 
     TODO: SessionModelPool auxiliary slot tracking is not yet integrated
     here — async auxiliary calls are not throttled. See call_llm() for
-    the synchronous implementation.
+    the synchronous implementation. Tracked in #37744.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)

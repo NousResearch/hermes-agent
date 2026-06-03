@@ -92,6 +92,9 @@ class SessionModelPool:
         self.strategy = strategy
         self.inactive_timeout = inactive_timeout  # seconds
         self._entries: List[PoolModelEntry] = entries or []
+        self._entries_by_key: Dict[str, PoolModelEntry] = {
+            e.pool_key: e for e in self._entries
+        }
         self._lock = threading.Lock()
         # Condition variable for auxiliary slot waiting (replaces polling).
         self._aux_condition = threading.Condition(self._lock)
@@ -164,19 +167,20 @@ class SessionModelPool:
             logger.warning("session_model_pool has no valid entries — disabled")
             return None
 
-        # Warn on duplicate pool keys — two entries sharing the same
-        # provider:model would share state unpredictably.
-        _seen_keys: Dict[str, str] = {}
+        # Deduplicate pool keys — if two entries share the same
+        # provider:model, only the LAST entry is kept. Earlier duplicates
+        # are logged and discarded to prevent inconsistent slot tracking.
+        _deduped: Dict[str, PoolModelEntry] = {}
         for _entry in entries:
             _key = _entry.pool_key
-            if _key in _seen_keys:
+            if _key in _deduped:
                 logger.warning(
                     "session_model_pool: duplicate pool_key '%s' (%s and %s). "
-                    "Both entries are retained but slot tracking uses the "
-                    "first match found — behavior may be unpredictable.",
-                    _key, _seen_keys[_key], _entry.model,
+                    "Keeping the last entry; discarding the earlier one.",
+                    _key, _deduped[_key].model, _entry.model,
                 )
-            _seen_keys[_key] = _entry.model
+            _deduped[_key] = _entry
+        entries = list(_deduped.values())
 
         strategy = config.get("strategy", "round-robin")
         if strategy not in ("round-robin", "least-loaded", "priority"):
@@ -220,14 +224,14 @@ class SessionModelPool:
             # If session already has a slot, refresh its timestamp and return it.
             existing = self._session_map.get(session_key)
             if existing:
-                for entry in self._entries:
-                    if entry.pool_key == existing:
-                        entry.session_slots[session_key] = time.monotonic()
-                        return {
-                            "model": entry.model,
-                            "provider": entry.provider,
-                            "context_length": entry.context_length,
-                        }
+                entry = self._entries_by_key.get(existing)
+                if entry:
+                    entry.session_slots[session_key] = time.monotonic()
+                    return {
+                        "model": entry.model,
+                        "provider": entry.provider,
+                        "context_length": entry.context_length,
+                    }
 
             # Find candidates with available session slots.
             candidates = [
@@ -271,14 +275,13 @@ class SessionModelPool:
             pool_key = self._session_map.pop(session_key, None)
             if not pool_key:
                 return
-            for entry in self._entries:
-                if entry.pool_key == pool_key:
-                    entry.session_slots.pop(session_key, None)
-                    logger.debug(
-                        "SessionModelPool: released session %s from %s:%s",
-                        session_key, entry.provider, entry.model,
-                    )
-                    break
+            entry = self._entries_by_key.get(pool_key)
+            if entry:
+                entry.session_slots.pop(session_key, None)
+                logger.debug(
+                    "SessionModelPool: released session %s from %s:%s",
+                    session_key, entry.provider, entry.model,
+                )
 
     def mark_manual_override(self, session_key: str) -> None:
         """Mark a session as manually overridden (e.g. via /model command).
@@ -293,10 +296,9 @@ class SessionModelPool:
             # Inline release (can't call release_session_slot which re-acquires lock).
             pool_key = self._session_map.pop(session_key, None)
             if pool_key:
-                for entry in self._entries:
-                    if entry.pool_key == pool_key:
-                        entry.session_slots.pop(session_key, None)
-                        break
+                entry = self._entries_by_key.get(pool_key)
+                if entry:
+                    entry.session_slots.pop(session_key, None)
 
     def clear_manual_override(self, session_key: str) -> None:
         """Remove manual override marker (e.g. on /new or /reset)."""
@@ -321,13 +323,12 @@ class SessionModelPool:
 
         with self._aux_condition:
             while True:
-                for entry in self._entries:
-                    if entry.pool_key == pool_key:
-                        if entry.available_auxiliary_slots > 0:
-                            entry.auxiliary_count += 1
-                            return True
-                        # No auxiliary slot available — wait for release.
-                        break
+                entry = self._entries_by_key.get(pool_key)
+                if entry:
+                    if entry.available_auxiliary_slots > 0:
+                        entry.auxiliary_count += 1
+                        return True
+                    # No auxiliary slot available — wait for release.
                 else:
                     # Model not in pool — allow without restriction.
                     return True
@@ -353,10 +354,9 @@ class SessionModelPool:
 
         pool_key = f"{provider}:{model}"
         with self._aux_condition:
-            for entry in self._entries:
-                if entry.pool_key == pool_key and entry.auxiliary_count > 0:
-                    entry.auxiliary_count -= 1
-                    break
+            entry = self._entries_by_key.get(pool_key)
+            if entry and entry.auxiliary_count > 0:
+                entry.auxiliary_count -= 1
             # Wake up any threads waiting for auxiliary slots.
             self._aux_condition.notify_all()
 
@@ -429,16 +429,12 @@ class SessionModelPool:
     # ---- internal helpers ----
 
     def _aux_count(self, pool_key: str) -> int:
-        for entry in self._entries:
-            if entry.pool_key == pool_key:
-                return entry.auxiliary_count
-        return 0
+        entry = self._entries_by_key.get(pool_key)
+        return entry.auxiliary_count if entry else 0
 
     def _reserved_count(self, pool_key: str) -> int:
-        for entry in self._entries:
-            if entry.pool_key == pool_key:
-                return entry.reserved_for_auxiliary
-        return 0
+        entry = self._entries_by_key.get(pool_key)
+        return entry.reserved_for_auxiliary if entry else 0
 
 
 # ---------------------------------------------------------------------------

@@ -486,7 +486,7 @@ class TestDuplicatePoolKey:
         assert any("duplicate pool_key" in r.message for r in caplog.records)
 
     def test_duplicate_pool_key_both_entries_retained(self):
-        """Warning is emitted but both entries are kept — behavior by design."""
+        """Duplicate pool_key is deduplicated — last entry wins, first discarded."""
         config = {
             "enabled": True,
             "pool": [
@@ -495,8 +495,9 @@ class TestDuplicatePoolKey:
             ],
         }
         pool = SessionModelPool.from_config(config)
-        # Both entries are retained (warning-only, not an error)
-        assert len(pool._entries) == 2
+        # Only the last entry is kept (deduplication)
+        assert len(pool._entries) == 1
+        assert pool._entries[0].max_concurrent == 3
 
 
 # ---------------------------------------------------------------------------

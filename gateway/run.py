@@ -2528,7 +2528,7 @@ class GatewayRunner:
         """
         try:
             from gateway.session_model_pool import get_session_model_pool as _get_pool
-            _p = _get_pool(_load_gateway_config())
+            _p = _get_pool({})
             if _p:
                 _p.mark_manual_override(session_key)
         except Exception as _exc:
@@ -8830,7 +8830,7 @@ class GatewayRunner:
             # Clear manual override so the pool can reassign on next turn.
             try:
                 from gateway.session_model_pool import get_session_model_pool as _get_pool_rst
-                _p_rst = _get_pool_rst(_load_gateway_config())
+                _p_rst = _get_pool_rst({})
                 if _p_rst:
                     _p_rst.clear_manual_override(session_key)
             except Exception as _exc:

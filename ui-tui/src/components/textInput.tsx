@@ -545,18 +545,21 @@ export function TextInput({
   }, [cur, display, focus, nativeCursor, placeholder, selected])
 
   useEffect(() => {
-    if (self.current) {
-      self.current = false
-    } else {
-      setCur(value.length)
-      setSel(null)
-      curRef.current = value.length
-      selRef.current = null
-      vRef.current = value
-      lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
-      undo.current = []
-      redo.current = []
+    const ownEcho = self.current && value === vRef.current
+    self.current = false
+
+    if (ownEcho) {
+      return
     }
+
+    setCur(value.length)
+    setSel(null)
+    curRef.current = value.length
+    selRef.current = null
+    vRef.current = value
+    lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
+    undo.current = []
+    redo.current = []
   }, [value])
 
   useEffect(() => {

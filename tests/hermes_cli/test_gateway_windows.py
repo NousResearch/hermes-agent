@@ -782,3 +782,232 @@ def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
 
     # Returns True because _pid_exists immediately says "gone".
     assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True
+
+# ---------------------------------------------------------------------------
+# Localized schtasks output decoding (#38172)
+# ---------------------------------------------------------------------------
+
+import io
+import locale as _locale
+import subprocess as _subprocess
+from unittest.mock import patch
+
+
+class _FakeCompletedProcess:
+    """Minimal stand-in for subprocess.CompletedProcess.
+
+    ``subprocess.run`` returns CompletedProcess with ``stdout``/``stderr`` as
+    str when text-mode decoding succeeded. We simulate the post-decode result
+    here so we can verify that ``_exec_schtasks`` propagates whatever the
+    text-mode reader produced (including ``\\ufffd`` replacement chars from
+    ``errors=\"replace\"``).
+    """
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _decode_with_run_kwargs(payload_bytes: bytes, kwargs: dict) -> str:
+    """Re-do what subprocess.run(text=True, encoding=..., errors=...) does.
+
+    This is what ``_readerthread`` performs under the hood — decoding raw
+    bytes with the requested encoding+errors mode. The bug in #38172 is that
+    without explicit ``encoding=`` the default decoder is invoked and crashes
+    on localized output. By driving the same decode here we can prove that
+    the kwargs ``_exec_schtasks`` now passes would survive that input.
+    """
+    encoding = kwargs.get("encoding") or "utf-8"
+    errors = kwargs.get("errors") or "strict"
+    return payload_bytes.decode(encoding, errors=errors)
+
+
+def test_exec_schtasks_decodes_localized_bytes_cp936(monkeypatch):
+    """Localized cp936 (Simplified Chinese) schtasks output decodes cleanly."""
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\Windows\System32\schtasks.exe")
+    # Simulate a Chinese Windows host: locale.getpreferredencoding pins to cp936
+    # so subprocess.run is told to decode with that codec.
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda do_setlocale=False: "cp936")
+
+    # Realistic excerpt of "schtasks /Query /V /FO LIST" on a Chinese box.
+    # "状态: 就绪" = "Status: Ready". "上次运行时间" = "Last Run Time".
+    sample_text = "TaskName: Hermes_Gateway\n状态: 就绪\n上次运行时间: 2026/6/3 上午 10:00:00\n"
+    sample_bytes = sample_text.encode("cp936")
+
+    captured_kwargs: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured_kwargs.update(kwargs)
+        # Simulate the post-decode result _readerthread would build using
+        # the kwargs handed to subprocess.run. If the encoding/errors are
+        # missing, this will raise UnicodeDecodeError — which is exactly the
+        # bug we're fixing.
+        decoded = _decode_with_run_kwargs(sample_bytes, kwargs)
+        return _FakeCompletedProcess(returncode=0, stdout=decoded, stderr="")
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway", "/V", "/FO", "LIST"])
+
+    assert code == 0
+    assert "Hermes_Gateway" in out
+    assert "就绪" in out, "decoded cp936 text should round-trip through _exec_schtasks"
+    assert err == ""
+    # The fix: encoding + errors must be passed explicitly.
+    assert captured_kwargs.get("encoding"), "encoding= kwarg must be set so localized output decodes cleanly"
+    assert captured_kwargs.get("errors") == "replace", "errors='replace' must be set to silence UnicodeDecodeError"
+
+
+def test_exec_schtasks_replaces_invalid_bytes(monkeypatch):
+    """A stray invalid byte inside otherwise-valid cp936 must not raise."""
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\Windows\System32\schtasks.exe")
+
+    # Build a cp936 buffer and corrupt one byte with an invalid lead byte.
+    # 0xff is invalid in both cp936 and utf-8, so a strict decode would die.
+    head = "状态: ".encode("cp936")
+    bad = b"\xff"
+    tail = " 就绪".encode("cp936")
+    raw = head + bad + tail
+
+    def fake_run(argv, **kwargs):
+        decoded = _decode_with_run_kwargs(raw, kwargs)
+        return _FakeCompletedProcess(returncode=0, stdout=decoded, stderr="")
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    # Force a known encoding so the test is deterministic across CI hosts —
+    # we are exercising the errors="replace" guarantee, not locale detection.
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda do_setlocale=False: "cp936")
+
+    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
+
+    assert code == 0
+    # The replacement char is the canonical Unicode U+FFFD.
+    assert "\ufffd" in out, "invalid byte must be replaced, not raised"
+    assert "状态" in out and "就绪" in out, "surrounding valid bytes must survive"
+
+
+def test_exec_schtasks_ascii_and_utf8_paths_unchanged(monkeypatch):
+    """Pure ASCII and pure UTF-8 inputs are not regressed by the new kwargs."""
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\Windows\System32\schtasks.exe")
+
+    ascii_text = "TaskName: Hermes_Gateway\nStatus: Ready\nLast Run Time: 6/3/2026 10:00:00 AM\n"
+
+    def fake_run(argv, **kwargs):
+        # Under UTF-8 locale the decode is a no-op, but errors="replace" must
+        # not corrupt anything either.
+        decoded = _decode_with_run_kwargs(ascii_text.encode("utf-8"), kwargs)
+        return _FakeCompletedProcess(returncode=0, stdout=decoded, stderr="")
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda do_setlocale=False: "utf-8")
+
+    code, out, _ = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway"])
+
+    assert code == 0
+    assert out == ascii_text, "English/ASCII output must round-trip byte-for-byte"
+
+
+def test_exec_schtasks_falls_back_to_utf8_when_locale_returns_none(monkeypatch):
+    """If getpreferredencoding returns None/empty the fix must default to utf-8.
+
+    Some embedded / minimal Python builds return an empty string from
+    ``locale.getpreferredencoding(False)``. The ``or \"utf-8\"`` clause must
+    guarantee we still hand a real codec to subprocess.run.
+    """
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: r"C:\Windows\System32\schtasks.exe")
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda do_setlocale=False: "")
+
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(kwargs)
+        return _FakeCompletedProcess(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, out, _ = gateway_windows._exec_schtasks(["/Query"])
+
+    assert code == 0
+    assert out == "ok"
+    assert captured.get("encoding") == "utf-8", "must fall back to a real codec when locale is unset"
+    assert captured.get("errors") == "replace"
+
+
+def test_status_emits_no_traceback_with_localized_output(monkeypatch, capsys):
+    """status() must not surface UnicodeDecodeError / _readerthread tracebacks."""
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [33724])
+
+    # Stand-in for the real _exec_schtasks: returns already-decoded cp936-
+    # flavored output (Python-side replacement chars in place of broken
+    # bytes), simulating what the fixed _exec_schtasks now produces.
+    localized_query_output = (
+        "TaskName: Hermes_Gateway\n"
+        "状态: 就绪\n"
+        "上次运行时间: 2026/6/3 上午 10:00:00\n"
+        "上次结果: 0\n"
+        # A stray replacement char that the new errors='replace' would emit.
+        "Some\ufffdNoisyTail\n"
+    )
+
+    def fake_exec(args):
+        if "/Query" in args:
+            return (0, localized_query_output, "")
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_exec)
+
+    # Invoke the high-level status() entry-point. We must not see any
+    # traceback noise on stdout/stderr.
+    gateway_windows.status(deep=False)
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "UnicodeDecodeError" not in combined
+    assert "_readerthread" not in combined
+    assert "Traceback" not in combined
+    # And the status command still reports the gateway is running.
+    assert "Hermes_Gateway" in captured.out
+    assert "33724" in captured.out
+
+
+def test_query_task_status_parses_localized_output_with_replacement_chars(monkeypatch):
+    """query_task_status() keeps parsing keys even with \\ufffd in values."""
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+
+    # Mixed-locale output: ASCII keys (which is what schtasks emits in /V
+    # /FO LIST mode regardless of system locale), localized values, and a
+    # replacement char from errors='replace'.
+    output = (
+        "TaskName: Hermes_Gateway\n"
+        "Status: \ufffd\u5c31\u7eea\n"   # corrupted-then-localized "Ready"
+        "Last Run Time: 2026/6/3 10:00:00\n"
+        "Last Run Result: 0\n"
+    )
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, output, ""))
+
+    info = gateway_windows.query_task_status()
+
+    # The parser must have produced the ASCII-keyed entries unaffected.
+    assert "last run time" in info
+    assert info["last run time"].startswith("2026/6/3")
+    assert info.get("last run result") == "0"
+    # The replacement char in the value must not break the parser.
+    assert "status" in info
+    assert info["status"] == "\ufffd\u5c31\u7eea"

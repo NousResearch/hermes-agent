@@ -5402,10 +5402,12 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
+                                lines = payload_summary.strip().splitlines()
+                                h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
                             elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
+                                lines = task.result.strip().splitlines()
+                                r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
                             msg = (
                                 f"✔ {tag}Kanban {sub['task_id']} done"
@@ -5753,7 +5755,14 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
-        interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
+        try:
+            interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
+        except (ValueError, TypeError):
+            logger.warning(
+                "kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 60",
+                kanban_cfg.get("dispatch_interval_seconds"),
+            )
+            interval = 60.0
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
         # Read max_spawn config to limit concurrent kanban tasks

@@ -1145,6 +1145,43 @@ def advance_dispatch(conn: sqlite3.Connection, dispatch_id: str, *, instance_id:
     return True
 
 
+def supersede_dispatch(conn: sqlite3.Connection, dispatch_id: str, *, actor_instance_id: str, actor_profile: str | None = None, reason: str | None = None, metadata: dict[str, Any] | None = None, now_ms: int | None = None) -> bool:
+    """Mark a non-running dispatch as superseded with an audit event.
+
+    This is for preserving stale incident rows without leaving them in active
+    queue scans. It intentionally refuses live runnable states; claim/advance or
+    the watchdog should handle pending/running work.
+    """
+    ts = _ts(now_ms)
+    event_metadata = dict(metadata or {})
+    if reason:
+        event_metadata["reason"] = redact_text(reason)
+    if actor_profile:
+        event_metadata["actor_profile"] = actor_profile
+    event_metadata["actor_instance_id"] = actor_instance_id
+    with transaction(conn):
+        row = conn.execute("SELECT status, lease_epoch FROM cp_dispatches WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+        if not row:
+            return False
+        if row["status"] in {"pending", "claimed", "running", "retry_ready"}:
+            raise ControlPlaneError(f"dispatch {dispatch_id} is still runnable status={row['status']}")
+        if row["status"] == "superseded":
+            return True
+        cur = conn.execute(
+            "UPDATE cp_dispatches SET status='superseded', last_error=?, completed_at_ms=COALESCE(completed_at_ms, ?), updated_at_ms=? WHERE dispatch_id=?",
+            (redact_text(reason) if reason else row["status"], ts, ts, dispatch_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        evt = _event_id()
+        conn.execute(
+            "INSERT INTO cp_dispatch_events(event_id,dispatch_id,event_type,event_json,created_at_ms) VALUES(?,?,?,?,?)",
+            (evt, dispatch_id, "superseded", dumps_redacted(event_metadata), ts),
+        )
+        _enqueue_outbox(conn, subject_type="dispatch", subject_id=dispatch_id, subject_version=int(row["lease_epoch"] or 0), event_id=evt, payload={"event": "dispatch.superseded", "dispatch_id": dispatch_id})
+    return True
+
+
 def record_artifact(conn: sqlite3.Connection, *, dispatch_id: str, instance_id: str, lease_epoch: int, path: str, summary: str | None = None, metadata: dict[str, Any] | None = None, now_ms: int | None = None) -> str:
     ts = _ts(now_ms)
     artifact_id = f"art_{uuid.uuid4().hex}"

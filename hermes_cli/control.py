@@ -313,6 +313,19 @@ def cmd_control(args) -> None:
                 if not ok:
                     raise SystemExit(1)
                 return
+            if sub == "supersede":
+                ok = cp.supersede_dispatch(
+                    conn,
+                    args.dispatch_id,
+                    actor_instance_id=args.actor_instance_id,
+                    actor_profile=args.actor_profile,
+                    reason=args.reason,
+                    metadata=_json_arg(args.metadata_json, {}),
+                )
+                _print_json({"db_path": str(target.db_path), "dispatch_id": args.dispatch_id, "superseded": ok})
+                if not ok:
+                    raise SystemExit(1)
+                return
         if command == "status":
             if sub == "emit":
                 event_id = cp.emit_status(
@@ -1081,6 +1094,13 @@ def register_subparser(subparsers) -> None:
     dadv.add_argument("--lease-epoch", type=int, required=True)
     dadv.add_argument("--status", required=True, choices=["running", "completed", "failed"])
     dadv.add_argument("--last-error", default=None)
+    dsup = dsp.add_parser("supersede")
+    _add_target_flags(dsup)
+    dsup.add_argument("dispatch_id")
+    dsup.add_argument("--actor-instance-id", required=True)
+    dsup.add_argument("--actor-profile", default="default")
+    dsup.add_argument("--reason", default=None)
+    dsup.add_argument("--metadata-json", default=None)
 
     status = sp.add_parser("status", help="Emit/list structured control-plane status events")
     _add_target_flags(status)

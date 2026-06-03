@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from hermes_cli import control_db as cp
 from hermes_cli.control_contracts import ContractError, make_child_payload, validate_statute_dispatch_v1
-from hermes_cli.control_worker import AGENT_WORKER_TERMINATE_GRACE_S, CONTROL_RESULT_SUCCESS_STATUSES, DispatchWorkItem, validate_control_result
+from hermes_cli.control_worker import AGENT_WORKER_TERMINATE_GRACE_S, CONTROL_RESULT_SUCCESS_STATUSES, DispatchWorkItem, _is_bounded_wave_payload, validate_control_result
 
 SpawnChild = Callable[[str, dict[str, Any], Path | None, str], int | None]
 
@@ -27,6 +27,57 @@ def _dispatch_item(row, epoch: int) -> DispatchWorkItem:
 
 def _has_blocker_kind(result: dict[str, Any], kind: str) -> bool:
     return any(isinstance(blocker, dict) and blocker.get("kind") == kind for blocker in result.get("blockers", []))
+
+
+def _path_within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve(strict=False).relative_to(parent.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _next_wave_dispatch_artifacts(parent_payload: dict[str, Any], result: dict[str, Any]) -> list[str]:
+    if not _is_bounded_wave_payload(parent_payload):
+        return []
+    repo_root = Path(parent_payload["repo_root"]).resolve(strict=False)
+    dispatch_dir = (repo_root / "docs" / "dispatches").resolve(strict=False)
+    found: list[str] = []
+    for artifact in result.get("artifacts") or []:
+        if not isinstance(artifact, dict) or not artifact.get("path"):
+            continue
+        raw_path = Path(str(artifact["path"])).expanduser()
+        artifact_path = (repo_root / raw_path if not raw_path.is_absolute() else raw_path).resolve(strict=False)
+        if artifact_path.suffix != ".md" or not _path_within(artifact_path, dispatch_dir) or not artifact_path.is_file():
+            continue
+        try:
+            display_path = artifact_path.relative_to(repo_root).as_posix()
+        except ValueError:
+            display_path = str(artifact_path)
+        if display_path not in found:
+            found.append(display_path)
+    return found
+
+
+def _next_wave_audit_notice(parent: DispatchWorkItem, child_id: str, parent_payload: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
+    dispatch_artifacts = _next_wave_dispatch_artifacts(parent_payload, result)
+    if not dispatch_artifacts:
+        return None
+    raw_constraints = parent_payload.get("constraints")
+    constraints = raw_constraints if isinstance(raw_constraints, dict) else {}
+    return {
+        "schema": "statutepm_next_wave_audit_notice_v1",
+        "parent_dispatch_id": parent.dispatch_id,
+        "child_dispatch_id": child_id,
+        "wave": constraints.get("wave"),
+        "sprint_ids": constraints.get("sprint_ids") or [],
+        "result_status": result.get("status"),
+        "summary": result.get("summary"),
+        "next_wave_dispatch_artifacts": dispatch_artifacts,
+        "dispatch_enabled": False,
+        "audit_only": True,
+        "message": "Next-wave dispatch markdown is ready as an audit artifact; no next wave was dispatched automatically.",
+    }
 
 
 class StatutePMFlow:
@@ -303,6 +354,23 @@ class StatutePMFlow:
                 blockers=child_result.get("blockers", []),
             )
             cp.record_result(conn, dispatch_id=parent.dispatch_id, instance_id=self.pm_instance_id, lease_epoch=parent.lease_epoch, result=result)
+            audit_notice = _next_wave_audit_notice(parent, child_id, parent_payload, result)
+            if audit_notice:
+                cp.create_message_from_instance(
+                    conn,
+                    sender_instance_id=self.pm_instance_id,
+                    receiver_profile=self.admin_profile,
+                    kind="status",
+                    body=json.dumps(audit_notice, sort_keys=True),
+                    metadata={
+                        "notice_type": "next_wave_ready_audit",
+                        "parent_dispatch_id": parent.dispatch_id,
+                        "child_dispatch_id": child_id,
+                        "dispatch_enabled": False,
+                        "next_wave_dispatch_artifacts": audit_notice["next_wave_dispatch_artifacts"],
+                    },
+                    idempotency_key=f"next-wave-audit:{parent.dispatch_id}:{child_id}",
+                )
             cp.create_message_from_instance(conn, sender_instance_id=self.pm_instance_id, receiver_profile=self.admin_profile, kind="status", body=json.dumps(result, sort_keys=True))
             cp.advance_dispatch(conn, parent.dispatch_id, instance_id=self.pm_instance_id, lease_epoch=parent.lease_epoch, status="completed")
             return {"parent_dispatch_id": parent.dispatch_id, "child_dispatch_id": child_id, "status": "completed", "pid": pid}

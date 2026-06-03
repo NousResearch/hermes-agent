@@ -140,6 +140,18 @@ hermes mcp test NAME        Test connection
 hermes mcp configure NAME   Toggle tool selection
 ```
 
+When a stdio MCP server argument starts with `-`, pass it through the
+equals form so argparse keeps it attached to `--args`:
+
+```bash
+hermes mcp add example-server \
+  --command /path/to/server \
+  --args=--transport=stdio
+```
+
+The space form (`--args "--transport=stdio"`) can be misread as a top-level
+Hermes option because `--args` accepts zero or more values.
+
 ### Gateway (Messaging Platforms)
 
 ```
@@ -289,6 +301,11 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /kanban [sub]        Multi-profile collaboration board (tasks, links, comments)
 /plugins             List plugins (CLI)
 ```
+
+Installed skills also expose dynamic slash commands named after the skill
+(for example `/github-auth`). Use `/skill <name>` or preload with
+`hermes --skills <name>` / `hermes -s <name>` when that is clearer for the
+session.
 
 ### Gateway
 ```
@@ -825,7 +842,8 @@ and logs — avoids shell-escaping backslashes in bash.
 ### Skills not showing
 1. `hermes skills list` — verify installed
 2. `hermes skills config` — check platform enablement
-3. Load explicitly: `/skill name` or `hermes -s name`
+3. Load explicitly: use `/skill name`, the skill's own slash command
+   such as `/github-auth`, or `hermes -s name`
 
 ### Gateway issues
 Check logs first:
@@ -837,6 +855,8 @@ Common gateway problems:
 - **Gateway dies on SSH logout**: Enable linger: `sudo loginctl enable-linger $USER`
 - **Gateway dies on WSL2 close**: WSL2 requires `systemd=true` in `/etc/wsl.conf` for systemd services to work. Without it, gateway falls back to `nohup` (dies when session closes).
 - **Gateway crash loop**: Reset the failed state: `systemctl --user reset-failed hermes-gateway`
+- **Gateway sends "Still working..." pings**: These are emitted by the gateway, not by the agent response. They are controlled by `agent.gateway_notify_interval` (default `180` seconds, bridged to `HERMES_AGENT_NOTIFY_INTERVAL`). To disable them for a profile, run `hermes -p <profile> config set agent.gateway_notify_interval 0` and restart that profile's gateway. Prompt or memory instructions alone do not suppress the notifier.
+- **`sudo hermes ...` says `sudo: hermes: command not found`**: `sudo` may use a secure PATH that excludes user-local installs such as `~/.local/bin/hermes`. Check the path with `command -v hermes`, then use the absolute path, for example `sudo /home/<user>/.local/bin/hermes gateway restart --system`, or operate the unit directly with `sudo systemctl restart hermes-gateway.service`.
 
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.

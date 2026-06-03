@@ -37,6 +37,22 @@ git config --global credential.helper 2>/dev/null || echo "no git credential hel
 2. If `gh` is installed but not authenticated → use "gh auth" method below
 3. If `gh` is not installed → use "git-only" method below (no sudo needed)
 
+### Repository context before auth diagnosis
+
+A GitHub command failing in the current directory does not prove GitHub is
+unauthenticated. Establish repository context first:
+
+```bash
+pwd
+git rev-parse --show-toplevel 2>/dev/null || echo "not in a git repository"
+gh auth status 2>/dev/null || true
+```
+
+- If `gh auth status` succeeds but `git rev-parse` reports "not in a git repository", fix the working directory or repository selection instead of re-authenticating.
+- Run repo-scoped commands from the owning checkout, either by setting the tool working directory or by using `cd /abs/path && ...`.
+- For `gh` commands that support it, use `-R OWNER/REPO` when no local checkout is needed.
+- Only diagnose an auth failure after both the repo-context check and the auth/token check fail.
+
 ---
 
 ## Method 1: Git-Only Authentication (No gh, No sudo)

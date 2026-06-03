@@ -6595,11 +6595,14 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
-        from agent.skill_commands import get_skill_commands
         from agent.skill_bundles import get_skill_bundles
 
+        # Skill commands are intentionally excluded from TUI autocomplete.
+        # ``slash.exec`` rejects skill commands (they must go through
+        # ``command.dispatch``), so showing them in the completion dropdown
+        # creates a dead-end UX: the user selects a suggestion only to hit an
+        # error on submit.  Users can still type skill commands manually.
         completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands(),
             skill_bundles_provider=lambda: get_skill_bundles(),
         )
         doc = Document(text, len(text))

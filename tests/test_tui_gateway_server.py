@@ -1859,6 +1859,31 @@ def test_complete_slash_includes_tui_details_command():
     assert any(item["text"] == "/details" for item in resp["result"]["items"])
 
 
+def test_complete_slash_excludes_skill_commands():
+    """Skill commands must NOT appear in TUI autocomplete.
+
+    ``slash.exec`` rejects skill commands (they must go through
+    ``command.dispatch``), so offering them in the completion dropdown
+    creates a dead-end UX.  Regression test for #38461.
+    """
+    fake_skills = {
+        "/mam": {"name": "mam", "description": "My Anime List"},
+        "/xyztest": {"name": "xyztest", "description": "Test skill"},
+    }
+    with patch(
+        "agent.skill_commands.get_skill_commands",
+        return_value=fake_skills,
+    ):
+        resp = server.handle_request(
+            {"id": "1", "method": "complete.slash", "params": {"text": "/ma"}}
+        )
+
+    items = resp.get("result", {}).get("items", [])
+    assert not any(it["text"] == "mam" for it in items), (
+        "Skill command 'mam' must not appear in TUI autocomplete"
+    )
+
+
 def test_complete_slash_includes_tui_mouse_command():
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/mou"}}

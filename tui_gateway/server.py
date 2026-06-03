@@ -1343,6 +1343,23 @@ def _get_usage(agent) -> dict:
     if comp:
         ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
         ctx_max = getattr(comp, "context_length", 0) or 0
+        # Guard against stale context_length from a previous model/alias session.
+        # Re-resolve against the active model+provider so a prior alias that
+        # targeted a different model cannot bleed its context_length into the
+        # status bar (issue #38006).
+        try:
+            from agent.model_metadata import get_model_context_length as _get_ctx
+            _live_ctx = _get_ctx(
+                getattr(agent, "model", "") or "",
+                base_url=getattr(agent, "base_url", "") or "",
+                api_key=getattr(agent, "api_key", "") or "",
+                provider=getattr(agent, "provider", "") or "",
+                config_context_length=getattr(agent, "_config_context_length", None),
+            )
+            if _live_ctx and isinstance(_live_ctx, int) and _live_ctx > 0:
+                ctx_max = _live_ctx
+        except Exception:
+            pass  # fall back to compressor value
         if ctx_max:
             usage["context_used"] = ctx_used
             usage["context_max"] = ctx_max

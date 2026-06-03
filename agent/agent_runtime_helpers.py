@@ -1886,6 +1886,17 @@ def looks_like_codex_intermediate_ack(
         "walkthrough",
         "report back",
         "summarize",
+        "diagnose",
+        "diagnosing",
+        "troubleshoot",
+        "troubleshooting",
+        "benchmark",
+        "verify",
+        "verifying",
+        "research",
+        "researching",
+        "investigate",
+        "investigating",
     )
     workspace_markers = (
         "directory",

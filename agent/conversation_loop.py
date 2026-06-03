@@ -4258,8 +4258,7 @@ def run_conversation(
                 agent._clear_status_buffer()
 
                 if (
-                    agent.api_mode == "codex_responses"
-                    and agent.valid_tool_names
+                    agent.valid_tool_names
                     and codex_ack_continuations < 2
                     and agent._looks_like_codex_intermediate_ack(
                         user_message=user_message,

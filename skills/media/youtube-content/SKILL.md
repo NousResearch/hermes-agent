@@ -71,3 +71,13 @@ After fetching the transcript, format it based on what the user asks for:
 - **Private/unavailable video**: relay the error and ask the user to verify the URL.
 - **No matching language**: retry without `--language` to fetch any available transcript, then note the actual language to the user.
 - **Dependency missing**: run `pip install youtube-transcript-api` and retry.
+
+## Hardened acquisition (Spearhead/Mystra)
+
+For autonomous Spearhead/Mystra knowledge extraction, the offline-safe
+acquisition layer `scripts/acquisition.py` provides a typed status taxonomy,
+transcript-provenance tracking (manual/ASR/translated/live-chat), bounded
+retry/backoff, default-anonymous auth policy, and a redaction helper. It
+performs no network/media/cookie/credential actions itself — providers are
+injected. Authenticated access is default-deny and requires explicit Filip
+approval. See [`docs/security/mystra-source-acquisition-policy.md`](../../../docs/security/mystra-source-acquisition-policy.md).

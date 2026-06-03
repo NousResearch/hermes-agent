@@ -557,6 +557,23 @@ def _copy_dist_payload(
     """
     target.mkdir(parents=True, exist_ok=True)
 
+    staged_resolved = staged.resolve()
+
+    def _copytree_ignore(directory: str, names: list) -> list:
+        """Only apply USER_OWNED_EXCLUDE at the staged-tree root.
+
+        Nested directories that happen to share names like ``bin``,
+        ``logs``, or ``cache`` must be copied verbatim — the exclude
+        list only protects the host installation's top-level
+        infrastructure dirs (e.g. ``~/.hermes/bin/``).
+        """
+        try:
+            if Path(directory).resolve() == staged_resolved:
+                return [n for n in names if n in USER_OWNED_EXCLUDE]
+        except (OSError, ValueError):
+            pass
+        return []
+
     for entry in staged.iterdir():
         name = entry.name
 
@@ -576,7 +593,7 @@ def _copy_dist_payload(
             shutil.copytree(
                 entry,
                 dest,
-                ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
+                ignore=_copytree_ignore,
             )
         else:
             shutil.copy2(entry, dest)

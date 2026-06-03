@@ -497,6 +497,35 @@ class TestSecurity:
         assert not (target / "skills" / "demo" / "leak.txt").exists()
 
 
+
+    def test_nested_dirs_matching_exclude_are_not_filtered(self, profile_env):
+        """Nested directories whose names match USER_OWNED_EXCLUDE entries
+        (e.g. tools/bin/, scripts/logs/) must be copied verbatim.
+
+        Regression test for #37954 -- the old copytree lambda applied
+        USER_OWNED_EXCLUDE recursively, silently dropping nested dirs.
+        """
+        staged = _make_staging_dir(profile_env, "src")
+        # Create nested dirs that share names with USER_OWNED_EXCLUDE
+        (staged / "tools" / "bin").mkdir(parents=True)
+        (staged / "tools" / "bin" / "tool.py").write_text("# tool\n")
+        (staged / "scripts" / "logs").mkdir(parents=True)
+        (staged / "scripts" / "logs" / "run.log").write_text("log\n")
+        (staged / "control" / "cache").mkdir(parents=True)
+        (staged / "control" / "cache" / "data.json").write_text("{}\n")
+
+        plan = install_distribution(str(staged), name="nested-test")
+        target = plan.target_dir
+
+        # All nested dirs must be present -- not filtered by USER_OWNED_EXCLUDE
+        assert (target / "tools" / "bin").is_dir(), "tools/bin/ was filtered"
+        assert (target / "tools" / "bin" / "tool.py").exists()
+        assert (target / "scripts" / "logs").is_dir(), "scripts/logs/ was filtered"
+        assert (target / "scripts" / "logs" / "run.log").exists()
+        assert (target / "control" / "cache").is_dir(), "control/cache/ was filtered"
+        assert (target / "control" / "cache" / "data.json").exists()
+
+
 # ===========================================================================
 # Install-time metadata (installed_at stamp)
 # ===========================================================================

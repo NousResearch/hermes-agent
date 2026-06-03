@@ -928,6 +928,62 @@ def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch
         assert kb.get_task(conn, t).status == "running"
 
 
+def test_max_runtime_zero_is_treated_as_no_limit(kanban_home, monkeypatch):
+    """max_runtime_seconds=0 must not kill the worker.
+
+    A value of 0 was previously treated as a literal upper bound: every
+    non-zero elapsed time triggered an immediate timeout.  After the fix,
+    0 is equivalent to NULL (no cap).
+
+    We insert max_runtime_seconds=0 via SQL to simulate a pre-existing row
+    (``create_task`` now rejects zero at the API boundary).
+    """
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+
+    with kb.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        t = kb.create_task(conn, title="zero-runtime", assignee="a")
+        # Simulate a pre-existing task with max_runtime_seconds=0
+        conn.execute(
+            "UPDATE tasks SET max_runtime_seconds = 0 WHERE id = ?", (t,),
+        )
+        kb.claim_task(conn, t, claimer=f"{host}:w")
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (999999, t),
+        )
+        run = kb.latest_run(conn, t)
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+            (999999, run.id),
+        )
+        # Simulate 5 minutes of elapsed time
+        old_started = int(time.time()) - 300
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? WHERE id = ?",
+            (old_started, run.id),
+        )
+
+        timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
+        assert timed_out == [], "max_runtime_seconds=0 should not trigger timeout"
+        assert kb.get_task(conn, t).status == "running"
+
+
+def test_create_task_rejects_max_runtime_zero(kanban_home):
+    """create_task must reject max_runtime_seconds <= 0."""
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="positive integer"):
+            kb.create_task(conn, title="bad", assignee="a", max_runtime_seconds=0)
+        with pytest.raises(ValueError, match="positive integer"):
+            kb.create_task(conn, title="bad", assignee="a", max_runtime_seconds=-1)
+        # None is fine (no limit)
+        tid = kb.create_task(conn, title="ok", assignee="a", max_runtime_seconds=None)
+        assert tid
+        # Positive is fine
+        tid2 = kb.create_task(conn, title="ok2", assignee="a", max_runtime_seconds=120)
+        assert tid2
+
+
 def test_heartbeat_extends_claim(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

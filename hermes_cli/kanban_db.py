@@ -2087,6 +2087,11 @@ def create_task(
         )
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
+    if max_runtime_seconds is not None and int(max_runtime_seconds) <= 0:
+        raise ValueError(
+            "max_runtime_seconds must be a positive integer or None (no limit); "
+            f"got {max_runtime_seconds!r}"
+        )
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
@@ -5127,6 +5132,7 @@ def enforce_max_runtime(
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
+        "  AND t.max_runtime_seconds > 0 "
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()

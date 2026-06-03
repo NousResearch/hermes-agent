@@ -11295,34 +11295,23 @@ class GatewayRunner:
         self._evict_cached_agent(session_key)
 
         # Persist to config if --global
+        # NOTE: Use save_config_value (atomic roundtrip) instead of the full
+        # save_config(cfg) to avoid the dual-write conflict described in #37751.
+        # save_config does a full dict rewrite via atomic_yaml_write() which can
+        # overwrite concurrent Desktop UI changes (regex field replacements).
+        # save_config_value uses atomic_roundtrip_yaml_update() which updates
+        # only the requested dotted keys, preserving any other changes that may
+        # have been made by another process between read and write.
         if persist_global:
             try:
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        cfg = yaml.safe_load(f) or {}
-                else:
-                    cfg = {}
-                # Coerce scalar/None ``model:`` into a dict before mutation —
-                # otherwise ``cfg.setdefault("model", {})`` returns the existing
-                # scalar and the next assignment raises
-                # ``TypeError: 'str' object does not support item assignment``.
-                # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
-                # string) instead of the proper nested ``model: {default: ...}``.
-                raw_model = cfg.get("model")
-                if isinstance(raw_model, dict):
-                    model_cfg = raw_model
-                elif isinstance(raw_model, str) and raw_model.strip():
-                    model_cfg = {"default": raw_model.strip()}
-                    cfg["model"] = model_cfg
-                else:
-                    model_cfg = {}
-                    cfg["model"] = model_cfg
-                model_cfg["default"] = result.new_model
-                model_cfg["provider"] = result.target_provider
+                # Use save_config_value for atomic per-key updates,
+                # matching the CLI behavior at cli.py:7802-7805.
+                from cli import save_config_value as _save_config_value
+                _save_config_value("model.default", result.new_model)
+                if result.provider_changed:
+                    _save_config_value("model.provider", result.target_provider)
                 if result.base_url:
-                    model_cfg["base_url"] = result.base_url
-                from hermes_cli.config import save_config
-                save_config(cfg)
+                    _save_config_value("model.base_url", result.base_url)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
 

@@ -17,7 +17,7 @@ import {
   parseMultipleKeypresses
 } from '../parse-keypress.js'
 import reconciler from '../reconciler.js'
-import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
+import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
 import { TerminalQuerier, xtversion } from '../terminal-querier.js'
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
@@ -648,7 +648,15 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
         void app.props
           .onCopySelectionNoClear()
           .then(text => {
-            if (!text) {
+            if (text) {
+              // Right-click copy is a deliberate action (unlike copy-on-select
+              // during a drag, which keeps the highlight so the drag can
+              // continue). Clear the highlight so the user gets visual
+              // confirmation the copy landed and a follow-up right-click on
+              // empty space pastes instead of re-copying the stale range.
+              clearSelection(sel)
+              app.props.onSelectionChange()
+            } else {
               app.props.onMouseDownAt(col, row, baseButton)
             }
           })

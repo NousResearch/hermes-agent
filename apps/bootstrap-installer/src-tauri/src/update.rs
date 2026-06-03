@@ -165,6 +165,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     emit_log(
         &app,
         Some("update"),
+        LogStream::Stdout,
         &format!("[update] updating against branch {update_branch}"),
     );
     let child_env = update_child_env(&install_root);
@@ -330,6 +331,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             emit_log(
                 &app,
                 None,
+                LogStream::Stderr,
                 &format!("[update] could not auto-launch desktop: {err}. Launch Hermes manually."),
             );
         }
@@ -585,6 +587,7 @@ async fn install_macos_app_update(
         emit_log(
             app,
             Some("install"),
+            LogStream::Stdout,
             &format!(
                 "[update] rebuilt app is already the launch target: {}",
                 target_app.display()
@@ -596,6 +599,7 @@ async fn install_macos_app_update(
     emit_log(
         app,
         Some("install"),
+        LogStream::Stdout,
         &format!(
             "[update] installing rebuilt app {} -> {}",
             rebuilt_app.display(),

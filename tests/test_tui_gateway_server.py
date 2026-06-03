@@ -133,6 +133,20 @@ def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
     assert "one" not in capped
 
 
+def test_tui_verbose_default_cap_stays_small(monkeypatch):
+    # Regression guard for #34095: the verbose tool text shipped to the TUI is
+    # rendered into a persisted, expanded-by-default trail block for the whole
+    # session. Raising this cap back toward the old 16KB re-introduces the Ink
+    # render-tree blowup that silently OOM-killed the TUI. Keep it small.
+    assert server._TUI_VERBOSE_TEXT_MAX_CHARS <= 2_000
+
+    huge = "x" * 40_000
+    capped = server._cap_tui_verbose_text(huge)
+
+    assert len(capped) < 2_000
+    assert capped.startswith("[showing verbose tail; omitted ")
+
+
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     redact_module = types.ModuleType("agent.redact")
 

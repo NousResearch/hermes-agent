@@ -1657,8 +1657,15 @@ def _tool_ctx(name: str, args: dict) -> str:
         return ""
 
 
-_TUI_VERBOSE_TEXT_MAX_CHARS = 16_000
-_TUI_VERBOSE_TEXT_MAX_LINES = 240
+# Tool Args/Result text shipped to the TUI for the verbose trail line. The TUI
+# renders only a small persisted preview (ui-tui VERBOSE_TRAIL_MAX_CHARS), kept
+# all session and expanded by default — so shipping more than that is pure pipe
+# waste AND feeds the Ink render-tree blowup that silently OOM-killed the TUI
+# parent (#34095). Cap here to match the render budget (a hair more, so the
+# "[omitted …]" label is still informative when output is genuinely large).
+# Full output stays in the agent context and the SQLite session, untouched.
+_TUI_VERBOSE_TEXT_MAX_CHARS = 1_000
+_TUI_VERBOSE_TEXT_MAX_LINES = 16
 
 
 def _cap_tui_verbose_text(text: str) -> str:

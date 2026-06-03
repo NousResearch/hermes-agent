@@ -33,6 +33,8 @@ import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessions,
+  $workingSessionIds,
+  mergeWorkingSessions,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -206,7 +208,12 @@ export function DesktopController() {
       const result = await listSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(result.sessions)
+        // Don't hard-replace: a session whose first turn is still in flight has
+        // message_count 0 in the DB, so min_messages=1 omits it. Since every
+        // message.complete refreshes the list, a plain replace would drop the
+        // other still-running new chats the moment one of them finishes. Keep
+        // any working session the server hasn't surfaced yet.
+        setSessions(prev => mergeWorkingSessions(prev, result.sessions, $workingSessionIds.get()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
       }
     } finally {

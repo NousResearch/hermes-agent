@@ -27,6 +27,33 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+/** Merge a fresh server session page into the in-memory list, keeping any
+ *  still-"working" session the server omitted.
+ *
+ *  A brand-new session's first user message isn't flushed to the SessionDB
+ *  until its turn is persisted, so `listSessions(min_messages=1)` skips
+ *  sessions that are mid-first-response. Because every `message.complete`
+ *  triggers a full refresh, a hard replace makes concurrent new chats vanish
+ *  the instant any one of them finishes. Preserving the working-but-absent
+ *  rows keeps them visible until their own turn persists and the server
+ *  starts returning them. Optimistic deletes/archives already drop the row
+ *  from `previous`, so a removed session can't be resurrected here. */
+export function mergeWorkingSessions(
+  previous: SessionInfo[],
+  incoming: SessionInfo[],
+  workingIds: readonly string[]
+): SessionInfo[] {
+  if (workingIds.length === 0) {
+    return incoming
+  }
+
+  const working = new Set(workingIds)
+  const incomingIds = new Set(incoming.map(session => session.id))
+  const survivors = previous.filter(session => working.has(session.id) && !incomingIds.has(session.id))
+
+  return survivors.length ? [...survivors, ...incoming] : incoming
+}
+
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])

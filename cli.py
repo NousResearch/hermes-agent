@@ -11979,7 +11979,7 @@ class HermesCLI:
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(self, message, images: list | None = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -12611,6 +12611,31 @@ class HermesCLI:
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
     
+    def _finalize_cli_session(self, end_reason: str = "cli_close") -> None:
+        """Best-effort closeout for the active CLI session row.
+
+        Interactive ``run()`` and non-interactive ``chat -q`` follow different
+        control-flow paths, and one-shot modes do not enter ``run()``'s
+        shutdown ``finally`` block.  Keep the DB closeout independent from
+        prompt rendering so every CLI mode can mark the live session ended.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if not session_db:
+            return
+
+        session_id = None
+        agent = getattr(self, "agent", None)
+        if agent is not None:
+            session_id = getattr(agent, "session_id", None)
+        session_id = session_id or getattr(self, "session_id", None)
+        if not session_id:
+            return
+
+        try:
+            session_db.end_session(session_id, end_reason)
+        except Exception:
+            logging.debug("Failed to finalize CLI session %s", session_id, exc_info=True)
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
         print()
@@ -15251,25 +15276,25 @@ class HermesCLI:
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
-            # Close session in SQLite
-            if hasattr(self, '_session_db') and self._session_db and self.agent:
+            # Close session in SQLite.  This is deliberately independent of
+            # ``self.agent`` so lazy/no-agent paths can still no-op safely and
+            # compression-rotated agents close the live child session.
+            self._finalize_cli_session("cli_close")
+            # /exit --delete: also remove the current session's transcripts
+            # and SQLite history. Ported from google-gemini/gemini-cli#19332.
+            if getattr(self, '_delete_session_on_exit', False):
                 try:
-                    self._session_db.end_session(self.agent.session_id, "cli_close")
-                except (Exception, KeyboardInterrupt) as e:
-                    logger.debug("Could not close session in DB: %s", e)
-                # /exit --delete: also remove the current session's transcripts
-                # and SQLite history. Ported from google-gemini/gemini-cli#19332.
-                if getattr(self, '_delete_session_on_exit', False):
-                    try:
-                        from hermes_constants import get_hermes_home as _ghh
-                        _sessions_dir = _ghh() / "sessions"
-                        _sid = self.agent.session_id
-                        if self._session_db.delete_session(_sid, sessions_dir=_sessions_dir):
-                            _cprint(f"  {_DIM}✓ Session {_escape(_sid)} deleted{_RST}")
+                    from hermes_constants import get_hermes_home as _ghh
+                    _sessions_dir = _ghh() / "sessions"
+                    _sid = getattr(self.agent, "session_id", None) if self.agent else self.session_id
+                    _session_db = getattr(self, '_session_db', None)
+                    if _session_db and _sid:
+                        if _session_db.delete_session(str(_sid), sessions_dir=_sessions_dir):
+                            _cprint(f"  {_DIM}✓ Session {_escape(str(_sid))} deleted{_RST}")
                         else:
-                            _cprint(f"  {_DIM}✗ Session {_escape(_sid)} not found for deletion{_RST}")
-                    except (Exception, KeyboardInterrupt) as e:
-                        logger.debug("Could not delete session on exit: %s", e)
+                            _cprint(f"  {_DIM}✗ Session {_escape(str(_sid))} not found for deletion{_RST}")
+                except (Exception, KeyboardInterrupt) as e:
+                    logger.debug("Could not delete session on exit: %s", e)
             # Plugin hook: on_session_end — safety net for interrupted exits.
             # run_conversation() already fires this per-turn on normal completion,
             # so only fire here if the agent was mid-turn (_agent_running) when
@@ -15808,6 +15833,9 @@ def main(
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                     
+                    # Non-interactive quiet mode exits before ``run()``'s
+                    # shutdown finally; close the SQLite session explicitly.
+                    cli._finalize_cli_session("cli_close")
                     # Ensure proper exit code for automation wrappers
                     sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
             
@@ -15833,7 +15861,12 @@ def main(
             # Surface security advisories before the agent runs — short
             # banner, doesn't depend on the welcome banner being shown.
             cli._show_security_advisories()
-            cli.chat(query, images=single_query_images or None)
+            try:
+                cli.chat(query, images=single_query_images or None)
+            finally:
+                # Human-facing one-shot mode also skips interactive run()
+                # closeout; finalize even when chat() returns an error.
+                cli._finalize_cli_session("cli_close")
             cli._print_exit_summary()
         return
     

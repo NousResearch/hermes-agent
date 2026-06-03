@@ -552,6 +552,68 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
+  it('keeps following final code-highlight growth when a run completes at bottom', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+
+    await wait(650)
+
+    scrollHeight = 1_700
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(1_700)
+  })
+
+  it('does not restart bottom-follow after completion when the user scrolled up', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+
+    await act(async () => {
+      fireEvent.wheel(viewport, { deltaY: -120 })
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    await wait(650)
+
+    scrollHeight = 1_700
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
   it('renders an incomplete streaming fenced code block as a code card', async () => {
     const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />)
 

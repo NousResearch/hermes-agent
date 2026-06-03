@@ -8,6 +8,7 @@ import { setThreadScrolledUp } from '@/store/thread-scroll'
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
+const POST_RUN_BOTTOM_LOCK_MS = 1_200
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -438,6 +439,46 @@ function useThreadScrollAnchor({
     }
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom, stickyBottomRef])
+
+  // Completion swaps streaming placeholders/plain code for final rendered DOM
+  // (notably Shiki-highlighted code). Keep following the bottom briefly after
+  // `isRunning` flips false so that final measurement pass cannot strand the
+  // viewport near the top of a large code block.
+  const prevIsRunningForLayoutRef = useRef(isRunning)
+  useLayoutEffect(() => {
+    const finishedRun = prevIsRunningForLayoutRef.current && !isRunning
+    prevIsRunningForLayoutRef.current = isRunning
+
+    if (!enabled || !finishedRun || !stickyBottomRef.current) {
+      return undefined
+    }
+
+    const lockUntil = performance.now() + POST_RUN_BOTTOM_LOCK_MS
+    let lockRaf: number | null = null
+
+    const lockFrame = () => {
+      lockRaf = null
+
+      if (!stickyBottomRef.current) {
+        return
+      }
+
+      pinToBottom()
+
+      if (performance.now() < lockUntil) {
+        lockRaf = requestAnimationFrame(lockFrame)
+      }
+    }
+
+    pinToBottom()
+    lockRaf = requestAnimationFrame(lockFrame)
+
+    return () => {
+      if (lockRaf !== null) {
+        cancelAnimationFrame(lockRaf)
+      }
+    }
+  }, [enabled, isRunning, pinToBottom, stickyBottomRef])
 
   useAuiEvent('thread.runStart', jumpToBottom)
 }

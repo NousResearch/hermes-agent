@@ -1496,6 +1496,76 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _telegram_topic_enabled_toolsets(user_config: dict, source: "SessionSource") -> Optional[List[str]]:
+    """Return a Telegram group-topic toolset allowlist when configured."""
+    if source.platform != Platform.TELEGRAM:
+        return None
+    if str(getattr(source, "chat_type", "") or "") != "group":
+        return None
+
+    thread_id = getattr(source, "thread_id", None)
+    if thread_id is None:
+        return None
+
+    telegram_cfg = user_config.get("telegram") or {}
+    if not isinstance(telegram_cfg, dict):
+        return None
+
+    group_topics = telegram_cfg.get("group_topics") or []
+    if not isinstance(group_topics, list):
+        return None
+
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    thread_id = str(thread_id)
+
+    for chat_entry in group_topics:
+        if not isinstance(chat_entry, dict):
+            continue
+        if str(chat_entry.get("chat_id", "")) != chat_id:
+            continue
+        topics = chat_entry.get("topics") or []
+        if not isinstance(topics, list):
+            return None
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            topic_thread_id = topic.get("thread_id")
+            if topic_thread_id is None or str(topic_thread_id) != thread_id:
+                continue
+            enabled_toolsets = topic.get("enabled_toolsets")
+            if isinstance(enabled_toolsets, list):
+                return [str(toolset) for toolset in enabled_toolsets]
+            return None
+        return None
+
+    return None
+
+
+def _resolve_enabled_toolsets_for_source(user_config: dict, source: "SessionSource") -> List[str]:
+    """Resolve the effective toolset list for a gateway source."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    platform_key = _platform_config_key(source.platform)
+    topic_toolsets = _telegram_topic_enabled_toolsets(user_config, source)
+    if topic_toolsets is None:
+        return sorted(_get_platform_tools(user_config, platform_key))
+
+    scoped_config = dict(user_config or {})
+    platform_toolsets = dict(scoped_config.get("platform_toolsets") or {})
+    platform_toolsets[platform_key] = list(topic_toolsets)
+    scoped_config["platform_toolsets"] = platform_toolsets
+
+    resolved = sorted(
+        _get_platform_tools(
+            scoped_config,
+            platform_key,
+            include_default_mcp_servers=False,
+        )
+    )
+    topic_toolset_names = set(topic_toolsets)
+    return [toolset for toolset in resolved if toolset in topic_toolset_names]
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -12479,9 +12549,7 @@ class GatewayRunner:
                 return
 
             platform_key = _platform_config_key(source.platform)
-
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = _resolve_enabled_toolsets_for_source(user_config, source)
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -16822,9 +16890,7 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
-
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = _resolve_enabled_toolsets_for_source(user_config, source)
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

@@ -24,6 +24,7 @@ const net = require('node:net')
 const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
+const { createBackendConnectionState } = require('./backend-connection-state.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
@@ -539,11 +540,10 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
-let hermesProcess = null
-let connectionPromise = null
+const backendConnectionState = createBackendConnectionState()
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
-// (the desktop's launch profile) stays managed by hermesProcess +
-// connectionPromise + startHermes(); this pool only holds EXTRA profile
+// (the desktop's launch profile) stays managed by backendConnectionState +
+// startHermes(); this pool only holds EXTRA profile
 // backends spawned lazily when a session belongs to a different profile. A user
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
@@ -1588,15 +1588,16 @@ async function releaseBackendLock(updateRoot, tag) {
 
   // Collect every backend PID the desktop owns: primary window backend + pool.
   const pids = []
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) pids.push(hermesProcess.pid)
+  const primaryProcess = backendConnectionState.getProcess()
+  if (primaryProcess && Number.isInteger(primaryProcess.pid)) pids.push(primaryProcess.pid)
   for (const entry of backendPool.values()) {
     if (entry.process && Number.isInteger(entry.process.pid)) pids.push(entry.process.pid)
   }
 
   // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
-  if (hermesProcess && !hermesProcess.killed) {
+  if (primaryProcess && !primaryProcess.killed) {
     try {
-      hermesProcess.kill('SIGTERM')
+      primaryProcess.kill('SIGTERM')
     } catch {
       void 0
     }
@@ -1801,6 +1802,7 @@ async function applyUpdatesPosixInApp() {
   // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
   // list (a single int still parses for back-compat).
   const desktopChildPids = []
+  const hermesProcess = backendConnectionState.getProcess()
   if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
     desktopChildPids.push(hermesProcess.pid)
   }
@@ -4378,13 +4380,13 @@ function resetBootProgressForReconnect() {
 }
 
 function resetHermesConnection() {
-  connectionPromise = null
+  const hermesProcess = backendConnectionState.getProcess()
+  backendConnectionState.invalidate()
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
   }
 
-  hermesProcess = null
   resetBootProgressForReconnect()
 }
 
@@ -4393,8 +4395,9 @@ function resetHermesConnection() {
 // startHermes() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
 async function teardownPrimaryBackendAndWait() {
-  // Capture the reference before resetHermesConnection() nulls hermesProcess.
-  const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
+  // Capture the reference before resetHermesConnection() invalidates it.
+  const primaryProcess = backendConnectionState.getProcess()
+  const dying = primaryProcess && !primaryProcess.killed ? primaryProcess : null
   resetHermesConnection()
 
   await waitForBackendExit(dying)
@@ -4693,8 +4696,11 @@ async function startHermes() {
   if (bootstrapFailure) {
     throw bootstrapFailure
   }
-  if (connectionPromise) return connectionPromise
+  const existingConnection = backendConnectionState.getPromise()
+  if (existingConnection) return existingConnection
 
+  const connectionAttempt = backendConnectionState.startAttempt()
+  let connectionPromise
   connectionPromise = (async () => {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
@@ -4743,7 +4749,7 @@ async function startHermes() {
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
-    hermesProcess = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
+    const hermesProcess = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
       cwd: hermesCwd,
       env: {
         ...process.env,
@@ -4768,6 +4774,7 @@ async function startHermes() {
       stdio: ['ignore', 'pipe', 'pipe']
     }))
 
+    const processOwner = backendConnectionState.attachProcess(hermesProcess)
     hermesProcess.stdout.on('data', rememberLog)
     hermesProcess.stderr.on('data', rememberLog)
     let backendReady = false
@@ -4776,6 +4783,12 @@ async function startHermes() {
       rejectBackendStart = reject
     })
     hermesProcess.once('error', error => {
+      if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
+        rememberLog(`Ignoring stale Hermes backend error: ${error.message}`)
+        rejectBackendStart?.(error)
+        return
+      }
+
       rememberLog(`Hermes backend failed to start: ${error.message}`)
       updateBootProgress(
         {
@@ -4786,15 +4799,19 @@ async function startHermes() {
         },
         { allowDecrease: true }
       )
-      hermesProcess = null
-      connectionPromise = null
       sendBackendExit({ code: null, signal: null, error: error.message })
       rejectBackendStart?.(error)
     })
     hermesProcess.once('exit', (code, signal) => {
+      if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
+        rememberLog(`Ignoring stale Hermes backend exit (${signal || code})`)
+        if (!backendReady) {
+          rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection.'))
+        }
+        return
+      }
+
       rememberLog(`Hermes backend exited (${signal || code})`)
-      hermesProcess = null
-      connectionPromise = null
       sendBackendExit({ code, signal })
       if (!backendReady) {
         const message = `Hermes backend exited before it became ready (${signal || code}).`
@@ -4839,20 +4856,21 @@ async function startHermes() {
     }
   })().catch(error => {
     const message = error instanceof Error ? error.message : String(error)
-    updateBootProgress(
-      {
-        error: message,
-        message: `Desktop boot failed: ${message}`,
-        phase: 'backend.error',
-        running: false
-      },
-      { allowDecrease: true }
-    )
-    connectionPromise = null
+    if (backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
+      updateBootProgress(
+        {
+          error: message,
+          message: `Desktop boot failed: ${message}`,
+          phase: 'backend.error',
+          running: false
+        },
+        { allowDecrease: true }
+      )
+    }
     throw error
   })
 
-  return connectionPromise
+  return backendConnectionState.setPromise(connectionAttempt, connectionPromise)
 }
 
 // Shared navigation guards + window chrome wiring applied to every window
@@ -5074,6 +5092,7 @@ ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(pro
 // not, we drop the cache so the next getConnection() rebuilds it. Local backends
 // self-heal via their child 'exit' handler, so we never touch them here.
 ipcMain.handle('hermes:connection:revalidate', async () => {
+  const connectionPromise = backendConnectionState.getPromise()
   if (!connectionPromise) {
     return { ok: true, rebuilt: false }
   }
@@ -5124,7 +5143,7 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   // full backend flow (including a fresh runBootstrap pass).
   rememberLog('[bootstrap] reset requested by renderer; clearing latched failure')
   bootstrapFailure = null
-  connectionPromise = null
+  backendConnectionState.clearPromise()
   bootstrapState = {
     active: false,
     manifest: null,
@@ -6253,6 +6272,7 @@ app.on('before-quit', () => {
   flushDesktopLogBufferSync()
   closePreviewWatchers()
 
+  const hermesProcess = backendConnectionState.getProcess()
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
   }

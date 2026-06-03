@@ -799,6 +799,19 @@ def _coerce_boolean(value: str):
     return value
 
 
+def _summarize_args(args: dict, max_len: int = 80) -> str:
+    """Summarize tool arguments for logging — truncates long values."""
+    if not args:
+        return "{}"
+    items = []
+    for k, v in args.items():
+        s = str(v)
+        if len(s) > max_len:
+            s = s[:max_len] + "..."
+        items.append(f"{k}={s}")
+    return ", ".join(items)
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -837,6 +850,24 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+
+    # ── Input-dependent risk classification ──────────────────────────
+    # Claude Code pattern: isConcurrencySafe(input) not isConcurrencySafe()
+    # Log destructive tool calls for audit trail
+    _risk_level = None
+    try:
+        from agent.tool_risk import classify_tool_risk, risk_requires_approval, classify_display
+        _risk_level = classify_tool_risk(function_name, function_args)
+        if risk_requires_approval(_risk_level):
+            logger.warning(
+                "%s tool call classified as %s: %s(%s)",
+                classify_display(_risk_level),
+                _risk_level.value,
+                function_name,
+                _summarize_args(function_args),
+            )
+    except Exception:
+        pass  # tool_risk module optional — silently degrade
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them

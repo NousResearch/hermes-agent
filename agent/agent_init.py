@@ -408,6 +408,11 @@ def init_agent(
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
 
+    # Circuit breaker panel — independent per-feature breakers
+    # (compression, delegation, api_retry, model_error, etc.)
+    from agent.circuit_breaker import CircuitBreakerPanel
+    agent._circuit_breaker_panel = CircuitBreakerPanel()
+
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt

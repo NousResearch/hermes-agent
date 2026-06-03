@@ -451,6 +451,9 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Advance circuit breakers — each turn is a fresh observation window
+    if hasattr(agent, '_circuit_breaker_panel'):
+        agent._circuit_breaker_panel.advance_turn()
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send
@@ -1503,6 +1506,16 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
+
+                        # Record circuit breaker failure
+                        if hasattr(agent, '_circuit_breaker_panel'):
+                            tripped = agent._circuit_breaker_panel.record_failure("api_retry")
+                            if tripped:
+                                agent._emit_status(
+                                    "🔴 Circuit breaker 'api_retry' TRIPPED — "
+                                    "all API calls blocked for this turn."
+                                )
+
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2909,6 +2922,17 @@ def run_conversation(
                             agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+
+                            # Record circuit breaker — compression trips after 3 failures
+                            if hasattr(agent, '_circuit_breaker_panel'):
+                                tripped = agent._circuit_breaker_panel.record_failure("compression")
+                                if tripped:
+                                    agent._emit_status(
+                                        "🔴 Circuit breaker 'compression' TRIPPED — "
+                                        "auto-compress disabled for this session. "
+                                        "Use /new for a fresh start."
+                                    )
+
                             agent._persist_session(messages, conversation_history)
                             return {
                                 "messages": messages,
@@ -2978,6 +3002,16 @@ def run_conversation(
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+
+                        # Record circuit breaker — compression trips after 3 failures
+                        if hasattr(agent, '_circuit_breaker_panel'):
+                            tripped = agent._circuit_breaker_panel.record_failure("compression")
+                            if tripped:
+                                agent._emit_status(
+                                    "🔴 Circuit breaker 'compression' TRIPPED — "
+                                    "auto-compress disabled. Use /new for fresh start."
+                                )
+
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -3314,6 +3348,16 @@ def run_conversation(
                         agent.log_prefix, max_retries, _final_summary,
                         _provider, _model, len(api_messages), f"{approx_tokens:,}",
                     )
+
+                    # Record circuit breaker — model_error trips after 3 consecutive API failures
+                    if hasattr(agent, '_circuit_breaker_panel'):
+                        tripped = agent._circuit_breaker_panel.record_failure("model_error")
+                        if tripped:
+                            agent._emit_status(
+                                "🔴 Circuit breaker 'model_error' TRIPPED — "
+                                "suggest switching model/provider."
+                            )
+
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,

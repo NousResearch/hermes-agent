@@ -4756,11 +4756,11 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
 
 
 def _convert_openai_images_to_anthropic(messages: list) -> list:
-    """Convert OpenAI ``image_url`` and ``video_url`` content blocks to Anthropic format.
+    """Convert OpenAI ``image_url``/``video_url`` blocks to Anthropic format.
 
     Converts:
-    - ``image_url`` blocks → Anthropic ``image`` blocks
-    - ``video_url`` blocks → Anthropic ``input_video`` blocks
+    - ``image_url`` blocks to Anthropic ``image`` blocks
+    - ``video_url`` blocks to Anthropic ``video`` blocks (MiniMax M3 compat)
 
     Only touches messages that have list-type content with ``image_url`` or
     ``video_url`` blocks; plain text messages pass through unchanged.
@@ -4801,6 +4801,13 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
                     })
                 changed = True
             elif block.get("type") == "video_url":
+                # MiniMax's Anthropic-compatible endpoint expects a "video"
+                # block (not OpenAI's "video_url", and not "input_video").
+                # See https://platform.minimax.io/docs/api-reference/text-anthropic-api
+                # — the Messages-field table lists type="video" (M3 only,
+                # URL/base64/mm_file://). The source shape mirrors the "image"
+                # block: base64 → {type:"base64", media_type, data}, URL →
+                # {type:"url", url}.
                 video_url_val = (block.get("video_url") or {}).get("url", "")
                 if video_url_val.startswith("data:"):
                     # Parse data URI: data:<media_type>;base64,<data>
@@ -4809,7 +4816,7 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
                     if ":" in header and ";" in header:
                         media_type = header.split(":", 1)[1].split(";", 1)[0]
                     new_content.append({
-                        "type": "input_video",
+                        "type": "video",
                         "source": {
                             "type": "base64",
                             "media_type": media_type,
@@ -4817,10 +4824,14 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
                         },
                     })
                 else:
-                    # URL-based video — Anthropic protocol doesn't have a
-                    # native URL-based video block; pass through as-is and
-                    # let the provider handle (or reject) it.
-                    new_content.append(block)
+                    # URL-based video
+                    new_content.append({
+                        "type": "video",
+                        "source": {
+                            "type": "url",
+                            "url": video_url_val,
+                        },
+                    })
                 changed = True
             else:
                 new_content.append(block)

@@ -46,6 +46,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
+from gateway.integrations.youpet import YouPetBridgeError, build_youpet_bridge_from_env
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.platforms.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
@@ -79,6 +80,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._user_app_map: Dict[str, str] = {}
         self._access_tokens: Dict[str, Dict[str, Any]] = {}
+        self._youpet_bridge = build_youpet_bridge_from_env(self.send)
 
     # ------------------------------------------------------------------
     # App normalisation
@@ -141,6 +143,8 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()
             self._poll_task = asyncio.create_task(self._poll_loop())
+            if self._youpet_bridge:
+                await self._youpet_bridge.start()
             self._mark_connected()
             logger.info(
                 "[WecomCallback] HTTP server listening on %s:%s%s",
@@ -169,6 +173,8 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        if self._youpet_bridge:
+            await self._youpet_bridge.stop()
         await self._cleanup()
         self._mark_disconnected()
         logger.info("[WecomCallback] Disconnected")
@@ -302,16 +308,26 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                             str(app.get("corp_id") or ""), event.source.user_id,
                         )
                         self._user_app_map[map_key] = app["name"]
-                    await self._message_queue.put(event)
+                    skip_agent_dispatch = await self._dispatch_youpet_bridge(event, app)
+                    if not skip_agent_dispatch:
+                        await self._message_queue.put(event)
                 # Immediately acknowledge — the agent's reply will arrive
                 # later via the proactive message/send API.
                 return web.Response(text="success", content_type="text/plain")
             except WeComCryptoError:
                 continue
+            except YouPetBridgeError:
+                logger.exception("[WecomCallback] YouPet bridge failed")
+                return web.Response(status=502, text="youpet bridge failed")
             except Exception:
                 logger.exception("[WecomCallback] Error handling message")
                 break
         return web.Response(status=400, text="invalid callback payload")
+
+    async def _dispatch_youpet_bridge(self, event: MessageEvent, app: Dict[str, Any]) -> bool:
+        if not self._youpet_bridge:
+            return False
+        return await self._youpet_bridge.handle_wecom_event(event, app)
 
     async def _poll_loop(self) -> None:
         """Drain the message queue and dispatch to the gateway runner."""

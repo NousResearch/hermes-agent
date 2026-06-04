@@ -307,3 +307,65 @@ class TestWecomCallbackPollLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert calls == ["test"]
+
+
+class TestWecomCallbackYouPetBridge:
+    @pytest.mark.asyncio
+    async def test_youpet_bridge_can_skip_agent_dispatch(self):
+        adapter = WecomCallbackAdapter(_config())
+        event = adapter._build_event(
+            _app(),
+            """
+            <xml>
+              <ToUserName>ww1234567890</ToUserName>
+              <FromUserName>zhangsan</FromUserName>
+              <CreateTime>1710000000</CreateTime>
+              <MsgType>text</MsgType>
+              <Content>done</Content>
+              <MsgId>m3</MsgId>
+            </xml>
+            """,
+        )
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            async def handle_wecom_event(self, inbound_event, app):
+                self.calls.append((inbound_event.message_id, app["name"]))
+                return True
+
+        bridge = FakeBridge()
+        adapter._youpet_bridge = bridge
+
+        skip_agent_dispatch = await adapter._dispatch_youpet_bridge(event, _app())
+
+        assert skip_agent_dispatch is True
+        assert bridge.calls == [("m3", "test-app")]
+
+    @pytest.mark.asyncio
+    async def test_youpet_bridge_can_allow_agent_dispatch(self):
+        adapter = WecomCallbackAdapter(_config())
+        event = adapter._build_event(
+            _app(),
+            """
+            <xml>
+              <ToUserName>ww1234567890</ToUserName>
+              <FromUserName>zhangsan</FromUserName>
+              <CreateTime>1710000000</CreateTime>
+              <MsgType>text</MsgType>
+              <Content>done</Content>
+              <MsgId>m4</MsgId>
+            </xml>
+            """,
+        )
+
+        class FakeBridge:
+            async def handle_wecom_event(self, inbound_event, app):
+                return False
+
+        adapter._youpet_bridge = FakeBridge()
+
+        skip_agent_dispatch = await adapter._dispatch_youpet_bridge(event, _app())
+
+        assert skip_agent_dispatch is False

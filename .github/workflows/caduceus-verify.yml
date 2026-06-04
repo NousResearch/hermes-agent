@@ -1,0 +1,28 @@
+name: Caduceus verify
+
+on:
+  push:
+    branches: [caduceus]
+  pull_request:
+    branches: [caduceus]
+
+permissions:
+  contents: read
+
+jobs:
+  caduceus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Caduceus gate
+        run: bash scripts/caduceus_verify.sh

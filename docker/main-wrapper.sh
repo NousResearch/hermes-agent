@@ -21,6 +21,34 @@ set -e
 
 drop() { [ "$(id -u)" = 0 ] && set -- s6-setuidgid hermes "$@"; exec "$@"; }
 
+# --- Reject the unsupported `docker run --user <uid>:<gid>` start ---
+# Mirror the guard in stage2-hook.sh (cont-init). This is the surface the
+# user actually sees in `docker run` output: when the container is pinned to
+# an arbitrary non-root, non-hermes UID, the bootstrap was skipped and the
+# baked image dirs (owned by the hermes build UID) are unwritable, so fail
+# fast here with actionable guidance rather than crashing on `cd`/EACCES
+# further down. See stage2-hook.sh for the full rationale.
+cur_uid="$(id -u)"
+if [ "$cur_uid" != 0 ] && [ "$cur_uid" != "$(id -u hermes)" ]; then
+    cat >&2 <<EOF
+[hermes] ERROR: container started with --user $cur_uid (an arbitrary, non-hermes UID) — not supported.
+
+To make container-written files match your HOST user, don't use --user.
+Start as root (the default) and pass your host UID/GID instead:
+
+    docker run -e HERMES_UID=\$(id -u) -e HERMES_GID=\$(id -g) ...
+
+NAS users (Synology / unRAID / UGOS) can use the PUID/PGID aliases:
+
+    docker run -e PUID=\$(id -u) -e PGID=\$(id -g) ...
+
+The image remaps the hermes user to that UID/GID at boot and chowns the data
+volume, so files land owned by your host user — the same outcome --user gave,
+without breaking the s6 supervision tree.
+EOF
+    exit 1
+fi
+
 # HOME comes through with-contenv as /root (the /init context). Override
 # to the hermes user's home before dropping privileges so libraries that
 # resolve paths via $HOME (e.g. discord lockfile under XDG_STATE_HOME)

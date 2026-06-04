@@ -23,3 +23,14 @@ def check_file_requirements():
 
 
 __all__ = ["check_file_requirements"]
+
+
+def __getattr__(name):
+    # Lazy re-export so gateway code can keep using
+    # `from tools import slash_confirm` without forcing a full eager import
+    # at package load time. Resolves only the names actually requested.
+    if name == "slash_confirm":
+        import importlib
+
+        return importlib.import_module("tools.slash_confirm")
+    raise AttributeError(f"module 'tools' has no attribute {name!r}")

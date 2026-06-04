@@ -118,7 +118,12 @@ def is_write_denied(path: str) -> bool:
             real = os.path.realpath(base)
             if real not in hermes_dirs:
                 hermes_dirs.append(real)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "Ignoring write-deny hermess-dir resolution error for %s: %s",
+                base,
+                exc,
+            )
             continue
 
     for base_real in hermes_dirs:
@@ -126,7 +131,13 @@ def is_write_denied(path: str) -> bool:
             try:
                 if resolved == os.path.realpath(os.path.join(base_real, name)):
                     return True
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "Ignoring write-deny control-file resolution error for %s/%s: %s",
+                    base_real,
+                    name,
+                    exc,
+                )
                 continue
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))

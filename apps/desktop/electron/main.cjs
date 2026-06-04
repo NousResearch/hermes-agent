@@ -3750,107 +3750,119 @@ async function startHermes() {
     }
 
     await advanceBootProgress('backend.port', 'Finding an open local port', 16)
-    const port = await pickPort()
     const token = crypto.randomBytes(32).toString('base64url')
-    const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
-    await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
-    const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
-    const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
-
-    await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
-    rememberLog(`Starting Hermes backend via ${backend.label}`)
-
-    hermesProcess = spawn(backend.command, backend.args, {
-      cwd: hermesCwd,
-      env: {
-        ...process.env,
-        // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-        // resolves to the SAME location our resolveHermesHome() picked. Without
-        // this pin, Python falls back to ~/.hermes on every platform — fine on
-        // mac/linux (where our default matches), but on Windows our default is
-        // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-        // Mismatch would split config / sessions / .env / logs across two
-        // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-        // can't reliably do that, so we set it inline for every spawn.
-        HERMES_HOME,
-        ...backend.env,
-        HERMES_DASHBOARD_SESSION_TOKEN: token,
-        HERMES_WEB_DIST: webDist
-      },
-      shell: backend.shell,
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
-
-    hermesProcess.stdout.on('data', rememberLog)
-    hermesProcess.stderr.on('data', rememberLog)
     let backendReady = false
-    let rejectBackendStart = null
-    const backendStartFailed = new Promise((_resolve, reject) => {
-      rejectBackendStart = reject
-    })
-    hermesProcess.once('error', error => {
-      rememberLog(`Hermes backend failed to start: ${error.message}`)
-      updateBootProgress(
-        {
-          error: error.message,
-          message: `Hermes backend failed to start: ${error.message}`,
-          phase: 'backend.error',
-          running: false
+    let lastPortError = null
+
+    for (let port = PORT_FLOOR; port <= PORT_CEILING; port++) {
+      if (!await isPortAvailable(port)) continue
+
+      const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
+      await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+      const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
+      const hermesCwd = resolveHermesCwd()
+      const webDist = resolveWebDist()
+
+      await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
+      rememberLog(`Starting Hermes backend via ${backend.label}`)
+
+      hermesProcess = spawn(backend.command, backend.args, {
+        cwd: hermesCwd,
+        env: {
+          ...process.env,
+          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+          // resolves to the SAME location our resolveHermesHome() picked. Without
+          // this pin, Python falls back to ~/.hermes on every platform — fine on
+          // mac/linux (where our default matches), but on Windows our default is
+          // %LOCALAPPDATA%\\hermes, which differs from C:\\Users\\<u>\\.hermes.
+          // Mismatch would split config / sessions / .env / logs across two
+          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+          // can't reliably do that, so we set it inline for every spawn.
+          HERMES_HOME,
+          ...backend.env,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          HERMES_WEB_DIST: webDist
         },
-        { allowDecrease: true }
-      )
-      hermesProcess = null
-      connectionPromise = null
-      sendBackendExit({ code: null, signal: null, error: error.message })
-      rejectBackendStart?.(error)
-    })
-    hermesProcess.once('exit', (code, signal) => {
-      rememberLog(`Hermes backend exited (${signal || code})`)
-      hermesProcess = null
-      connectionPromise = null
-      sendBackendExit({ code, signal })
-      if (!backendReady) {
-        const message = `Hermes backend exited before it became ready (${signal || code}).`
+        shell: backend.shell,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+
+      hermesProcess.stdout.on('data', rememberLog)
+      hermesProcess.stderr.on('data', rememberLog)
+      let rejectBackendStart = null
+      const backendStartFailed = new Promise((_resolve, reject) => {
+        rejectBackendStart = reject
+      })
+      hermesProcess.once('error', error => {
+        rememberLog(`Hermes backend failed to start: ${error.message}`)
         updateBootProgress(
           {
-            error: message,
-            message,
+            error: error.message,
+            message: `Hermes backend failed to start: ${error.message}`,
             phase: 'backend.error',
             running: false
           },
           { allowDecrease: true }
         )
-        rejectBackendStart?.(
-          new Error(
-            `Hermes backend exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentHermesLog()}`
+        hermesProcess = null
+        if (backendReady) connectionPromise = null
+        sendBackendExit({ code: null, signal: null, error: error.message })
+        rejectBackendStart?.(error)
+      })
+      hermesProcess.once('exit', (code, signal) => {
+        rememberLog(`Hermes backend exited (${signal || code})`)
+        hermesProcess = null
+        if (backendReady) connectionPromise = null
+        sendBackendExit({ code, signal })
+        if (!backendReady) {
+          const message = `Hermes backend exited before it became ready (${signal || code}).`
+          updateBootProgress(
+            {
+              error: message,
+              message,
+              phase: 'backend.error',
+              running: false
+            },
+            { allowDecrease: true }
           )
-        )
+          rejectBackendStart?.(
+            new Error(
+              `Hermes backend exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentHermesLog()}`
+            )
+          )
+        }
+      })
+
+      const baseUrl = `http://127.0.0.1:${port}`
+      await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
+      try {
+        await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
+        backendReady = true
+        updateBootProgress({
+          phase: 'backend.ready',
+          message: 'Hermes backend is ready. Finalizing desktop startup',
+          progress: 94,
+          running: true,
+          error: null
+        })
+        return {
+          baseUrl,
+          mode: 'local',
+          source: 'local',
+          authMode: 'token',
+          token,
+          wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
+          logs: hermesLog.slice(-80),
+          ...getWindowState()
+        }
+      } catch (err) {
+        lastPortError = err
+        rememberLog(`Port ${port} failed, trying next: ${err.message}`)
       }
-    })
-
-    const baseUrl = `http://127.0.0.1:${port}`
-    await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
-    await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
-    backendReady = true
-    updateBootProgress({
-      phase: 'backend.ready',
-      message: 'Hermes backend is ready. Finalizing desktop startup',
-      progress: 94,
-      running: true,
-      error: null
-    })
-
-    return {
-      baseUrl,
-      mode: 'local',
-      source: 'local',
-      authMode: 'token',
-      token,
-      wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
-      logs: hermesLog.slice(-80),
-      ...getWindowState()
     }
+
+    connectionPromise = null
+    throw lastPortError || new Error('No free localhost port')
   })().catch(error => {
     const message = error instanceof Error ? error.message : String(error)
     updateBootProgress(

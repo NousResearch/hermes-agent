@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
 import { Check } from '@/lib/icons'
@@ -51,6 +52,20 @@ function ThemePreview({ name }: { name: string }) {
   )
 }
 
+function SectionHead({ title, description, pill }: { title: string; description: string; pill?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div>
+        <div className="text-[length:var(--conversation-text-font-size)] font-medium">{title}</div>
+        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {description}
+        </div>
+      </div>
+      {pill}
+    </div>
+  )
+}
+
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
@@ -58,24 +73,18 @@ export function AppearanceSettings() {
 
   return (
     <SettingsContent>
-      <div className="space-y-5">
-        <div>
-          <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
-            chat surface styling.
-          </p>
-        </div>
+      <div className="grid gap-8">
+        <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
+          chat surface styling.
+        </p>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">Color Mode</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Pick a fixed mode or let Hermes follow your system setting.
-              </div>
-            </div>
-            <Pill>{prettyName(mode)}</Pill>
-          </div>
+        <section className="grid gap-3">
+          <SectionHead
+            description="Pick a fixed mode or let Hermes follow your system setting."
+            pill={<Pill>{prettyName(mode)}</Pill>}
+            title="Color Mode"
+          />
           <div className="grid gap-2 sm:grid-cols-3">
             {MODE_OPTIONS.map(({ id, label, description, icon: Icon }) => {
               const active = mode === id
@@ -113,16 +122,12 @@ export function AppearanceSettings() {
           </div>
         </section>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">Tool Call Display</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Product hides raw tool payloads; Technical shows full input/output.
-              </div>
-            </div>
-            <Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>
-          </div>
+        <section className="grid gap-3">
+          <SectionHead
+            description="Product hides raw tool payloads; Technical shows full input/output."
+            pill={<Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>}
+            title="Tool Call Display"
+          />
           <div className="grid gap-2 sm:grid-cols-2">
             {(
               [
@@ -170,16 +175,12 @@ export function AppearanceSettings() {
           </div>
         </section>
 
-        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium">Theme</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Desktop palettes only. The selected mode is applied on top.
-              </div>
-            </div>
-            {activeTheme && <Pill>{activeTheme.label}</Pill>}
-          </div>
+        <section className="grid gap-3">
+          <SectionHead
+            description="Desktop palettes only. The selected mode is applied on top."
+            pill={activeTheme ? <Pill>{activeTheme.label}</Pill> : undefined}
+            title="Theme"
+          />
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {availableThemes.map(theme => {
               const active = themeName === theme.name

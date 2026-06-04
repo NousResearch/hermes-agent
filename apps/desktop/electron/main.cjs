@@ -224,6 +224,7 @@ const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.j
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
+const GIT_OPERATION_TIMEOUT_MS = Number.parseInt(process.env.HERMES_DESKTOP_GIT_TIMEOUT_MS || '15000', 10)
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
@@ -1136,6 +1137,7 @@ function resolveUpdateRoot() {
 
 function runGit(args, options = {}) {
   return new Promise((resolve, reject) => {
+    let settled = false
     const child = spawn(resolveGitBinary(), IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args, {
       cwd: options.cwd,
       env: { ...process.env, ...(options.env || {}), GIT_TERMINAL_PROMPT: '0' },
@@ -1154,8 +1156,29 @@ function runGit(args, options = {}) {
       stderr += text
       options.onLine?.('stderr', text)
     })
-    child.once('error', reject)
-    child.once('exit', code => resolve({ code, stdout, stderr }))
+    const timeout = setTimeout(() => {
+      if (settled) return
+      settled = true
+      stderr = stderr
+        ? `${stderr}\ngit operation timed out after ${GIT_OPERATION_TIMEOUT_MS}ms`
+        : `git operation timed out after ${GIT_OPERATION_TIMEOUT_MS}ms`
+      try {
+        child.kill('SIGTERM')
+      } catch {}
+      resolve({ code: null, stdout, stderr, timedOut: true })
+    }, GIT_OPERATION_TIMEOUT_MS)
+    child.once('error', error => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      reject(error)
+    })
+    child.once('exit', code => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      resolve({ code, stdout, stderr })
+    })
   })
 }
 

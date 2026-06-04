@@ -1026,15 +1026,32 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+def _vision_result_failed(result: Any) -> bool:
+    """True when a ``vision_analyze_tool`` JSON result signals failure.
+
+    ``vision_analyze_tool`` catches its own errors and returns
+    ``{"success": false, ...}`` rather than raising, so the cascade detects
+    a dead local model by inspecting that flag. Unparseable / non-JSON
+    results are treated as success (don't double-call on an odd shape).
+    """
+    if not isinstance(result, str):
+        return False
+    try:
+        data = json.loads(result)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("success") is False
+
+
+async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
 
-    # Fast path: when the active main model supports native vision AND the
-    # provider supports image content inside tool results, short-circuit
-    # the auxiliary LLM and return the image bytes as a multimodal
-    # tool-result envelope. The main model sees the pixels directly on its
-    # next turn — no aux call, no information loss, no extra latency.
+    # Resolve the active main model once — used for the native fast path AND
+    # as the cascade fallback when a configured local/aux vision model is
+    # unavailable (e.g. an ollama runner that OOMs / crashes on this host).
+    _provider = _model = _mode = None
+    _native_ok = False
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
         from agent.image_routing import decide_image_input_mode
@@ -1044,22 +1061,44 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         _model = _read_main_model()
         _cfg = load_config()
         _mode = decide_image_input_mode(_provider, _model, _cfg)
-        if _mode == "native" and _supports_media_in_tool_results(_provider, _model):
-            logger.info(
-                "vision_analyze: native fast path (provider=%s, model=%s)",
-                _provider, _model,
-            )
-            return _vision_analyze_native(image_url, question)
+        _native_ok = _supports_media_in_tool_results(_provider, _model)
     except Exception as exc:
-        logger.debug("Native vision fast-path check failed; using aux LLM: %s", exc)
+        logger.debug("Vision routing check failed: %s", exc)
 
-    # Legacy path: aux LLM describes the image and we return its text.
+    # Fast path: no aux vision model configured and the main model reads
+    # images natively — hand the pixels straight to it (no aux call, no
+    # information loss, no extra latency).
+    if _mode == "native" and _native_ok:
+        logger.info(
+            "vision_analyze: native fast path (provider=%s, model=%s)",
+            _provider, _model,
+        )
+        return await _vision_analyze_native(image_url, question)
+
+    # Local/aux first, then cascade to the native main model on failure.
+    # A configured local model (e.g. minicpm-v via ollama) is tried first to
+    # keep vision cheap and private; if it errors (model-runner crash,
+    # timeout, connection refused) we fall back to the vision-capable main
+    # model so the user still gets an answer instead of a cryptic 500.
     full_prompt = (
         "Fully describe and explain everything about this image, then answer the "
         f"following question:\n\n{question}"
     )
     model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return vision_analyze_tool(image_url, full_prompt, model)
+    result = await vision_analyze_tool(image_url, full_prompt, model)
+
+    if not _native_ok or not _vision_result_failed(result):
+        return result
+
+    logger.warning(
+        "vision_analyze: local/aux vision failed; cascading to native main "
+        "model (provider=%s, model=%s)", _provider, _model,
+    )
+    try:
+        return await _vision_analyze_native(image_url, question)
+    except Exception as exc:
+        logger.error("vision_analyze: native fallback also failed: %s", exc)
+        return result
 
 
 registry.register(

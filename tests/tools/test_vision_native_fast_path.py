@@ -211,3 +211,76 @@ class TestHandleVisionAnalyzeFastPath:
 
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
+
+
+# ─── _handle_vision_analyze local→native cascade ─────────────────────────────
+
+
+class TestHandleVisionAnalyzeCascade:
+    """When a local/aux vision model is configured but fails (e.g. an ollama
+    runner that crashes), fall back to the vision-capable main model so the
+    user still gets an answer instead of a 500."""
+
+    def _run(self, img):
+        coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_aux_success_does_not_call_native(self, tmp_path):
+        img = tmp_path / "x.png"; img.write_bytes(_TINY_PNG)
+
+        async def _aux_ok(*a, **k):
+            return '{"success": true, "analysis": "a cat"}'
+
+        async def _native_should_not_run(*a, **k):
+            raise AssertionError("native fallback called despite aux success")
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("openrouter", "anthropic/claude-opus-4.6")  # native-capable
+        try:
+            with patch("agent.image_routing.decide_image_input_mode", return_value="describe"), \
+                 patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_ok), \
+                 patch("tools.vision_tools._vision_analyze_native", side_effect=_native_should_not_run):
+                result = self._run(img)
+        finally:
+            clear_runtime_main()
+        assert json.loads(result)["analysis"] == "a cat"
+
+    def test_aux_failure_cascades_to_native(self, tmp_path):
+        img = tmp_path / "x.png"; img.write_bytes(_TINY_PNG)
+
+        async def _aux_fail(*a, **k):
+            return '{"success": false, "analysis": "Error analyzing image: 500 ollama"}'
+
+        async def _native(*a, **k):
+            return {"_multimodal": True, "content": []}
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("openrouter", "anthropic/claude-opus-4.6")  # native-capable
+        try:
+            with patch("agent.image_routing.decide_image_input_mode", return_value="describe"), \
+                 patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_fail), \
+                 patch("tools.vision_tools._vision_analyze_native", side_effect=_native):
+                result = self._run(img)
+        finally:
+            clear_runtime_main()
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+
+    def test_aux_failure_without_native_returns_aux_error(self, tmp_path):
+        img = tmp_path / "x.png"; img.write_bytes(_TINY_PNG)
+
+        async def _aux_fail(*a, **k):
+            return '{"success": false, "analysis": "Error analyzing image: 500 ollama"}'
+
+        async def _native_should_not_run(*a, **k):
+            raise AssertionError("native fallback called when main model is not vision-capable")
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        set_runtime_main("brand-new-provider", "some-model")  # NOT native-capable
+        try:
+            with patch("agent.image_routing.decide_image_input_mode", return_value="describe"), \
+                 patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_fail), \
+                 patch("tools.vision_tools._vision_analyze_native", side_effect=_native_should_not_run):
+                result = self._run(img)
+        finally:
+            clear_runtime_main()
+        assert json.loads(result)["success"] is False

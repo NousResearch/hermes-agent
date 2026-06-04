@@ -194,16 +194,18 @@ class TestHandleVisionAnalyze:
         """The full prompt should incorporate the user's question."""
         with patch(
             "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
-        ) as mock_tool:
+        ) as mock_tool, patch(
+            "tools.vision_tools._supports_media_in_tool_results", return_value=False
+        ):
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
-                {
-                    "image_url": "https://example.com/img.png",
-                    "question": "Describe the cat",
-                }
+            asyncio.get_event_loop().run_until_complete(
+                _handle_vision_analyze(
+                    {
+                        "image_url": "https://example.com/img.png",
+                        "question": "Describe the cat",
+                    }
+                )
             )
-            # Clean up coroutine
-            coro.close()
             call_args = mock_tool.call_args
             full_prompt = call_args[0][1]  # second positional arg
             assert "Describe the cat" in full_prompt
@@ -216,12 +218,14 @@ class TestHandleVisionAnalyze:
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
             patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "custom/model-v1"}),
+            patch("tools.vision_tools._supports_media_in_tool_results", return_value=False),
         ):
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
-                {"image_url": "https://example.com/img.png", "question": "test"}
+            asyncio.get_event_loop().run_until_complete(
+                _handle_vision_analyze(
+                    {"image_url": "https://example.com/img.png", "question": "test"}
+                )
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]  # third positional arg
             assert model == "custom/model-v1"
@@ -233,14 +237,16 @@ class TestHandleVisionAnalyze:
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
             patch.dict(os.environ, {}, clear=False),
+            patch("tools.vision_tools._supports_media_in_tool_results", return_value=False),
         ):
             # Ensure AUXILIARY_VISION_MODEL is not set
             os.environ.pop("AUXILIARY_VISION_MODEL", None)
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
-                {"image_url": "https://example.com/img.png", "question": "test"}
+            asyncio.get_event_loop().run_until_complete(
+                _handle_vision_analyze(
+                    {"image_url": "https://example.com/img.png", "question": "test"}
+                )
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]
             # With no AUXILIARY_VISION_MODEL set, model should be None

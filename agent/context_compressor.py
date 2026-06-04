@@ -139,6 +139,25 @@ def _extract_tool_call_id(tool_call: Any) -> str:
     return str(getattr(tool_call, "id", "") or "")
 
 
+def _coerce_tool_calls(tool_calls: Any) -> list[Any]:
+    """Return tool calls as a list, decoding persisted JSON when needed."""
+    if not tool_calls:
+        return []
+    if isinstance(tool_calls, str):
+        try:
+            parsed = json.loads(tool_calls)
+        except (ValueError, TypeError):
+            return []
+        if isinstance(parsed, list):
+            return parsed
+        return []
+    if isinstance(tool_calls, list):
+        return tool_calls
+    if isinstance(tool_calls, tuple):
+        return list(tool_calls)
+    return []
+
+
 def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
     for match in _PATH_MENTION_RE.findall(text):
         _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
@@ -784,7 +803,7 @@ class ContextCompressor(ContextEngine):
         call_id_to_tool: Dict[str, tuple] = {}
         for msg in result:
             if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
+                for tc in _coerce_tool_calls(msg.get("tool_calls")):
                     if isinstance(tc, dict):
                         cid = tc.get("id", "")
                         fn = tc.get("function", {})
@@ -807,7 +826,7 @@ class ContextCompressor(ContextEngine):
                 raw_content = msg.get("content") or ""
                 content_len = _content_length_for_budget(raw_content)
                 msg_tokens = content_len // _CHARS_PER_TOKEN + 10
-                for tc in msg.get("tool_calls") or []:
+                for tc in _coerce_tool_calls(msg.get("tool_calls")):
                     if isinstance(tc, dict):
                         args = tc.get("function", {}).get("arguments", "")
                         msg_tokens += len(args) // _CHARS_PER_TOKEN
@@ -905,7 +924,7 @@ class ContextCompressor(ContextEngine):
                 continue
             new_tcs = []
             modified = False
-            for tc in msg["tool_calls"]:
+            for tc in _coerce_tool_calls(msg.get("tool_calls")):
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
                     if len(args) > 500:
@@ -971,7 +990,7 @@ class ContextCompressor(ContextEngine):
             if role == "assistant":
                 if len(content) > self._CONTENT_MAX:
                     content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
-                tool_calls = msg.get("tool_calls", [])
+                tool_calls = _coerce_tool_calls(msg.get("tool_calls"))
                 if tool_calls:
                     tc_parts = []
                     for tc in tool_calls:
@@ -1051,7 +1070,7 @@ class ContextCompressor(ContextEngine):
         call_id_to_tool: dict[str, tuple[str, str]] = {}
         for msg in turns_to_summarize:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg.get("tool_calls") or []:
+                for tc in _coerce_tool_calls(msg.get("tool_calls")):
                     name, raw_args = _extract_tool_call_name_and_args(tc)
                     args = redact_sensitive_text(raw_args)
                     call_id = _extract_tool_call_id(tc)
@@ -1072,7 +1091,7 @@ class ContextCompressor(ContextEngine):
             turn_text = text
             turn_tool_names: list[str] = []
             if role == "assistant" and msg.get("tool_calls"):
-                for tc in msg.get("tool_calls") or []:
+                for tc in _coerce_tool_calls(msg.get("tool_calls")):
                     name, _args = _extract_tool_call_name_and_args(tc)
                     turn_tool_names.append(name)
                 if turn_tool_names:
@@ -1087,7 +1106,7 @@ class ContextCompressor(ContextEngine):
                 user_asks.append(text)
             elif role == "assistant":
                 tool_names: list[str] = []
-                for tc in msg.get("tool_calls") or []:
+                for tc in _coerce_tool_calls(msg.get("tool_calls")):
                     name, _args = _extract_tool_call_name_and_args(tc)
                     tool_names.append(name)
                 if tool_names:
@@ -1585,7 +1604,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
+                for tc in _coerce_tool_calls(msg.get("tool_calls")):
                     cid = self._get_tool_call_id(tc)
                     if cid:
                         surviving_call_ids.add(cid)
@@ -1614,7 +1633,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             for msg in messages:
                 patched.append(msg)
                 if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
+                    for tc in _coerce_tool_calls(msg.get("tool_calls")):
                         cid = self._get_tool_call_id(tc)
                         if cid in missing_results:
                             patched.append({
@@ -1777,7 +1796,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             content_len = _content_length_for_budget(raw_content)
             msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
+            for tc in _coerce_tool_calls(msg.get("tool_calls")):
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
                     msg_tokens += len(args) // _CHARS_PER_TOKEN
@@ -1932,8 +1951,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 tail_msgs,
             )
 
-        # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        # Phase 3: Generate structured summary. If the compression window only
+        # contained an existing handoff summary, carry it forward unchanged
+        # instead of asking the LLM to rewrite the same summary with no new
+        # turns. This avoids expensive/noisy no-op compactions on resumed
+        # sessions whose protected head already contains the latest handoff.
+        if not turns_to_summarize and self._previous_summary:
+            summary = self._with_summary_prefix(self._previous_summary)
+        else:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

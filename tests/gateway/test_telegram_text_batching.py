@@ -32,6 +32,8 @@ def _make_adapter():
     adapter._message_handler = AsyncMock()
     adapter.handle_message = AsyncMock()
     adapter._bot = AsyncMock()
+    adapter._forum_lock = asyncio.Lock()
+    adapter._forum_command_registered = set()
     return adapter
 
 

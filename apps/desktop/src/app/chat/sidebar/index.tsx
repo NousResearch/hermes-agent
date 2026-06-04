@@ -732,6 +732,8 @@ export function ChatSidebar({
           />
         )}
 
+        {sidebarOpen && !showSessionSections && <div className="min-h-0 flex-1" />}
+
         {multiProfile && sidebarOpen && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
             <ProfileRail />

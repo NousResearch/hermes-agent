@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -18,6 +18,7 @@ import {
   setShowAllProfiles
 } from '@/store/profile'
 
+import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
@@ -29,6 +30,8 @@ export function ProfileRail() {
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
   const navigate = useNavigate()
+
+  const [createOpen, setCreateOpen] = useState(false)
 
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
@@ -70,9 +73,22 @@ export function ProfileRail() {
             onSelect={() => selectProfile(profile.name)}
           />
         ))}
+
+        <Tip label="New profile">
+          <button
+            aria-label="New profile"
+            className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
+            onClick={() => setCreateOpen(true)}
+            type="button"
+          >
+            <Codicon name="add" size="0.75rem" />
+          </button>
+        </Tip>
       </div>
 
       <ProfilePill active={false} glyph="ellipsis" label="Manage profiles…" onSelect={() => navigate(PROFILES_ROUTE)} />
+
+      <CreateProfileDialog onClose={() => setCreateOpen(false)} onCreated={refreshActiveProfile} open={createOpen} />
     </div>
   )
 }

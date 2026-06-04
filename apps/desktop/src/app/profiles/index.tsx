@@ -2,9 +2,9 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { ActionStatus } from '@/components/ui/action-status'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
@@ -33,7 +33,7 @@ import {
   renameProfile,
   updateProfileSoul
 } from '@/hermes'
-import { AlertTriangle, Check, Loader2, Save, Users } from '@/lib/icons'
+import { AlertTriangle, Save, Users } from '@/lib/icons'
 import { profileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import { $activeProfile, switchProfile } from '@/store/profile'
@@ -42,13 +42,7 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-const PROFILE_NAME_HINT = 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.'
-
-function isValidProfileName(name: string): boolean {
-  return PROFILE_NAME_RE.test(name.trim())
-}
+import { CreateProfileDialog, isValidProfileName, PROFILE_NAME_HINT } from './create-profile-dialog'
 
 // Pick a free "<source>-copy" name for a duplicated profile, appending a numeric
 // suffix when the base is taken. Source is truncated to leave room for the
@@ -73,27 +67,6 @@ function uniqueCloneName(source: string, existing: Set<string>): string {
 
 // Three-state affordance shared by every save/create/rename/delete button:
 // spinner while pending, a check on success, then back to the idle icon+label.
-function ActionStatus({
-  state,
-  idle,
-  busy,
-  done,
-  idleIcon = null
-}: {
-  state: 'done' | 'idle' | 'saving'
-  idle: string
-  busy: string
-  done: string
-  idleIcon?: React.ReactNode
-}) {
-  return (
-    <>
-      {state === 'saving' ? <Loader2 className="size-4 animate-spin" /> : state === 'done' ? <Check /> : idleIcon}
-      {state === 'saving' ? busy : state === 'done' ? done : idle}
-    </>
-  )
-}
-
 interface ProfilesViewProps {
   onClose: () => void
 }
@@ -147,21 +120,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
     return profiles.find(p => p.name === selectedName) ?? profiles[0] ?? null
   }, [profiles, selectedName])
-
-  const handleCreate = useCallback(
-    async (name: string, cloneFromDefault: boolean) => {
-      const trimmed = name.trim()
-
-      if (!isValidProfileName(trimmed)) {
-        throw new Error(PROFILE_NAME_HINT)
-      }
-
-      await createProfile({ name: trimmed, clone_from_default: cloneFromDefault })
-      setSelectedName(trimmed)
-      await refresh()
-    },
-    [refresh]
-  )
 
   const handleRename = useCallback(
     async (from: string, to: string): Promise<void> => {
@@ -290,7 +248,10 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
-        onCreate={async (name, cloneFromDefault) => handleCreate(name, cloneFromDefault)}
+        onCreated={async name => {
+          setSelectedName(name)
+          await refresh()
+        }}
         open={createOpen}
       />
 
@@ -639,120 +600,6 @@ function SoulEditor({ profileName }: { profileName: string }) {
         </Button>
       </div>
     </section>
-  )
-}
-
-function CreateProfileDialog({
-  onClose,
-  onCreate,
-  open
-}: {
-  onClose: () => void
-  onCreate: (name: string, cloneFromDefault: boolean) => Promise<void>
-  open: boolean
-}) {
-  const [name, setName] = useState('')
-  const [cloneFromDefault, setCloneFromDefault] = useState(true)
-  const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
-  const [error, setError] = useState<null | string>(null)
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    setName('')
-    setCloneFromDefault(true)
-    setError(null)
-    setStatus('idle')
-  }, [open])
-
-  const trimmed = name.trim()
-  const invalid = trimmed !== '' && !isValidProfileName(trimmed)
-  const busy = status === 'saving' || status === 'done'
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-
-    if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
-
-      return
-    }
-
-    setStatus('saving')
-    setError(null)
-
-    try {
-      await onCreate(trimmed, cloneFromDefault)
-      setStatus('done')
-      window.setTimeout(onClose, 800)
-    } catch (err) {
-      setStatus('idle')
-      setError(err instanceof Error ? err.message : 'Failed to create profile')
-    }
-  }
-
-  return (
-    <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>New profile</DialogTitle>
-          <DialogDescription>
-            Profiles are independent Hermes environments: separate config, skills, and SOUL.md.
-          </DialogDescription>
-        </DialogHeader>
-
-        <form className="grid gap-4" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-name">
-              Name
-            </label>
-            <Input
-              aria-invalid={invalid}
-              autoFocus
-              id="new-profile-name"
-              onChange={event => setName(event.target.value)}
-              placeholder="my-profile"
-              value={name}
-            />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
-            </p>
-          </div>
-
-          <label className="flex cursor-pointer select-none items-start gap-2.5 px-0.5 py-1">
-            <Checkbox
-              checked={cloneFromDefault}
-              className="mt-0.5 shrink-0"
-              onCheckedChange={checked => setCloneFromDefault(checked === true)}
-            />
-            <span className="grid gap-0.5 leading-snug">
-              <span className="text-sm font-medium">Clone from default</span>
-              <span className="text-xs text-muted-foreground">
-                Copy config, skills, and SOUL.md from your default profile.
-              </span>
-            </span>
-          </label>
-
-          {error && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
-              Cancel
-            </Button>
-            <Button disabled={busy || !trimmed || invalid} type="submit">
-              <ActionStatus busy="Creating…" done="Created" idle="Create profile" state={status} />
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   )
 }
 

@@ -1040,9 +1040,18 @@ def _get_env_config() -> Dict[str, Any]:
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, and everything else starts in the backend's default
-    # root-like cwd.
+    # root-like cwd.  Prefer an explicit TERMINAL_CWD before touching
+    # os.getcwd(): on macOS a long-lived gateway/cleanup thread can inherit a
+    # TCC-denied or removed cwd, where os.getcwd() raises PermissionError.
+    configured_cwd = os.getenv("TERMINAL_CWD")
     if env_type == "local":
-        default_cwd = os.getcwd()
+        if configured_cwd:
+            default_cwd = configured_cwd
+        else:
+            try:
+                default_cwd = os.getcwd()
+            except (OSError, PermissionError):
+                default_cwd = os.path.expanduser("~")
     elif env_type == "ssh":
         default_cwd = "~"
     else:

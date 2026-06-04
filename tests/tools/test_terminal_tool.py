@@ -11,6 +11,21 @@ def teardown_function():
     terminal_tool._reset_cached_sudo_passwords()
 
 
+def test_get_env_config_uses_terminal_cwd_when_getcwd_is_inaccessible(monkeypatch):
+    """Configured TERMINAL_CWD should avoid os.getcwd() in macOS/TCC-denied cwd."""
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", "/tmp/hermes-safe-cwd")
+
+    def _raise_getcwd():
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _raise_getcwd)
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/tmp/hermes-safe-cwd"
+
+
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

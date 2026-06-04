@@ -63,6 +63,31 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
+
+def _launch_cwd_for_session(source: str) -> Optional[str]:
+    """Working directory to stamp on a new session row, or None.
+
+    Only local CLI sessions get a recorded cwd: the directory the process was
+    launched from is meaningful for ``hermes -c`` / ``--resume`` (relaunch
+    where you left off). Gateway/cron/remote-backend sessions have no stable
+    host cwd to restore, so they record nothing.
+
+    ``TERMINAL_ENV`` is set by the CLI's config bridge (``load_cli_config``);
+    a non-"local" backend (docker/ssh/modal/...) means the host cwd is
+    irrelevant to the agent's tools, so we skip it there too.
+    """
+    if source != "cli":
+        return None
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend and backend != "local":
+        return None
+    try:
+        return os.getcwd()
+    except OSError:
+        # cwd was unlinked out from under us — nothing meaningful to record.
+        return None
+
+
 # OpenAI lazy proxy + safe stdio + proxy URL helpers — see agent/process_bootstrap.py.
 # `OpenAI` is re-exported here so `patch("run_agent.OpenAI", ...)` in tests works.
 # The other `# noqa: F401` re-exports below cover names accessed via
@@ -476,15 +501,17 @@ class AIAgent:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
+        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=source,
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
+                cwd=_launch_cwd_for_session(source),
             )
             self._session_db_created = True
         except Exception as e:

@@ -218,3 +218,50 @@ def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monk
         "NO_PROXY host must not route through HTTPProxy; pools were %r" % (pool_types,)
     )
     http_client.close()
+
+
+@patch("run_agent.OpenAI")
+def test_create_openai_client_strips_default_user_agent_for_ai_centos(
+    mock_openai, monkeypatch
+):
+    """ai.centos.hk rejects the default httpx User-Agent header.
+
+    The keepalive transport is still required for the normal OpenAI-compatible
+    client path, but requests to this provider need the auto-added header
+    removed immediately before the transport sends the request.
+    """
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    agent = _make_agent()
+    kwargs = {
+        "api_key": "test-key",
+        "base_url": "https://ai.centos.hk/v1",
+    }
+    agent._create_openai_client(kwargs, reason="test", shared=False)
+
+    forwarded = mock_openai.call_args.kwargs
+    http_client = _extract_http_client(forwarded)
+    assert isinstance(http_client, httpx.Client)
+
+    seen_headers = {}
+
+    class RecordingTransport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen_headers.update(request.headers)
+            return httpx.Response(200, request=request)
+
+        def close(self):
+            pass
+
+    # Replace the real network transport under the stripping wrapper so the
+    # test exercises the actual wrapper path without making a network request.
+    strip_transport = http_client._transport
+    setattr(strip_transport, "_transport", RecordingTransport())
+
+    response = http_client.get("https://ai.centos.hk/v1/models")
+
+    assert response.status_code == 200
+    assert "user-agent" not in seen_headers
+    http_client.close()

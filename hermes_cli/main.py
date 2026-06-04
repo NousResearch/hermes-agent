@@ -7592,6 +7592,8 @@ def _find_stale_dashboard_pids(
         "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
+        "dashboard --tui",          # TUI dashboard processes (#39136)
+        "dashboard --no-open",      # No-open flag, always used with TUI (#39136)
     ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
@@ -12353,6 +12355,13 @@ def cmd_dashboard(args):
         # log and proceed; the gate's fail-closed branch will surface
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
+
+    # Kill any existing dashboard processes before starting a new one to
+    # prevent stale process accumulation and port conflicts (#39136).
+    existing = _find_stale_dashboard_pids()
+    if existing:
+        print(f"  Stopping {len(existing)} existing dashboard process(es)...")
+        _kill_stale_dashboard_processes(reason="starting fresh dashboard")
 
     from hermes_cli.web_server import start_server
 

@@ -50,12 +50,22 @@ EXCLUDED_SKILL_DIRS = frozenset(
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
 
+_BACKUP_DIR_PATTERN = re.compile(
+    r"(^\.bak-|^\.backup-|\.bak-|\.backup-)",
+)
+
+
+def _is_backup_dir_name(name: str) -> bool:
+    """Return True when *name* matches a backup directory pattern."""
+    return bool(_BACKUP_DIR_PATTERN.search(name))
+
+
 def is_excluded_skill_path(path) -> bool:
     """True if *path* should be skipped by active skill scanners.
 
     Use this on every ``SKILL.md`` path produced by direct ``rglob`` scans to
-    prune dependency, virtualenv, VCS, cache, and progressive-disclosure
-    support-package paths. Centralising the check here keeps every
+    prune dependency, virtualenv, VCS, cache, backup, and progressive-
+    disclosure support-package paths. Centralising the check here keeps every
     skill-scanning site in sync with the shared exclusion set.
 
     Accepts a Path or string.
@@ -65,8 +75,9 @@ def is_excluded_skill_path(path) -> bool:
     except AttributeError:
         from pathlib import PurePath
         parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
-        path
+    return (
+        any(part in EXCLUDED_SKILL_DIRS or _is_backup_dir_name(part) for part in parts)
+        or is_skill_support_path(path)
     )
 
 
@@ -799,6 +810,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             d
             for d in dirs
             if d not in EXCLUDED_SKILL_DIRS
+            and not _is_backup_dir_name(d)
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         if filename in files:

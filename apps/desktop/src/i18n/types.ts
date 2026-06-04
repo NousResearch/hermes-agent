@@ -26,6 +26,75 @@ export interface Translations {
     off: string
   }
 
+  boot: {
+    ready: string
+    desktopBootFailedWithMessage: (message: string) => string
+    steps: {
+      connectingGateway: string
+      loadingSettings: string
+      loadingSessions: string
+      startingDesktopConnection: string
+      startingHermesDesktop: string
+    }
+    errors: {
+      backgroundExited: string
+      backgroundExitedDuringStartup: string
+      backendStopped: string
+      desktopBootFailed: string
+      gatewaySignInRequired: string
+      ipcBridgeUnavailable: string
+    }
+    failure: {
+      title: string
+      description: string
+      remoteTitle: string
+      remoteDescription: string
+      retry: string
+      repairInstall: string
+      useLocalGateway: string
+      openLogs: string
+      repairHint: string
+      remoteSignInHint: string
+      hideRecentLogs: string
+      showRecentLogs: string
+      signedInTitle: string
+      signedInMessage: string
+      signInIncompleteTitle: string
+      signInIncompleteMessage: string
+      signInFailed: string
+      signInToRemoteGateway: string
+      signInWithProvider: (provider: string) => string
+      identityProvider: string
+    }
+  }
+
+  notifications: {
+    region: string
+    hide: string
+    show: string
+    more: (count: number) => string
+    clearAll: string
+    dismiss: string
+    details: string
+    copyDetail: string
+    copyDetailFailed: string
+    backendOutOfDateTitle: string
+    backendOutOfDateMessage: string
+    updateHermes: string
+    updateReadyTitle: string
+    updateReadyMessage: (count: number) => string
+    seeWhatsNew: string
+    errors: {
+      elevenLabsNeedsKey: string
+      elevenLabsRejectedKey: string
+      methodNotAllowed: string
+      microphonePermission: string
+      openaiRejectedApiKey: string
+      openaiRejectedApiKeyWithStatus: (status: string) => string
+      openaiTtsNeedsKey: string
+    }
+  }
+
   titlebar: {
     hideSidebar: string
     showSidebar: string
@@ -43,6 +112,8 @@ export interface Translations {
   language: {
     label: string
     description: string
+    saving: string
+    saveError: string
   }
 
   settings: {

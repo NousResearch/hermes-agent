@@ -16,6 +16,79 @@ export const en: Translations = {
     off: 'Off'
   },
 
+  boot: {
+    ready: 'Hermes Desktop is ready',
+    desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
+    steps: {
+      connectingGateway: 'Connecting live desktop gateway',
+      loadingSettings: 'Loading Hermes settings',
+      loadingSessions: 'Loading recent sessions',
+      startingDesktopConnection: 'Starting desktop connection',
+      startingHermesDesktop: 'Starting Hermes Desktop…'
+    },
+    errors: {
+      backgroundExited: 'Hermes background process exited.',
+      backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
+      backendStopped: 'Backend stopped',
+      desktopBootFailed: 'Desktop boot failed',
+      gatewaySignInRequired: 'Gateway sign-in required',
+      ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
+    },
+    failure: {
+      title: "Hermes couldn't start",
+      description:
+        "The background gateway didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
+      remoteTitle: 'Remote gateway sign-in required',
+      remoteDescription:
+        'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
+      retry: 'Retry',
+      repairInstall: 'Repair install',
+      useLocalGateway: 'Use local gateway',
+      openLogs: 'Open logs',
+      repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
+      remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
+      hideRecentLogs: 'Hide recent logs',
+      showRecentLogs: 'Show recent logs',
+      signedInTitle: 'Signed in',
+      signedInMessage: 'Reconnecting to the remote gateway…',
+      signInIncompleteTitle: 'Sign-in incomplete',
+      signInIncompleteMessage: 'The login window closed before authentication finished.',
+      signInFailed: 'Sign-in failed',
+      signInToRemoteGateway: 'Sign in to remote gateway',
+      signInWithProvider: provider => `Sign in with ${provider}`,
+      identityProvider: 'your identity provider'
+    }
+  },
+
+  notifications: {
+    region: 'Notifications',
+    hide: 'Hide',
+    show: 'Show',
+    more: count => `${count} more ${count === 1 ? 'notification' : 'notifications'}`,
+    clearAll: 'Clear all',
+    dismiss: 'Dismiss notification',
+    details: 'Details',
+    copyDetail: 'Copy detail',
+    copyDetailFailed: 'Could not copy notification detail',
+    backendOutOfDateTitle: 'Backend out of date',
+    backendOutOfDateMessage:
+      'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
+    updateHermes: 'Update Hermes',
+    updateReadyTitle: 'Update ready',
+    updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
+    seeWhatsNew: "See what's new",
+    errors: {
+      elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
+      elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
+      methodNotAllowed:
+        'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.',
+      microphonePermission: 'Microphone permission was denied.',
+      openaiRejectedApiKey: 'OpenAI rejected the API key.',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI rejected the API key (${status} invalid_api_key).`,
+      openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.'
+    }
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -32,7 +105,9 @@ export const en: Translations = {
 
   language: {
     label: 'Language',
-    description: 'Choose the language for the desktop interface.'
+    description: 'Choose the language for the desktop interface.',
+    saving: 'Saving language…',
+    saveError: 'Language update failed'
   },
 
   settings: {

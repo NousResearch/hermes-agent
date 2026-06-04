@@ -4,6 +4,7 @@ import { type Locale, LOCALE_META, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
@@ -52,12 +53,27 @@ function ThemePreview({ name }: { name: string }) {
 }
 
 export function AppearanceSettings() {
-  const { t, locale, setLocale } = useI18n()
+  const { t, isSavingLocale, locale, setLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(theme => theme.name === themeName)
   const a = t.settings.appearance
   const locales = Object.keys(LOCALE_META) as Locale[]
+
+  const selectLocale = async (code: Locale) => {
+    if (code === locale || isSavingLocale) {
+      return
+    }
+
+    triggerHaptic('selection')
+
+    try {
+      await setLocale(code)
+      triggerHaptic('success')
+    } catch (error) {
+      notifyError(error, t.language.saveError)
+    }
+  }
 
   return (
     <SettingsContent>
@@ -74,6 +90,7 @@ export function AppearanceSettings() {
             <div>
               <div className="text-sm font-medium">{t.language.label}</div>
               <div className="mt-1 text-xs text-muted-foreground">{t.language.description}</div>
+              {isSavingLocale && <div className="mt-1 text-xs text-muted-foreground">{t.language.saving}</div>}
             </div>
             <Pill>{LOCALE_META[locale].name}</Pill>
           </div>
@@ -87,11 +104,9 @@ export function AppearanceSettings() {
                     'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
                     active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
                   )}
+                  disabled={isSavingLocale}
                   key={code}
-                  onClick={() => {
-                    triggerHaptic('crisp')
-                    setLocale(code)
-                  }}
+                  onClick={() => void selectLocale(code)}
                   type="button"
                 >
                   <div className="flex items-start justify-between gap-3">

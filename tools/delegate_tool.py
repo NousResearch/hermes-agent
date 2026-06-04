@@ -27,6 +27,12 @@ from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 
+# Re-export ACP marker so we can set base_url when acp_command is provided
+try:
+    from agent.copilot_acp_client import ACP_MARKER_BASE_URL
+except ImportError:
+    ACP_MARKER_BASE_URL = "acp://copilot"
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
@@ -319,12 +325,23 @@ def _build_child_agent(
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or parent_agent.base_url
-    effective_api_key = override_api_key or parent_api_key
-    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
+    # When acp_command is explicitly provided, the child must run as copilot-acp
+    # transport so the command/args are actually used (see run_agent.py:904).
+    # Without this, acp_command is silently ignored and the child falls through
+    # to a regular OpenAI client — which causes SimpleNamespace-type mismatches
+    # when the non-ACP provider returns unexpected response shapes.
+    if effective_acp_command and effective_acp_command.strip():
+        effective_provider = "copilot-acp"
+        effective_base_url = override_base_url or ACP_MARKER_BASE_URL
+        effective_api_key = override_api_key or "copilot-acp"
+        effective_api_mode = "chat_completions"
+    else:
+        effective_provider = override_provider or getattr(parent_agent, "provider", None)
+        effective_base_url = override_base_url or parent_agent.base_url
+        effective_api_key = override_api_key or parent_api_key
+        effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
 
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)

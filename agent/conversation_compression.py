@@ -507,6 +507,8 @@ def compress_context(
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            # Ordering contract: the agent thread updates the contextvar here;
+            # the gateway propagates to SessionEntry after run_in_executor returns.
             try:
                 from gateway.session_context import set_current_session_id
 

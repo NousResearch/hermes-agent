@@ -9672,6 +9672,8 @@ class GatewayRunner:
             )
             response = _sanitize_gateway_final_response(source.platform, response)
 
+            # Ordering contract: the agent thread already updated the contextvar
+            # in conversation_compression.py; propagate to SessionEntry + _save().
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:

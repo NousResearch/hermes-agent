@@ -100,7 +100,8 @@ def _format_discord_clarify_choices_field(choices: List[str]) -> str:
 
     if not lines:
         return instruction
-    return f"{'\n'.join(lines)}\n\n{instruction}"
+    choices_text = "\n".join(lines)
+    return f"{choices_text}\n\n{instruction}"
 
 try:
     import discord

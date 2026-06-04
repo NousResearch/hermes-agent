@@ -15554,6 +15554,7 @@ def _cli_play_tts_media(result: dict, history_len: int, thread_holder=None) -> N
                     path = m.group(1).strip().rstrip('\\",}')
                     if path and path not in seen and os.path.isfile(path):
                         seen.add(path)
+                        logger.info("_cli_play_tts_media: playing %s", path)
                         play_audio_file(path)
         except Exception:
             pass  # Best-effort — never crash the main thread

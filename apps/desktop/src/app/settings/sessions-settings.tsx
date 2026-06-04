@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
@@ -10,7 +11,6 @@ import { setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
-import type { SearchProps } from './types'
 
 const ARCHIVED_FETCH_LIMIT = 200
 
@@ -30,10 +30,11 @@ function workspaceLabel(cwd: null | string | undefined): string {
   )
 }
 
-export function SessionsSettings({ query }: SearchProps) {
+export function SessionsSettings() {
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -87,17 +88,39 @@ export function SessionsSettings({ query }: SearchProps) {
     }
   }, [])
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase()
+  // Deep-link target from the command palette (?session=<id>): scroll the row
+  // into view and flash it.
+  const targetSession = searchParams.get('session')
 
-    if (!needle) {
-      return sessions
+  useEffect(() => {
+    if (!targetSession || loading || !sessions.some(session => session.id === targetSession)) {
+      return
     }
 
-    return sessions.filter(session =>
-      [sessionTitle(session), session.preview ?? '', session.cwd ?? ''].join(' ').toLowerCase().includes(needle)
+    const scrollTimeout = window.setTimeout(() => {
+      const element = document.getElementById(`archived-session-${targetSession}`)
+
+      if (!element) {
+        return
+      }
+
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      element.classList.add('setting-field-highlight')
+      window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
+    }, 80)
+
+    setSearchParams(
+      previous => {
+        const next = new URLSearchParams(previous)
+        next.delete('session')
+
+        return next
+      },
+      { replace: true }
     )
-  }, [query, sessions])
+
+    return () => window.clearTimeout(scrollTimeout)
+  }, [loading, sessions, setSearchParams, targetSession])
 
   if (loading) {
     return <LoadingState label="Loading archived sessions…" />
@@ -117,27 +140,25 @@ export function SessionsSettings({ query }: SearchProps) {
         archive it.
       </p>
 
-      {filtered.length === 0 ? (
-        <EmptyState
-          description={query.trim() ? 'No archived chats match your search.' : 'Archive a chat to hide it here.'}
-          title="Nothing archived"
-        />
+      {sessions.length === 0 ? (
+        <EmptyState description="Archive a chat to hide it here." title="Nothing archived" />
       ) : (
         <div className="grid gap-1">
-          {filtered.map(session => {
+          {sessions.map(session => {
             const label = workspaceLabel(session.cwd)
             const busy = busyId === session.id
 
             return (
-              <ListRow
-                action={
+              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+                <ListRow
+                  action={
                   <div className="flex items-center gap-1.5">
                     <Button
                       disabled={busy}
                       onClick={() => void unarchive(session)}
                       size="sm"
                       type="button"
-                      variant="outline"
+                      variant="textStrong"
                     >
                       {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
                       <span>Unarchive</span>
@@ -156,11 +177,11 @@ export function SessionsSettings({ query }: SearchProps) {
                     </Button>
                   </div>
                 }
-                description={session.preview || undefined}
-                hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
-                key={session.id}
-                title={sessionTitle(session)}
-              />
+                  description={session.preview || undefined}
+                  hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
+                  title={sessionTitle(session)}
+                />
+              </div>
             )
           })}
         </div>
@@ -192,7 +213,7 @@ function DefaultProjectDirSetting() {
     let alive = true
 
     void settings.getDefaultProjectDir().then(result => {
-      if (!alive) return
+      if (!alive) {return}
       setDir(result.dir)
       setFallback(result.defaultLabel)
     })
@@ -205,7 +226,7 @@ function DefaultProjectDirSetting() {
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {return}
 
     setBusy(true)
 
@@ -229,7 +250,7 @@ function DefaultProjectDirSetting() {
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {return}
 
     setBusy(true)
 
@@ -251,13 +272,19 @@ function DefaultProjectDirSetting() {
       </p>
       <ListRow
         action={
-          <div className="flex items-center gap-1.5">
-            <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="outline">
+          <div className="flex items-center gap-3">
+            <Button
+              disabled={busy}
+              onClick={() => void choose()}
+              size="sm"
+              type="button"
+              variant="textStrong"
+            >
               <FolderOpen className="size-3.5" />
               <span>{dir ? 'Change' : 'Choose'}</span>
             </Button>
             {dir && (
-              <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="ghost">
+              <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="text">
                 Clear
               </Button>
             )}

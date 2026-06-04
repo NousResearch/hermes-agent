@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ComponentProps, ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -24,7 +24,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 
-import { PROFILES_ROUTE } from '../routes'
+import { appViewForPath, isOverlayView, PROFILES_ROUTE } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -53,6 +53,7 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
@@ -134,6 +135,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     }
   ]
+
+  // While a full-screen overlay (settings, command center, …) is open it should
+  // visually own the window. These control clusters are `fixed` at a higher
+  // z-index than the overlay card, so they'd otherwise bleed over it — hide them
+  // and let the overlay's own chrome (close button, drag region) take over.
+  if (isOverlayView(appViewForPath(location.pathname))) {
+    return null
+  }
 
   const visibleSystemTools = systemTools.filter(tool => !tool.hidden)
   const settingsTool = visibleSystemTools.find(tool => tool.id === 'settings')

@@ -71,6 +71,7 @@ CONFIGURABLE_TOOLSETS = [
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
+    ("reaction_menu",   "🎛️  Reaction Menus",          "present_menu (tap-to-choose; off by default)"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
@@ -96,7 +97,7 @@ CONFIGURABLE_TOOLSETS = [
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "reaction_menu"}
 
 
 def _xai_credentials_present() -> bool:

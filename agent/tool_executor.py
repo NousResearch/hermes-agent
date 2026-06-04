@@ -938,6 +938,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name == "present_menu":
+            from tools.reaction_menu_tool import present_menu_tool as _present_menu_tool
+            function_result = _present_menu_tool(
+                prompt=function_args.get("prompt", ""),
+                options=function_args.get("options"),
+                context_id=function_args.get("context_id"),
+                callback=getattr(agent, "present_menu_callback", None),
+            )
+            tool_duration = time.time() - tool_start_time
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

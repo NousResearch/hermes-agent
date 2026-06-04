@@ -395,6 +395,9 @@ def init_agent(
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback
+    # Non-blocking reaction-menu sender; gateway sets this on the agent instance
+    # for reaction-capable platforms (None in CLI / non-gateway contexts).
+    agent.present_menu_callback = None
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback

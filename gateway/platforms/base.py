@@ -2455,6 +2455,78 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
+    async def send_reaction_menu(
+        self,
+        chat_id: str,
+        menu_id: str,
+        prompt: str,
+        options: list,
+        session_key: str,
+        source: Any = None,
+        context_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Present an interactive menu (default: numbered text fallback).
+
+        Reaction-capable platforms (Matrix today; Telegram/Discord buttons as a
+        fast-follow) override this to seed one tappable reaction per option. The
+        default renders a numbered list and registers the menu so the gateway's
+        text intercept (``GatewayRunner._maybe_intercept_menu_choice``) can
+        resolve a bare-number reply.
+
+        Text fallback supports ONE live menu per session (newest wins): a bare
+        number resolves it and ``more`` reprints it. Reaction/button consumers
+        keep the consumer-agnostic per-message core, which supports many live
+        menus at once.
+        """
+        lines = [prompt, ""]
+        for i, opt in enumerate(options, start=1):
+            lines.append(f"  {i}. {opt['emoji']} {opt['label']}")
+        lines.append("")
+        lines.append("Reply with the option number, or 'more' to see it again.")
+        text = "\n".join(lines)
+
+        result = await self.send(chat_id=chat_id, content=text, metadata=metadata)
+        if not result.success:
+            return result
+
+        try:
+            from tools import reaction_menu_gateway as _rmg
+            src = source.to_dict() if source is not None and hasattr(source, "to_dict") else None
+            _rmg.register(
+                menu_id=menu_id,
+                session_key=session_key,
+                platform=self.name or "text",
+                chat_id=chat_id,
+                message_id=result.message_id or menu_id,
+                prompt=prompt,
+                options=options,
+                context_id=context_id,
+                source=src,
+            )
+        except Exception as exc:
+            logger.debug("[%s] reaction-menu registry register failed: %s", self.name, exc)
+
+        return result
+
+    async def reprint_reaction_menu(
+        self,
+        chat_id: str,
+        prompt: str,
+        options: list,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Re-send a menu's numbered text (text-fallback ``more``)."""
+        lines = [prompt, ""]
+        for i, opt in enumerate(options, start=1):
+            lines.append(f"  {i}. {opt['emoji']} {opt['label']}")
+        lines.append("")
+        lines.append("Reply with the option number, or 'more' to see it again.")
+        try:
+            await self.send(chat_id=chat_id, content="\n".join(lines), metadata=metadata)
+        except Exception as exc:
+            logger.debug("[%s] reaction-menu reprint failed: %s", self.name, exc)
+
     async def send_private_notice(
         self,
         chat_id: str,

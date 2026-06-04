@@ -188,6 +188,50 @@ class _MatrixApprovalPrompt:
         self.resolved = resolved
         self.bot_reaction_events: dict[str, str] = {}  # emoji -> event_id
 
+
+@dataclass
+class _MatrixMenuPrompt:
+    """Tracks a live reaction-menu (parallel to ``_MatrixApprovalPrompt``).
+
+    Distinct from the approval path on purpose: keyed per message (no per-session
+    single-slot) so MANY menus can be live in one session at once.
+    """
+
+    def __init__(self, menu_id, session_key, chat_id, message_id, prompt,
+                 options, source=None, context_id=None, resolved=False):
+        self.menu_id = menu_id
+        self.session_key = session_key
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.prompt = prompt
+        self.options = options          # normalised list of option dicts
+        self.source = source            # SessionSource (for forging the choice turn)
+        self.context_id = context_id
+        self.resolved = resolved
+        self.bot_reaction_events: dict[str, str] = {}  # emoji -> seed reaction event_id
+
+    def option_for_emoji(self, emoji):
+        for opt in self.options:
+            if opt.get("emoji") == emoji:
+                return opt
+        return None
+
+
+@dataclass
+class _MatrixMenuReload:
+    """A one-shot ♻️ reload handle seeded on a collapsed menu message."""
+
+    def __init__(self, session_key, chat_id, prompt, options, source=None,
+                 context_id=None, reload_reaction_event_id=None):
+        self.session_key = session_key
+        self.chat_id = chat_id
+        self.prompt = prompt
+        self.options = options
+        self.source = source
+        self.context_id = context_id
+        self.reload_reaction_event_id = reload_reaction_event_id
+
+
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
 MAX_MESSAGE_LENGTH = 4000
@@ -554,6 +598,11 @@ class MatrixAdapter(BasePlatformAdapter):
         }
         self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
         self._approval_prompt_by_session: Dict[str, str] = {}
+        # Reaction-menu tracking — keyed per message (NOT per session) so many
+        # menus can be live simultaneously. Parallel to, and independent of, the
+        # approval path above.
+        self._menu_prompts_by_event: Dict[str, _MatrixMenuPrompt] = {}
+        self._menu_reload_by_event: Dict[str, _MatrixMenuReload] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
@@ -1027,10 +1076,54 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("Matrix: initial key share failed: %s", exc)
 
+        # Restore any reaction-menus left live by a previous gateway process so
+        # taps on them still resolve after a restart (spec §6).
+        self._restore_persisted_menus()
+
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
         return True
+
+    def _restore_persisted_menus(self) -> None:
+        """Rebuild ``_menu_prompts_by_event`` from persisted unresolved menus.
+
+        Seed reaction event-ids aren't persisted, so post-restart collapse can't
+        redact the bot's original seeds (best-effort) — but the menu still
+        resolves and injects the chosen turn, which is the durability contract.
+        """
+        try:
+            from tools import reaction_menu_gateway as _rmg
+            from gateway.session import SessionSource
+        except Exception as exc:
+            logger.debug("Matrix: menu restore imports failed: %s", exc)
+            return
+        try:
+            restored = _rmg.load_persisted(platform="matrix")
+        except Exception as exc:
+            logger.debug("Matrix: menu restore load failed: %s", exc)
+            return
+        count = 0
+        for entry in restored:
+            source = None
+            if entry.source:
+                try:
+                    source = SessionSource.from_dict(entry.source)
+                except Exception:
+                    source = None
+            self._menu_prompts_by_event[entry.message_id] = _MatrixMenuPrompt(
+                menu_id=entry.menu_id,
+                session_key=entry.session_key,
+                chat_id=entry.chat_id,
+                message_id=entry.message_id,
+                prompt=entry.prompt,
+                options=entry.options,
+                source=source,
+                context_id=entry.context_id,
+            )
+            count += 1
+        if count:
+            logger.info("Matrix: restored %d live reaction-menu(s) from persistence", count)
 
     async def disconnect(self) -> None:
         """Disconnect from Matrix."""
@@ -1380,6 +1473,141 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: failed to add approval reaction %s: %s", emoji, exc)
 
         return result
+
+    # ------------------------------------------------------------------
+    # Reaction menus (parallel to the exec-approval reaction path)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_menu_text(prompt: str, options: list) -> str:
+        """Render the menu message body: prompt + an emoji/label line each."""
+        lines = [prompt, ""]
+        for opt in options:
+            lines.append(f"{opt['emoji']} {opt['label']}")
+        lines.append("")
+        lines.append("Tap a reaction below to choose.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_menu_resolved(prompt: str, options: list, chosen: dict) -> str:
+        """Render the collapsed menu: keep every option visible, mark the choice.
+
+        Preserves the full option list (with a ✓ on the chosen line) so the user
+        can still see what the alternatives were after resolving.
+        """
+        lines = [prompt, ""]
+        for opt in options:
+            mark = " ✓" if opt["emoji"] == chosen["emoji"] else ""
+            lines.append(f"{opt['emoji']} {opt['label']}{mark}")
+        lines.append("")
+        lines.append(f"You chose: {chosen['emoji']} {chosen['label']}")
+        return "\n".join(lines)
+
+    async def send_reaction_menu(
+        self,
+        chat_id: str,
+        menu_id: str,
+        prompt: str,
+        options: list,
+        session_key: str,
+        source: Any = None,
+        context_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a reaction-menu message and seed one reaction per option.
+
+        Non-blocking: presents the menu and registers it. The user's later tap
+        is handled by the menu branch of :meth:`_on_reaction`.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        text = self._render_menu_text(prompt, options)
+        result = await self.send(chat_id, text, metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        menu = _MatrixMenuPrompt(
+            menu_id=menu_id,
+            session_key=session_key,
+            chat_id=chat_id,
+            message_id=result.message_id,
+            prompt=prompt,
+            options=options,
+            source=source,
+            context_id=context_id,
+        )
+        self._menu_prompts_by_event[result.message_id] = menu
+
+        # Register in the consumer-agnostic gateway store (+ persistence) so the
+        # menu survives a gateway restart.
+        try:
+            from tools import reaction_menu_gateway as _rmg
+            _src_dict = source.to_dict() if source is not None and hasattr(source, "to_dict") else None
+            _rmg.register(
+                menu_id=menu_id,
+                session_key=session_key,
+                platform="matrix",
+                chat_id=chat_id,
+                message_id=result.message_id,
+                prompt=prompt,
+                options=options,
+                context_id=context_id,
+                source=_src_dict,
+            )
+        except Exception as exc:
+            logger.debug("Matrix: reaction-menu registry register failed: %s", exc)
+
+        for opt in options:
+            try:
+                rid = await self._send_reaction(chat_id, result.message_id, opt["emoji"])
+                if rid:
+                    menu.bot_reaction_events[opt["emoji"]] = str(rid)
+            except Exception as exc:
+                logger.debug("Matrix: failed to seed menu reaction %s: %s", opt.get("emoji"), exc)
+
+        return result
+
+    async def _redact_bot_menu_reactions(
+        self,
+        room_id: str,
+        menu: "_MatrixMenuPrompt",
+    ) -> None:
+        """Redact the bot's seeded option reactions, leaving the user's tap."""
+        for emoji, evt_id in menu.bot_reaction_events.items():
+            self._schedule_reaction_redaction(room_id, evt_id, "menu resolved")
+
+    async def _inject_menu_choice(
+        self,
+        menu: "_MatrixMenuPrompt",
+        option: dict,
+    ) -> None:
+        """Forge a synthetic ``[menu-choice]`` user turn for the chosen option.
+
+        Dispatches through ``handle_message`` — the SAME inbound path a real user
+        message takes — so the turn is queued behind any busy agent (FIFO/promote)
+        AND, crucially, its response is delivered back to the channel. Calling the
+        bare ``_message_handler`` directly runs the turn but never sends the reply,
+        because response delivery lives in ``handle_message`` (see base.py).
+        """
+        from tools.reaction_menu_gateway import build_menu_choice_body
+
+        if self._message_handler is None:
+            logger.warning("Matrix: no message handler; dropping menu choice")
+            return
+
+        source = menu.source
+        if source is None:
+            logger.warning("Matrix: menu %s has no source; cannot route choice", menu.menu_id)
+            return
+
+        body = build_menu_choice_body(option["payload"])
+        event = MessageEvent(
+            text=body,
+            source=source,
+            internal=True,
+        )
+        await self.handle_message(event)
 
     def format_message(self, content: str) -> str:
         """Pass-through — Matrix supports standard Markdown natively."""
@@ -2339,6 +2567,115 @@ class MatrixAdapter(BasePlatformAdapter):
                         await self._redact_bot_approval_reactions(room_id, prompt)
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
+                return
+
+            # Not an approval reaction — try the reaction-menu path. Parallel to
+            # the approval branch above; the approval flow is untouched.
+            await self._handle_menu_reaction(room_id, reacts_to, key, sender)
+
+    def _is_reaction_user_authorized(self, sender: str) -> bool:
+        """Fail-closed auth for reaction-driven actions (mirrors approval auth)."""
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return bool(self._allowed_user_ids and sender in self._allowed_user_ids)
+
+    async def _handle_menu_reaction(
+        self,
+        room_id: str,
+        reacts_to: str,
+        key: str,
+        sender: str,
+    ) -> None:
+        """Resolve a tap on a live reaction-menu, or a ♻️ reload tap.
+
+        Choreography (spec §5):
+          * Authorized tap on an option → collapse (redact bot seeds, keep the
+            user's reaction, best-effort edit to show the choice, seed ♻️ unless
+            the option is terminal) → inject a ``[menu-choice]`` synthetic turn.
+          * Authorized ♻️ tap on a collapsed menu → repost a FRESH menu, no model
+            turn. One-shot.
+        Unauthorized taps are ignored, leaving the menu live and unresolved.
+        """
+        from tools import reaction_menu_gateway as _rmg
+
+        menu = self._menu_prompts_by_event.get(reacts_to)
+        if menu is not None and not menu.resolved:
+            if room_id != menu.chat_id:
+                return
+            option = menu.option_for_emoji(key)
+            if option is None:
+                return  # unrelated reaction on the menu message
+            if not self._is_reaction_user_authorized(sender):
+                logger.info(
+                    "Matrix: ignoring menu reaction from unauthorized user %s on %s",
+                    sender, reacts_to,
+                )
+                return
+            # Dedup double-taps: only the first resolution injects a turn.
+            if not _rmg.mark_resolved(menu.menu_id):
+                return
+            menu.resolved = True
+            self._menu_prompts_by_event.pop(reacts_to, None)
+
+            await self._redact_bot_menu_reactions(room_id, menu)
+            # Best-effort edit so the message reflects the chosen option.
+            try:
+                await self.edit_message(
+                    room_id, reacts_to,
+                    self._render_menu_resolved(menu.prompt, menu.options, option),
+                )
+            except Exception as exc:
+                logger.debug("Matrix: menu collapse edit failed: %s", exc)
+
+            if not option.get("terminal"):
+                reload_rid = None
+                try:
+                    reload_rid = await self._send_reaction(room_id, reacts_to, _rmg.RELOAD_EMOJI)
+                except Exception as exc:
+                    logger.debug("Matrix: failed to seed reload reaction: %s", exc)
+                self._menu_reload_by_event[reacts_to] = _MatrixMenuReload(
+                    session_key=menu.session_key,
+                    chat_id=room_id,
+                    prompt=menu.prompt,
+                    options=menu.options,
+                    source=menu.source,
+                    context_id=menu.context_id,
+                    reload_reaction_event_id=str(reload_rid) if reload_rid else None,
+                )
+
+            logger.info(
+                "Matrix: menu %s resolved (option=%s, user=%s)",
+                menu.menu_id, option["emoji"], sender,
+            )
+            await self._inject_menu_choice(menu, option)
+            return
+
+        # Reload (♻️) tap on a previously collapsed menu — repost a fresh menu.
+        reload = self._menu_reload_by_event.get(reacts_to)
+        if reload is not None and key == _rmg.RELOAD_EMOJI:
+            if not self._is_reaction_user_authorized(sender):
+                return
+            self._menu_reload_by_event.pop(reacts_to, None)
+            if reload.reload_reaction_event_id:
+                self._schedule_reaction_redaction(
+                    room_id, reload.reload_reaction_event_id, "menu reloaded",
+                )
+            import uuid as _uuid
+            new_menu_id = _uuid.uuid4().hex[:12]
+            logger.info("Matrix: reloading menu in %s (new id %s)", room_id, new_menu_id)
+            try:
+                await self.send_reaction_menu(
+                    chat_id=reload.chat_id,
+                    menu_id=new_menu_id,
+                    prompt=reload.prompt,
+                    options=reload.options,
+                    session_key=reload.session_key,
+                    source=reload.source,
+                    context_id=reload.context_id,
+                )
+            except Exception as exc:
+                logger.error("Matrix: menu reload failed: %s", exc)
+            return
 
     async def _redact_bot_approval_reactions(
         self,

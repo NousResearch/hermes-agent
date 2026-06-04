@@ -1747,6 +1747,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 callback=agent.clarify_callback,
             )
         )
+    elif function_name == "present_menu":
+        from tools.reaction_menu_tool import present_menu_tool as _present_menu_tool
+        return _present_menu_tool(
+            prompt=function_args.get("prompt", ""),
+            options=function_args.get("options"),
+            context_id=function_args.get("context_id"),
+            callback=getattr(agent, "present_menu_callback", None),
+        )
     elif function_name == "delegate_task":
         return _finish_agent_tool(agent._dispatch_delegate_task(function_args))
     else:

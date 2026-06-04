@@ -7500,6 +7500,49 @@ class GatewayRunner:
                     # itself will produce the next user-facing message.
                     return ""
 
+        # Intercept bare-number / 'more' replies to a live reaction-menu — the
+        # text fallback for platforms without reaction UIs. One live menu per
+        # session (newest wins): a number resolves it (rewriting THIS turn into
+        # a [menu-choice] turn the agent then runs); 'more' reprints it.
+        try:
+            from tools import reaction_menu_gateway as _rmg_mod
+            _live_menu = _rmg_mod.get_newest_for_session(_quick_key)
+        except Exception:
+            _rmg_mod = None
+            _live_menu = None
+        if _live_menu is not None:
+            _menu_reply = (event.text or "").strip()
+            if _menu_reply.lower() == "more":
+                _menu_adapter = self.adapters.get(event.source.platform)
+                if _menu_adapter is not None and getattr(
+                    type(_menu_adapter), "reprint_reaction_menu", None
+                ) is not None:
+                    try:
+                        await _menu_adapter.reprint_reaction_menu(
+                            chat_id=event.source.chat_id,
+                            prompt=_live_menu.prompt,
+                            options=_live_menu.options,
+                            metadata=self._thread_metadata_for_source(
+                                event.source, event.message_id
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.debug("reaction-menu reprint failed: %s", exc)
+                return ""
+            _menu_choice = None
+            if _menu_reply.isdigit():
+                _menu_idx = int(_menu_reply) - 1
+                if 0 <= _menu_idx < len(_live_menu.options):
+                    _menu_choice = _live_menu.options[_menu_idx]
+            if _menu_choice is not None and _rmg_mod.mark_resolved(_live_menu.menu_id):
+                logger.info(
+                    "Gateway intercepted reaction-menu text choice (session=%s, menu=%s)",
+                    _quick_key, _live_menu.menu_id,
+                )
+                # Rewrite this turn into a synthetic [menu-choice] turn and fall
+                # through so the agent runs the chosen payload as the next turn.
+                event.text = _rmg_mod.build_menu_choice_body(_menu_choice["payload"])
+
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are
         # /approve, /always, /cancel (plus short aliases).  Anything else
@@ -16969,6 +17012,14 @@ class GatewayRunner:
             if event_type not in {"tool.started",}:
                 return
 
+            # present_menu's output IS a user-facing message (the menu itself),
+            # so a tool-progress bubble for it is redundant noise that also
+            # leaks the raw prompt (incl. any model-escaped unicode) and whose
+            # 🎛️ tool emoji trips client-side message effects (Element's
+            # space-invaders). Suppress it — the menu is the visible artifact.
+            if tool_name == "present_menu":
+                return
+
             # Suppress tool-progress bubbles once the user has sent `stop`.
             # When the LLM response carries N parallel tool calls, the agent
             # fires N "tool.started" events back-to-back before checking for
@@ -17852,6 +17903,78 @@ class GatewayRunner:
                 return response
 
             agent.clarify_callback = _clarify_callback_sync
+
+            # ------------------------------------------------------------------
+            # present_menu callback: present a reaction-menu and return at once.
+            #
+            # Unlike clarify, this does NOT block: it schedules the adapter's
+            # send_reaction_menu on the event loop, waits only long enough to
+            # confirm delivery, and returns. The user's later tap arrives as a
+            # fresh inbound turn (Matrix: the menu branch of _on_reaction forges
+            # it; text platforms: the gateway text intercept rewrites the reply).
+            # ------------------------------------------------------------------
+            def _present_menu_callback_sync(prompt, options, context_id):
+                import uuid as _uuid
+
+                if not _status_adapter:
+                    return ""
+                if getattr(type(_status_adapter), "send_reaction_menu", None) is None:
+                    return ""
+
+                menu_id = _uuid.uuid4().hex[:12]
+
+                def _do_menu_send():
+                    return safe_schedule_threadsafe(
+                        _status_adapter.send_reaction_menu(
+                            chat_id=_status_chat_id,
+                            menu_id=menu_id,
+                            prompt=prompt,
+                            options=options,
+                            session_key=session_key or "",
+                            source=source,
+                            context_id=context_id,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="present_menu send failed to schedule",
+                    )
+
+                # Ordering fix: a menu sent mid-turn lands ABOVE the turn's
+                # narrative reply, because the reply is only delivered once the
+                # agent loop ends (post-`_run_agent`).  The user then finishes
+                # reading the reply and has to scroll UP to find the live menu.
+                # Defer the send to a post-delivery callback (fires in base.py's
+                # handle_message finally, after the reply is on the wire) so the
+                # menu always lands directly BELOW the reply — at the bottom of
+                # the chat, where the eye ends up.  This chains cleanly with the
+                # background-review release callback registered just above.
+                # present_menu is the last tool of the turn and ends it, so
+                # reporting an optimistic "delivered" here (before the deferred
+                # send) is safe — the model only uses the result to stop.
+                if session_key and getattr(
+                    type(_status_adapter), "register_post_delivery_callback", None
+                ) is not None:
+                    _status_adapter.register_post_delivery_callback(
+                        session_key,
+                        _do_menu_send,
+                        generation=run_generation,
+                    )
+                    return "delivered"
+
+                # Fallback for sessions/adapters without the post-delivery hook:
+                # send immediately and confirm delivery, as before.
+                fut = _do_menu_send()
+                if fut is None:
+                    return ""
+                try:
+                    result = fut.result(timeout=15)
+                    return "delivered" if bool(getattr(result, "success", False)) else ""
+                except Exception as exc:
+                    logger.warning("present_menu send failed: %s", exc)
+                    return ""
+
+            agent.present_menu_callback = _present_menu_callback_sync
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent

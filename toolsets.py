@@ -233,7 +233,17 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
-    
+
+    "reaction_menu": {
+        "description": (
+            "Present tap-to-choose menus the user resolves with a reaction "
+            "(Matrix today; numbered text fallback elsewhere). Off by default — "
+            "enable via `hermes tools` → Reaction Menu to add present_menu."
+        ),
+        "tools": ["present_menu"],
+        "includes": []
+    },
+
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
         "tools": ["execute_code"],

@@ -399,6 +399,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
 
     target = "20260409_010101_abc123"
     created_sids: list[str] = []
+    closed_sids: list[str] = []
     first_agent_started = threading.Event()
     agent_can_finish = threading.Event()
 
@@ -422,11 +423,20 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def close(self):
             pass
 
+    class _Agent:
+        def __init__(self, sid, session_id):
+            self.sid = sid
+            self.model = "test/model"
+            self.session_id = session_id
+
+        def close(self):
+            closed_sids.append(self.sid)
+
     def make_agent(sid, key, session_id=None):
         created_sids.append(sid)
         first_agent_started.set()
         assert agent_can_finish.wait(timeout=1)
-        return types.SimpleNamespace(model="test/model", session_id=session_id or key)
+        return _Agent(sid, session_id or key)
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", make_agent)
@@ -490,10 +500,18 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
 
     assert "error" not in first
     assert "error" not in second
+    # Both resumes resolve to the SAME single live session — the core invariant.
     assert second["result"]["session_id"] == first["result"]["session_id"]
     assert len(server._sessions) == 1
     assert [s.get("session_key") for s in server._sessions.values()].count(target) == 1
-    assert created_sids == [first["result"]["session_id"]]
+    winner = first["result"]["session_id"]
+    # The agent build happens outside the resume lock, so a racing resume may
+    # build a redundant agent; double-checked locking keeps only one live
+    # session and closes any loser's agent (no worker/poller is wired for it).
+    assert winner in created_sids
+    survivors = [sid for sid in created_sids if sid not in closed_sids]
+    assert survivors == [winner]
+    assert all(sid == winner for sid in server._sessions)
 
 
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):

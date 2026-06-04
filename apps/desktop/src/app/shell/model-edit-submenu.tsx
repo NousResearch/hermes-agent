@@ -191,6 +191,7 @@ export function ModelEditSubmenu({
                 checked={thinkingOn}
                 className="ml-auto"
                 onCheckedChange={checked => void patchReasoning(checked ? effort || 'medium' : 'none', currentReasoningEffort)}
+                size="xs"
               />
             </DropdownMenuItem>
           ) : null}
@@ -200,7 +201,7 @@ export function ModelEditSubmenu({
               onSelect={event => event.preventDefault()}
             >
               Fast
-              <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} />
+              <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
             </DropdownMenuItem>
           ) : null}
           {reasoning ? (

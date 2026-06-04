@@ -1565,6 +1565,7 @@ class SessionDB:
         order_by_last_active: bool = False,
         include_archived: bool = False,
         archived_only: bool = False,
+        id_query: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1597,13 +1598,23 @@ class SessionDB:
         params = []
 
         if not include_children:
-            # Show root sessions and branch sessions (whose parent ended with
-            # end_reason='branched' before the child was created), while still
-            # hiding sub-agent runs and compression continuations (which also
-            # carry a parent_session_id but were spawned while the parent was
-            # still live — i.e., started_at < parent.ended_at).
+            # Show root sessions and branch sessions, while still hiding
+            # sub-agent runs and compression continuations (which also carry a
+            # parent_session_id but were spawned while the parent was still
+            # live — i.e., started_at < parent.ended_at).
+            #
+            # Branch sessions are identified two ways, OR'd for robustness:
+            #   1. A stable ``_branched_from`` marker in model_config, written
+            #      by /branch at creation time. This survives the parent being
+            #      reopened and re-ended with a different end_reason (e.g.
+            #      tui_shutdown overwriting 'branched'), which otherwise hides
+            #      the branch — see issue #20856.
+            #   2. The legacy heuristic (parent ended with 'branched' before the
+            #      child started), covering branch sessions created before the
+            #      marker existed.
             where_clauses.append(
                 "(s.parent_session_id IS NULL"
+                " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
                 " OR EXISTS (SELECT 1 FROM sessions p"
                 "            WHERE p.id = s.parent_session_id"
                 "            AND p.end_reason = 'branched'"
@@ -1626,6 +1637,16 @@ class SessionDB:
             where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Optional session-id filter, pushed into SQL so callers (Desktop
+        # session-id search) don't have to fetch every row and filter in
+        # Python. ``id_query`` is matched as a case-insensitive substring
+        # against each surfaced row's id AND every id in its forward
+        # compression chain — so searching a compression *root* id or a *tip*
+        # id both resolve to the same projected conversation. Only used in the
+        # order_by_last_active path (which builds the chain CTE); other callers
+        # pass id_query=None.
+        id_needle = (id_query or "").strip().lower()
         if order_by_last_active:
             # Compute effective_last_active by walking each surfaced session's
             # compression-continuation chain forward in SQL and taking the MAX
@@ -1638,6 +1659,28 @@ class SessionDB:
             # compression-continuation edges using the same criteria as
             # get_compression_tip (parent.end_reason='compression' AND
             # child.started_at >= parent.ended_at).
+            outer_where = where_sql
+            id_params: List[Any] = []
+            if id_needle:
+                # Admit a surfaced row if its own id or any id in its forward
+                # compression chain matches the needle. LIKE with a leading
+                # wildcard can't use an index, but the chain membership and
+                # the small result set keep this bounded — far cheaper than
+                # fetching every session and scanning in Python.
+                id_clause = (
+                    "EXISTS (SELECT 1 FROM chain cq"
+                    "        WHERE cq.root_id = s.id"
+                    "          AND LOWER(cq.cur_id) LIKE ? ESCAPE '\\')"
+                )
+                like_pattern = (
+                    "%"
+                    + id_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    + "%"
+                )
+                id_params = [like_pattern]
+                outer_where = (
+                    f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
+                )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -1674,12 +1717,13 @@ class SessionDB:
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
-                {where_sql}
+                {outer_where}
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            # WHERE params apply twice (CTE seed + outer select).
-            params = params + params + [limit, offset]
+            # WHERE params apply twice (CTE seed + outer select); the id filter
+            # only applies to the outer select.
+            params = params + params + id_params + [limit, offset]
         else:
             query = f"""
                 SELECT s.*,
@@ -3006,6 +3050,53 @@ class SessionDB:
             match.pop("content", None)
 
         return matches
+
+    def search_sessions_by_id(
+        self,
+        query: str,
+        limit: int = 20,
+        include_archived: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Search surfaced sessions by exact/prefix/substring session id.
+
+        Desktop search uses this alongside FTS message search so users can paste
+        a session id from logs, CLI output, or another Hermes surface and jump
+        straight to that conversation.  Matching also checks ``_lineage_root_id``
+        for projected compression-chain tips, so an old root id still resolves to
+        the live continuation row.
+        """
+        needle = (query or "").strip().lower()
+        if not needle or limit <= 0:
+            return []
+
+        # SQL-bounded: list_sessions_rich pushes the id LIKE filter into the
+        # query (matching the row's own id AND any id in its forward
+        # compression chain), so we only materialize matching rows instead of
+        # scanning every session. Fetch a small multiple of `limit` so the
+        # in-Python exact/prefix/substring ranking below has enough candidates
+        # to order, then truncate.
+        candidates = self.list_sessions_rich(
+            limit=max(limit * 4, limit),
+            offset=0,
+            include_archived=include_archived,
+            order_by_last_active=True,
+            id_query=needle,
+        )
+
+        def score(row: Dict[str, Any]) -> int:
+            ids = [str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")]
+            normalized = [value.lower() for value in ids if value]
+            if any(value == needle for value in normalized):
+                return 0
+            if any(value.startswith(needle) for value in normalized):
+                return 1
+            return 2
+
+        ranked = sorted(
+            enumerate(candidates),
+            key=lambda item: (score(item[1]), item[0]),
+        )
+        return [row for _, row in ranked[:limit]]
 
     def search_sessions(
         self,

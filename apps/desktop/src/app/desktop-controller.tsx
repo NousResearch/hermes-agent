@@ -13,7 +13,9 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, listSessions } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { toggleCommandPalette } from '../store/command-palette'
 import {
+  $panesFlipped,
   $pinnedSessionIds,
   $sessionsLimit,
   bumpSessionsLimit,
@@ -33,6 +35,8 @@ import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessions,
+  $workingSessionIds,
+  mergeSessionPage,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -56,6 +60,7 @@ import {
   PREVIEW_RAIL_PANE_WIDTH
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
+import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -110,6 +115,7 @@ export function DesktopController() {
   const previewTarget = useStore($previewTarget)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
+  const panesFlipped = useStore($panesFlipped)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
@@ -123,9 +129,11 @@ export function DesktopController() {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
+    cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
+    profilesOpen,
     settingsOpen,
     toggleCommandCenter
   } = useOverlayRouting()
@@ -193,6 +201,31 @@ export function DesktopController() {
     }
   }, [])
 
+  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K → command
+  // palette (the composer's "drain next queued" moved to Cmd+Shift+K), Cmd+. →
+  // command center (sessions / system / usage).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+
+      if (key === 'k') {
+        event.preventDefault()
+        toggleCommandPalette()
+      } else if (key === '.') {
+        event.preventDefault()
+        toggleCommandCenter()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [toggleCommandCenter])
+
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
@@ -206,7 +239,13 @@ export function DesktopController() {
       const result = await listSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(result.sessions)
+        // Don't hard-replace. Two kinds of rows must survive a refresh the
+        // server didn't return: (1) sessions whose first turn is still in
+        // flight (message_count 0, so min_messages=1 omits them) and (2)
+        // pinned sessions that have aged off the most-recent page — otherwise
+        // the pin "disappears until you refresh". mergeSessionPage keeps both.
+        const keepIds = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
+        setSessions(prev => mergeSessionPage(prev, result.sessions, keepIds))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
       }
     } finally {
@@ -277,7 +316,7 @@ export function DesktopController() {
   })
 
   const openProviderSettings = useCallback(() => {
-    navigate(`${SETTINGS_ROUTE}?tab=keys`)
+    navigate(`${SETTINGS_ROUTE}?tab=providers`)
   }, [navigate])
 
   const modelMenuContent = useMemo(
@@ -406,6 +445,8 @@ export function DesktopController() {
 
       event.preventDefault()
       startFreshSessionDraft()
+      // Briefly light up the sidebar's ⌘N hint so the shortcut is discoverable.
+      window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -517,7 +558,9 @@ export function DesktopController() {
     inferenceStatus,
     modelMenuContent,
     openAgents,
+    freshDraftReady,
     openCommandCenterSection,
+    requestGateway,
     statusSnapshot,
     toggleCommandCenter
   })
@@ -554,6 +597,7 @@ export function DesktopController() {
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
+      <CommandPalette />
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -582,7 +626,6 @@ export function DesktopController() {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
-            onNavigateRoute={path => navigate(path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
         </Suspense>
@@ -591,6 +634,18 @@ export function DesktopController() {
       {agentsOpen && (
         <Suspense fallback={null}>
           <AgentsView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {cronOpen && (
+        <Suspense fallback={null}>
+          <CronView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {profilesOpen && (
+        <Suspense fallback={null}>
+          <ProfilesView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
     </>
@@ -604,7 +659,7 @@ export function DesktopController() {
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}
       onAttachImageBlob={composer.attachImageBlob}
-      onBranchInNewChat={messageId => void branchInNewChat(messageId)}
+      onBranchInNewChat={branchInNewChat}
       onCancel={cancelRun}
       onDeleteSelectedSession={() => {
         if (selectedStoredSessionId) {
@@ -631,12 +686,52 @@ export function DesktopController() {
     </div>
   )
 
+  // Flipped layout mirrors the default: sessions sidebar → right, file
+  // browser + preview rail → left. Same panes, swapped sides.
+  const sidebarSide = panesFlipped ? 'right' : 'left'
+  const railSide = panesFlipped ? 'left' : 'right'
+
+  const previewPane = (
+    <Pane
+      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      id="preview"
+      key="preview"
+      maxWidth={PREVIEW_RAIL_MAX_WIDTH}
+      minWidth={PREVIEW_RAIL_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={PREVIEW_RAIL_PANE_WIDTH}
+    >
+      {chatOpen ? (
+        <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
+      ) : null}
+    </Pane>
+  )
+
+  const fileBrowserPane = (
+    <Pane
+      defaultOpen={false}
+      disabled={!chatOpen}
+      id="file-browser"
+      key="file-browser"
+      maxWidth={FILE_BROWSER_MAX_WIDTH}
+      minWidth={FILE_BROWSER_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={FILE_BROWSER_DEFAULT_WIDTH}
+    >
+      <RightSidebarPane
+        onActivateFile={composer.attachContextFilePath}
+        onActivateFolder={composer.attachContextFolderPath}
+        onChangeCwd={changeSessionCwd}
+      />
+    </Pane>
+  )
+
   return (
     <AppShell
-      commandCenterOpen={commandCenterOpen}
       leftStatusbarItems={leftStatusbarItems}
       leftTitlebarTools={titlebarToolGroups.flat.left}
-      onOpenSearch={() => openCommandCenterSection('sessions')}
       onOpenSettings={openSettings}
       overlays={overlays}
       statusbarItems={statusbarItems}
@@ -648,7 +743,7 @@ export function DesktopController() {
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
         resizable
-        side="left"
+        side={sidebarSide}
         width={`${SIDEBAR_DEFAULT_WIDTH}px`}
       >
         {sidebar}
@@ -681,25 +776,8 @@ export function DesktopController() {
             }
             path="artifacts"
           />
-          <Route
-            element={
-              <Suspense fallback={null}>
-                <CronView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
-            }
-            path="cron"
-          />
-          <Route
-            element={
-              <Suspense fallback={null}>
-                <ProfilesView
-                  setStatusbarItemGroup={setStatusbarItemGroup}
-                  setTitlebarToolGroup={setTitlebarToolGroup}
-                />
-              </Suspense>
-            }
-            path="profiles"
-          />
+          <Route element={null} path="cron" />
+          <Route element={null} path="profiles" />
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />
           <Route element={null} path="agents" />
@@ -708,35 +786,13 @@ export function DesktopController() {
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
         </Routes>
       </PaneMain>
-      <Pane
-        disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-        id="preview"
-        maxWidth={PREVIEW_RAIL_MAX_WIDTH}
-        minWidth={PREVIEW_RAIL_MIN_WIDTH}
-        resizable
-        side="right"
-        width={PREVIEW_RAIL_PANE_WIDTH}
-      >
-        {chatOpen ? (
-          <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
-        ) : null}
-      </Pane>
-      <Pane
-        defaultOpen={false}
-        disabled={!chatOpen}
-        id="file-browser"
-        maxWidth={FILE_BROWSER_MAX_WIDTH}
-        minWidth={FILE_BROWSER_MIN_WIDTH}
-        resizable
-        side="right"
-        width={FILE_BROWSER_DEFAULT_WIDTH}
-      >
-        <RightSidebarPane
-          onActivateFile={composer.attachContextFilePath}
-          onActivateFolder={composer.attachContextFolderPath}
-          onChangeCwd={changeSessionCwd}
-        />
-      </Pane>
+      {/*
+        Order within a side maps to column order. Default (rail on the right):
+        main | preview | file-browser. Flipped (rail on the left): mirror it to
+        file-browser | preview | main so preview stays adjacent to the chat.
+      */}
+      {panesFlipped ? fileBrowserPane : previewPane}
+      {panesFlipped ? previewPane : fileBrowserPane}
     </AppShell>
   )
 }

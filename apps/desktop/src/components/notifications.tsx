@@ -132,9 +132,7 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
 function NotificationDetail({ detail }: { detail: string }) {
   return (
     <details className="mt-2 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none font-medium text-muted-foreground hover:text-foreground">
-        Details
-      </summary>
+      <summary className="select-none font-medium text-muted-foreground hover:text-foreground">Details</summary>
       <div className="mt-1 rounded-md border border-border/70 bg-background/65 p-2">
         <pre className="max-h-32 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed">
           {detail}

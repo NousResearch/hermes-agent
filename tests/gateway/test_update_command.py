@@ -661,8 +661,14 @@ class TestSendUpdateNotification:
         assert not pending_path.exists()
 
     @pytest.mark.asyncio
-    async def test_no_adapter_for_platform(self, tmp_path):
-        """Does not crash if the platform adapter is not connected."""
+    async def test_no_adapter_for_platform_preserves_markers(self, tmp_path):
+        """A finished update whose platform is offline keeps its markers.
+
+        When the target platform's adapter has not reconnected yet, dropping
+        the completion markers would silently lose the notification. Instead the
+        call defers (returns False) and leaves every marker on disk so a later
+        retry can deliver once the platform is back.
+        """
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -680,13 +686,62 @@ class TestSendUpdateNotification:
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
-            await runner._send_update_notification()
+            result = await runner._send_update_notification()
 
-        # send should not have been called (wrong platform)
+        # No send (wrong platform offline) and the result is deferred.
+        assert result is False
         mock_adapter.send.assert_not_called()
-        # Files should still be cleaned up
+        # Markers are preserved for a later retry — NOT cleaned up.
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        # The marker stays in its canonical pending location (claim restored).
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_deferred_notification_delivers_after_reconnect(self, tmp_path):
+        """A deferred completion is delivered once the platform reconnects.
+
+        Regression for the late-reconnect /update bug: the update finishes while
+        the target platform is offline, the markers survive the deferral, and
+        the next call (after the adapter is registered) delivers the result and
+        cleans up — exactly once.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        output_path.write_text("✓ Update complete!")
+        exit_code_path.write_text("0")
+
+        # First pass: target platform (discord) is still offline → defer.
+        with patch("gateway.run._hermes_home", hermes_home):
+            first = await runner._send_update_notification()
+
+        assert first is False
+        assert pending_path.exists()
+
+        # Platform reconnects: the reconnect watcher adds the adapter back.
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.DISCORD: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            second = await runner._send_update_notification()
+
+        assert second is True
+        mock_adapter.send.assert_called_once()
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "Update complete" in sent_text
+        # Now everything is cleaned up — no duplicate deliveries possible.
         assert not pending_path.exists()
+        assert not output_path.exists()
         assert not exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
 
 
 # ---------------------------------------------------------------------------

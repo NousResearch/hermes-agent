@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -350,6 +351,14 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        leadGap: hasLeadGap(
+          prevRenderedMsg(i => virtualRows[i]?.msg, index, {
+            commandOverride: ui.detailsModeCommandOverride,
+            detailsMode: ui.detailsMode,
+            sections: ui.sections
+          }),
+          virtualRows[index]!.msg
+        ),
         thinkingVisible: thinkingDetailsVisible,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
@@ -362,6 +371,9 @@ export function useMainApp(gw: GatewayClient) {
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
+      ui.detailsMode,
+      ui.detailsModeCommandOverride,
+      ui.sections,
       ui.theme.brand.prompt,
       virtualRows
     ]

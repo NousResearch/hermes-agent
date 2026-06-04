@@ -76,8 +76,7 @@
   --shadow-header:
     0 0.0625rem 0 color-mix(in srgb, var(--dt-foreground) 7%, transparent),
     0 0.625rem 1.5rem -1.25rem color-mix(in srgb, #000 16%, transparent);
-  --shadow-composer:
-    0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
+  --shadow-composer: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
   --shadow-composer-focus:
     0 0 0 0.125rem color-mix(in srgb, var(--dt-composer-ring) calc(10% * var(--composer-ring-strength)), transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-composer-ring) calc(22% * var(--composer-ring-strength)), transparent),
@@ -133,15 +132,23 @@
     --ui-cyan: #4c7f8c;
     --ui-blue: #0053fd;
     --ui-purple: #9e94d5;
-    --ui-bg-chrome: color-mix(in srgb, var(--theme-background-seed) var(--theme-mix-chrome), var(--theme-neutral-chrome));
-    --ui-bg-sidebar: color-mix(in srgb, var(--theme-sidebar-seed) var(--theme-mix-sidebar), var(--theme-neutral-sidebar));
-    --ui-bg-editor: color-mix(in srgb, var(--theme-card-seed) var(--theme-mix-card), var(--theme-neutral-card));
-    --ui-bg-elevated: color-mix(in srgb, var(--theme-elevated-seed) var(--theme-mix-elevated), var(--theme-neutral-card));
-    --ui-bg-card: color-mix(
+    --ui-bg-chrome: color-mix(
       in srgb,
-      var(--ui-accent) 4%,
-      color-mix(in srgb, var(--ui-base) 4%, transparent)
+      var(--theme-background-seed) var(--theme-mix-chrome),
+      var(--theme-neutral-chrome)
     );
+    --ui-bg-sidebar: color-mix(
+      in srgb,
+      var(--theme-sidebar-seed) var(--theme-mix-sidebar),
+      var(--theme-neutral-sidebar)
+    );
+    --ui-bg-editor: color-mix(in srgb, var(--theme-card-seed) var(--theme-mix-card), var(--theme-neutral-card));
+    --ui-bg-elevated: color-mix(
+      in srgb,
+      var(--theme-elevated-seed) var(--theme-mix-elevated),
+      var(--theme-neutral-card)
+    );
+    --ui-bg-card: color-mix(in srgb, var(--ui-accent) 4%, color-mix(in srgb, var(--ui-base) 4%, transparent));
     --ui-bg-input: #fcfcfc;
     --ui-bg-primary: color-mix(
       in srgb,
@@ -218,7 +225,11 @@
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
-    --ui-chat-bubble-background: color-mix(in srgb, var(--theme-bubble-seed) var(--theme-mix-bubble), var(--theme-neutral-card));
+    --ui-chat-bubble-background: color-mix(
+      in srgb,
+      var(--theme-bubble-seed) var(--theme-mix-bubble),
+      var(--theme-neutral-card)
+    );
     --ui-chat-bubble-opaque-background: var(--ui-bg-editor);
     --ui-inline-code-background: color-mix(in srgb, #141414 5%, transparent);
     --ui-inline-code-border: color-mix(in srgb, #141414 8%, transparent);
@@ -272,6 +283,7 @@
     --conversation-line-height: 1.125rem;
     --conversation-caption-line-height: 1rem;
     --conversation-turn-gap: 0.375rem;
+    --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
     --composer-width: 48.75rem;
@@ -413,6 +425,25 @@
   display: none;
 }
 
+/* Primitive-level pointer cursor for every interactive control (buttons,
+   selects, menu items, switches, tabs, summaries). Keeps individual
+   components from having to hardcode `cursor-pointer`; explicit cursor
+   utilities (cursor-grab, cursor-default, disabled:cursor-*) still win since
+   they live in the utilities layer. */
+@layer base {
+  button:not(:disabled):not([aria-disabled='true']),
+  summary,
+  [role='button']:not([aria-disabled='true']),
+  [role='menuitem']:not([aria-disabled='true']),
+  [role='menuitemradio']:not([aria-disabled='true']),
+  [role='menuitemcheckbox']:not([aria-disabled='true']),
+  [role='option']:not([aria-disabled='true']),
+  [role='switch']:not([aria-disabled='true']),
+  [role='tab']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}
+
 @layer utilities {
   [class*='rounded-full'],
   [class*=':rounded-full'] {
@@ -455,6 +486,57 @@
   --arc-c1: var(--dt-foreground);
 }
 
+/* Quest-style "needs you" pulse for a clarify-blocked session's dot —
+   a soft amber glow that breathes so the row draws the eye without a toast. */
+@keyframes quest-glow {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0.1875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 70%, transparent),
+      0 0 0.5rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 45%, transparent);
+  }
+  50% {
+    transform: scale(1.18);
+    box-shadow:
+      0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
+      0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
+  }
+}
+
+.quest-glow {
+  animation: quest-glow 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quest-glow {
+    animation: none;
+    box-shadow:
+      0 0 0.25rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 80%, transparent),
+      0 0 0.625rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 55%, transparent);
+  }
+}
+
+/* Command-palette deep-link: briefly flash the targeted settings row. */
+@keyframes setting-field-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--dt-primary, #f59e0b) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.setting-field-highlight {
+  animation: setting-field-flash 1.6s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setting-field-highlight {
+    animation: none;
+  }
+}
+
 .arc-border::before {
   content: '';
   position: absolute;
@@ -480,10 +562,38 @@
   animation: arc-border var(--arc-duration) linear infinite;
 }
 
+/* Flip the arc's travel direction (e.g. the Nous Portal hero row). */
+.arc-border.arc-reverse::before {
+  animation-direction: reverse;
+}
+
+/* Nous Portal hero: slower, blue → orange arc. */
+.arc-border.arc-nous,
+:root.dark .arc-border.arc-nous {
+  --arc-c1: #4f8cff;
+  --arc-c2: #ff8c42;
+  --arc-duration: 3.27s;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
   }
+}
+
+/* No focus rings, anywhere. Kills the native outline plus Tailwind's
+   `focus-visible:ring-*` (a box-shadow driven by --tw-ring-*). Unlayered so it
+   beats the utilities layer without !important on the outline. The composer /
+   .desktop-input-chrome focus glow is untouched — those set `box-shadow`
+   directly rather than through the ring vars. */
+*:focus,
+*:focus-visible {
+  outline: none;
+}
+
+*:focus-visible {
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
 }
 
 button {
@@ -572,11 +682,10 @@ canvas {
     var(--dt-composer-ring) calc(var(--ring-pct) * var(--composer-ring-strength)),
     var(--ring-fall)
   );
-  box-shadow: var(--shadow-composer);
+  box-shadow: none;
   transition:
     background-color 200ms ease-out,
-    border-color 200ms ease-out,
-    box-shadow 200ms ease-out;
+    border-color 200ms ease-out;
 }
 
 .desktop-input-chrome:hover {
@@ -588,19 +697,12 @@ canvas {
   --ring-pct: 45%;
   --ring-fall: transparent;
   background: var(--dt-card);
-  box-shadow: var(--shadow-composer-focus);
+  box-shadow: none;
   outline: none;
 }
 
 .desktop-input-chrome[aria-invalid='true'] {
   border-color: var(--dt-destructive);
-}
-
-.desktop-input-chrome[aria-invalid='true']:focus {
-  box-shadow:
-    0 0 0 0.125rem color-mix(in srgb, var(--dt-destructive) 18%, transparent),
-    0 0 0 0.0625rem color-mix(in srgb, var(--dt-destructive) 34%, transparent),
-    0 0.1875rem 0.625rem color-mix(in srgb, var(--dt-destructive) 12%, transparent);
 }
 
 @layer components {
@@ -626,7 +728,7 @@ canvas {
   .scrollbar-dt::-webkit-scrollbar-thumb,
   .scrollbar-dt *::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 18%, transparent);
-  border-radius: 9999rem;
+    border-radius: 9999rem;
     border: 0.125rem solid transparent;
     background-clip: padding-box;
   }
@@ -704,9 +806,50 @@ canvas {
   padding-inline-start: var(--md-text-indent, 0.5rem);
 }
 
+[data-slot='aui_user-message-root'] {
+  top: var(--sticky-human-top);
+}
+
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
   font-size: var(--conversation-text-font-size);
+}
+
+/* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
+   prompt doesn't dominate the viewport while you read the response stuck
+   beneath it. The clamp lifts on hover / focus (clicking the bubble opens the
+   edit composer, which already shows the full text). --human-msg-full is the
+   measured content height (set in UserMessage) so expand/collapse animates to
+   the real height instead of overshooting the cap. */
+.sticky-human-clamp {
+  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  overflow: hidden;
+  transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sticky-human-clamp[data-clamped='true'] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+
+.composer-human-message:hover .sticky-human-clamp,
+.composer-human-message:focus-within .sticky-human-clamp {
+  max-height: min(var(--human-msg-full, 24rem), 24rem);
+  overflow-y: auto;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* The thread renders items in natural document flow (padding spacers, not
+   transforms) and @tanstack/react-virtual already adjusts scrollTop itself
+   when an off-screen turn is measured and its real height differs from the
+   220px estimate. The browser's native scroll anchoring (overflow-anchor:
+   auto) would adjust scrollTop for that SAME size delta, so the two
+   double-correct and the view lurches — most visibly on Windows mouse wheels,
+   whose coarse notches mount/measure several under-estimated turns per tick.
+   Opt out of native anchoring so only the virtualizer compensates. */
+[data-slot='aui_thread-viewport'] {
+  overflow-anchor: none;
 }
 
 [data-slot='aui_thread-content'] {
@@ -863,6 +1006,32 @@ canvas {
   margin-block: 0 !important;
 }
 
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'] {
+  position: relative;
+  transition:
+    border-color 180ms ease-out,
+    box-shadow 180ms ease-out,
+    background-color 180ms ease-out;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
+  animation:
+    code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both,
+    code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
+  border-color: color-mix(in srgb, var(--dt-ring) 24%, var(--ui-stroke-tertiary));
+  box-shadow:
+    0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 10%, transparent),
+    0 0.625rem 1.75rem color-mix(in srgb, var(--dt-ring) 8%, transparent);
+}
+
+[data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true']
+  [data-slot='code-card-body'] {
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
+  mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
   border: 0.0625rem solid var(--ui-inline-code-border);
   background: var(--ui-inline-code-background);
@@ -897,8 +1066,7 @@ canvas {
   background: transparent !important;
 }
 
-[data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+[data-slot='aui_assistant-message-content'] > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -929,12 +1097,8 @@ canvas {
   margin-top: 1rem;
 }
 
-[data-slot='aui_assistant-message-content']
-  [data-slot='aui_thinking-disclosure']
-  + [data-slot='tool-block'],
-[data-slot='aui_assistant-message-content']
-  [data-slot='tool-block']
-  + [data-slot='aui_thinking-disclosure'] {
+[data-slot='aui_assistant-message-content'] [data-slot='aui_thinking-disclosure'] + [data-slot='tool-block'],
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'] + [data-slot='aui_thinking-disclosure'] {
   margin-top: 0.75rem;
 }
 
@@ -989,4 +1153,38 @@ canvas {
 .thinking-preview {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
   mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
+}
+
+@keyframes code-card-stream-enter {
+  from {
+    opacity: 0.74;
+    transform: translateY(0.375rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes code-card-stream-glow {
+  from {
+    border-color: color-mix(in srgb, var(--dt-ring) 18%, var(--ui-stroke-tertiary));
+    box-shadow:
+      0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 6%, transparent),
+      0 0.5rem 1.5rem color-mix(in srgb, var(--dt-ring) 5%, transparent);
+  }
+
+  to {
+    border-color: color-mix(in srgb, var(--dt-ring) 32%, var(--ui-stroke-tertiary));
+    box-shadow:
+      0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent),
+      0 0.75rem 2rem color-mix(in srgb, var(--dt-ring) 10%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
+    animation: none;
+  }
 }

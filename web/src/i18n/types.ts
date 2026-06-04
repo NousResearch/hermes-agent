@@ -60,6 +60,10 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
+    // Optional: non-English locales fall back to the English literal in the
+    // component until translated, matching the enriched-profiles keys.
+    gateway?: string;
+    gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };
@@ -365,6 +369,39 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
+    // Optional keys added for the enriched profiles experience. Non-English
+    // locales fall back to the English literal in the component until
+    // translated, so these are optional to avoid churning every locale file.
+    activeProfile?: string;
+    activeBadge?: string;
+    setActive?: string;
+    activeSet?: string;
+    gatewayRunning?: string;
+    gatewayStopped?: string;
+    gatewayRunningWarning?: string;
+    aliasBadge?: string;
+    description?: string;
+    descriptionPlaceholder?: string;
+    noDescription?: string;
+    editDescription?: string;
+    descriptionSaved?: string;
+    reviewBadge?: string;
+    autoGenerate?: string;
+    generating?: string;
+    describeFailed?: string;
+    distribution?: string;
+    advancedOptions?: string;
+    cloneAll?: string;
+    noSkillsOption?: string;
+    descriptionOptional?: string;
+    modelOptional?: string;
+    modelInherit?: string;
+    modelLoading?: string;
+    modelNone?: string;
+    editModel?: string;
+    modelSaved?: string;
+    modelSelect?: string;
+    actions?: string;
   };
 
   // ── Skills page ──

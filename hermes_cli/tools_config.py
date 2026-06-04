@@ -181,6 +181,30 @@ def _get_plugin_toolset_keys() -> set:
     except Exception:
         return set()
 
+
+def _checklist_toolset_keys(platform: str) -> Set[str]:
+    """Return the toolset keys the ``hermes tools`` checklist actually offers
+    for ``platform``.
+
+    This mirrors exactly what ``_prompt_toolset_checklist`` renders:
+    ``_get_effective_configurable_toolsets()`` (built-in + plugin toolsets),
+    filtered by ``_toolset_allowed_for_platform``. The checklist's returned
+    selection can therefore only ever be a subset of this universe.
+
+    Non-configurable toolsets that ``_get_platform_tools`` resolves at read
+    time — ``kanban`` and other check_fn-gated toolsets, recovered platform
+    composites, MCP server names — are NOT in this set because the checklist
+    never shows them. Use this to scope the added/removed diff the UI prints,
+    so ``hermes tools`` never claims to add or remove a toolset the user was
+    never given a checkbox for. The underlying config is unaffected — those
+    entries are preserved by ``_save_platform_tools`` regardless.
+    """
+    return {
+        ts_key
+        for ts_key, _, _ in _get_effective_configurable_toolsets()
+        if _toolset_allowed_for_platform(ts_key, platform)
+    }
+
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
@@ -203,6 +227,13 @@ TOOL_CATEGORIES = {
         "icon": "🔊",
         "providers": [
             {
+                "name": "Microsoft Edge TTS",
+                "badge": "★ recommended · free",
+                "tag": "Good quality, no API key needed",
+                "env_vars": [],
+                "tts_provider": "edge",
+            },
+            {
                 "name": "Nous Subscription",
                 "badge": "subscription",
                 "tag": "Managed OpenAI TTS billed to your subscription",
@@ -211,13 +242,6 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "tts",
                 "override_env_vars": ["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"],
-            },
-            {
-                "name": "Microsoft Edge TTS",
-                "badge": "★ recommended · free",
-                "tag": "Good quality, no API key needed",
-                "env_vars": [],
-                "tts_provider": "edge",
             },
             {
                 "name": "OpenAI TTS",
@@ -406,15 +430,26 @@ TOOL_CATEGORIES = {
         # Per-provider rows for Browserbase, Browser Use, and Firecrawl are
         # injected at runtime from plugins.browser.<vendor>.provider via
         # _plugin_browser_providers() in _visible_providers(). Only
-        # non-provider UX setup-flow rows remain here:
+        # non-provider UX setup-flow rows remain here. "Local Browser" is
+        # listed FIRST so it is the default-highlighted (index 0) choice on a
+        # fresh install — pressing Enter must land on the free, no-key local
+        # backend, never on the paid Nous Subscription gateway row:
+        #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
         #   - "Nous Subscription (Browser Use cloud)" — managed Browser Use
         #     billed via Nous subscription (requires_nous_auth +
         #     override_env_vars). Uses the browser-use plugin as the
         #     underlying backend but has a distinct setup UX.
-        #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
         #   - "Camofox" — anti-detection local Firefox; short-circuits the
         #     cloud-provider dispatch path via _is_camofox_mode().
         "providers": [
+            {
+                "name": "Local Browser",
+                "badge": "★ recommended · free",
+                "tag": "Headless Chromium, no API key needed",
+                "env_vars": [],
+                "browser_provider": "local",
+                "post_setup": "agent_browser",
+            },
             {
                 "name": "Nous Subscription (Browser Use cloud)",
                 "badge": "subscription",
@@ -424,14 +459,6 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "browser",
                 "override_env_vars": ["BROWSER_USE_API_KEY"],
-                "post_setup": "agent_browser",
-            },
-            {
-                "name": "Local Browser",
-                "badge": "★ recommended · free",
-                "tag": "Headless Chromium, no API key needed",
-                "env_vars": [],
-                "browser_provider": "local",
                 "post_setup": "agent_browser",
             },
             {
@@ -3314,8 +3341,15 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             # Show checklist
             new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey)
 
-            added = new_enabled - current_enabled
-            removed = current_enabled - new_enabled
+            # Only diff against toolsets the checklist actually offered. The
+            # resolved ``current_enabled`` can include non-configurable toolsets
+            # (e.g. ``kanban``, recovered platform composites) the user was
+            # never shown a checkbox for; without this scope the summary would
+            # print spurious ``- kanban`` removals even though the config keeps
+            # them. See _checklist_toolset_keys.
+            _diff_universe = _checklist_toolset_keys(pkey)
+            added = (new_enabled - current_enabled) & _diff_universe
+            removed = (current_enabled - new_enabled) & _diff_universe
             if added:
                 for ts in sorted(added):
                     label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
@@ -3424,8 +3458,12 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             if new_enabled != all_current:
                 for pk in platform_keys:
                     prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
-                    added = new_enabled - prev
-                    removed = prev - new_enabled
+                    # Scope the printed diff to the checklist's universe (see
+                    # _checklist_toolset_keys) so non-configurable toolsets like
+                    # ``kanban`` aren't reported as added/removed.
+                    _diff_universe = _checklist_toolset_keys(pk)
+                    added = (new_enabled - prev) & _diff_universe
+                    removed = (prev - new_enabled) & _diff_universe
                     pinfo_inner = PLATFORMS[pk]
                     if added or removed:
                         print(color(f"  {pinfo_inner['label']}:", Colors.DIM))
@@ -3471,8 +3509,12 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         )
 
         if new_enabled != current_enabled:
-            added = new_enabled - current_enabled
-            removed = current_enabled - new_enabled
+            # Scope the printed diff to the checklist's universe (see
+            # _checklist_toolset_keys) so non-configurable toolsets like
+            # ``kanban`` aren't reported as added/removed.
+            _diff_universe = _checklist_toolset_keys(pkey)
+            added = (new_enabled - current_enabled) & _diff_universe
+            removed = (current_enabled - new_enabled) & _diff_universe
 
             if added:
                 for ts in sorted(added):

@@ -40,11 +40,19 @@ class _FakeAdapter:
 def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD: PlatformConfig(enabled=True, token="***"),
+        }
     )
-    runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
+    runner.adapters = {
+        Platform.TELEGRAM: _FakeAdapter(),
+        Platform.DISCORD: _FakeAdapter(),
+    }
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._busy_input_mode = "interrupt"
+    runner._followup_grace_cache = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
@@ -67,9 +75,9 @@ def _make_runner():
     return runner
 
 
-def _make_event(text="hello", chat_id="12345"):
+def _make_event(text="hello", chat_id="12345", platform=Platform.TELEGRAM):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm",
+        platform=platform, chat_id=chat_id, chat_type="dm",
         user_id="u1",
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
@@ -263,8 +271,54 @@ def test_merge_pending_message_event_promotes_document_followups_over_text():
     assert merged.media_types == ["application/pdf"]
 
 
+def test_load_followup_grace_uses_global_env_override(monkeypatch):
+    monkeypatch.setenv("HERMES_FOLLOWUP_GRACE_SECONDS", "2.5")
+    monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "7.0")
+
+    runtime_config = {
+        "gateway": {
+            "followup_grace_per_platform": {
+                "discord": 0,
+            },
+            "followup_grace_seconds": 1.0,
+        },
+    }
+    with patch("gateway.run._load_gateway_runtime_config", return_value=runtime_config):
+        assert GatewayRunner._load_followup_grace(Platform.DISCORD) == 2.5
+        assert GatewayRunner._load_followup_grace(Platform.TELEGRAM) == 2.5
+
+
+def test_load_followup_grace_keeps_telegram_legacy_env(monkeypatch):
+    monkeypatch.delenv("HERMES_FOLLOWUP_GRACE_SECONDS", raising=False)
+    monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "4.0")
+
+    with patch("gateway.run._load_gateway_runtime_config", return_value={}):
+        assert GatewayRunner._load_followup_grace(Platform.TELEGRAM) == 4.0
+        assert GatewayRunner._load_followup_grace(Platform.DISCORD) == 0.0
+
+
+def test_load_followup_grace_uses_platform_config_before_global(monkeypatch):
+    monkeypatch.delenv("HERMES_FOLLOWUP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+
+    runtime_config = {
+        "gateway": {
+            "followup_grace_per_platform": {
+                "telegram": 3.0,
+            },
+            "followup_grace_seconds": 1.0,
+        },
+    }
+    with patch("gateway.run._load_gateway_runtime_config", return_value=runtime_config):
+        assert GatewayRunner._load_followup_grace(Platform.TELEGRAM) == 3.0
+        assert GatewayRunner._load_followup_grace(Platform.DISCORD) == 1.0
+
+
 @pytest.mark.asyncio
-async def test_recent_telegram_text_followup_is_queued_without_interrupt():
+async def test_recent_telegram_text_followup_is_queued_without_interrupt(monkeypatch):
+    monkeypatch.delenv("HERMES_FOLLOWUP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+
     runner = _make_runner()
     event = _make_event(text="follow-up")
     session_key = build_session_key(event.source)
@@ -275,7 +329,8 @@ async def test_recent_telegram_text_followup_is_queued_without_interrupt():
     import time as _time
     runner._running_agents_ts[session_key] = _time.time()
 
-    result = await runner._handle_message(event)
+    with patch("gateway.run._load_gateway_runtime_config", return_value={}):
+        result = await runner._handle_message(event)
 
     assert result is None
     fake_agent.interrupt.assert_not_called()
@@ -284,7 +339,10 @@ async def test_recent_telegram_text_followup_is_queued_without_interrupt():
 
 
 @pytest.mark.asyncio
-async def test_recent_telegram_followups_append_in_pending_queue():
+async def test_recent_telegram_followups_append_in_pending_queue(monkeypatch):
+    monkeypatch.delenv("HERMES_FOLLOWUP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+
     runner = _make_runner()
     first = _make_event(text="part one")
     second = _make_event(text="part two")
@@ -296,12 +354,69 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     import time as _time
     runner._running_agents_ts[session_key] = _time.time()
 
-    await runner._handle_message(first)
-    await runner._handle_message(second)
+    with patch("gateway.run._load_gateway_runtime_config", return_value={}) as load_config:
+        await runner._handle_message(first)
+        await runner._handle_message(second)
 
     fake_agent.interrupt.assert_not_called()
+    assert load_config.call_count == 1
     adapter = runner.adapters[Platform.TELEGRAM]
     assert adapter._pending_messages[session_key].text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+async def test_recent_discord_text_followup_defaults_to_interrupt(monkeypatch):
+    monkeypatch.delenv("HERMES_FOLLOWUP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+
+    runner = _make_runner()
+    event = _make_event(text="follow-up", platform=Platform.DISCORD)
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    import time as _time
+    runner._running_agents_ts[session_key] = _time.time()
+
+    with patch("gateway.run._load_gateway_runtime_config", return_value={}):
+        result = await runner._handle_message(event)
+
+    assert result is None
+    fake_agent.interrupt.assert_called_once_with("follow-up")
+    adapter = runner.adapters[Platform.DISCORD]
+    assert session_key not in adapter._pending_messages
+
+
+@pytest.mark.asyncio
+async def test_recent_discord_text_followup_can_be_queued_by_config(monkeypatch):
+    monkeypatch.delenv("HERMES_FOLLOWUP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+
+    runner = _make_runner()
+    event = _make_event(text="follow-up", platform=Platform.DISCORD)
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    import time as _time
+    runner._running_agents_ts[session_key] = _time.time()
+
+    runtime_config = {
+        "gateway": {
+            "followup_grace_per_platform": {
+                "discord": 3.0,
+            },
+        },
+    }
+    with patch("gateway.run._load_gateway_runtime_config", return_value=runtime_config):
+        result = await runner._handle_message(event)
+
+    assert result is None
+    fake_agent.interrupt.assert_not_called()
+    adapter = runner.adapters[Platform.DISCORD]
+    assert adapter._pending_messages[session_key].text == "follow-up"
 
 
 # ------------------------------------------------------------------

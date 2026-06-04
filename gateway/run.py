@@ -2606,6 +2606,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
+    _followup_grace_invalid_warnings: set[tuple[str, str]] = set()
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -2638,6 +2639,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
+        self._followup_grace_cache: Dict[str, float] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -4613,6 +4615,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No explicit legacy knob → follow busy_input_mode.
         input_mode = GatewayRunner._load_busy_input_mode()
         return "queue" if input_mode == "queue" else "interrupt"
+
+    @staticmethod
+    def _load_followup_grace(platform: Any) -> float:
+        """Load per-platform follow-up queue/merge grace in seconds."""
+        platform_name = _gateway_platform_value(platform)
+        telegram_platform_name = _gateway_platform_value(Platform.TELEGRAM)
+
+        def _parse_seconds(raw: Any, label: str) -> Optional[float]:
+            if raw is None:
+                return None
+            if isinstance(raw, str) and not raw.strip():
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                warning_key = (label, repr(raw))
+                if warning_key not in GatewayRunner._followup_grace_invalid_warnings:
+                    GatewayRunner._followup_grace_invalid_warnings.add(warning_key)
+                    logger.warning("Invalid followup grace seconds for %s: %r", label, raw)
+                return None
+
+        global_env = _parse_seconds(
+            os.getenv("HERMES_FOLLOWUP_GRACE_SECONDS"),
+            "HERMES_FOLLOWUP_GRACE_SECONDS",
+        )
+        if global_env is not None:
+            return global_env
+
+        if platform_name == telegram_platform_name:
+            telegram_env = _parse_seconds(
+                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS"),
+                "HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS",
+            )
+            if telegram_env is not None:
+                return telegram_env
+
+        cfg = _load_gateway_runtime_config()
+        per_platform = cfg_get(
+            cfg,
+            "gateway",
+            "followup_grace_per_platform",
+            platform_name,
+            default=None,
+        )
+        parsed = _parse_seconds(
+            per_platform,
+            f"gateway.followup_grace_per_platform.{platform_name}",
+        )
+        if parsed is not None:
+            return parsed
+
+        global_config = _parse_seconds(
+            cfg_get(cfg, "gateway", "followup_grace_seconds", default=None),
+            "gateway.followup_grace_seconds",
+        )
+        if global_config is not None:
+            return global_config
+
+        if platform_name == telegram_platform_name:
+            return 3.0
+        return 0.0
+
+    def _get_followup_grace(self, platform: Any) -> float:
+        """Return cached per-platform follow-up grace seconds."""
+        platform_name = _gateway_platform_value(platform)
+        cache = getattr(self, "_followup_grace_cache", None)
+        if cache is None:
+            cache = {}
+            self._followup_grace_cache = cache
+        if platform_name not in cache:
+            cache[platform_name] = self._load_followup_grace(platform)
+        return cache[platform_name]
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -8998,20 +9072,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
-            _telegram_followup_grace = float(
-                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
-            )
+            _followup_grace = self._get_followup_grace(source.platform)
             _started_at = self._running_agents_ts.get(_quick_key, 0)
+            _followup_elapsed = time.time() - _started_at if _started_at else 0
             if (
-                source.platform == Platform.TELEGRAM
-                and event.message_type == MessageType.TEXT
-                and _telegram_followup_grace > 0
+                event.message_type == MessageType.TEXT
+                and _followup_grace > 0
                 and _started_at
-                and (time.time() - _started_at) <= _telegram_followup_grace
+                and _followup_elapsed <= _followup_grace
             ):
                 logger.debug(
-                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-                    time.time() - _started_at,
+                    "Follow-up arrived on %s %.2fs after run start for %s — queueing without interrupt",
+                    _gateway_platform_value(source.platform),
+                    _followup_elapsed,
                     _quick_key,
                 )
                 adapter = self.adapters.get(source.platform)

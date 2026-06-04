@@ -16,6 +16,7 @@ interface SlashItemMetadata extends Record<string, string> {
   command: string
   display: string
   meta: string
+  rawText?: string
 }
 
 function textValue(value: unknown, fallback = ''): string {
@@ -91,7 +92,13 @@ export function useSlashCompletions(options: { gateway: HermesGateway | null }):
     const metadata: SlashItemMetadata = {
       command,
       display,
-      meta
+      meta,
+      // Provide rawText so hermesDirectiveFormatter.serialize uses the
+      // direct-insertion path instead of the legacy @type:id fallback.
+      // Without this, the item.id (which includes a "|index" suffix for
+      // trigger-adapter uniqueness) leaks into the serialized chip text
+      // and the submitted command.
+      rawText: command
     }
 
     return {

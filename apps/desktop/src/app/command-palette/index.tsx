@@ -36,7 +36,8 @@ import {
   Settings,
   Sun,
   Users,
-  Wrench
+  Wrench,
+  Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
@@ -98,8 +99,20 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
 })
 
 const NON_CONFIG_SETTINGS: ReadonlyArray<{ icon: IconComponent; keywords?: string[]; label: string; tab: string }> = [
+  {
+    icon: Zap,
+    keywords: ['accounts', 'sign in', 'oauth', 'login', 'subscription', 'models', 'anthropic', 'openai'],
+    label: 'Providers',
+    tab: 'providers&pview=accounts'
+  },
+  {
+    icon: KeyRound,
+    keywords: ['providers', 'api key', 'keys', 'secrets', 'tokens'],
+    label: 'Provider API keys',
+    tab: 'providers&pview=keys'
+  },
   { icon: Globe, keywords: ['connection', 'messaging'], label: 'Gateway', tab: 'gateway' },
-  { icon: KeyRound, keywords: ['api', 'secrets', 'tokens', 'credentials'], label: 'API Keys', tab: 'keys' },
+  { icon: KeyRound, keywords: ['api', 'secrets', 'tokens', 'credentials'], label: 'Tools & Keys', tab: 'keys' },
   { icon: Wrench, keywords: ['servers', 'tools'], label: 'MCP', tab: 'mcp' },
   { icon: Archive, keywords: ['history', 'archived'], label: 'Archived Chats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], label: 'About', tab: 'about' }
@@ -169,7 +182,7 @@ export function CommandPalette() {
           {
             icon: Wrench,
             id: 'nav-skills',
-            keywords: ['tools', 'toolsets', 'providers'],
+            keywords: ['tools', 'toolsets'],
             label: 'Skills & Tools',
             run: go(SKILLS_ROUTE)
           },
@@ -207,25 +220,9 @@ export function CommandPalette() {
         ]
       },
       {
-        heading: 'Settings',
-        items: [
-          ...SECTIONS.map(section => ({
-            icon: section.icon,
-            id: `set-config-${section.id}`,
-            keywords: ['settings', section.label],
-            label: section.label,
-            run: go(settingsTab(`config:${section.id}`))
-          })),
-          ...NON_CONFIG_SETTINGS.map(entry => ({
-            icon: entry.icon,
-            id: `set-${entry.tab}`,
-            keywords: ['settings', ...(entry.keywords ?? [])],
-            label: entry.label,
-            run: go(settingsTab(entry.tab))
-          }))
-        ]
-      },
-      {
+        // Declared before Settings: cmdk keeps group order, so this keeps the
+        // theme/mode pickers on top for "theme"/"color" queries instead of
+        // buried under a fuzzy Settings match.
         heading: 'Appearance',
         items: [
           {
@@ -242,6 +239,25 @@ export function CommandPalette() {
             label: 'Change color mode…',
             to: 'color-mode'
           }
+        ]
+      },
+      {
+        heading: 'Settings',
+        items: [
+          ...SECTIONS.map(section => ({
+            icon: section.icon,
+            id: `set-config-${section.id}`,
+            keywords: ['settings', section.label],
+            label: section.label,
+            run: go(settingsTab(`config:${section.id}`))
+          })),
+          ...NON_CONFIG_SETTINGS.map(entry => ({
+            icon: entry.icon,
+            id: `set-${entry.tab}`,
+            keywords: ['settings', ...(entry.keywords ?? [])],
+            label: entry.label,
+            run: go(settingsTab(entry.tab))
+          }))
         ]
       }
     ]

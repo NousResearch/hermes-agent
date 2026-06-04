@@ -24,6 +24,9 @@ interface OverlayNavItemProps {
   active: boolean
   icon: IconComponent
   label: string
+  // Renders as an indented child of another nav item: smaller icon and a
+  // lighter active state so it never competes with the boxed parent item.
+  nested?: boolean
   onClick: () => void
   trailing?: ReactNode
 }
@@ -70,19 +73,29 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
   )
 }
 
-export function OverlayNavItem({ active, icon: Icon, label, onClick, trailing }: OverlayNavItemProps) {
+export function OverlayNavItem({ active, icon: Icon, label, nested, onClick, trailing }: OverlayNavItemProps) {
   return (
     <button
       className={cn(
         'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
-        active
-          ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
-          : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+        nested
+          ? active
+            ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
+            : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+          : active
+            ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
+            : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
       )}
       onClick={onClick}
       type="button"
     >
-      <Icon className={cn('size-4 shrink-0', active ? 'text-foreground/80' : 'text-muted-foreground/80')} />
+      <Icon
+        className={cn(
+          'shrink-0',
+          nested ? 'size-3.5' : 'size-4',
+          active ? 'text-foreground/80' : 'text-muted-foreground/80'
+        )}
+      />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing}
     </button>

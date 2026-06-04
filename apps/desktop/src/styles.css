@@ -562,6 +562,19 @@
   animation: arc-border var(--arc-duration) linear infinite;
 }
 
+/* Flip the arc's travel direction (e.g. the Nous Portal hero row). */
+.arc-border.arc-reverse::before {
+  animation-direction: reverse;
+}
+
+/* Nous Portal hero: slower, blue → orange arc. */
+.arc-border.arc-nous,
+:root.dark .arc-border.arc-nous {
+  --arc-c1: #4f8cff;
+  --arc-c2: #ff8c42;
+  --arc-duration: 3.27s;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .arc-border::before {
     animation: none;
@@ -669,11 +682,10 @@ canvas {
     var(--dt-composer-ring) calc(var(--ring-pct) * var(--composer-ring-strength)),
     var(--ring-fall)
   );
-  box-shadow: var(--shadow-composer);
+  box-shadow: none;
   transition:
     background-color 200ms ease-out,
-    border-color 200ms ease-out,
-    box-shadow 200ms ease-out;
+    border-color 200ms ease-out;
 }
 
 .desktop-input-chrome:hover {
@@ -685,19 +697,12 @@ canvas {
   --ring-pct: 45%;
   --ring-fall: transparent;
   background: var(--dt-card);
-  box-shadow: var(--shadow-composer-focus);
+  box-shadow: none;
   outline: none;
 }
 
 .desktop-input-chrome[aria-invalid='true'] {
   border-color: var(--dt-destructive);
-}
-
-.desktop-input-chrome[aria-invalid='true']:focus {
-  box-shadow:
-    0 0 0 0.125rem color-mix(in srgb, var(--dt-destructive) 18%, transparent),
-    0 0 0 0.0625rem color-mix(in srgb, var(--dt-destructive) 34%, transparent),
-    0 0.1875rem 0.625rem color-mix(in srgb, var(--dt-destructive) 12%, transparent);
 }
 
 @layer components {

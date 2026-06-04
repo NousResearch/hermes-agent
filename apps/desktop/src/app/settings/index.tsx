@@ -3,7 +3,7 @@ import { useRef } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Wrench } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Sparkles, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -18,11 +18,13 @@ import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
+import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
+  'providers',
   'gateway',
   'keys',
   'mcp',
@@ -32,6 +34,14 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 
 export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  // Providers subnav (Accounts vs API keys) lives in its own param so each
+  // sub-view is deep-linkable and survives a refresh.
+  const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
+
+  const openProviderView = (view: ProviderView) => {
+    setActiveView('providers')
+    setProviderView(view)
+  }
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -84,6 +94,30 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           })}
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
+            active={activeView === 'providers'}
+            icon={Zap}
+            label="Providers"
+            onClick={() => setActiveView('providers')}
+          />
+          {activeView === 'providers' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <OverlayNavItem
+                active={providerView === 'accounts'}
+                icon={Sparkles}
+                label="Accounts"
+                nested
+                onClick={() => openProviderView('accounts')}
+              />
+              <OverlayNavItem
+                active={providerView === 'keys'}
+                icon={KeyRound}
+                label="API keys"
+                nested
+                onClick={() => openProviderView('keys')}
+              />
+            </div>
+          )}
+          <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
             label="Gateway"
@@ -92,7 +126,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           <OverlayNavItem
             active={activeView === 'keys'}
             icon={KeyRound}
-            label="API Keys"
+            label="Tools & Keys"
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
@@ -154,6 +188,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               onConfigSaved={onConfigSaved}
               onMainModelChanged={onMainModelChanged}
             />
+          ) : activeView === 'providers' ? (
+            <ProvidersSettings onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
             <KeysSettings />
           ) : activeView === 'mcp' ? (

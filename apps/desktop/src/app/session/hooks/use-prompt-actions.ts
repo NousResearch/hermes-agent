@@ -18,6 +18,7 @@ import {
   isDesktopSlashCommand
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
 import {
@@ -246,7 +247,7 @@ export function usePromptActions({
       }
 
       const releaseBusy = () => {
-        busyRef.current = false
+        setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
       }
@@ -290,7 +291,7 @@ export function usePromptActions({
         )
       }
 
-      busyRef.current = true
+      setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
       clearNotifications()
@@ -594,7 +595,7 @@ export function usePromptActions({
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
 
-    busyRef.current = false
+    setMutableRef(busyRef, false)
     setBusy(false)
     setAwaitingResponse(false)
 
@@ -753,7 +754,7 @@ export function usePromptActions({
       const editedMessage: ChatMessage = { ...source, parts: [textPart(text)] }
 
       clearNotifications()
-      busyRef.current = true
+      setMutableRef(busyRef, true)
       setBusy(true)
       setAwaitingResponse(true)
       updateSessionState(sessionId, state => ({
@@ -791,7 +792,7 @@ export function usePromptActions({
           }
         }
 
-        busyRef.current = false
+        setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))

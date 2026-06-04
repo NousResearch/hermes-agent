@@ -73,6 +73,7 @@ AUTHOR_MAP = {
     "kchuang1015@users.noreply.github.com": "kchuang1015",
     "maheshthedev@gmail.com": "MaheshtheDev",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
+    "shriganesh.patel@gmail.com": "ashishpatel26",
     "45688690+fujinice@users.noreply.github.com": "fujinice",
     "276689385+carltonawong@users.noreply.github.com": "carltonawong",
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",

@@ -1923,6 +1923,19 @@ def run_conversation(
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
 
+                    # Emit structured token usage for real-time context bar updates.
+                    # Fire-and-forget: the target may not have a status_callback wired,
+                    # and we never want to block the conversation loop.
+                    agent._emit_token_usage(
+                        input_tokens=agent.session_input_tokens,
+                        output_tokens=agent.session_output_tokens,
+                        total_tokens=agent.session_total_tokens,
+                        context_tokens=agent.context_compressor.last_prompt_tokens
+                        if agent.context_compressor else 0,
+                        context_length=agent.context_compressor.context_length
+                        if agent.context_compressor else 0,
+                    )
+
                     # Log API call details for debugging/observability
                     _cache_pct = ""
                     if canonical_usage.cache_read_tokens and prompt_tokens:

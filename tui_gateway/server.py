@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 from tui_gateway.transport import (
     StdioTransport,
@@ -394,6 +395,16 @@ def _emit(event: str, sid: str, payload: dict | None = None):
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
+        return
+    # Structured token_usage events are JSON-encoded; unpack and re-emit
+    # as a typed event so the desktop app can consume them directly.
+    if kind == "token_usage":
+        import json
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return
+        _emit("token.usage", sid, payload)
         return
     _emit(
         "status.update",
@@ -2173,7 +2184,10 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
-        "fallback_model": getattr(agent, "_fallback_model", None),
+        "fallback_model": (
+            list(getattr(agent, "_fallback_chain", None) or [])
+            or getattr(agent, "_fallback_model", None)
+        ),
     }
 
 
@@ -2347,6 +2361,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         pass
 
     cfg = _load_cfg()
+    fallback_chain = get_fallback_chain(cfg)
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()
@@ -2378,6 +2393,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=fallback_chain or None,
         quiet_mode=True,
         # verbose_logging controls DEBUG-level agent logging; it is intentionally
         # independent of tool_progress_mode (which only controls per-tool

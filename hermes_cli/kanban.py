@@ -15,6 +15,7 @@ Exposes the full Kanban command surface documented in the design spec
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shlex
@@ -41,6 +42,22 @@ _STATUS_ICONS = {
     "done":     "✓",
     "archived": "—",
 }
+
+_READONLY_EXISTING_DB_ACTIONS = {"assignees"}
+
+
+def _is_filesystem_permission_error(exc: BaseException) -> bool:
+    """Return True when ``exc`` or its chain is an OS permission failure."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, PermissionError):
+            return True
+        if isinstance(current, OSError) and current.errno in {errno.EACCES, errno.EPERM}:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _fmt_ts(ts: Optional[int]) -> str:
@@ -915,6 +932,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         os.environ["HERMES_KANBAN_BOARD"] = normed
         restore_board_env = True
 
+    readonly_existing_db = False
+
     # Auto-initialize the DB before dispatching any subcommand. init_db
     # is idempotent, so running it every invocation is cheap (one
     # SELECT against sqlite_master when tables already exist) and
@@ -925,9 +944,21 @@ def kanban_command(args: argparse.Namespace) -> int:
     try:
         kb.init_db()
     except Exception as exc:
-        print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
-        _restore_board_env()
-        return 1
+        db_exists = False
+        try:
+            db_exists = kb.kanban_db_path().exists()
+        except Exception:
+            db_exists = False
+        if (
+            action in _READONLY_EXISTING_DB_ACTIONS
+            and db_exists
+            and _is_filesystem_permission_error(exc)
+        ):
+            readonly_existing_db = True
+        else:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+            _restore_board_env()
+            return 1
 
     handlers = {
         "init":     _cmd_init,
@@ -974,6 +1005,8 @@ def kanban_command(args: argparse.Namespace) -> int:
         print(f"kanban: unknown action {action!r}", file=sys.stderr)
         _restore_board_env()
         return 2
+    if readonly_existing_db:
+        setattr(args, "_kanban_readonly_existing_db", True)
     try:
         return int(handler(args) or 0)
     except (ValueError, RuntimeError) as exc:
@@ -1297,8 +1330,12 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
 
 
 def _cmd_assignees(args: argparse.Namespace) -> int:
-    with kb.connect_closing() as conn:
-        data = kb.known_assignees(conn)
+    if getattr(args, "_kanban_readonly_existing_db", False):
+        with kb.connect_readonly_existing_closing() as conn:
+            data = kb.known_assignees(conn)
+    else:
+        with kb.connect_closing() as conn:
+            data = kb.known_assignees(conn)
     if getattr(args, "json", False):
         print(json.dumps(data, indent=2, ensure_ascii=False))
         return 0

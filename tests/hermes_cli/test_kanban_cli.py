@@ -166,6 +166,25 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_assignees_falls_back_when_init_lock_is_not_writable(kanban_home):
+    kc.run_slash("create 'sandboxed task' --assignee alice")
+    lock_path = kb.kanban_db_path().with_name(kb.kanban_db_path().name + ".init.lock")
+    lock_path.touch()
+    lock_path.chmod(0o400)
+    try:
+        out = kc.run_slash("assignees")
+    finally:
+        lock_path.chmod(0o600)
+
+    assert "alice" in out
+    assert "ready=1" in out
+
+
+def test_kanban_init_fallback_guard_is_permission_scoped():
+    assert kc._is_filesystem_permission_error(PermissionError("no write"))
+    assert not kc._is_filesystem_permission_error(RuntimeError("schema failed"))
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

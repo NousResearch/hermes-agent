@@ -1157,6 +1157,21 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _sqlite_connect_readonly(path: Path) -> sqlite3.Connection:
+    """Open an existing Kanban SQLite DB without creating lock sidecars."""
+    busy_timeout_ms = _resolve_busy_timeout_ms()
+    uri = path.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        isolation_level=None,
+        timeout=busy_timeout_ms / 1000.0,
+    )
+    conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
 @contextlib.contextmanager
 def _cross_process_init_lock(path: Path):
     """Serialize first-connect WAL/schema/integrity setup across processes.
@@ -1465,6 +1480,37 @@ def connect(
     return conn
 
 
+def connect_readonly_existing(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+) -> sqlite3.Connection:
+    """Open an existing kanban DB for read-only commands without init locks.
+
+    This is a degraded path for sandboxed/read-only environments. Normal
+    ``connect()`` remains the canonical entry point because it validates,
+    initializes, migrates, enables WAL, and runs integrity checks. Some
+    read-only command surfaces, however, are useful even when the caller can
+    read ``kanban.db`` but cannot create ``kanban.db.init.lock``. This helper
+    deliberately refuses to create or migrate anything.
+    """
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    _validate_sqlite_header(path)
+    conn = _sqlite_connect_readonly(path)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
 @contextlib.contextmanager
 def connect_closing(
     db_path: Optional[Path] = None,
@@ -1491,6 +1537,23 @@ def connect_closing(
     callers) continue to work.
     """
     conn = connect(db_path=db_path, board=board)
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@contextlib.contextmanager
+def connect_readonly_existing_closing(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+):
+    """Open an existing read-only kanban DB and close it on exit."""
+    conn = connect_readonly_existing(db_path=db_path, board=board)
     try:
         yield conn
     finally:

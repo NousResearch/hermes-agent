@@ -2,10 +2,17 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { getProfiles, transcribeAudio } from '@/hermes'
+import { requestComposerInsert } from '@/app/chat/composer/focus'
+import { getProfiles, getSessionMessages, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
-import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import {
+  branchGroupForUser,
+  type ChatMessage,
+  chatMessageText,
+  textPart,
+  toChatMessages
+} from '@/lib/chat-messages'
 import {
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -901,6 +908,40 @@ export function usePromptActions({
             return
           }
 
+          if (dispatch.type === 'prefill') {
+            // /undo returns a prefill directive. The server has already
+            // soft-deleted the backed-up turns (active=0), so re-sync the
+            // visible transcript to the server's active history first — without
+            // this the undone exchange stays on screen even though it's gone
+            // from the agent's context (issue #39019). This is a wholesale
+            // replace (unlike resume's reconcile), which intentionally drops
+            // any local-only rows: /undo is a "discard" and runs on an idle
+            // session. The notice is surfaced *after* the replace so it isn't
+            // clobbered by it, then we drop the backed-up text into the
+            // composer for editing — matching the Ink TUI's prefill handling.
+            try {
+              const refreshed = await getSessionMessages(sessionId)
+
+              updateSessionState(
+                sessionId,
+                state => ({ ...state, messages: toChatMessages(refreshed.messages) }),
+                selectedStoredSessionIdRef.current
+              )
+            } catch (err) {
+              renderSlashOutput(`/${name}: could not refresh history — ${err instanceof Error ? err.message : String(err)}`)
+            }
+
+            if (dispatch.notice?.trim()) {
+              renderSlashOutput(dispatch.notice)
+            }
+
+            if (dispatch.message) {
+              requestComposerInsert(dispatch.message, { target: 'main' })
+            }
+
+            return
+          }
+
           const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
 
           if (!message) {
@@ -1196,8 +1237,10 @@ export function usePromptActions({
       refreshSessions,
       requestGateway,
       resumeStoredSession,
+      selectedStoredSessionIdRef,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      updateSessionState
     ]
   )
 

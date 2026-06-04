@@ -730,7 +730,7 @@ class TestWriteFilePostWriteVerification:
         stale = "ORIGINAL CONTENT THAT WAS NOT REPLACED\n"
 
         def side_effect(command, stdin_data=None, **kwargs):
-            if command.startswith("cat >"):  # the write itself — pretend success
+            if stdin_data is not None:  # the write itself — pretend success
                 return {"output": "", "returncode": 0}
             if command.startswith("cat ") or command.startswith("head "):  # reads return stale
                 return {"output": stale, "returncode": 0}
@@ -756,9 +756,12 @@ class TestWriteFilePostWriteVerification:
         state = {"content": ""}
 
         def side_effect(command, stdin_data=None, **kwargs):
-            if command.startswith("cat >"):  # write
-                if stdin_data is not None:
-                    state["content"] = stdin_data
+            # The write is the only exec that streams content via stdin
+            # (write_file pipes through _atomic_write: a `cat > "$tmp"; mv`
+            # script). Discriminate on stdin_data rather than the command
+            # string so the mock survives changes to the write command shape.
+            if stdin_data is not None:  # write
+                state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
             if command.startswith("cat ") or command.startswith("head "):  # read
                 return {"output": state["content"], "returncode": 0}
@@ -781,9 +784,8 @@ class TestWriteFilePostWriteVerification:
         state = {"content": ""}
 
         def side_effect(command, stdin_data=None, **kwargs):
-            if command.startswith("cat >"):  # write
-                if stdin_data is not None:
-                    state["content"] = stdin_data
+            if stdin_data is not None:  # write
+                state["content"] = stdin_data
                 return {"output": "", "returncode": 0}
             if command.startswith("cat ") or command.startswith("head "):  # verify read fails
                 return {"output": "", "returncode": 1}

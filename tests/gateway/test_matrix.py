@@ -2160,6 +2160,7 @@ class TestMatrixReadReceipts:
     async def test_accepted_message_schedules_read_receipt(self):
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter.get_chat_info = AsyncMock(return_value={"name": "Room Alpha", "type": "dm"})
         self.adapter._background_read_receipt = MagicMock()
 
         ctx = await self.adapter._resolve_message_context(
@@ -2732,6 +2733,7 @@ class TestMatrixDmAutoThread:
         self.adapter = _make_adapter()
         self.adapter._is_dm_room = AsyncMock(return_value=True)
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter.get_chat_info = AsyncMock(return_value={"name": "DM Chat", "type": "dm"})
         self.adapter._background_read_receipt = MagicMock()
         # Disable require_mention so DMs pass gating
         self.adapter._require_mention = False

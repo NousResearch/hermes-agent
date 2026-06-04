@@ -1,6 +1,6 @@
 # Supermemory Memory Provider
 
-Semantic long-term memory with profile recall, semantic search, explicit memory tools, and session-end conversation ingest.
+Semantic long-term memory with profile recall, semantic search, explicit memory tools, and full-session conversation ingest (one ingest per session) for richer profiles.
 
 ## Requirements
 
@@ -45,21 +45,25 @@ Config file: `$HERMES_HOME/supermemory.json`
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `supermemory_store` | Store an explicit memory |
-| `supermemory_search` | Search memories by semantic similarity |
-| `supermemory_forget` | Forget a memory by ID or best-match query |
-| `supermemory_profile` | Retrieve persistent profile and recent context |
+Kebab-case names are registered for the agent; snake_case aliases remain supported.
+
+| Tool | Alias | Description |
+|------|-------|-------------|
+| `supermemory-save` | `supermemory_store` | Store an explicit memory |
+| `supermemory-search` | `supermemory_search` | Search memories by semantic similarity |
+| `supermemory-forget` | `supermemory_forget` | Forget a memory by ID or best-match query |
+| `supermemory-profile` | `supermemory_profile` | Retrieve persistent profile and recent context |
 
 ## Behavior
 
 When enabled, Hermes can:
 
 - prefetch relevant memory context before each turn
-- store cleaned conversation turns after each completed response
-- ingest the full session on session end for richer graph updates
+- buffer the full conversation and ingest it as **one session** at session end (or on `/reset`, branch, compression, or shutdown)
+- ingest the full session to the conversations endpoint for richer profile/graph updates
 - expose explicit tools for search, store, forget, and profile access
+
+The session is written once via the conversations endpoint, which drives Supermemory's entity extraction and profile building while keeping a clean, retrievable full transcript.
 
 ## Profile-Scoped Containers
 
@@ -87,7 +91,7 @@ For advanced setups (e.g. OpenClaw-style multi-workspace), you can enable custom
 ```
 
 When enabled:
-- `supermemory_search`, `supermemory_store`, `supermemory_forget`, and `supermemory_profile` accept an optional `container_tag` parameter
+- `supermemory-search`, `supermemory-save`, `supermemory-forget`, and `supermemory-profile` accept an optional `container_tag` parameter
 - The tag must be in the whitelist: primary container + `custom_containers`
 - Automatic operations (turn sync, prefetch, memory write mirroring, session ingest) always use the **primary** container only
 - Custom container instructions are injected into the system prompt

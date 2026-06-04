@@ -646,3 +646,17 @@ No merge, deploy, production mutation, origin push, main push, dependency change
   - `/tmp/ua-p6-wave2-prep/diffs/ua-p6-006.diff` — 321 lines / 12399 bytes.
   - `/tmp/ua-p6-wave2-prep/diffs/ua-p6-wave2-combined-final.diff` — 891 lines / 39642 bytes.
 - No commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying performed for Wave 2.
+
+### UA Phase 6 Serial Closeout integrated locally — 2026-06-04T03:56:17Z
+- Base checkpoint: `ae2f44a1f` (`feat(ua): add phase 6 wave 2 handoff gates`).
+- Serial branch/worktree: `swarm/p6-007-009-serial` at `/home/jarrad/work/hermes-agent-ua-p6-serial-worktree`.
+- P6-007 Security-review mode and evidence gaps: accepted after Hermes verification PASS and reviewer PASS; diff artifact `/tmp/ua-p6-serial-prep/diffs/ua-p6-007.diff` — 599 lines / 26551 bytes.
+- P6-008 PRL-like golden E2E regression: accepted after Hermes verification PASS and reviewer PASS; delta artifact `/tmp/ua-p6-serial-prep/diffs/ua-p6-008.diff` — 280 lines / 13385 bytes.
+- P6-009 Docs/skill/ledger closeout: integrated locally in repo docs/ledger/skills; active-profile skills outside this repo were not edited.
+- Serial verification evidence so far:
+  - P6-007 focused: 230 passed; full `python -m pytest tests/code_scan -q`: 1037 passed; py_compile/diff-check/secret scan PASS.
+  - P6-008 focused E2E: 66 passed; full `python -m pytest tests/code_scan -q`: 1042 passed; diff-check/secret scan PASS.
+- Boundary: UA validation does not prove security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Runtime readiness lists tool availability and suggested/external gate status without executing project gates. Reviewer/researcher outputs are targeted critic evidence; Hermes owns final synthesis and final assessment.
+- Follow-up beads: no unresolved blocking findings from P6-007/P6-008 reviewer gates; future work should only claim `executed_external_gate` when a separately approved external runner actually executes a target gate and records evidence.
+- Guardrails preserved: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, PRL/Muster source copying, or active-profile skill edits outside the repo.
+- Approval gate: serial changes are uncommitted; separate JC approval is required for checkpoint commit, push, merge, deploy, or production mutation.

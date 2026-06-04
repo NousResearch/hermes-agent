@@ -92,3 +92,7 @@ When the UA run includes **subagent context** generation (`review`, `preflight`,
 ### Recommendation
 <Proceed / Fix critical issues / Request changes>
 ```
+
+## Phase 6 Evidence-Gap Boundary
+
+Security-review evidence gaps are planning/preflight outputs. They can identify static analysis findings, out-of-scope claims, and suggested verification that was not run, but they do not certify security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Treat any `executed_external_gate` label as valid only when separately approved external gate evidence is recorded. Reviewer/researcher outputs remain targeted critic evidence; Hermes owns final synthesis.

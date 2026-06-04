@@ -78,6 +78,7 @@ class TestModeMetadata:
         "review",
         "preflight",
         "full",
+        "security-review",
     ])
     def test_mode_recorded_in_manifest(self, tmp_path: Path, mode: str):
         target = str(FIXTURES_DIR / "sample_repo")
@@ -155,6 +156,34 @@ class TestReviewMode:
         val = json.loads((Path(out) / "validation.json").read_text())
         assert "issues" in val
         assert "warnings" in val
+
+
+class TestSecurityReviewMode:
+    """security-review: planning/preflight report with security evidence gaps."""
+
+    REQUIRED = [
+        "scan.json", "imports.json", "graph.json", "validation.json",
+        "domain-surfaces.json", "runtime-readiness.json", "subagent-context.json",
+        "REPORT.md", "security-report-data.json", "manifest.json",
+    ]
+
+    def test_security_review_artifacts_and_boundaries(self, tmp_path: Path):
+        target = str(FIXTURES_DIR / "sample_repo")
+        out = str(tmp_path / "bundle")
+        rc, _, stderr = run_ua(target, out, mode="security-review")
+        assert rc == 0, f"security-review failed: {stderr}"
+
+        for fname in self.REQUIRED:
+            assert (Path(out) / fname).exists(), f"Missing required: {fname}"
+        report = (Path(out) / "REPORT.md").read_text()
+        assert "Security Evidence Gaps" in report
+        assert "not a security certification" in report
+        assert "RLS correctness" in report
+        assert "Edge Function auth" in report
+        assert "suggested_verification_not_run" in report
+        lower = report.lower()
+        assert "security verified" not in lower
+        assert "rls verified" not in lower
 
 
 class TestDeltaMode:

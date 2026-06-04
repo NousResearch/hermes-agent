@@ -28,6 +28,7 @@ python scripts/code-scan/run_ua.py --target <dir> --out <bundle_dir> [--mode <mo
 | **delta** | incremental scan + delta summary against prior manifest | Detect changes since a prior run (use `--prior-manifest`). |
 | **preflight** | structure + entrypoints/hubs + subagent context | Subagent handoff preparation with structure and context. |
 | **full** | all available deterministic enrichers | Everything available — analytics, context, report. |
+| **security-review** | review-mode artifacts + security evidence-gap report data | Planning/preflight mode for static security-assurance follow-up gaps; never a certification. |
 
 ### Mode Routing Guarantees
 
@@ -149,3 +150,10 @@ python scripts/code-scan/project_state_append.py <project_root> --manifest <bund
 - **Structure:** <top-level dirs + key files>
 - **Import map:** <top 5 most-imported modules>
 - **Files:** <total_files> total, <files_with_imports> with imports
+
+## Phase 6 Trustworthy Handoff Additions
+
+- `subagent-context.json` includes relevance-ranked recommended files and a bounded `must_read_map` for Hermes/subagent attention routing. These are navigation aids, not authority transfer or security proof.
+- `runtime-readiness.json` includes a runtime gate inventory with statuses such as `suggested_not_run`; UA lists tool availability and candidate commands without executing target build/test/lint/audit gates.
+- `security-review` mode emits deterministic security evidence gaps from static UA facts, domain surfaces, must-read map, orphan summaries, runtime gate inventory, and critic packs. Every gap must be labelled as `outside_ua_scope`, `static_analysis_finding`, `suggested_verification_not_run`, or `executed_external_gate` when externally supplied evidence exists.
+- UA validation does not prove security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Reviewer/researcher outputs are targeted critic evidence; Hermes owns final synthesis and final assessment.

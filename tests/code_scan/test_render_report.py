@@ -861,3 +861,55 @@ class TestUA_P6_005_MustReadMapRendering:
         assert "not semantic judgment" in md
         assert "src/main.tsx" in md
         assert "supabase/functions/invite/index.ts" in md
+
+
+class TestUA_P6_007_SecurityEvidenceGapRendering:
+    """UA-P6-007: security evidence gaps render as a bounded table."""
+
+    def test_security_evidence_gap_table_renders_without_proof_claims(self):
+        report = _make_report_data(
+            sections={
+                "scan": {
+                    "project_root": "/tmp/p",
+                    "scanned_at": "",
+                    "total_files": 3,
+                    "total_lines": 30,
+                    "languages": {"typescript": 2, "sql": 1},
+                    "categories": {},
+                    "frameworks": ["vite"],
+                },
+                "security_evidence_gaps": {
+                    "mode_semantics": "planning_preflight_not_security_certification",
+                    "does_not_execute_target_gates": True,
+                    "boundaries": [
+                        "Security-review mode is a planning/preflight mode, not a security certification.",
+                        "UA does not prove RLS/security/deployment/runtime correctness.",
+                    ],
+                    "gaps": [
+                        {
+                            "topic": "RLS correctness",
+                            "label": "static_analysis_finding",
+                            "ua_static_evidence": "supabase_migration: supabase/migrations/001.sql",
+                            "required_follow_up": "Review SQL policies and run live role-based RLS tests.",
+                        },
+                        {
+                            "topic": "dependency audit",
+                            "label": "suggested_verification_not_run",
+                            "ua_static_evidence": "runtime gates suggested: npm audit",
+                            "required_follow_up": "Run dependency audit in target CI or local toolchain.",
+                        },
+                    ],
+                },
+            },
+            claim_boundaries={"security_evidence_gaps": "outside_ua_scope"},
+        )
+        md = render_report.render_report_data(report)
+        assert "## Security Evidence Gaps" in md
+        assert "| Topic | Label | UA static evidence | Required follow-up |" in md
+        assert "RLS correctness" in md
+        assert "static_analysis_finding" in md
+        assert "suggested_verification_not_run" in md
+        lower = md.lower()
+        assert "not a security certification" in lower
+        assert "security verified" not in lower
+        assert "rls verified" not in lower

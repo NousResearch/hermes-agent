@@ -79,3 +79,22 @@ Beads under `.beads/` are the authoritative execution units. Each bead contains:
 - Phase 1 commit: `24356edcd`
 - Evaluation evidence: `/tmp/phase2-d1-d3-eval-corrected-latest.log`
 - Test bed repos: `cass_memory_system/`, `mission-control/`, hermes-agent itself
+
+## Phase 6 (Trustworthy Handoff and Security-Review Readiness) — ✅ INTEGRATED LOCALLY / CHECKPOINT PENDING
+
+Phase 6 is integrated on the local branch `feat/ua-phase6-trustworthy-handoff-security-review` through serial closeout work. Local checkpoint commits exist for Wave 1 and Wave 2; P6-007 through P6-009 are currently uncommitted pending separate JC checkpoint approval.
+
+| Bead | Status |
+|---|---|
+| P6-000 baseline scope guard | Complete |
+| P6-001 manifest reconciliation/self-validation | Complete |
+| P6-002 recommended-file relevance ranking | Complete |
+| P6-003 orphan report summarization | Complete |
+| P6-004 graph issue classification | Complete |
+| P6-005 must-read map artifact | Complete |
+| P6-006 runtime gate inventory | Complete |
+| P6-007 security-review mode and evidence gaps | Integrated locally; reviewer PASS |
+| P6-008 PRL-like golden E2E regression | Integrated locally; reviewer PASS |
+| P6-009 docs/skills/ledger closeout | Integrated locally; final verifier/reviewer pending in serial closeout |
+
+Boundary: UA validation does not prove security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Runtime readiness lists tool availability and suggested/external gate status without executing project gates. Reviewer/researcher outputs are targeted critic evidence; Hermes owns final synthesis and final assessment. Future `executed_external_gate` claims require separately approved external gate execution evidence.

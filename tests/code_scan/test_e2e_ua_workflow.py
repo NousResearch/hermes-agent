@@ -657,6 +657,216 @@ class TestPhase5PrlLikeGoldenE2EGate:
         assert "deterministic_fact" in report
         assert "suggested_verification_not_run" in report
 
+    def test_prl_like_security_review_lists_evidence_gaps(self, tmp_path: Path):
+        """Security-review mode must list live follow-ups without proof claims."""
+        src = GOLDEN_DIR / "prl_like_react_supabase"
+        target = tmp_path / "prl_like_react_supabase"
+        shutil.copytree(src, target)
+
+        out = tmp_path / "bundle"
+        cache = tmp_path / "external-cache"
+        rc, _, stderr = run_ua(
+            str(target),
+            str(out),
+            mode="security-review",
+            extra_args=["--read-only-target", "--external-cache-dir", str(cache)],
+        )
+        assert rc == 0, f"security-review failed for PRL-like fixture: {stderr}"
+
+        report = (out / "REPORT.md").read_text()
+        assert "## Security Evidence Gaps" in report
+        assert "Security-review mode is a planning/preflight mode" in report
+        for topic in [
+            "RLS correctness",
+            "Edge Function auth",
+            "MFA/session behavior",
+            "PWA storage/cache/logout",
+            "CI/deployment",
+            "dependency audit",
+            "sensitive logging/error output",
+        ]:
+            assert topic in report
+        for label in ["outside_ua_scope", "static_analysis_finding", "suggested_verification_not_run"]:
+            assert label in report
+        lower = report.lower()
+        assert "security verified" not in lower
+        assert "rls verified" not in lower
+        assert "deployment ready" not in lower
+
+
+# ── UA-P6-008: PRL-like golden E2E regression ──────────────────────────────
+
+class TestPhase6PrlLikeGoldenE2ERegression:
+    """Lock review/security-review behavior for a fully synthetic PRL-like app."""
+
+    REQUIRED_REVIEW_ARTIFACTS = {
+        "analytics.json",
+        "domain-surfaces.json",
+        "graph.json",
+        "imports.json",
+        "REPORT.md",
+        "runtime-readiness.json",
+        "runtime-readiness.md",
+        "scan.json",
+        "subagent-context.json",
+        "summary.json",
+        "validation.json",
+    }
+
+    def _run_prl_review_on_temp_copy(self, tmp_path: Path, mode: str = "review") -> Path:
+        src = GOLDEN_DIR / "prl_like_react_supabase"
+        target = tmp_path / "prl_like_react_supabase"
+        shutil.copytree(src, target)
+
+        out = tmp_path / f"bundle-{mode}"
+        cache = tmp_path / f"external-cache-{mode}"
+        rc, _, stderr = run_ua(
+            str(target),
+            str(out),
+            mode=mode,
+            extra_args=["--read-only-target", "--external-cache-dir", str(cache)],
+        )
+        assert rc == 0, f"{mode} failed for PRL-like fixture: {stderr}"
+        assert not (target / ".hermes").exists(), "read-only target was mutated"
+        return out
+
+    def test_prl_like_review_manifest_reconciles_expected_artifacts(self, tmp_path: Path):
+        """Temp-copy review must have clean manifest/read-only artifact reconciliation."""
+        out = self._run_prl_review_on_temp_copy(tmp_path)
+
+        manifest = load_json(out / "manifest.json")
+        assert manifest["status"] == "complete"
+        assert manifest["target_mutation_allowed"] is False
+        assert manifest["target_cleanliness_status"] == "clean"
+        assert manifest["unexpected_target_changes"] == []
+
+        artifact_paths = manifest.get("artifact_paths", {})
+        missing = self.REQUIRED_REVIEW_ARTIFACTS - set(artifact_paths)
+        assert not missing, f"manifest omitted expected artifacts: {sorted(missing)}"
+        for artifact in self.REQUIRED_REVIEW_ARTIFACTS:
+            path = Path(artifact_paths[artifact])
+            assert path.exists(), f"manifest points at missing artifact: {artifact} -> {path}"
+            assert path == out / artifact
+
+    def test_prl_like_review_ranks_recommendations_and_must_read_map(self, tmp_path: Path):
+        """Recommendations must route attention to PRL-like app/security/data areas."""
+        out = self._run_prl_review_on_temp_copy(tmp_path)
+        context = load_json(out / "subagent-context.json")
+
+        recommended = context.get("recommended_files", [])
+        assert len(recommended) >= 6
+        scores = [item["score"] for item in recommended]
+        assert scores == sorted(scores, reverse=True), "recommendations must be relevance-ranked"
+        recommended_paths = [Path(item["path"]).as_posix() for item in recommended]
+        for expected in [
+            "package.json",
+            "src/main.jsx",
+            "src/auth/session.ts",
+            "src/api/tasks.ts",
+            "supabase/functions/example/index.ts",
+            "supabase/migrations/001_init.sql",
+        ]:
+            assert any(path.endswith(expected) for path in recommended_paths), expected
+
+        must_read = context.get("must_read_map", {})
+        assert must_read.get("purpose") == "attention_routing_not_semantic_judgment"
+        boundary_text = "\n".join(must_read.get("boundaries", []))
+        assert "does not prove security" in boundary_text
+        sections = must_read.get("sections", {})
+        expected_sections = {
+            "project_identity": "package.json",
+            "backend_serverless": "supabase/functions/example/index.ts",
+            "db_rls": "supabase/migrations/001_init.sql",
+            "runtime_deployment": "public/manifest.json",
+        }
+        for section, expected_path in expected_sections.items():
+            items = sections.get(section, [])
+            assert items, f"must-read section is empty: {section}"
+            assert any(str(item.get("path", "")).endswith(expected_path) for item in items)
+        for section in ["app_entrypoints", "auth_security", "data_api", "tests", "docs_process"]:
+            assert section in sections
+
+    def test_prl_like_review_orphans_graph_runtime_and_report_boundaries(self, tmp_path: Path):
+        """Review output must classify graph warnings and preserve report boundaries."""
+        out = self._run_prl_review_on_temp_copy(tmp_path)
+
+        validation = load_json(out / "validation.json")
+        assert validation.get("issues") == []
+        classified = validation.get("severity_classified_warnings", [])
+        assert classified, "orphan warnings must be severity-classified"
+        assert validation.get("severity_summary", {}).get("moderate", 0) >= 1
+        assert any(
+            item.get("severity") == "moderate" and "supabase/migrations/001_init.sql" in item.get("message", "")
+            for item in classified
+        )
+
+        summary = load_json(out / "summary.json")
+        assert summary.get("graph", {}).get("orphan_nodes", 0) >= 1
+        assert summary.get("validation", {}).get("warning_count", 0) >= 1
+
+        readiness = load_json(out / "runtime-readiness.json")
+        inventory = readiness.get("runtime_gate_inventory", [])
+        assert any(gate.get("command") == "npm test (node)" for gate in inventory)
+        assert any(gate.get("command") == "npm run build" for gate in inventory)
+        assert all(gate.get("status") == "suggested_not_run" for gate in inventory)
+
+        report = (out / "REPORT.md").read_text()
+        assert "What UA proves / What UA does not prove" in report
+        assert "does not prove security, deployment readiness, RLS correctness, or runtime correctness" in report
+        assert "suggested_verification_not_run" in report
+        assert "security verified" not in report.lower()
+        assert "deployment ready" not in report.lower()
+
+    def test_prl_like_security_review_evidence_gaps_and_no_overclaim(self, tmp_path: Path):
+        """Security-review must inventory gaps without claiming runtime/security proof."""
+        out = self._run_prl_review_on_temp_copy(tmp_path, mode="security-review")
+
+        report = (out / "REPORT.md").read_text()
+        assert "## Security Evidence Gaps" in report
+        assert "## Must-Read Map" in report
+        for topic in [
+            "RLS correctness",
+            "Edge Function auth",
+            "MFA/session behavior",
+            "PWA storage/cache/logout",
+            "CI/deployment",
+            "dependency audit",
+            "sensitive logging/error output",
+        ]:
+            assert topic in report
+        for evidence in [
+            "supabase/migrations/001_init.sql",
+            "supabase/functions/example/index.ts",
+            "public/manifest.json",
+            "runtime gate inventory: npm test (node) (suggested_not_run)",
+        ]:
+            assert evidence in report
+        lower = report.lower()
+        assert "security verified" not in lower
+        assert "rls verified" not in lower
+        assert "runtime correctness" in lower
+
+    def test_prl_like_worktree_target_classifies_existing_dirty_state(self, tmp_path: Path):
+        """Direct worktree scan must classify preexisting fixture dirtiness instead of mutating."""
+        target = GOLDEN_DIR / "prl_like_react_supabase"
+        out = tmp_path / "bundle-worktree"
+        cache = tmp_path / "external-cache-worktree"
+        rc, _, stderr = run_ua(
+            str(target),
+            str(out),
+            mode="review",
+            extra_args=["--read-only-target", "--external-cache-dir", str(cache)],
+        )
+        assert rc == 0, f"worktree review failed for PRL-like fixture: {stderr}"
+
+        manifest = load_json(out / "manifest.json")
+        assert manifest["target_mutation_allowed"] is False
+        assert manifest["unexpected_target_changes"] == []
+        assert manifest["target_cleanliness_status"] in {"clean", "preexisting_dirty"}
+        if manifest["target_dirty_before"]:
+            assert manifest["target_cleanliness_status"] == "preexisting_dirty"
+            assert manifest["target_dirty_files_before"]
+
 
 # ── UA-P1-005: Docs must not overclaim runtime test success ────────────────
 

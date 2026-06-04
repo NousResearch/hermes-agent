@@ -35,6 +35,7 @@ _SECTION_ORDER = [
     "domain_surfaces",
     "delta",
     "readiness",
+    "security_evidence_gaps",
     "reading_plan",
     "sources",
     "warnings",
@@ -563,6 +564,37 @@ def _render_readiness(readiness: Any) -> str:
     return "\n".join(lines)
 
 
+def _render_security_evidence_gaps(security_gaps: Any) -> str:
+    """Render security-review planning evidence gaps without proof claims."""
+    lines = ["## Security Evidence Gaps", ""]
+    if not isinstance(security_gaps, dict):
+        lines.append("*No security evidence-gap data available.*")
+        lines.append("")
+        return "\n".join(lines)
+
+    for boundary in security_gaps.get("boundaries", []):
+        lines.append(f"- {_safe_inline(str(boundary))}")
+    lines.append("")
+    lines.append("| Topic | Label | UA static evidence | Required follow-up |")
+    lines.append("|-------|-------|--------------------|--------------------|")
+    for gap in security_gaps.get("gaps", []) or []:
+        if not isinstance(gap, dict):
+            continue
+        lines.append(
+            "| "
+            f"{_safe_inline(gap.get('topic', ''))} | "
+            f"{_safe_inline(gap.get('label', ''))} | "
+            f"{_safe_inline(gap.get('ua_static_evidence', ''))} | "
+            f"{_safe_inline(gap.get('required_follow_up', ''))} |"
+        )
+    lines.append("")
+    critic_boundary = security_gaps.get("critic_pack_boundary", "")
+    if critic_boundary:
+        lines.append(f"Critic boundary: {_safe_inline(critic_boundary)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _render_must_read_map(must_read_map: Any) -> str:
     """Render bounded deterministic must-read attention map."""
     lines = ["## Must-Read Map", ""]
@@ -849,6 +881,7 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
     domain_surfaces = sections.get("domain_surfaces", "not_available")
     delta = sections.get("delta", "not_available")
     readiness = sections.get("readiness", "not_available")
+    security_gaps = sections.get("security_evidence_gaps", "not_available")
     graph = sections.get("graph_analysis", "not_available")
 
     parts: list[str] = []
@@ -889,6 +922,10 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
 
     # 9. Readiness
     parts.append(_render_readiness(readiness))
+
+    # 9a. Security evidence gaps
+    if security_gaps != "not_available":
+        parts.append(_render_security_evidence_gaps(security_gaps))
 
     # 9b. Graph / Validation
     parts.append(_render_graph_analysis(graph))

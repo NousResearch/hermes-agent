@@ -890,3 +890,64 @@ class TestUA_P6_005_MustReadMap:
         assert "package-lock.json" not in flat_paths
         assert "public/logo.png" not in flat_paths
         assert len(flat_paths) <= 45
+
+
+class TestUA_P6_007_SecurityEvidenceGaps:
+    """UA-P6-007: security-review report data turns UA facts into evidence gaps."""
+
+    def test_security_evidence_gaps_are_built_from_static_artifacts(self):
+        scan = _load_fixture("scan.json")
+        domain_surfaces = {
+            "surfaces": [
+                {"surface": "supabase_migration", "path": "supabase/migrations/001.sql"},
+                {"surface": "supabase_edge_function", "path": "supabase/functions/send/index.ts"},
+                {"surface": "pwa_manifest", "path": "public/manifest.json"},
+            ],
+            "summary": {
+                "total_surfaces": 3,
+                "surface_types": {
+                    "supabase_edge_function": 1,
+                    "supabase_migration": 1,
+                    "pwa_manifest": 1,
+                },
+            },
+        }
+        readiness = {
+            "verification_status": "verification_ready",
+            "detected_stacks": ["node"],
+            "verification_gates": [
+                {"command": "npm test", "status": "suggested_not_run", "stack": "node"},
+            ],
+            "blockers": [],
+        }
+
+        result = report_data.build_report_data(
+            scan=scan,
+            domain_surfaces=domain_surfaces,
+            readiness=readiness,
+        )
+
+        security = result["sections"]["security_evidence_gaps"]
+        assert security["mode_semantics"] == "planning_preflight_not_security_certification"
+        assert security["does_not_execute_target_gates"] is True
+        assert "RLS correctness" in " ".join(security["boundaries"])
+        topics = {gap["topic"] for gap in security["gaps"]}
+        assert {
+            "RLS correctness",
+            "Edge Function auth",
+            "MFA/session behavior",
+            "PWA storage/cache/logout",
+            "CI/deployment",
+            "dependency audit",
+            "sensitive logging/error output",
+        }.issubset(topics)
+        labels = {gap["label"] for gap in security["gaps"]}
+        assert labels <= {
+            "outside_ua_scope",
+            "static_analysis_finding",
+            "suggested_verification_not_run",
+            "executed_external_gate",
+        }
+        assert any(gap["label"] == "static_analysis_finding" for gap in security["gaps"])
+        assert any(gap["label"] == "suggested_verification_not_run" for gap in security["gaps"])
+        assert result["claim_boundaries"]["security_evidence_gaps"] == "outside_ua_scope"

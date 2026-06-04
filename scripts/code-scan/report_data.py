@@ -610,6 +610,127 @@ def _build_domain_surfaces_section(domain_surfaces: Optional[dict], warnings: li
     }
 
 
+def _surface_paths(domain_surfaces: Optional[dict], surface_names: set[str]) -> list[str]:
+    if not isinstance(domain_surfaces, dict):
+        return []
+    paths = []
+    for item in domain_surfaces.get("surfaces", []) or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("surface", "")) in surface_names:
+            paths.append(str(item.get("path", "")))
+    return sorted(path for path in paths if path)
+
+
+def _scan_paths_matching(scan: Optional[dict], needles: tuple[str, ...]) -> list[str]:
+    if not isinstance(scan, dict):
+        return []
+    matches = []
+    for item in scan.get("files", []) or []:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("relative_path") or item.get("path") or "")
+        rel_lower = rel.lower()
+        if any(needle in rel_lower for needle in needles):
+            matches.append(rel)
+    return sorted(matches)
+
+
+def _gate_evidence(readiness: Optional[dict]) -> tuple[list[str], bool]:
+    if not isinstance(readiness, dict):
+        return [], False
+    gate_text = []
+    executed = False
+    for gate in readiness.get("verification_gates", []) or []:
+        if not isinstance(gate, dict):
+            continue
+        command = str(gate.get("command", ""))
+        status = str(gate.get("status", ""))
+        if command:
+            gate_text.append(f"{command} ({status or 'unknown'})")
+        if status == "executed_external_gate":
+            executed = True
+    return sorted(gate_text), executed
+
+
+def _build_security_evidence_gaps_section(
+    scan: Optional[dict],
+    domain_surfaces: Optional[dict],
+    orphan_triage: Optional[dict],
+    readiness: Optional[dict],
+    must_read_map: Optional[dict],
+) -> dict[str, Any]:
+    """Build planning-only security evidence gaps from deterministic UA facts."""
+    gates, has_executed_gate = _gate_evidence(readiness)
+    orphan_total = 0
+    if isinstance(orphan_triage, dict):
+        orphan_total = int(orphan_triage.get("totals", {}).get("total_orphans", 0) or 0)
+    must_read_sections = []
+    if isinstance(must_read_map, dict):
+        must_read_sections = sorted((must_read_map.get("sections", {}) or {}).keys())
+
+    rls_paths = _surface_paths(domain_surfaces, {"supabase_migration", "rls_policy"})
+    edge_paths = _surface_paths(
+        domain_surfaces,
+        {"supabase_edge_function", "supabase_function", "edge_function"},
+    )
+    pwa_paths = _surface_paths(domain_surfaces, {"pwa_manifest", "service_worker"})
+    ci_paths = _surface_paths(domain_surfaces, {"ci_workflow", "github_workflow"}) or _scan_paths_matching(
+        scan, (".github/workflows", ".gitlab-ci", "deploy", "vercel", "netlify")
+    )
+    dep_paths = _scan_paths_matching(
+        scan, ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "requirements", "poetry.lock")
+    )
+    auth_paths = _scan_paths_matching(scan, ("auth", "session", "mfa"))
+    log_paths = _scan_paths_matching(scan, ("log", "error", "exception", "sentry"))
+
+    def gap(topic: str, paths: list[str], follow_up: str, *, gates_topic: bool = False) -> dict:
+        if has_executed_gate and gates_topic:
+            label = "executed_external_gate"
+        elif gates_topic and gates:
+            label = "suggested_verification_not_run"
+        elif paths:
+            label = "static_analysis_finding"
+        else:
+            label = "outside_ua_scope"
+        evidence_parts = []
+        if paths:
+            evidence_parts.append(", ".join(paths[:5]))
+        if gates_topic and gates:
+            evidence_parts.append("runtime gate inventory: " + "; ".join(gates[:5]))
+        if orphan_total:
+            evidence_parts.append(f"orphan summary: {orphan_total} total orphans")
+        if must_read_sections:
+            evidence_parts.append("must-read sections: " + ", ".join(must_read_sections[:9]))
+        return {
+            "topic": topic,
+            "label": label,
+            "ua_static_evidence": "; ".join(evidence_parts) or "no deterministic UA surface found",
+            "required_follow_up": follow_up,
+        }
+
+    return {
+        "mode_semantics": "planning_preflight_not_security_certification",
+        "does_not_execute_target_gates": True,
+        "boundaries": [
+            "Security-review mode is a planning/preflight mode, not a security certification.",
+            "It must not execute target gates.",
+            "It must not claim RLS correctness, security correctness, deployment correctness, or runtime correctness.",
+            "Researcher/reviewer packs remain critics only; Hermes owns final assessment.",
+        ],
+        "gaps": [
+            gap("RLS correctness", rls_paths, "Review SQL policies and run live role-based RLS tests."),
+            gap("Edge Function auth", edge_paths, "Inspect function auth paths and run live authorized/unauthorized calls."),
+            gap("MFA/session behavior", auth_paths, "Run browser/session tests for MFA enrollment, expiry, refresh, and logout."),
+            gap("PWA storage/cache/logout", pwa_paths, "Verify service-worker/cache/storage behavior and logout data clearing in browser."),
+            gap("CI/deployment", ci_paths, "Run CI/deployment gates in the target environment and record results.", gates_topic=True),
+            gap("dependency audit", dep_paths, "Run dependency audit tooling and triage advisories.", gates_topic=True),
+            gap("sensitive logging/error output", log_paths, "Review logs/errors and exercise failure paths for secret/PII leakage."),
+        ],
+        "critic_pack_boundary": "critic_packs_are_input_only_hermes_owns_final_assessment",
+    }
+
+
 # ── Totals builder ─────────────────────────────────────────────────────
 
 
@@ -782,6 +903,14 @@ def build_report_data(
         hub_rankings=hub_rankings,
     )
 
+    sections["security_evidence_gaps"] = _build_security_evidence_gaps_section(
+        scan,
+        domain_surfaces,
+        orphan_triage,
+        readiness,
+        must_read_map,
+    )
+
     # ── Assemble report ────────────────────────────────────────
     return {
         "schema_version": SCHEMA_VERSION,
@@ -804,6 +933,7 @@ def build_report_data(
             "semantic_signals": "heuristic_signal",
             "readiness": "suggested_verification_not_run",
             "reading_plan": "suggested_verification_not_run",
+            "security_evidence_gaps": "outside_ua_scope",
         },
     }
 

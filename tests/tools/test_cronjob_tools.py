@@ -5,6 +5,7 @@ import pytest
 
 from tools.cronjob_tools import (
     _scan_cron_prompt,
+    _validate_cron_script_path,
     check_cronjob_requirements,
     cronjob,
 )
@@ -452,3 +453,100 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+
+# =========================================================================
+# Cron script path validation (regression for #38693)
+# =========================================================================
+
+class TestValidateCronScriptPath:
+    """Regression for #38693: error message must reflect $HERMES_HOME/scripts,
+    not a hardcoded ~/.hermes/scripts/."""
+
+    def test_empty_or_none_is_valid(self, tmp_path, monkeypatch):
+        """None / empty / whitespace must pass — they're the "clearing" signal."""
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import hermes_constants
+        if hasattr(hermes_constants, "_HERMES_HOME_CACHE"):
+            hermes_constants._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
+        assert _validate_cron_script_path(None) is None
+        assert _validate_cron_script_path("") is None
+        assert _validate_cron_script_path("   ") is None
+
+    def test_absolute_path_rejected_with_hermes_home_in_message(
+        self, tmp_path, monkeypatch,
+    ):
+        """An absolute path must produce an error that names the *actual*
+        HERMES_HOME, not a hardcoded ~/.hermes/scripts/."""
+        home = tmp_path / "opt" / "data"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import hermes_constants
+        if hasattr(hermes_constants, "_HERMES_HOME_CACHE"):
+            hermes_constants._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
+
+        err = _validate_cron_script_path(str(home / "scripts" / "my.sh"))
+        assert err is not None
+        assert str(home) in err, f"error should mention actual HERMES_HOME: {err}"
+        # And it must NOT pin users to the default location if they're not using it.
+        assert "~/.hermes" not in err, f"error hardcodes default path: {err}"
+
+    def test_tilde_path_rejected_with_hermes_home_in_message(
+        self, tmp_path, monkeypatch,
+    ):
+        """A tilde path is rejected for the same reason — message must reflect HERMES_HOME."""
+        home = tmp_path / "docker-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import hermes_constants
+        if hasattr(hermes_constants, "_HERMES_HOME_CACHE"):
+            hermes_constants._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
+
+        err = _validate_cron_script_path("~/scripts/my.sh")
+        assert err is not None
+        assert str(home) in err
+        assert "~/.hermes" not in err
+
+    def test_windows_drive_letter_rejected_with_hermes_home_in_message(
+        self, tmp_path, monkeypatch,
+    ):
+        """Windows-style C:\\... paths are also rejected; message still names HERMES_HOME."""
+        home = tmp_path / "win-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import hermes_constants
+        if hasattr(hermes_constants, "_HERMES_HOME_CACHE"):
+            hermes_constants._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
+
+        err = _validate_cron_script_path("C:/scripts/my.sh")
+        assert err is not None
+        assert str(home) in err
+        assert "~/.hermes" not in err
+
+    def test_relative_path_within_scripts_dir_is_valid(
+        self, tmp_path, monkeypatch,
+    ):
+        """A clean relative path resolves and validates cleanly — no error."""
+        home = tmp_path / "hermes"
+        (home / "scripts").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import hermes_constants
+        if hasattr(hermes_constants, "_HERMES_HOME_CACHE"):
+            hermes_constants._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
+
+        assert _validate_cron_script_path("my-script.sh") is None
+
+    def test_path_traversal_is_rejected(self, tmp_path, monkeypatch):
+        """../ traversal must still be caught by the containment check."""
+        home = tmp_path / "hermes"
+        (home / "scripts").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import hermes_constants
+        if hasattr(hermes_constants, "_HERMES_HOME_CACHE"):
+            hermes_constants._HERMES_HOME_CACHE = None  # type: ignore[attr-defined]
+
+        err = _validate_cron_script_path("../etc/passwd")
+        assert err is not None
+        assert "traversal" in err.lower() or "escapes" in err.lower()

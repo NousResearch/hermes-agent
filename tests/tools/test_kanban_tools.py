@@ -171,6 +171,69 @@ def worker_env(monkeypatch, tmp_path):
     return tid
 
 
+def test_default_spawn_writes_active_task_recitation_file(monkeypatch, tmp_path, worker_env):
+    """Dispatch should seed the workspace with a concise objective/proof file."""
+    import subprocess
+    from hermes_cli import kanban_db as kb
+
+    class FakeProc:
+        pid = 4242
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "worker-space"
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", ("done_if: smoke test passes", worker_env))
+        conn.commit()
+        task = kb.get_task(conn, worker_env)
+    finally:
+        conn.close()
+
+    assert task is not None
+    pid = kb._default_spawn(task, str(workspace))
+    assert pid == 4242
+    active = workspace / "_ACTIVE_TASK.md"
+    assert active.exists()
+    text = active.read_text(encoding="utf-8")
+    assert "<!-- HERMES_ACTIVE_TASK -->" in text
+    assert f"task_id: `{worker_env}`" in text
+    assert "done_if: smoke test passes" in text
+    assert "metadata" in text
+    assert captured["kwargs"]["cwd"] == str(workspace)
+
+
+def test_default_spawn_writes_default_completion_gate_for_mobile_tasks(monkeypatch, tmp_path, worker_env):
+    """Workers should see a proof requirement even when the user gave only a mobile-short task."""
+    import subprocess
+    from hermes_cli import kanban_db as kb
+
+    class FakeProc:
+        pid = 4242
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: FakeProc())
+    workspace = tmp_path / "mobile-worker-space"
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET session_id = ? WHERE id = ?", ("discord-session", worker_env))
+        conn.commit()
+        task = kb.get_task(conn, worker_env)
+    finally:
+        conn.close()
+
+    assert task is not None
+    kb._default_spawn(task, str(workspace))
+    text = (workspace / "_ACTIVE_TASK.md").read_text(encoding="utf-8")
+    assert "Default verification gate" in text
+    assert "concrete proof" in text
+
+
 def test_show_defaults_to_env_task_id(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_show({})
@@ -294,7 +357,7 @@ def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({
         "summary": "got the thing done",
-        "metadata": {"files": 2},
+        "metadata": {"files": 2, "verification": {"status": "ok"}},
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -306,7 +369,7 @@ def test_complete_happy_path(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        assert run.metadata == {"files": 2, "verification": {"status": "ok"}}
     finally:
         conn.close()
 
@@ -337,11 +400,135 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     assert shown["runs"][-1]["metadata"] == handoff
 
 
+def test_complete_task_blocks_ungated_mobile_task_without_verification(worker_env):
+    """Mobile-created tasks without magic words still require proof metadata."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET session_id = ? WHERE id = ?", ("discord-session", worker_env))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"summary": "claiming done without evidence"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "completion blocked" in d["error"]
+    assert "default verification" in d["error"]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+        events = kb.list_events(conn, worker_env)
+        assert any(e.kind == "completion_blocked_missing_verification" for e in events)
+    finally:
+        conn.close()
+
+    ok_out = kt._handle_complete({
+        "summary": "done with proof",
+        "metadata": {"verification": {"command": "pytest tests/tools/test_kanban_tools.py", "exit_code": 0}},
+    })
+    assert json.loads(ok_out)["ok"] is True
+
+
+def test_complete_task_blocks_done_if_without_verification(worker_env):
+    """A declared completion gate must require concrete proof metadata."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", ("done_if: pytest passes", worker_env))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"summary": "claiming done without evidence"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "completion blocked" in d["error"]
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+        events = kb.list_events(conn, worker_env)
+        assert any(e.kind == "completion_blocked_missing_verification" for e in events)
+    finally:
+        conn.close()
+
+    ok_out = kt._handle_complete({
+        "summary": "done with proof",
+        "metadata": {"verification": {"command": "pytest tests/tools/test_kanban_tools.py", "exit_code": 0}},
+    })
+    assert json.loads(ok_out)["ok"] is True
+
+
+def test_complete_task_accepts_structured_verification_without_exit_code(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", ("verification: lint and graph recompute", worker_env))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "done with structured proof",
+        "metadata": {"verification": {"lint_counts": {"error": 0}, "graph_recompute": {"components": 1}}},
+    })
+    assert json.loads(out)["ok"] is True
+
+
+def test_complete_task_rejects_failed_verification_metadata(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", ("verification: failing command must block", worker_env))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "failed command should not satisfy gate",
+        "metadata": {"verification": {"exit_code": 1, "output": "failed"}},
+    })
+    assert "completion blocked" in json.loads(out).get("error", "")
+
+
+def test_complete_task_accepts_existing_evidence_metadata_keys(worker_env):
+    """Gated completions can use real handoff keys, not only a magic `verification` field."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", ("done_if: source review is archived", worker_env))
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "done with source evidence",
+        "metadata": {"sources_read": ["/tmp/source.md"], "result": "reviewed source file"},
+    })
+    assert json.loads(out)["ok"] is True
+
+
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     from tools import kanban_tools as kt
 
     monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
-    metadata = {"files": 2, "worker_session_id": "user-spoof"}
+    metadata = {"files": 2, "verification": {"status": "ok"}, "worker_session_id": "user-spoof"}
 
     out = kt._handle_complete({
         "summary": "done by scoped worker",
@@ -356,6 +543,7 @@ def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.metadata == {
             "files": 2,
+            "verification": {"status": "ok"},
             "worker_session_id": "session-trusted",
         }
     finally:

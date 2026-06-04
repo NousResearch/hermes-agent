@@ -508,6 +508,17 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_active_task_recitation_loads_alongside_project_context(self, tmp_path):
+        (tmp_path / "_ACTIVE_TASK.md").write_text(
+            "<!-- HERMES_ACTIVE_TASK -->\n# Active Kanban Task\ntask_id: `t_123`\ndone_if: pytest passes\n"
+        )
+        (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "_ACTIVE_TASK.md" in result
+        assert "t_123" in result
+        assert "done_if: pytest passes" in result
+        assert "Ruff for linting" in result
+
     def test_loads_cursorrules(self, tmp_path):
         (tmp_path / ".cursorrules").write_text("Always use type hints.")
         result = build_context_files_prompt(cwd=str(tmp_path))

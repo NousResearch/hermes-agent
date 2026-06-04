@@ -1479,6 +1479,27 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
+def _load_active_task(cwd_path: Path) -> str:
+    """Load dispatcher-written _ACTIVE_TASK.md from worker workspace.
+
+    This is deliberately independent of the normal project-context priority chain:
+    a worker's current objective must survive even when AGENTS.md/HERMES.md also
+    exists in the repo. The dispatcher owns this file and rewrites it at spawn.
+    """
+    candidate = cwd_path / "_ACTIVE_TASK.md"
+    if not candidate.exists():
+        return ""
+    try:
+        content = candidate.read_text(encoding="utf-8").strip()
+        if not content or "HERMES_ACTIVE_TASK" not in content:
+            return ""
+        content = _scan_context_content(content, "_ACTIVE_TASK.md")
+        return _truncate_content(f"## _ACTIVE_TASK.md\n\n{content}", "_ACTIVE_TASK.md")
+    except Exception as e:
+        logger.debug("Could not read _ACTIVE_TASK.md: %s", e)
+        return ""
+
+
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
@@ -1499,6 +1520,10 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     cwd_path = Path(cwd).resolve()
     sections = []
+
+    active_task = _load_active_task(cwd_path)
+    if active_task:
+        sections.append(active_task)
 
     # Priority-based project context: first match wins
     project_context = (

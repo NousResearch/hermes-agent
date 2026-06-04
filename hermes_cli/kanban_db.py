@@ -217,6 +217,39 @@ _CTX_MAX_FIELD_BYTES    = 4 * 1024   # 4 KB per summary/error/metadata/result
 _CTX_MAX_BODY_BYTES     = 8 * 1024   # 8 KB per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 
+# Worker recitation + completion contract helpers. The prompt builder already
+# reads _ACTIVE_TASK.md when present; dispatcher writes it before spawn.
+ACTIVE_TASK_FILENAME = "_ACTIVE_TASK.md"
+ACTIVE_TASK_MARKER = "<!-- HERMES_ACTIVE_TASK -->"
+_DEFAULT_COMPLETION_GATE = (
+    "default verification gate: completion requires concrete proof metadata "
+    "such as verification, tests_run, checks, evidence, proof, artifacts, "
+    "sources_read, command_tool_evidence, or marker_readback"
+)
+_COMPLETION_GATE_RE = re.compile(
+    r"^\s*(done_if|done if|done_when|done when|acceptance criteria|verification)\s*:\s*(.+)?$",
+    re.IGNORECASE,
+)
+_VERIFICATION_METADATA_KEYS = (
+    "verification",
+    "verified",
+    "tests_run",
+    "checks",
+    "evidence",
+    "proof",
+    "artifacts",
+    # Existing worker handoffs often record proof under domain-specific keys.
+    # Treat these as evidence when a gate exists instead of forcing agents to
+    # duplicate the same facts under a magic field name.
+    "result",
+    "sources_read",
+    "filing_checks",
+    "command_tool_evidence",
+    "marker_readback",
+    "archive_path",
+    "children_completed",
+)
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -3559,6 +3592,99 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionVerificationError(ValueError):
+    """Raised when a task declares a completion gate but lacks proof."""
+
+    def __init__(self, task_id: str, gate: str):
+        self.task_id = task_id
+        self.gate = gate
+        super().__init__(
+            "completion blocked: task declares a done_if / verification gate "
+            f"but completion metadata did not include proof for {task_id}: {gate[:220]}"
+        )
+
+
+def _task_completion_gate(task: Optional[Task]) -> Optional[str]:
+    if task is None:
+        return None
+    for raw in (task.body or "").splitlines():
+        match = _COMPLETION_GATE_RE.match(raw)
+        if match:
+            tail = (match.group(2) or "").strip()
+            return f"{match.group(1)}: {tail}" if tail else match.group(1)
+    # Mobile/chat-created cards are often terse and should not require the
+    # human to type magic words like done_if/verification. Agent-created
+    # cards carry an originating session_id; direct CLI/DB maintenance cards
+    # keep the old explicit-gate behavior so slash maintenance still works.
+    if task.session_id:
+        return _DEFAULT_COMPLETION_GATE
+    return None
+
+
+def _metadata_has_verification_proof(metadata: Optional[dict]) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    verification = metadata.get("verification")
+    if isinstance(verification, dict):
+        if verification.get("ok") is False or verification.get("passed") is False:
+            return False
+        if verification.get("status") in {"failed", "failure", "error"}:
+            return False
+        exit_code = verification.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            return False
+        if verification.get("ok") is True or verification.get("passed") is True:
+            return True
+        if exit_code == 0:
+            return True
+        if verification.get("status") in {"ok", "passed", "success"}:
+            return True
+        if verification.get("command") and any(
+            verification.get(k) not in (None, "", [], {})
+            for k in ("output", "artifact", "source", "checked_at")
+        ):
+            return True
+        if any(value not in (None, "", [], {}, False) for value in verification.values()):
+            return True
+    elif verification not in (None, "", [], {}, False):
+        return True
+    if metadata.get("verified") is True:
+        return True
+    for key in _VERIFICATION_METADATA_KEYS:
+        if key == "verification":
+            continue
+        if metadata.get(key) not in (None, "", [], {}, False):
+            return True
+    return False
+
+
+def _enforce_completion_gate(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+    summary: Optional[str],
+    result: Optional[str],
+) -> None:
+    gate = _task_completion_gate(get_task(conn, task_id))
+    if not gate or _metadata_has_verification_proof(metadata):
+        return
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "completion_blocked_missing_verification",
+            {
+                "gate": gate,
+                "summary_preview": (
+                    (summary or result or "").strip().splitlines()[0][:200]
+                    if (summary or result)
+                    else None
+                ),
+            },
+        )
+    raise CompletionVerificationError(task_id, gate)
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3599,11 +3725,9 @@ def complete_task(
     """
     now = int(time.time())
 
-    # Gate: verify created_cards BEFORE the main write txn. A rejected
-    # completion still needs an auditable event, so we emit it in a
-    # tiny dedicated txn, then raise. The caller is responsible for
-    # surfacing HallucinatedCardsError to the worker; this function
-    # never mutates task state on a phantom-card rejection.
+    # Gate: verify created_cards BEFORE the main write txn and before the
+    # generic proof gate. A phantom-card rejection is more specific than
+    # "missing proof" and tells the worker exactly what to retry.
     if created_cards:
         verified_cards, phantom_cards = _verify_created_cards(
             conn, task_id, created_cards
@@ -3625,6 +3749,8 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    _enforce_completion_gate(conn, task_id, metadata, summary, result)
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -6610,6 +6736,38 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _write_active_task_file(task: Task, workspace: str) -> Optional[Path]:
+    """Write a compact, dispatcher-owned task recitation into the workspace."""
+    try:
+        workspace_path = Path(workspace)
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        active_path = workspace_path / ACTIVE_TASK_FILENAME
+        body = (task.body or "").strip()
+        lines = [
+            ACTIVE_TASK_MARKER,
+            "# Active Kanban Task",
+            "",
+            f"task_id: `{task.id}`",
+            f"title: {task.title}",
+            f"assignee: {task.assignee or '(unassigned)'}",
+            f"status_at_spawn: {task.status}",
+            "",
+            "## Objective / acceptance gate",
+            body or "(No task body supplied.)",
+            "",
+            "## Completion proof expected",
+            f"Default verification gate: { _task_completion_gate(task) or _DEFAULT_COMPLETION_GATE }.",
+            "Complete only with metadata containing concrete proof such as `verification`, `tests_run`, `checks`, `evidence`, `proof`, `artifacts`, `sources_read`, `command_tool_evidence`, or `marker_readback`. If a check failed, block instead of completing.",
+        ]
+        tmp = active_path.with_suffix(active_path.suffix + ".tmp")
+        tmp.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        tmp.replace(active_path)
+        return active_path
+    except Exception as exc:
+        _log.warning("Could not write %s for %s: %s", ACTIVE_TASK_FILENAME, task.id, exc)
+        return None
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -6751,6 +6909,7 @@ def _default_spawn(
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and
     # logs don't collide across boards that happen to share task ids.
+    _write_active_task_file(task, workspace)
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"

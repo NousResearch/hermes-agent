@@ -1157,6 +1157,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
                 if name_evt and hasattr(name_evt, "name") and name_evt.name:
                     name = name_evt.name
+                    chat_type = "group"  # Named rooms are workspaces, not DMs
             except Exception:
                 pass
 

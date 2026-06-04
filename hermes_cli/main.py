@@ -7226,6 +7226,17 @@ def _detect_concurrent_hermes_instances(
             shim_paths.add(str(shim.resolve()).lower())
         except OSError:
             shim_paths.add(str(shim).lower())
+
+    # Also detect venv python.exe workers (Gateway, Dashboard, REPLs).
+    # These hold .pyd file locks that block uv pip install. Issue #38789.
+    for py_name in ("python.exe", "pythonw.exe"):
+        py_path = scripts_dir / py_name
+        if py_path.exists():
+            try:
+                shim_paths.add(str(py_path.resolve()).lower())
+            except OSError:
+                shim_paths.add(str(py_path).lower())
+
     if not shim_paths:
         return []
 
@@ -7309,13 +7320,12 @@ def _format_concurrent_instances_message(
     matches: list[tuple[int, str]], scripts_dir: Path
 ) -> str:
     """Build a human-readable explanation + remediation hint for the user."""
-    shim = scripts_dir / "hermes.exe"
-    lines = ["✗ Another hermes.exe is running:"]
+    lines = ["✗ Hermes processes are using the active venv:"]
     for pid, name in matches:
         lines.append(f"    PID {pid}  {name}")
     lines.append("")
-    lines.append(f"  Updating now would fail to overwrite {shim} because")
-    lines.append("  Windows blocks REPLACE on a running executable.")
+    lines.append("  Updating now would fail because Windows blocks replacement")
+    lines.append("  of running executables (.exe) and loaded native modules (.pyd).")
     lines.append("")
     lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
     lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")

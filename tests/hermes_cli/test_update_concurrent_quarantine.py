@@ -332,8 +332,6 @@ def test_format_message_mentions_pids_and_remediation(tmp_path):
     assert "hermes.exe" in msg
     assert "Hermes Desktop" in msg
     assert "--force" in msg
-    # Mentions the file that would have been overwritten
-    assert str(tmp_path / "hermes.exe") in msg
     # Self-service kill command targets the exact stale PIDs (issue #34795).
     assert "taskkill" in msg
     assert "/PID 1234" in msg
@@ -795,3 +793,93 @@ def test_cmd_update_force_bypasses_concurrent_check(_winp, tmp_path):
 
     # When --force is set, we should not have even consulted psutil.
     detect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# venv python.exe / pythonw.exe worker detection (issue #38789)
+# ---------------------------------------------------------------------------
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_finds_venv_python_worker(_winp, tmp_path):
+    """A python.exe process running from the venv scripts dir is detected.
+
+    Gateway, Dashboard, and REPL workers run as venv python.exe. They hold
+    .pyd file locks that block uv pip install during ``hermes update``.
+    """
+    scripts_dir = tmp_path
+    (scripts_dir / "hermes.exe").write_bytes(b"")
+    py_path = scripts_dir / "python.exe"
+    py_path.write_bytes(b"")
+
+    other_pid = os.getpid() + 1
+    procs = [_make_proc(other_pid, str(py_path), "python.exe")]
+    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(procs))
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == [(other_pid, "python.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_excludes_self_python_worker(_winp, tmp_path):
+    """The running process's own python.exe is excluded (same PID as os.getpid())."""
+    scripts_dir = tmp_path
+    py_path = scripts_dir / "python.exe"
+    py_path.write_bytes(b"")
+
+    my_pid = os.getpid()
+    procs = [_make_proc(my_pid, str(py_path), "python.exe")]
+    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(procs))
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_finds_pythonw_worker(_winp, tmp_path):
+    """pythonw.exe (GUI/headless workers) is also detected when running from venv."""
+    scripts_dir = tmp_path
+    (scripts_dir / "hermes.exe").write_bytes(b"")
+    pyw_path = scripts_dir / "pythonw.exe"
+    pyw_path.write_bytes(b"")
+
+    other_pid = os.getpid() + 1
+    procs = [_make_proc(other_pid, str(pyw_path), "pythonw.exe")]
+    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(procs))
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == [(other_pid, "pythonw.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_finds_both_shim_and_python(_winp, tmp_path):
+    """Both a hermes.exe shim and a python.exe worker are reported together."""
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    py_path = scripts_dir / "python.exe"
+    py_path.write_bytes(b"")
+
+    shim_pid = os.getpid() + 1
+    py_pid = os.getpid() + 2
+    procs = [
+        _make_proc(shim_pid, str(shim), "hermes.exe"),
+        _make_proc(py_pid, str(py_path), "python.exe"),
+    ]
+    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter(procs))
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert (shim_pid, "hermes.exe") in result
+    assert (py_pid, "python.exe") in result
+    assert len(result) == 2
+
+
+def test_format_message_mentions_pyd(tmp_path):
+    """The updated message flags .pyd locks so users understand the full scope."""
+    matches = [(9999, "python.exe")]
+    msg = cli_main._format_concurrent_instances_message(matches, tmp_path)
+    assert ".pyd" in msg

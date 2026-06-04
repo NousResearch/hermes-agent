@@ -13,6 +13,7 @@ import { useStore } from '@nanostores/react'
 import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
   type ClipboardEvent,
+  type ComponentProps,
   type FC,
   type FocusEvent,
   type FormEvent,
@@ -48,14 +49,13 @@ import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/co
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
-import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import { UserMessageText } from '@/components/assistant-ui/user-message-text'
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
-import { MarkdownText } from '@/components/assistant-ui/markdown-text'
+import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
@@ -221,6 +221,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isPlaceholder = messageStatus === 'running' && content.length === 0
   const interruptedOnly = useMemo(() => isInterruptedOnlyMessage(messageText), [messageText])
+  const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
     return null
@@ -231,6 +232,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
+      data-streaming={messageStatus === 'running' ? 'true' : undefined}
+      ref={enterRef}
     >
       <div
         className={cn(
@@ -372,7 +375,9 @@ const ThinkingDisclosure: FC<{
     observer.observe(content)
 
     return () => observer.disconnect()
-  }, [isPreview])
+    // Re-run when the disclosure toggles so the observer attaches to the new
+    // DOM after expand/collapse (refs are conditionally rendered on `open`).
+  }, [isPreview, open])
 
   return (
     <div
@@ -446,17 +451,19 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 
 const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
   const displayText = text.trimStart()
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const isRunning = status?.type === 'running' || messageRunning
 
   return (
-    <div
-      className={cn(
-        'whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/85',
-        status?.type === 'running' && 'shimmer text-muted-foreground/55'
+    <MarkdownTextContent
+      containerClassName={cn(
+        'text-xs leading-relaxed text-muted-foreground/85',
+        isRunning && 'shimmer text-muted-foreground/55'
       )}
-      data-slot="aui_reasoning-text"
-    >
-      {displayText}
-    </div>
+      containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+      isRunning={isRunning}
+      text={displayText}
+    />
   )
 }
 
@@ -611,13 +618,13 @@ const AssistantFooter: FC<MessageActionProps> = props => (
       className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
       hideWhenSingleBranch
     >
-      <BranchPickerPrimitive.Previous className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-left" size="0.875rem" />
       </BranchPickerPrimitive.Previous>
       <span className="tabular-nums">
         <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
       </span>
-      <BranchPickerPrimitive.Next className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-right" size="0.875rem" />
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
@@ -655,7 +662,7 @@ const USER_BUBBLE_BASE_CLASS =
   'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left shadow-composer'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
-  'grid cursor-pointer place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
+  'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
 
 const USER_ACTION_ICON_SIZE = '0.6875rem'
 const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -translate-y-px" />
@@ -798,7 +805,7 @@ const UserMessage: FC<{
             >
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
                 title="Restore previous checkpoint"
               >
                 Restore checkpoint
@@ -807,7 +814,7 @@ const UserMessage: FC<{
                 <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
               </span>
               <BranchPickerPrimitive.Next
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
                 title="Restore next checkpoint"
               >
                 Go forward

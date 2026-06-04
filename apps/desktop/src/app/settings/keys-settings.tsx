@@ -1,431 +1,162 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
-import { Input } from '@/components/ui/input'
-import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
-import { Check, Eye, EyeOff, Save, Settings2, Trash2, Zap } from '@/lib/icons'
+import { Settings2, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
-import { CONTROL_TEXT } from './constants'
-import {
-  asText,
-  includesQuery,
-  prettyName,
-  providerGroup,
-  providerPriority,
-  redactedValue,
-  withoutKey
-} from './helpers'
-import { LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
-import type { EnvPatch, EnvRowProps, ProviderGroup, SearchProps } from './types'
+import { EnvVarRow, useEnvCredentials } from './env-credentials'
+import { asText } from './helpers'
+import { LoadingState, SettingsContent } from './primitives'
 
-interface EnvActionsProps {
-  varKey: string
-  info: EnvVarInfo
-  saving: string | null
-  onEdit: () => void
-  onClear: (key: string) => void
-  onReveal: (key: string) => void
-  isRevealed: boolean
-  showReveal?: boolean
+// Providers live on their own page; messaging-platform credentials live on the
+// dedicated Messaging page (and are hidden here via `channel_managed`). This
+// view covers tool API keys plus server/setting env vars (API server, webhook,
+// gateway), which fold into the Settings tab.
+const KEY_TABS = [
+  { icon: Wrench, id: 'tool', label: 'Tools' },
+  { icon: Settings2, id: 'setting', label: 'Settings' }
+] as const
+
+type KeyCategoryId = (typeof KEY_TABS)[number]['id']
+
+const CATEGORY_LABELS: Record<KeyCategoryId, string> = {
+  setting: 'Settings',
+  tool: 'Tools'
 }
 
-function EnvActions({
-  varKey,
-  info,
-  saving,
-  onEdit,
-  onClear,
-  onReveal,
-  isRevealed,
-  showReveal = true
-}: EnvActionsProps) {
-  return (
-    <div className="flex shrink-0 items-center gap-1.5">
-      {info.url && (
-        <Button asChild size="xs" title="Open provider docs" variant="ghost">
-          <a href={info.url} rel="noreferrer" target="_blank">
-            Docs
-          </a>
-        </Button>
-      )}
-      {info.is_set && showReveal && (
-        <Button
-          onClick={() => onReveal(varKey)}
-          size="icon-xs"
-          title={isRevealed ? 'Hide value' : 'Reveal value'}
-          variant="ghost"
-        >
-          {isRevealed ? <EyeOff /> : <Eye />}
-        </Button>
-      )}
-      <Button onClick={onEdit} size="xs" variant="outline">
-        {info.is_set ? 'Replace' : 'Set'}
-      </Button>
-      {info.is_set && (
-        <Button
-          disabled={saving === varKey}
-          onClick={() => onClear(varKey)}
-          size="icon-xs"
-          title="Clear value"
-          variant="ghost"
-        >
-          <Trash2 />
-        </Button>
-      )}
-    </div>
-  )
+// Backend categories that surface under each tab. Server/gateway vars carry the
+// `messaging` category server-side but belong with general settings here, since
+// the platform-credential half of `messaging` is owned by the Messaging page.
+const TAB_CATEGORIES: Record<KeyCategoryId, readonly string[]> = {
+  setting: ['setting', 'messaging'],
+  tool: ['tool']
 }
 
-function EnvVarRow({
-  varKey,
-  info,
-  edits,
-  revealed,
-  saving,
-  setEdits,
-  onSave,
-  onClear,
-  onReveal,
-  compact = false
-}: EnvRowProps) {
-  const isEditing = edits[varKey] !== undefined
-  const isRevealed = revealed[varKey] !== undefined
-  const value = isRevealed ? revealed[varKey] : info.redacted_value
-  const startEdit = () => setEdits(c => ({ ...c, [varKey]: '' }))
-
-  if (compact && !isEditing) {
-    return (
-      <div className="flex items-center justify-between gap-3 py-1.5">
-        <div className="min-w-0">
-          <div className="truncate font-mono text-[0.72rem] text-muted-foreground">{varKey}</div>
-          <div className="truncate text-[0.68rem] text-muted-foreground/70">{info.description}</div>
-        </div>
-        <EnvActions
-          info={info}
-          isRevealed={isRevealed}
-          onClear={onClear}
-          onEdit={startEdit}
-          onReveal={onReveal}
-          saving={saving}
-          showReveal={false}
-          varKey={varKey}
-        />
-      </div>
-    )
+function tabForCategory(category: string): KeyCategoryId | null {
+  for (const tab of KEY_TABS) {
+    if (TAB_CATEGORIES[tab.id].includes(category)) {
+      return tab.id
+    }
   }
 
-  return (
-    <div className="grid gap-2 rounded-xl bg-background/55 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs font-medium">{varKey}</span>
-            <Pill tone={info.is_set ? 'primary' : 'muted'}>
-              {info.is_set && <Check className="size-3" />}
-              {info.is_set ? 'Set' : 'Not set'}
-            </Pill>
-          </div>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{info.description}</p>
-        </div>
-        <EnvActions
-          info={info}
-          isRevealed={isRevealed}
-          onClear={onClear}
-          onEdit={startEdit}
-          onReveal={onReveal}
-          saving={saving}
-          varKey={varKey}
-        />
-      </div>
-
-      {!isEditing && info.is_set && (
-        <div
-          className={cn(
-            'rounded-md px-3 py-2 font-mono text-xs',
-            isRevealed ? 'bg-background text-foreground' : 'bg-muted/30 text-muted-foreground'
-          )}
-        >
-          {value || '---'}
-        </div>
-      )}
-
-      {isEditing && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input
-            autoFocus
-            className={cn('min-w-56 flex-1 font-mono', CONTROL_TEXT)}
-            onChange={e => setEdits(c => ({ ...c, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? 'Replace current value' : 'Enter value'}
-            type={info.is_password ? 'password' : 'text'}
-            value={edits[varKey]}
-          />
-          <Button disabled={saving === varKey || !edits[varKey]} onClick={() => onSave(varKey)} size="sm">
-            <Save />
-            {saving === varKey ? 'Saving' : 'Save'}
-          </Button>
-          <Button onClick={() => setEdits(c => withoutKey(c, varKey))} size="sm" variant="outline">
-            <Codicon name="close" />
-            Cancel
-          </Button>
-        </div>
-      )}
-    </div>
-  )
+  return null
 }
 
-function EnvProviderGroup({
-  group,
-  rowProps
+function CategoryTabs({
+  active,
+  counts,
+  onSelect
 }: {
-  group: ProviderGroup
-  rowProps: Omit<EnvRowProps, 'varKey' | 'info'>
+  active: KeyCategoryId
+  counts: Record<KeyCategoryId, number>
+  onSelect: (id: KeyCategoryId) => void
 }) {
-  const setCount = group.entries.filter(([, info]) => info.is_set).length
-  // Default-expand providers that already have at least one key set; the
-  // user is much more likely to be coming back to edit those than to start
-  // configuring a fresh provider from scratch.
-  const [expanded, setExpanded] = useState(setCount > 0)
-
   return (
-    <div className="overflow-hidden rounded-xl bg-background/60">
-      <button
-        className="flex w-full items-center justify-between gap-3 bg-transparent px-3 py-2.5 text-left hover:bg-accent/50"
-        onClick={() => setExpanded(e => !e)}
-        type="button"
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <Zap className="size-4 shrink-0 text-muted-foreground" />
-          <span className="truncate text-sm font-medium">
-            {group.name === 'Other' ? 'Other providers' : group.name}
-          </span>
-          {setCount > 0 && <Pill tone="primary">{setCount} set</Pill>}
-        </span>
-        <span className="text-xs text-muted-foreground">{group.entries.length} keys</span>
-      </button>
-      {expanded && (
-        <div className="grid gap-2 bg-muted/20 p-3">
-          {group.entries.map(([key, info]) => (
-            <EnvVarRow compact={!info.is_set} info={info} key={key} varKey={key} {...rowProps} />
-          ))}
-        </div>
-      )}
+    <div className="mb-4 inline-flex w-full gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)/30 p-1">
+      {KEY_TABS.map(tab => {
+        const isActive = active === tab.id
+        const count = counts[tab.id]
+
+        return (
+          <button
+            className={cn(
+              'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[length:var(--conversation-text-font-size)] font-medium transition-colors',
+              isActive
+                ? 'bg-(--ui-chat-surface-background) text-foreground shadow-sm'
+                : 'text-(--ui-text-secondary) hover:text-foreground'
+            )}
+            key={tab.id}
+            onClick={() => onSelect(tab.id)}
+            type="button"
+          >
+            <tab.icon className="size-3.5 shrink-0" />
+            <span className="truncate">{tab.label}</span>
+            {count > 0 && (
+              <span
+                className={cn(
+                  'rounded-full px-1.5 text-[0.6875rem] tabular-nums',
+                  isActive ? 'bg-primary/12 text-primary' : 'bg-(--ui-bg-tertiary)/60 text-muted-foreground'
+                )}
+              >
+                {count}
+              </span>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
 
-export function KeysSettings({ query }: SearchProps) {
-  const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
-  const [edits, setEdits] = useState<Record<string, string>>({})
-  const [revealed, setRevealed] = useState<Record<string, string>>({})
-  const [saving, setSaving] = useState<string | null>(null)
+export function KeysSettings() {
+  const { rowProps, vars } = useEnvCredentials()
+  const [activeCategory, setActiveCategory] = useState<KeyCategoryId>('tool')
 
-  // We used to hide ~80% of rows behind a global "Show advanced" toggle, but
-  // everything in this view is configuration-level — "advanced" was a poor
-  // distinction. The full list is rendered now and provider groups
-  // default-collapsed-unless-set keep the surface manageable.
-  useEffect(() => {
-    try {
-      window.localStorage.removeItem('desktop.settings.keys.show_advanced')
-    } catch {
-      // Ignore — old key cleanup is best-effort.
-    }
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-
-    void (async () => {
-      try {
-        const next = await getEnvVars()
-
-        if (!cancelled) {
-          setVars(next)
-        }
-      } catch (err) {
-        notifyError(err, 'API keys failed to load')
-      }
-    })()
-
-    return () => void (cancelled = true)
-  }, [])
-
-  const filterEnv = useCallback((info: EnvVarInfo, key: string, q: string, cat: string, extra?: string) => {
-    if (asText(info.category) !== cat) {
-      return false
-    }
-
-    if (!q) {
-      return true
-    }
-
-    return (
-      key.toLowerCase().includes(q) ||
-      includesQuery(info.description, q) ||
-      Boolean(extra && extra.toLowerCase().includes(q))
-    )
-  }, [])
-
-  const providerGroups = useMemo<ProviderGroup[]>(() => {
+  const groups = useMemo(() => {
     if (!vars) {
       return []
     }
 
-    const q = query.trim().toLowerCase()
+    return KEY_TABS.map(t => t.id).flatMap(tab => {
+      const cats = TAB_CATEGORIES[tab]
 
-    const entries = Object.entries(vars).filter(([key, info]) =>
-      filterEnv(info, key, q, 'provider', providerGroup(key))
-    )
-
-    const groups = new Map<string, [string, EnvVarInfo][]>()
-
-    for (const entry of entries) {
-      const name = providerGroup(entry[0])
-      groups.set(name, [...(groups.get(name) ?? []), entry])
-    }
-
-    return Array.from(groups, ([name, entries]) => ({
-      name,
-      priority: providerPriority(name),
-      entries: entries.sort(([a], [b]) => a.localeCompare(b)),
-      hasAnySet: entries.some(([, info]) => info.is_set)
-    })).sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
-  }, [filterEnv, query, vars])
-
-  const otherGroups = useMemo(() => {
-    if (!vars) {
-      return []
-    }
-
-    const q = query.trim().toLowerCase()
-
-    const labels: Record<string, string> = {
-      tool: 'Tools',
-      messaging: 'Messaging',
-      setting: 'Settings'
-    }
-
-    return ['tool', 'messaging', 'setting'].flatMap(cat => {
       const entries = Object.entries(vars)
-        .filter(([key, info]) => filterEnv(info, key, q, cat))
+        .filter(([, info]) => !info.channel_managed && cats.includes(asText(info.category)))
         .sort(([a], [b]) => a.localeCompare(b))
 
-      return entries.length === 0 ? [] : [{ category: cat, label: labels[cat] ?? prettyName(cat), entries }]
+      return entries.length === 0 ? [] : [{ category: tab, label: CATEGORY_LABELS[tab], entries }]
     })
-  }, [filterEnv, query, vars])
+  }, [vars])
 
-  function patchVar(key: string, patch: EnvPatch) {
-    setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
-  }
+  // Tab badge counts reflect how many keys are set per tab. Channel-managed
+  // credentials are owned by the Messaging page and excluded here.
+  const categoryCounts = useMemo<Record<KeyCategoryId, number>>(() => {
+    const counts: Record<KeyCategoryId, number> = { setting: 0, tool: 0 }
 
-  function clearLocalState(key: string) {
-    setEdits(c => withoutKey(c, key))
-    setRevealed(c => withoutKey(c, key))
-  }
-
-  async function handleSave(key: string) {
-    const value = edits[key]
-
-    if (!value) {
-      return
+    if (!vars) {
+      return counts
     }
 
-    setSaving(key)
+    for (const info of Object.values(vars)) {
+      if (!info.is_set || info.channel_managed) {
+        continue
+      }
 
-    try {
-      await setEnvVar(key, value)
-      patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
-      clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${key} updated.` })
-    } catch (err) {
-      notifyError(err, `Failed to save ${key}`)
-    } finally {
-      setSaving(null)
-    }
-  }
+      const tab = tabForCategory(asText(info.category))
 
-  async function handleClear(key: string) {
-    if (!window.confirm(`Remove ${key} from .env?`)) {
-      return
+      if (tab) {
+        counts[tab] += 1
+      }
     }
 
-    setSaving(key)
-
-    try {
-      await deleteEnvVar(key)
-      patchVar(key, { is_set: false, redacted_value: null })
-      clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${key} removed.` })
-    } catch (err) {
-      notifyError(err, `Failed to remove ${key}`)
-    } finally {
-      setSaving(null)
-    }
-  }
-
-  async function handleReveal(key: string) {
-    if (revealed[key]) {
-      setRevealed(c => withoutKey(c, key))
-
-      return
-    }
-
-    try {
-      const result = await revealEnvVar(key)
-      setRevealed(c => ({ ...c, [key]: result.value }))
-    } catch (err) {
-      notifyError(err, `Failed to reveal ${key}`)
-    }
-  }
+    return counts
+  }, [vars])
 
   if (!vars) {
     return <LoadingState label="Loading API keys and credentials..." />
   }
 
-  const rowProps = {
-    edits,
-    revealed,
-    saving,
-    setEdits,
-    onSave: handleSave,
-    onClear: handleClear,
-    onReveal: handleReveal
-  }
-
-  const configuredCount = providerGroups.filter(g => g.hasAnySet).length
+  const visible = groups.filter(g => g.category === activeCategory)
 
   return (
     <SettingsContent>
-      <div className="mb-6">
-        <SectionHeading
-          icon={Zap}
-          meta={`${configuredCount} of ${providerGroups.length} configured`}
-          title="LLM providers"
-        />
-        <div className="grid gap-2">
-          {providerGroups.map(group => (
-            <EnvProviderGroup group={group} key={group.name} rowProps={rowProps} />
-          ))}
-        </div>
-      </div>
+      <CategoryTabs active={activeCategory} counts={categoryCounts} onSelect={setActiveCategory} />
 
-      {otherGroups.map(group => (
-        <div className="mb-6" key={group.category}>
-          <SectionHeading
-            icon={Settings2}
-            meta={`${group.entries.filter(([, i]) => i.is_set).length} of ${group.entries.length} set`}
-            title={group.label}
-          />
+      {visible.map(group => (
+        <section className="mb-6" key={group.category}>
           <div className="grid gap-2">
-            {group.entries.map(([key, info]) => (
+            {group.entries.map(([key, info]: [string, EnvVarInfo]) => (
               <EnvVarRow info={info} key={key} varKey={key} {...rowProps} />
             ))}
           </div>
-        </div>
+        </section>
       ))}
+
+      {visible.length === 0 && (
+        <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
+          Nothing configured in this category yet.
+        </div>
+      )}
     </SettingsContent>
   )
 }

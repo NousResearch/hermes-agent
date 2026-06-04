@@ -428,6 +428,78 @@ class TestWebServerEndpoints:
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
 
+    def test_search_dedupes_compression_lineage_to_tip(self):
+        """A conversation that auto-compresses leaves the matched term in both
+        the root segment and the continuation. Search must collapse them to a
+        single result keyed by the lineage root and pointing at the live tip,
+        so the sidebar stops showing the same chat several times."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="search-root", source="cli")
+            db.append_message(session_id="search-root", role="user", content="distinctneedle in the root")
+            db.end_session("search-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "search-root"),
+            )
+            db.create_session(session_id="search-tip", source="cli", parent_session_id="search-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 90, "search-tip"))
+            db.append_message(session_id="search-tip", role="user", content="distinctneedle again in the tip")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=distinctneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        lineage_hits = [r for r in results if r.get("lineage_root") == "search-root"]
+        # One conversation -> exactly one result despite two FTS hits.
+        assert len(lineage_hits) == 1
+        hit = lineage_hits[0]
+        # Surfaced under the live tip so clicking resumes the current session.
+        assert hit["session_id"] == "search-tip"
+        assert hit["lineage_root"] == "search-root"
+
+    def test_search_keeps_branch_specific_hits_on_branch(self):
+        """Branch sessions share parent_session_id, but they are not compression
+        continuations. A query that only exists in the branch must open the
+        branch instead of being collapsed back to the parent/root."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = _time.time()
+            db.create_session(session_id="branch-parent", source="cli")
+            db.append_message(session_id="branch-parent", role="user", content="ancestor context")
+            db.end_session("branch-parent", "branched")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "branch-parent"),
+            )
+            db.create_session(session_id="branch-child", source="cli", parent_session_id="branch-parent")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 80, "branch-child"))
+            db.append_message(session_id="branch-child", role="user", content="branchspecificneedle only here")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=branchspecificneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        assert any(
+            r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
+            for r in results
+        )
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 
@@ -974,6 +1046,119 @@ class TestWebServerEndpoints:
         data = resp.json()
         assert data["ok"] is True
         assert data.get("gateway_tools", []) == []
+
+    def test_apply_main_model_assignment_base_url_and_context_reconcile(self):
+        """The shared main-slot assignment helper must persist base_url only for
+        custom providers, clear stale base_url for hosted ones, and always drop
+        a hardcoded context_length override. Both POST /api/model/set and
+        profile-model writes route through this, so the contract is pinned here."""
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        # Custom + base_url → persisted; stale context_length dropped.
+        out = _apply_main_model_assignment(
+            {"context_length": 8192}, "custom", "llama-3.1-8b", "http://127.0.0.1:8000/v1"
+        )
+        assert out["provider"] == "custom"
+        assert out["default"] == "llama-3.1-8b"
+        assert out["base_url"] == "http://127.0.0.1:8000/v1"
+        assert "context_length" not in out
+
+        # Hosted provider → stale base_url cleared (no base_url supplied).
+        out = _apply_main_model_assignment(
+            {"base_url": "http://127.0.0.1:8000/v1"}, "openrouter", "anthropic/claude-opus-4.8"
+        )
+        assert out["provider"] == "openrouter"
+        assert out["base_url"] == ""
+
+        # Custom WITHOUT a base_url → don't invent one, clear any stale value.
+        out = _apply_main_model_assignment(
+            {"base_url": "http://stale:1/v1"}, "custom", "m"
+        )
+        assert out["base_url"] == ""
+
+        # Non-dict input is coerced to a fresh dict (never raises).
+        out = _apply_main_model_assignment("not-a-dict", "custom", "m", "http://x/v1")
+        assert out == {"provider": "custom", "default": "m", "base_url": "http://x/v1"}
+
+    def test_parse_model_ids_handles_openai_and_bare_shapes(self):
+        """Model discovery must tolerate the common /v1/models shapes and
+        never raise (so a slightly non-standard local endpoint still works)."""
+        from hermes_cli.web_server import _parse_model_ids
+
+        class FakeResp:
+            def __init__(self, payload, ok=True):
+                self._payload = payload
+                self.is_success = ok
+
+            def json(self):
+                if isinstance(self._payload, Exception):
+                    raise self._payload
+                return self._payload
+
+        # OpenAI / vLLM / llama.cpp shape.
+        assert _parse_model_ids(
+            FakeResp({"data": [{"id": "llama-3.1-8b"}, {"id": "qwen2.5-7b"}]})
+        ) == ["llama-3.1-8b", "qwen2.5-7b"]
+        # Bare list of ids.
+        assert _parse_model_ids(FakeResp({"data": ["m1", "m2"]})) == ["m1", "m2"]
+        # Top-level list.
+        assert _parse_model_ids(FakeResp([{"id": "x"}])) == ["x"]
+        # Non-success / malformed / exception → [] (never raises).
+        assert _parse_model_ids(FakeResp({"data": []}, ok=False)) == []
+        assert _parse_model_ids(FakeResp({"nope": 1})) == []
+        assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
+
+    def test_set_model_main_custom_persists_base_url(self):
+        """Custom/local providers must persist model.base_url so the runtime
+        resolver (which ignores OPENAI_BASE_URL) can route to a self-hosted
+        endpoint without an API key. Regression for the desktop onboarding bug
+        where 'Local / custom endpoint' could never be configured."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "llama-3.1-8b",
+                "base_url": "http://127.0.0.1:8000/v1",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "custom"
+        assert data["base_url"] == "http://127.0.0.1:8000/v1"
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert model_cfg["provider"] == "custom"
+        assert model_cfg["default"] == "llama-3.1-8b"
+        assert model_cfg["base_url"] == "http://127.0.0.1:8000/v1"
+
+    def test_set_model_main_non_custom_clears_stale_base_url(self):
+        """Switching to a hosted provider must clear a stale base_url so the
+        resolver picks that provider's own default endpoint."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "provider": "custom",
+            "default": "llama-3.1-8b",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["base_url"] == ""
+
+        model_cfg = load_config().get("model")
+        assert model_cfg["provider"] == "openrouter"
+        assert model_cfg.get("base_url", "") == ""
 
     def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
         """A Portal/gateway hiccup must never prevent saving the model."""
@@ -3343,7 +3528,7 @@ class TestPtyWebSocket:
         with pytest.raises(WebSocketDisconnect) as exc:
             with self.client.websocket_connect(self._url()):
                 pass
-        assert exc.value.code == 4403
+        assert exc.value.code == 4404
 
     def test_rejects_missing_token(self, monkeypatch):
         monkeypatch.setattr(

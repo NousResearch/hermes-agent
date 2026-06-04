@@ -1105,6 +1105,29 @@ class TestGeminiHttpErrorParsing:
         assert "/gquota" in message
         assert "rate limited" not in message.lower()
 
+    def test_per_day_message_is_not_misclassified_as_rate_limit(self):
+        """A 'requests per day' body is a daily quota, not a transient limit.
+
+        Guards the message heuristic against the 'requests per' overmatch:
+        the per-window token list must require minute/second, so a daily
+        message keeps the /gquota guidance.
+        """
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": "Quota exceeded for requests per day.",
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        assert err.code == "code_assist_rate_limited"
+        message = str(err)
+        assert "/gquota" in message
+        assert "rate limited" not in message.lower()
+
     def test_404_model_not_found_produces_model_retired_message(self):
         from agent.gemini_cloudcode_adapter import _gemini_http_error
 

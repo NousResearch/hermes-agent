@@ -865,19 +865,23 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
     if isinstance(error_metadata, dict):
         model_hint = str(error_metadata.get("model") or error_metadata.get("modelId") or "").strip()
 
-    # Transient per-minute rate limit (RPM/TPM).  Google returns the SAME
+    # Transient short-window rate limit (RPM/TPM).  Google returns the SAME
     # 429 RESOURCE_EXHAUSTED envelope as a true daily-quota exhaustion, so
     # disambiguate on the ErrorInfo reason (or a per-window message) to avoid
     # telling the user their daily quota is gone when it actually resets in
     # seconds.  Only the explicit RATE_LIMIT_EXCEEDED reason re-tags the code
     # (see classify block above); the message-based signal refines the
     # human-readable text only.
+    #
+    # Token list is deliberately restricted to explicit minute/second windows.
+    # A bare "requests per" would also match "requests per day", which is a
+    # genuine daily-quota message and must keep the /gquota guidance.
     _msg_lower = err_message.lower()
     _is_transient_rate = error_reason == "RATE_LIMIT_EXCEEDED" or (
         err_status == "RESOURCE_EXHAUSTED"
         and any(
             token in _msg_lower
-            for token in ("per minute", "per-minute", "requests per", "per second")
+            for token in ("per minute", "per-minute", "per second", "per-second")
         )
     )
 
@@ -893,7 +897,7 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
     elif status == 429 and _is_transient_rate:
         message = (
             f"Gemini rate limited ({err_message or 'RATE_LIMIT_EXCEEDED'}) — "
-            f"short-term per-minute throttle, not daily-quota exhaustion. "
+            f"short-term rate limit, not daily-quota exhaustion. "
             f"Hermes will back off and retry automatically."
         )
         if retry_delay_seconds is not None:

@@ -227,7 +227,7 @@ function LanguageMenuButton() {
       <DropdownMenuTrigger asChild>
         <button
           aria-label={t('titlebar.language')}
-          className={cn(titlebarButtonClass, 'flex items-center gap-1 bg-transparent select-none [&_svg]:size-4 px-2 w-auto')}
+          className={cn(titlebarButtonClass, 'flex items-center gap-1 bg-transparent select-none [&_svg]:size-4 px-2 w-auto focus-visible:outline-0')}
           onPointerDown={event => event.stopPropagation()}
           title={currentLabel}
           type="button"

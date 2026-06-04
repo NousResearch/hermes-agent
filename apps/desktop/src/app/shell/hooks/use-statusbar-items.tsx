@@ -61,7 +61,7 @@ export function useStatusbarItems({
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
-  useLocaleSync()
+  const localeVersion = useLocaleSync()
   const busy = useStore($busy)
   const currentFastMode = useStore($currentFastMode)
   const currentModel = useStore($currentModel)
@@ -249,7 +249,7 @@ export function useStatusbarItems({
       openAgents,
       subagentsRunning,
       toggleCommandCenter
-    ]
+    , localeVersion]
   )
 
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
@@ -324,17 +324,17 @@ export function useStatusbarItems({
       sessionStartedAt,
       turnStartedAt,
       versionItem
-    ]
+    , localeVersion]
   )
 
   const leftStatusbarItems = useMemo(
     () => [...coreLeftStatusbarItems, ...extraLeftItems],
-    [coreLeftStatusbarItems, extraLeftItems]
+    [coreLeftStatusbarItems, extraLeftItems, localeVersion]
   )
 
   const statusbarItems = useMemo(
     () => [...extraRightItems, ...coreRightStatusbarItems],
-    [coreRightStatusbarItems, extraRightItems]
+    [coreRightStatusbarItems, extraRightItems, localeVersion]
   )
 
   return { leftStatusbarItems, statusbarItems }

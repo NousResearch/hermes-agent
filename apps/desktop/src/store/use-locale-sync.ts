@@ -3,10 +3,10 @@ import { onLocaleChange } from './i18n'
 
 /**
  * Forces the component to re-render whenever the locale changes.
- * Use in components that import `t()` directly from @/store/i18n
- * instead of using the reactive `useTranslation()` hook.
+ * Returns a version number that can be used as a useMemo/useCallback dependency.
  */
-export function useLocaleSync() {
-  const [, tick] = useState(0)
-  useEffect(() => onLocaleChange(() => tick(n => n + 1)), [])
+export function useLocaleSync(): number {
+  const [version, setVersion] = useState(0)
+  useEffect(() => onLocaleChange(() => setVersion(n => n + 1)), [])
+  return version
 }

@@ -554,6 +554,17 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+# Structured-output validation + per-api_mode wire mapping lives in
+# agent.structured_output (the single place that knows which backend honours
+# which constraint). Aliased to the historical private names so the request
+# handlers below — and existing imports of these symbols — read unchanged.
+from agent.structured_output import (  # noqa: E402
+    normalize_response_format as _normalize_response_format,
+    normalize_responses_text_format as _response_format_from_text_format,
+    unsupported_reason as _structured_output_unsupported_reason,
+)
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -975,6 +986,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1028,7 +1040,37 @@ class APIServerAdapter(BasePlatformAdapter):
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )
+        # Structured-output constraint (OpenAI response_format / Responses
+        # text.format).  Read by chat_completion_helpers.build_api_kwargs and
+        # forwarded to the chat.completions call.  None for normal requests.
+        agent._gateway_response_format = response_format
         return agent
+
+    def _structured_output_error(
+        self, response_format: Optional[Dict[str, Any]]
+    ) -> Optional["web.Response"]:
+        """Return a 400 response when a structured-output request targets a
+        backend that cannot honour it, else ``None``.
+
+        Resolves the configured backend ``api_mode`` and rejects up-front
+        (before any streaming starts) so the caller gets a clear error
+        instead of a plain-text response that fails schema validation.  When
+        the backend cannot be resolved we return ``None`` and let
+        ``_create_agent`` surface the underlying provider error.
+        """
+        if not response_format:
+            return None
+        try:
+            from gateway.run import _resolve_runtime_agent_kwargs
+            api_mode = (_resolve_runtime_agent_kwargs() or {}).get("api_mode")
+        except Exception:
+            return None
+        reason = _structured_output_unsupported_reason(response_format, api_mode)
+        if reason:
+            return web.json_response(
+                _openai_error(reason, param="response_format"), status=400
+            )
+        return None
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -1114,6 +1156,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
+                # response_format (json_object / json_schema) on
+                # /v1/chat/completions and text.format on /v1/responses are
+                # forwarded to chat-completions backends; other backends 400.
+                "structured_output": True,
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
@@ -1703,6 +1749,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
+        # Structured output: forward `response_format` (json_object / json_schema)
+        # to the backend model.  Reject up-front when the configured backend
+        # cannot honour it rather than silently returning plain text (#33864).
+        response_format, rf_err = _normalize_response_format(body.get("response_format"))
+        if rf_err:
+            return web.json_response(_openai_error(rf_err, param="response_format"), status=400)
+        unsupported = self._structured_output_error(response_format)
+        if unsupported is not None:
+            return unsupported
+
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
@@ -1895,6 +1951,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                response_format=response_format,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1914,11 +1971,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                response_format=response_format,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream", "response_format"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -2804,6 +2862,16 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
 
+        # Structured output: the Responses API carries the schema in
+        # `text.format`.  Translate it to the shared `response_format` shape
+        # and forward to the backend instead of dropping it (#33864).
+        response_format, rf_err = _response_format_from_text_format(body.get("text"))
+        if rf_err:
+            return web.json_response(_openai_error(rf_err, param="text.format"), status=400)
+        unsupported = self._structured_output_error(response_format)
+        if unsupported is not None:
+            return unsupported
+
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
             return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
@@ -2938,6 +3006,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                response_format=response_format,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2971,13 +3040,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                response_format=response_format,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools", "text"],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -3474,6 +3544,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3498,6 +3569,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                response_format=response_format,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

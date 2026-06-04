@@ -6,10 +6,15 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/useomnia/hermes-agent/main/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
+#
+# Environment overrides (useful when piping through curl, where flags are
+# awkward to pass):
+#   HERMES_REPO=owner/repo   install from a different fork (default: useomnia/hermes-agent)
+#   HERMES_BRANCH=name       install a specific branch     (default: main; --branch overrides)
 #
 # ============================================================================
 
@@ -43,8 +48,15 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+#
+# Repository: defaults to the useomnia fork.  Override without editing this
+# file via environment variables (handy for programmatic installs):
+#   HERMES_REPO            owner/repo slug, e.g. "NousResearch/hermes-agent"
+#   HERMES_REPO_URL_SSH    full SSH clone URL   (takes precedence over HERMES_REPO)
+#   HERMES_REPO_URL_HTTPS  full HTTPS clone URL (takes precedence over HERMES_REPO)
+HERMES_REPO="${HERMES_REPO:-useomnia/hermes-agent}"
+REPO_URL_SSH="${HERMES_REPO_URL_SSH:-git@github.com:${HERMES_REPO}.git}"
+REPO_URL_HTTPS="${HERMES_REPO_URL_HTTPS:-https://github.com/${HERMES_REPO}.git}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -71,7 +83,10 @@ USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
 NO_SKILLS=false
-BRANCH="main"
+# Branch to install.  Defaults to $HERMES_BRANCH when set (lets callers pick a
+# branch programmatically without passing flags), else "main".  The --branch
+# flag below overrides both.
+BRANCH="${HERMES_BRANCH:-main}"
 INSTALL_COMMIT=""
 ENSURE_DEPS=""
 POSTINSTALL_MODE=false
@@ -166,7 +181,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --branch NAME  Git branch to install (default: main, or \$HERMES_BRANCH)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "  --manifest     Print desktop bootstrap stage manifest as JSON"
             echo "  --stage NAME   Run one desktop bootstrap stage"
@@ -178,6 +193,11 @@ while [[ $# -gt 0 ]]; do
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
             echo "  --hermes-home PATH  Data directory (default: ~/.hermes, or \$HERMES_HOME)"
             echo "  -h, --help     Show this help"
+            echo ""
+            echo "Environment overrides:"
+            echo "  HERMES_REPO=owner/repo   Install from a different fork"
+            echo "                             (default: useomnia/hermes-agent)"
+            echo "  HERMES_BRANCH=name       Branch to install (default: main; --branch overrides)"
             echo ""
             echo "Notes:"
             echo "  When running as root on Linux, Hermes installs the code under"
@@ -451,7 +471,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://raw.githubusercontent.com/useomnia/hermes-agent/main/scripts/install.ps1)"
             exit 1
             ;;
         *)

@@ -106,6 +106,30 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 
 Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
 
+**Structured output:** pass `response_format` to constrain the reply to JSON. Both `json_object` and `json_schema` are forwarded to the backend model:
+
+```json
+{
+  "model": "hermes-agent",
+  "messages": [{"role": "user", "content": "Extract the city and country."}],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "Location",
+      "schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}, "country": {"type": "string"}},
+        "required": ["city", "country"],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  }
+}
+```
+
+Structured output is forwarded only when the configured backend uses an OpenAI-compatible chat-completions API. On other backends (e.g. native Anthropic Messages or Bedrock Converse) the request returns `400` with a clear message rather than silently returning plain text. A malformed `response_format` returns `400` with `param: "response_format"`.
+
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
 **Tool progress in streams**:
@@ -160,6 +184,30 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
 ```
 
 Uploaded files (`input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+
+**Structured output:** the Responses API carries the schema in `text.format`. It is translated to the same downstream constraint as Chat Completions' `response_format`, so the OpenAI Agents SDK `output_type=<PydanticModel>` pattern works:
+
+```json
+{
+  "model": "hermes-agent",
+  "input": "Extract the city and country.",
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "Location",
+      "schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}, "country": {"type": "string"}},
+        "required": ["city", "country"],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  }
+}
+```
+
+As with Chat Completions, this is honoured on chat-completions backends and returns `400` on backends that cannot enforce it.
 
 #### Multi-turn with previous_response_id
 

@@ -527,6 +527,9 @@ _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
+    timeout_method = getattr(config.option, "timeout_method", None)
+    if sys.platform.startswith("win") and timeout_method == "signal":
+        config.option.timeout_method = "thread"
     config.addinivalue_line(
         "markers",
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "

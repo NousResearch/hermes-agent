@@ -10,14 +10,11 @@ name = "hermes-agent"
 version = "0.15.1"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-# Upper bound is load-bearing, not cosmetic. uv resolves the project's
-# Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
-# fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# Hermes now has a working Windows CPython 3.14 path: the blocking native
+# dependency was pywinpty 2.x, whose wheels stopped at 3.13 and forced a
+# failing PyO3 source build. With pywinpty pinned to a 3.x release that ships
+# cp314 wheels, the package can advertise normal 3.14 support again.
+requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -80,7 +77,10 @@ dependencies = [
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
-  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  # Windows PTY backend. pywinpty 2.x tops out at CPython 3.13 wheels and
+  # falls back to a PyO3 source build that currently fails on 3.14. Keep the
+  # pin on the first 3.x line that ships official cp314 win_amd64 wheels.
+  "pywinpty==3.0.3; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -284,12 +284,12 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
-# pytest-timeout: per-test 30s hard cap with signal method.
-# This is the fallback inside each per-file pytest subprocess (see
-# scripts/run_tests_parallel.py). Per-file isolation gives every test
-# file a fresh Python interpreter; pytest-timeout catches Python-level
-# hangs within a file.
-addopts = "-m 'not integration' --timeout=30 --timeout-method=signal"
+# pytest-timeout: per-test 30s hard cap.
+# Use the thread backend for portability: Windows has no SIGALRM, and the
+# signal backend crashes the suite before tests even start there.
+# Per-file isolation still comes from scripts/run_tests_parallel.py, so the
+# timeout remains a within-file hang guard, not the primary isolation layer.
+addopts = "-m 'not integration' --timeout=30 --timeout-method=thread"
 
 [tool.ty.environment]
 python-version = "3.13"

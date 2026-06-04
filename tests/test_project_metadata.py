@@ -11,6 +11,19 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
+def _load_project_dependencies():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    return project["dependencies"]
+
+
+def _load_project_metadata():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)["project"]
+
+
 def _load_package_data():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
@@ -154,3 +167,35 @@ def test_nested_bundled_plugin_metadata_is_packaged():
     assert "**/plugin.yaml" in plugin_data
     assert "**/plugin.yml" in plugin_data
     assert "**/README.md" in plugin_data
+
+
+def test_windows_base_pty_dependency_allows_python_314_wheels():
+    """Windows base installs must not pin pywinpty below the cp314 wheel line.
+
+    Regression for the 2026-06-04 update failure: ``pywinpty<3`` forced pip to
+    select 2.0.15, which has wheels only up to CPython 3.13 on Windows. On a
+    Python 3.14 venv, pip then fell back to building from sdist and the build
+    died inside PyO3's interpreter-version guard before Hermes finished
+    updating.
+    """
+    deps = _load_project_dependencies()
+    pywinpty_specs = [
+        dep for dep in deps if dep.startswith("pywinpty") and "sys_platform == 'win32'" in dep
+    ]
+    assert pywinpty_specs, "expected a Windows pywinpty dependency in [project].dependencies"
+    assert pywinpty_specs == ["pywinpty==3.0.3; sys_platform == 'win32'"], (
+        "Windows base dependency must stay on a pywinpty release that ships "
+        f"official CPython 3.14 wheels. Found: {pywinpty_specs}"
+    )
+
+
+def test_requires_python_no_longer_blocks_python_314():
+    """Editable installs on Windows must not reject the active 3.14 runtime.
+
+    Once pywinpty moved to a cp314-compatible wheel line, the old
+    ``requires-python <3.14`` guard became stale and started breaking
+    ``hermes update`` during the reinstall step even though the actual wheels
+    resolved cleanly.
+    """
+    project = _load_project_metadata()
+    assert project["requires-python"] == ">=3.11"

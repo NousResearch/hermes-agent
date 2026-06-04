@@ -55,6 +55,12 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  // approval.request (dangerous command / execute_code) — session-keyed
+  command?: string
+  description?: string
+  // secret.request (skill credential capture)
+  env_var?: string
+  prompt?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

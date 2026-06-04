@@ -6,6 +6,10 @@ model:
 toolsets:
   - hermes-analytics
 
+plugins:
+  enabled:
+    - elixir-analytics-runner
+
 agent:
   max_turns: 90
   gateway_timeout: 1800
@@ -35,6 +39,7 @@ platforms:
 
 platform_toolsets:
   cli:
+    - elixir-analytics-runner
     - web
     - terminal
     - file
@@ -46,6 +51,7 @@ platform_toolsets:
     - code_execution
     - cronjob
   slack:
+    - elixir-analytics-runner
     - web
     - terminal
     - file

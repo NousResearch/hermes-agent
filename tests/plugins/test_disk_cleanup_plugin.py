@@ -453,3 +453,54 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+    def test_profile_plugins_load_from_distribution_owned_namespace(self, _isolate_env):
+        """Profile-distributed plugins load from profile_plugins, not user plugins."""
+        import yaml
+
+        profile_plugin = _isolate_env / "profile_plugins" / "analytics-runner"
+        profile_plugin.mkdir(parents=True)
+        (profile_plugin / "plugin.yaml").write_text(
+            "\n".join(
+                [
+                    "name: analytics-runner",
+                    "version: 0.1.0",
+                    "description: Profile-owned analytics runner.",
+                    "provides_tools:",
+                    "  - profile_runner_ping",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (profile_plugin / "__init__.py").write_text(
+            "\n".join(
+                [
+                    "def register(ctx):",
+                    "    ctx.register_tool(",
+                    "        name='profile_runner_ping',",
+                    "        toolset='analytics-runner',",
+                    "        schema={",
+                    "            'name': 'profile_runner_ping',",
+                    "            'description': 'Ping profile plugin.',",
+                    "            'parameters': {'type': 'object', 'properties': {}},",
+                    "        },",
+                    "        handler=lambda args, **kwargs: '{\"ok\": true}',",
+                    "    )",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (_isolate_env / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["analytics-runner"]}}),
+            encoding="utf-8",
+        )
+
+        from hermes_cli import plugins as pmod
+
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["analytics-runner"]
+        assert loaded.enabled
+        assert loaded.manifest.source == "profile"
+        assert "profile_runner_ping" in loaded.tools_registered

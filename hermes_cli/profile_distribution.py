@@ -45,12 +45,13 @@ Manifest format (``distribution.yaml`` at the profile root)::
     distribution_owned:      # optional; sensible defaults apply
       - SOUL.md
       - skills/
+      - profile_plugins/
       - cron/
       - mcp.json
 
 Update semantics:
 
-* Distribution-owned paths (SOUL.md, mcp.json, skills/, cron/,
+* Distribution-owned paths (SOUL.md, mcp.json, skills/, profile_plugins/, cron/,
   distribution.yaml) are replaced from the new source.
 * ``config.yaml`` is distribution-owned but preserved on update unless
   ``--force-config`` is passed (user overrides typically live here).
@@ -89,6 +90,7 @@ DEFAULT_DIST_OWNED: Tuple[str, ...] = (
     "config.yaml",
     "mcp.json",
     "skills",
+    "profile_plugins",
     "cron",
     MANIFEST_FILENAME,
 )

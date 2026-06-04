@@ -253,3 +253,43 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+
+class TestHermesAnalyticsToolset:
+    def test_keeps_analytics_runtime_and_self_improvement_tools(self):
+        tools = set(resolve_toolset("hermes-analytics"))
+
+        assert {
+            "terminal",
+            "process",
+            "execute_code",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+            "skills_list",
+            "skill_view",
+            "skill_manage",
+            "memory",
+            "session_search",
+            "clarify",
+            "cronjob",
+            "send_message",
+        }.issubset(tools)
+
+    def test_excludes_unrelated_general_agent_fluff(self):
+        tools = set(resolve_toolset("hermes-analytics"))
+
+        assert {
+            "image_generate",
+            "vision_analyze",
+            "text_to_speech",
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "ha_list_entities",
+            "ha_call_service",
+            "kanban_create",
+            "delegate_task",
+            "computer_use",
+        }.isdisjoint(tools)

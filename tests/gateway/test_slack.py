@@ -10,6 +10,7 @@ We mock the slack modules at import time to avoid collection errors.
 
 import asyncio
 import contextlib
+import logging
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch, call
@@ -453,10 +454,11 @@ class TestSlackSocketWatchdog:
                 await adapter.disconnect()
 
     @pytest.mark.asyncio
-    async def test_watchdog_reconnects_when_transport_reports_disconnected(self):
+    async def test_watchdog_reconnects_when_transport_reports_disconnected(self, caplog):
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
         adapter._socket_watchdog_interval_s = 0.01
         factory, instances = self._make_fake_handler_factory()
+        caplog.set_level(logging.INFO, logger="gateway.platforms.slack")
 
         with contextlib.ExitStack() as stack:
             for p in self._patch_stack(factory):
@@ -476,6 +478,13 @@ class TestSlackSocketWatchdog:
                 assert len(instances) >= 2, "watchdog did not heal dead transport"
                 assert instances[0].closed is True
                 assert adapter._handler is instances[-1]
+
+                for _ in range(40):
+                    if "Socket Mode connected (recovered)" in caplog.text:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert "Socket Mode connected (recovered)" in caplog.text
             finally:
                 await adapter.disconnect()
 

@@ -369,6 +369,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        self._socket_transport_was_unhealthy = False
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -443,6 +444,7 @@ class SlackAdapter(BasePlatformAdapter):
                 return
 
             logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
+            self._socket_transport_was_unhealthy = True
             await self._stop_socket_mode_handler()
 
             try:
@@ -475,6 +477,9 @@ class SlackAdapter(BasePlatformAdapter):
                     continue
 
                 connected = await self._socket_transport_connected()
+                if connected is True and self._socket_transport_was_unhealthy:
+                    self._socket_transport_was_unhealthy = False
+                    logger.info("[Slack] Socket Mode connected (recovered)")
                 if connected is False:
                     await self._restart_socket_mode("transport disconnected")
             except asyncio.CancelledError:

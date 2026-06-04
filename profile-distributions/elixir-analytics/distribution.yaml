@@ -36,7 +36,9 @@ env_requires:
 distribution_owned:
   - SOUL.md
   - ROADMAP.md
+  - RELEASE_PACKAGING.md
   - config.yaml
   - skills
+  - profile_plugins
   - distribution.yaml
   - README.md

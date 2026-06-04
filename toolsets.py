@@ -82,6 +82,24 @@ _HERMES_WEBHOOK_SAFE_TOOLS = [
     "clarify",
 ]
 
+# Narrow default surface for specialized analytics agents.  This keeps the
+# self-improvement loop (skills, memory, session search, code/file tools,
+# scheduled reviews, Slack messaging) while excluding unrelated media,
+# desktop automation, smart-home, browser, kanban, and delegation tools.
+_HERMES_ANALYTICS_AGENT_TOOLS = [
+    # Research
+    "web_search", "web_extract",
+    # Runtime/query execution
+    "terminal", "process", "execute_code",
+    # Source-of-truth maintenance
+    "read_file", "write_file", "patch", "search_files",
+    # Skills and self-improvement
+    "skills_list", "skill_view", "skill_manage",
+    "todo", "memory", "session_search", "clarify",
+    # Scheduled reviews / Slack updates
+    "cronjob", "send_message",
+]
+
 
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
@@ -411,6 +429,16 @@ TOOLSETS = {
         "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
+    },
+
+    "hermes-analytics": {
+        "description": (
+            "Specialized analytics agent toolset — Slack-first analysis, "
+            "read-only runtime execution, source maintenance, memory, "
+            "skills, and scheduled reviews without media or desktop fluff"
+        ),
+        "tools": _HERMES_ANALYTICS_AGENT_TOOLS,
+        "includes": [],
     },
 
     "hermes-telegram": {

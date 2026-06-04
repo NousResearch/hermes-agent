@@ -2233,19 +2233,35 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model/provider override: if the task specifies its own
+            # model or provider, re-resolve credentials for that task so the
+            # correct base_url / api_key / api_mode are derived from the
+            # per-task provider (not the global delegation config).
+            if t.get("model") or t.get("provider"):
+                task_cfg = dict(cfg)
+                if t.get("model"):
+                    task_cfg["model"] = t["model"]
+                if t.get("provider"):
+                    task_cfg["provider"] = t["provider"]
+                try:
+                    task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+                except ValueError as exc:
+                    return tool_error(str(exc))
+            else:
+                task_creds = creds
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -3102,6 +3118,28 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Model override for this specific task "
+                                "(e.g. 'claude-haiku-4-5', 'claude-opus-4-5', "
+                                "'minimaxai/minimax-m2.7'). When omitted, inherits "
+                                "the parent config or top-level delegation.model. "
+                                "Use lighter models (haiku) for simple tool tasks; "
+                                "heavier models (opus) for complex reasoning."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Provider override for this specific task "
+                                "(e.g. 'anthropic', 'nvidia', 'openrouter'). "
+                                "When set alongside 'model', full credentials are "
+                                "resolved via the provider system — base_url, "
+                                "api_key, and api_mode are derived automatically. "
+                                "When omitted, inherits the parent provider."
+                            ),
                         },
                     },
                     "required": ["goal"],

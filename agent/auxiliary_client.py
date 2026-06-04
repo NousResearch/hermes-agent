@@ -8,7 +8,7 @@ Resolution order for text tasks (auto mode):
   1. User's main provider + main model (used regardless of provider type —
      aggregators, direct API-key providers, native Anthropic, Codex, etc.)
   2. OpenRouter  (OPENROUTER_API_KEY)
-  3. Nous Portal (~/.hermes/auth.json active provider)
+  3. Nous Portal (Hermes auth store active provider)
   4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
   5. Native Anthropic
   6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
@@ -103,7 +103,6 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from agent.process_bootstrap import build_keepalive_http_client
-from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -567,8 +566,6 @@ _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_AUTH_JSON_PATH = get_hermes_home() / "auth.json"
-
 # Codex OAuth endpoint used when a caller explicitly requests
 # provider="openai-codex".  There is deliberately no hardcoded default
 # model: the set of models OpenAI accepts on this endpoint for
@@ -1385,7 +1382,7 @@ def _maybe_wrap_anthropic(
 
 
 def _read_nous_auth() -> Optional[dict]:
-    """Read and validate ~/.hermes/auth.json for an active Nous provider.
+    """Read and validate the Hermes auth store for an active Nous provider.
 
     Returns the provider state dict if Nous is active with tokens,
     otherwise None.
@@ -1407,9 +1404,12 @@ def _read_nous_auth() -> Optional[dict]:
         }
 
     try:
-        if not _AUTH_JSON_PATH.is_file():
+        from hermes_constants import get_hermes_oauth_file
+
+        auth_json_path = get_hermes_oauth_file()
+        if not auth_json_path.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text())
+        data = json.loads(auth_json_path.read_text())
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})

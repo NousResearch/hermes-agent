@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
-from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
+from hermes_constants import OPENROUTER_BASE_URL, get_hermes_oauth_file, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
@@ -875,7 +875,7 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 # =============================================================================
 
 def _auth_file_path() -> Path:
-    path = get_hermes_home() / "auth.json"
+    path = get_hermes_oauth_file()
     # Seat belt: if pytest is running and HERMES_HOME resolves to the real
     # user's auth store, refuse rather than silently corrupt it. This catches
     # tests that forgot to monkeypatch HERMES_HOME, tests invoked without the
@@ -906,6 +906,8 @@ def _global_auth_file_path() -> Optional[Path]:
 
     See issue #18594 follow-up (credential_pool shadowing).
     """
+    if os.environ.get("HERMES_OAUTH_FILE", "").strip():
+        return None
     try:
         from hermes_constants import get_default_hermes_root
         global_root = get_default_hermes_root()

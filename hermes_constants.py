@@ -110,6 +110,19 @@ def get_hermes_home() -> Path:
     return _get_platform_default_hermes_home()
 
 
+def get_hermes_oauth_file() -> Path:
+    """Return the Hermes OAuth credential store path.
+
+    ``HERMES_OAUTH_FILE`` is a documented deployment override for the shared
+    auth store.  Empty values are ignored so an accidentally blank env var keeps
+    the standard ``$HERMES_HOME/auth.json`` behavior.
+    """
+    override = os.environ.get("HERMES_OAUTH_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return get_hermes_home() / "auth.json"
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 

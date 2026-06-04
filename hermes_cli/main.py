@@ -782,8 +782,9 @@ def _relative_time(ts) -> str:
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home, load_config
+    from hermes_cli.config import get_env_path, load_config
     from hermes_cli.auth import get_auth_status
+    from hermes_constants import get_hermes_oauth_file
 
     # Determine whether Hermes itself has been explicitly configured (model
     # in config that isn't the hardcoded default). Used below to gate external
@@ -850,7 +851,7 @@ def _has_any_provider_configured() -> bool:
         pass
 
     # Check for Nous Portal OAuth credentials
-    auth_file = get_hermes_home() / "auth.json"
+    auth_file = get_hermes_oauth_file()
     if auth_file.exists():
         try:
             import json

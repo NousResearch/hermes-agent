@@ -58,6 +58,32 @@ class _FakeAnthropicStream:
         return self._final_message
 
 
+def test_read_nous_auth_uses_hermes_oauth_file(tmp_path, monkeypatch):
+    from agent.auxiliary_client import _read_nous_auth
+
+    hermes_home = tmp_path / "hermes"
+    shared_auth = tmp_path / "shared" / "auth.json"
+    shared_auth.parent.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_OAUTH_FILE", str(shared_auth))
+    shared_auth.write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "nous": {
+                "access_token": "shared-nous-token",
+                "inference_base_url": "https://inference.example.com/v1",
+            },
+        },
+    }))
+
+    auth_state = _read_nous_auth()
+
+    assert auth_state is not None
+    assert auth_state["access_token"] == "shared-nous-token"
+    assert not (hermes_home / "auth.json").exists()
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""

@@ -1,5 +1,6 @@
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -37,9 +38,10 @@ function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
 }) {
-  const label = FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+  const { t } = useTranslation()
+  const label = t(`settings.fields.${schemaKey}`, { defaultValue: FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey) })
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  const rawDescription = (FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '').trim()
+  const rawDescription = (t(`settings.field_desc.${schemaKey}`, { defaultValue: FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '' }) || '').trim()
   const normalizedDesc = normalize(rawDescription)
 
   const description =

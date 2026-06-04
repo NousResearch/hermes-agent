@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import i18next from 'i18next'
 
 type BrowserAudioContext = typeof AudioContext
 
@@ -27,26 +28,26 @@ function micError(error: unknown): Error {
   const name = error instanceof DOMException ? error.name : ''
 
   if (name === 'NotAllowedError' || name === 'SecurityError') {
-    return new Error('Microphone permission was denied.')
+    return new Error(i18next.t('chat.mic_denied'))
   }
 
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-    return new Error('No microphone was found.')
+    return new Error(i18next.t('chat.mic_not_found'))
   }
 
   if (name === 'NotReadableError' || name === 'TrackStartError') {
-    return new Error('Microphone is already in use by another app.')
+    return new Error(i18next.t('chat.mic_in_use'))
   }
 
   if (name === 'OverconstrainedError') {
-    return new Error('Microphone constraints are not supported by this device.')
+    return new Error(i18next.t('chat.mic_constraints_unsupported'))
   }
 
   if (error instanceof Error) {
     return error
   }
 
-  return new Error('Could not start microphone recording.')
+  return new Error(i18next.t('chat.mic_start_failed'))
 }
 
 export function useMicRecorder(): { handle: MicRecorderHandle; level: number; recording: boolean } {
@@ -158,13 +159,13 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
     }
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      throw new Error('This runtime does not support microphone recording.')
+      throw new Error(i18next.t('chat.mic_not_supported'))
     }
 
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
 
     if (permitted === false) {
-      throw new Error('Microphone access denied.')
+      throw new Error(i18next.t('chat.mic_access_denied'))
     }
 
     let stream: MediaStream

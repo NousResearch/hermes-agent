@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
@@ -53,6 +54,7 @@ export function useStatusbarItems({
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
+  const { t } = useTranslation()
   const busy = useStore($busy)
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
@@ -109,13 +111,13 @@ export function useStatusbarItems({
 
   const gatewayDetail = gatewayOpen
     ? inferenceStatus?.ready
-      ? 'ready'
+      ? t('statusbar.ready')
       : inferenceStatus
-        ? 'needs setup'
-        : 'checking'
+        ? t('statusbar.needs_setup')
+        : t('statusbar.checking')
     : gatewayConnecting
-      ? 'connecting'
-      : 'offline'
+      ? t('statusbar.connecting')
+      : t('statusbar.offline')
 
   const gatewayClassName = inferenceReady
     ? undefined
@@ -133,13 +135,13 @@ export function useStatusbarItems({
 
     const label = applying
       ? updateApply.stage === 'restart'
-        ? `${base} · restart`
-        : `${base} · update`
+        ? `${base} · ${t('statusbar.restart')}`
+        : `${base} · ${t('statusbar.update')}`
       : `${base}${behindHint}`
 
     const tooltip = [
-      applying ? updateApply.message || 'Update in progress' : null,
-      !applying && behind > 0 && `${behind} commit${behind === 1 ? '' : 's'} behind ${updateStatus?.branch ?? '…'}`,
+      applying ? updateApply.message || t('statusbar.update_in_progress') : null,
+      !applying && behind > 0 && t('statusbar.commits_behind', { count: behind, plural: behind === 1 ? '' : 's', branch: updateStatus?.branch ?? '…' }),
       appVersion && `Hermes Desktop v${appVersion}`,
       sha && `commit ${sha}`,
       updateStatus?.branch && `branch ${updateStatus.branch}`
@@ -175,7 +177,7 @@ export function useStatusbarItems({
         icon: <Command className="size-3.5" />,
         id: 'command-center',
         onSelect: toggleCommandCenter,
-        title: commandCenterOpen ? 'Close Command Center' : 'Open Command Center',
+        title: commandCenterOpen ? t('statusbar.close_command_center') : t('statusbar.open_command_center'),
         variant: 'action'
       },
       {
@@ -183,10 +185,10 @@ export function useStatusbarItems({
         detail: gatewayDetail,
         icon: inferenceReady ? <Activity className="size-3" /> : <AlertCircle className="size-3" />,
         id: 'gateway-health',
-        label: 'Gateway',
+        label: t('statusbar.gateway'),
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
-        title: inferenceStatus?.reason || 'Hermes inference gateway status',
+        title: inferenceStatus?.reason || t('statusbar.gateway_status'),
         variant: 'menu'
       },
       {
@@ -196,11 +198,11 @@ export function useStatusbarItems({
         ),
         detail:
           subagentsRunning > 0
-            ? `${subagentsRunning} subagent${subagentsRunning === 1 ? '' : 's'}`
+            ? `${subagentsRunning} ${t('statusbar.agents')}`
             : bgFailed > 0
-              ? `${bgFailed} failed`
+              ? `${bgFailed} ${t('statusbar.failed')}`
               : bgRunning > 0
-                ? `${bgRunning} running`
+                ? `${bgRunning} ${t('statusbar.running')}`
                 : undefined,
         icon:
           bgFailed > 0 ? (
@@ -211,16 +213,16 @@ export function useStatusbarItems({
             <Sparkles className="size-3" />
           ),
         id: 'agents',
-        label: 'Agents',
+        label: t('statusbar.agents'),
         onSelect: openAgents,
-        title: agentsOpen ? 'Close agents' : 'Open agents',
+        title: agentsOpen ? t('statusbar.close_agents') : t('statusbar.open_agents'),
         variant: 'action'
       },
       {
         icon: <Clock className="size-3" />,
         id: 'cron',
-        label: 'Cron',
-        title: 'Open cron jobs',
+        label: t('statusbar.cron'),
+        title: t('statusbar.open_cron_jobs'),
         to: CRON_ROUTE,
         variant: 'action'
       }
@@ -248,8 +250,8 @@ export function useStatusbarItems({
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
-        label: 'Running',
-        title: 'Current turn elapsed',
+        label: t('statusbar.running'),
+        title: t('statusbar.current_turn_elapsed'),
         variant: 'text'
       },
       {
@@ -257,24 +259,24 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: 'Context usage',
+        title: t('statusbar.context_usage'),
         variant: 'text'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
-        label: 'Session',
-        title: 'Runtime session elapsed',
+        label: t('statusbar.session'),
+        title: t('statusbar.session_elapsed'),
         variant: 'text'
       },
       {
         detail: currentProvider || '',
         icon: <Cpu className="size-3" />,
         id: 'model-summary',
-        label: currentModel || 'No model selected',
+        label: currentModel || t('statusbar.no_model_selected'),
         onSelect: () => setModelPickerOpen(true),
-        title: currentProvider ? `Switch model · ${currentProvider}: ${currentModel || ''}` : 'Open model picker',
+        title: currentProvider ? `${t('statusbar.switch_model')} · ${currentProvider}: ${currentModel || ''}` : t('statusbar.open_model_picker'),
         variant: 'action'
       },
       versionItem

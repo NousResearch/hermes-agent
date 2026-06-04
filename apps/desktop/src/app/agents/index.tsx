@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -75,6 +76,7 @@ interface AgentsViewProps {
 }
 
 export function AgentsView({ onClose }: AgentsViewProps) {
+  const { t } = useTranslation()
   const activeSessionId = useStore($activeSessionId)
   const subagentsBySession = useStore($subagentsBySession)
 
@@ -87,14 +89,14 @@ export function AgentsView({ onClose }: AgentsViewProps) {
 
   return (
     <OverlayView
-      closeLabel="Close agents"
+      closeLabel={t('agents.close')}
       contentClassName="px-5 pt-5 pb-4 sm:px-6"
       onClose={onClose}
       rootClassName="mx-auto max-w-3xl"
     >
       <header className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-foreground">Spawn tree</h2>
-        <p className="text-xs text-muted-foreground/80">Live subagent activity for the current turn.</p>
+        <h2 className="text-sm font-semibold text-foreground">{t('agents.spawn_tree')}</h2>
+        <p className="text-xs text-muted-foreground/80">{t('agents.spawn_tree_description')}</p>
       </header>
       <SubagentTree tree={tree} />
     </OverlayView>
@@ -185,6 +187,7 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
 }
 
 function SubagentTree({ tree }: { tree: SubagentNode[] }) {
+  const { t } = useTranslation()
   const flat = useMemo(() => flatten(tree), [tree])
   const groups = useMemo(() => groupDelegations(tree), [tree])
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -210,20 +213,20 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
     return (
       <div className="grid place-items-center gap-3 py-12 text-center">
         <Sparkles className="size-6 text-muted-foreground/60" />
-        <p className="text-sm font-medium text-foreground/90">No live subagents</p>
+        <p className="text-sm font-medium text-foreground/90">{t('agents.no_live_subagents')}</p>
         <p className="max-w-md text-xs leading-relaxed text-muted-foreground/75">
-          When a turn delegates work, child agents stream their progress here.
+          {t('agents.no_live_subagents_description')}
         </p>
       </div>
     )
   }
 
   const summary = [
-    `${flat.length} ${flat.length === 1 ? 'agent' : 'agents'}`,
-    active > 0 ? `${active} active` : '',
-    failed > 0 ? `${failed} failed` : '',
-    tools > 0 ? `${tools} tools` : '',
-    files > 0 ? `${files} files` : '',
+    `${flat.length} ${flat.length === 1 ? t('agents.agent') : t('agents.agents')}`,
+    active > 0 ? `${active} ${t('agents.active')}` : '',
+    failed > 0 ? `${failed} ${t('agents.failed')}` : '',
+    tools > 0 ? `${tools} ${t('agents.tools')}` : '',
+    files > 0 ? `${files} ${t('agents.files')}` : '',
     tokens > 0 ? fmtTokens(tokens) : '',
     cost > 0 ? `$${cost.toFixed(2)}` : ''
   ].filter(Boolean)
@@ -243,6 +246,8 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
 }
 
 function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) {
+  const { t } = useTranslation()
+
   if (group.nodes.length === 1 && group.taskCount <= 1) {
     return <SubagentRow node={group.nodes[0]!} nowMs={nowMs} />
   }
@@ -252,8 +257,8 @@ function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) 
   return (
     <section className="grid min-w-0 gap-3">
       <p className="text-[0.66rem] font-medium uppercase tracking-wider text-muted-foreground/70">
-        {group.label} <span className="text-muted-foreground/50">·</span> {group.nodes.length} workers
-        {activeWorkers > 0 ? <span className="text-primary/85"> · {activeWorkers} active</span> : null}
+        {group.label} <span className="text-muted-foreground/50">·</span> {group.nodes.length} {t('agents.workers')}
+        {activeWorkers > 0 ? <span className="text-primary/85"> · {activeWorkers} {t('agents.active')}</span> : null}
       </p>
       <div className="grid min-w-0 gap-4">
         {group.nodes.map(node => (
@@ -297,6 +302,7 @@ function StreamLine({
 }
 
 function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
+  const { t } = useTranslation()
   const running = node.status === 'running' || node.status === 'queued'
   const elapsed = useElapsedSeconds(running, `subagent:${node.id}`)
 
@@ -318,9 +324,9 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
   const subtitle = [
     node.model,
     fmtDuration(durationSeconds),
-    node.toolCount ? `${node.toolCount} tools` : '',
+    node.toolCount ? `${node.toolCount} ${t('agents.tools')}` : '',
     fmtTokens((node.inputTokens ?? 0) + (node.outputTokens ?? 0)),
-    `updated ${fmtAge(node.updatedAt, nowMs)}`
+    `${t('agents.updated')} ${fmtAge(node.updatedAt, nowMs)}`
   ].filter(Boolean)
 
   return (
@@ -366,7 +372,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
 
       {open && fileLines.length > 0 ? (
         <div className="grid min-w-0 gap-0.5 pl-6">
-          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">Files</p>
+          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">{t('agents.files')}</p>
           {fileLines.slice(0, 8).map(line => (
             <p className="wrap-break-word font-mono text-[0.67rem] leading-relaxed text-muted-foreground/80" key={line}>
               {line}
@@ -374,7 +380,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
           ))}
           {fileLines.length > 8 ? (
             <p className="font-mono text-[0.67rem] leading-relaxed text-muted-foreground/65">
-              +{fileLines.length - 8} more files
+              +{fileLines.length - 8} {t('agents.more_files')}
             </p>
           ) : null}
         </div>

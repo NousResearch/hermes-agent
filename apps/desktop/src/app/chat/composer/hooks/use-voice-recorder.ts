@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import i18next from 'i18next'
 
 import { notify, notifyError } from '@/store/notifications'
 
@@ -67,7 +68,7 @@ export function useVoiceRecorder({
         onTranscript(transcript)
       }
     } catch (error) {
-      notifyError(error, 'Voice transcription failed')
+      notifyError(error, i18next.t('chat.voice_transcription_failed'))
     } finally {
       setVoiceStatus('idle')
       focusInput()
@@ -82,7 +83,7 @@ export function useVoiceRecorder({
     }
 
     try {
-      await handle.start({ onError: error => notifyError(error, 'Voice recording failed') })
+      await handle.start({ onError: error => notifyError(error, i18next.t('chat.voice_recording_failed')) })
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')
@@ -91,7 +92,7 @@ export function useVoiceRecorder({
       timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
     } catch (error) {
       setVoiceStatus('idle')
-      notifyError(error, 'Voice recording failed')
+      notifyError(error, i18next.t('chat.voice_recording_failed'))
     }
   }
 

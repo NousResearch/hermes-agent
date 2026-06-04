@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import i18next from 'i18next'
 
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notify, notifyError } from '@/store/notifications'
@@ -168,7 +169,7 @@ export function useVoiceConversation({
           await onSubmit(transcript)
           setStatus('thinking')
         } catch (error) {
-          notifyError(error, 'Voice transcription failed')
+          notifyError(error, i18next.t('chat.voice_transcription_failed'))
 
           if (enabledRef.current && !mutedRef.current && !busyRef.current) {
             pendingStartRef.current = true
@@ -201,7 +202,7 @@ export function useVoiceConversation({
         silenceMs: 1_250,
         idleSilenceMs: 12_000,
         onError: error => {
-          notifyError(error, 'Microphone failed')
+          notifyError(error, i18next.t('chat.voice_mic_failed'))
           pendingStartRef.current = false
           onFatalError?.()
         },
@@ -210,7 +211,7 @@ export function useVoiceConversation({
       setStatus('listening')
       turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
     } catch (error) {
-      notifyError(error, 'Could not start voice session')
+      notifyError(error, i18next.t('chat.voice_session_failed'))
       pendingStartRef.current = false
       setStatus('idle')
       onFatalError?.()
@@ -223,7 +224,7 @@ export function useVoiceConversation({
     try {
       await playSpeechText(text, { source: 'voice-conversation' })
     } catch (error) {
-      notifyError(error, 'Voice playback failed')
+      notifyError(error, i18next.t('chat.voice_playback_failed'))
     } finally {
       if (enabledRef.current) {
         pendingStartRef.current = true

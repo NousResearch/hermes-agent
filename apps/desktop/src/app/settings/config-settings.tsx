@@ -89,7 +89,7 @@ function ConfigField({
   if (schema.type === 'number') {
     return row(
       <Input
-        className={cn('h-8', CONTROL_TEXT)}
+        className={CONTROL_TEXT}
         onChange={e => {
           const raw = e.target.value
           const n = raw === '' ? 0 : Number(raw)
@@ -108,7 +108,7 @@ function ConfigField({
   if (schema.type === 'list') {
     return row(
       <Input
-        className={cn('h-8', CONTROL_TEXT)}
+        className={CONTROL_TEXT}
         onChange={e =>
           onChange(
             e.target.value
@@ -154,7 +154,7 @@ function ConfigField({
       />
     ) : (
       <Input
-        className={cn('h-8', CONTROL_TEXT)}
+        className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
         placeholder="Not set"
         value={String(value ?? '')}

@@ -37,7 +37,7 @@ export function OverlaySearchInput({
       <Search className="pointer-events-none absolute left-3 top-1/2 z-1 size-3.5 -translate-y-1/2 text-muted-foreground/80" />
       <Input
         className={cn(
-          'relative z-0 h-8 rounded-lg py-2 pl-8 text-[length:var(--conversation-text-font-size)]',
+          'relative z-0 py-2 pl-8 text-[length:var(--conversation-text-font-size)]',
           hasTrailing || loading || value ? 'pr-16' : 'pr-8',
           inputClassName
         )}
@@ -71,7 +71,7 @@ export function PageSearchInput(props: OverlaySearchInputProps) {
     <OverlaySearchInput
       {...props}
       containerClassName={cn('mx-auto w-[min(36rem,calc(100%-2rem))] min-w-0', props.containerClassName)}
-      inputClassName={cn('h-8 rounded-lg py-2 pl-8', props.inputClassName)}
+      inputClassName={cn('py-2 pl-8', props.inputClassName)}
     />
   )
 }

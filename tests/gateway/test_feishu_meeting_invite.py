@@ -104,7 +104,6 @@ class TestMeetingInviteParsing(unittest.TestCase):
         self.assertEqual(parsed.meeting.id, "7646677832873577404")
         self.assertEqual(parsed.meeting.start_time_ms, 1780384522000)
         self.assertEqual(parsed.meeting.end_time_ms, 1780384522000)
-        self.assertEqual(parsed.inviter.id, "ou_390b35dca44816efc9afa812aaff3a69")
         self.assertEqual(parsed.inviter.open_id, "ou_390b35dca44816efc9afa812aaff3a69")
         self.assertEqual(parsed.inviter.user_id, "e65g874e")
         self.assertEqual(parsed.inviter.union_id, "on_e19a19e6ffafbd54fbb3c4d251d6fa19")
@@ -129,7 +128,7 @@ class TestMeetingInviteParsing(unittest.TestCase):
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.meeting.meeting_no, "884264377")
-        self.assertEqual(parsed.inviter.id, "ou_390b35dca44816efc9afa812aaff3a69")
+        self.assertEqual(parsed.inviter.open_id, "ou_390b35dca44816efc9afa812aaff3a69")
 
     def test_parse_requires_inviter(self):
         payload = _make_payload()

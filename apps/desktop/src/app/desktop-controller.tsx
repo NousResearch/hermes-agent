@@ -36,6 +36,7 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  hydratePinnedSessions,
   mergeSessionPage,
   sessionPinId,
   setAwaitingResponse,
@@ -245,7 +246,9 @@ export function DesktopController() {
         // pinned sessions that have aged off the most-recent page — otherwise
         // the pin "disappears until you refresh". mergeSessionPage keeps both.
         const keepIds = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
-        setSessions(prev => mergeSessionPage(prev, result.sessions, keepIds))
+        const merged = mergeSessionPage($sessions.get(), result.sessions, keepIds)
+        const withPins = await hydratePinnedSessions(merged, $pinnedSessionIds.get())
+        setSessions(withPins)
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
       }
     } finally {

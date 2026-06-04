@@ -4,6 +4,8 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistString, storedString } from '@/lib/storage'
+import { searchSessions } from '@/hermes'
+import { searchResultToSession } from '@/lib/session-search'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
@@ -70,6 +72,55 @@ export function mergeSessionPage(
   )
 
   return survivors.length ? [...survivors, ...incoming] : incoming
+}
+
+/** After cold boot `previous` is empty, so pinned ids in keepIds do not survive
+ *  mergeSessionPage. Re-fetch missing pin rows by id before building the sidebar. */
+export async function hydratePinnedSessions(
+  merged: SessionInfo[],
+  pinIds: Iterable<string>
+): Promise<SessionInfo[]> {
+  const pins = [...pinIds]
+
+  if (!pins.length) {
+    return merged
+  }
+
+  const index = new Map<string, SessionInfo>()
+
+  for (const session of merged) {
+    index.set(session.id, session)
+
+    if (session._lineage_root_id) {
+      index.set(session._lineage_root_id, session)
+    }
+  }
+
+  const missing = pins.filter(id => !index.has(id))
+
+  if (!missing.length) {
+    return merged
+  }
+
+  const hydrated: SessionInfo[] = []
+
+  await Promise.all(
+    missing.map(async pinId => {
+      try {
+        const res = await searchSessions(pinId)
+        const hit =
+          res.results.find(r => r.session_id === pinId || r.lineage_root === pinId) ?? res.results[0]
+
+        if (hit) {
+          hydrated.push(searchResultToSession(hit))
+        }
+      } catch {
+        // Session deleted — pin id will be ignored by the sidebar.
+      }
+    })
+  )
+
+  return hydrated.length ? mergeSessionPage(merged, hydrated, pins) : merged
 }
 
 export const $connection = atom<HermesConnection | null>(null)

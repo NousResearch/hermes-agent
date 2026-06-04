@@ -1751,6 +1751,46 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say, body):
                 await self._handle_assistant_thread_lifecycle_event(event, body)
 
+            # Catch-all no-op ack for any other subscribed event type that
+            # Hermes has no listener for (e.g. user_change,
+            # user_huddle_changed, member_joined_channel, channel_archive,
+            # pin_added, etc.).
+            #
+            # Two reasons this must exist (issues #6572 and the Event
+            # Subscriptions auto-disable failure mode):
+            #   1. Correctness at scale: without a matching listener,
+            #      slack-bolt returns HTTP 404 for every unhandled event
+            #      envelope and never sends the Socket Mode ack. When the app
+            #      is subscribed to high-volume events (user_change fires on
+            #      every presence/status change for the whole org), the flood
+            #      of un-acked 404s pushes Slack's failure rate past its
+            #      95%/60-min threshold and Slack auto-disables the app's
+            #      Event Subscriptions — silently killing ALL inbound
+            #      delivery until manually re-enabled.
+            #   2. Noise: each unhandled envelope also logs a slack_bolt
+            #      "Unhandled request" WARNING, flooding gateway logs in
+            #      busy channels.
+            #
+            # Registered AFTER every named handler: bolt dispatches to the
+            # first matching listener, so the named handlers above always
+            # win and this only fires for truly unhandled types. The
+            # envelope is acked with 200, keeping the failure rate near 0%
+            # regardless of which events the Slack app manifest subscribes
+            # to. A debug line preserves visibility into unknown event
+            # types without per-message WARNING noise.
+            @self._app.event(re.compile(r".*"))
+            async def handle_unhandled_event(event, body, logger):
+                logger.debug(
+                    "[Slack] Ignoring unhandled event type=%s (no listener "
+                    "registered; subscribed events not handled by Hermes can "
+                    "be removed from the Slack app manifest via "
+                    "`hermes slack manifest`)",
+                    (event or {}).get(
+                        "type",
+                        (body or {}).get("event", {}).get("type", "unknown"),
+                    ),
+                )
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack

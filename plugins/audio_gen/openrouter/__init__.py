@@ -217,8 +217,8 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
             "name": "OpenRouter Audio",
             "badge": "paid",
             "tag": (
-                "One OpenRouter key for Lyria 3 music + GPT-Audio — "
-                "text-to-music with optional lyrics; uses OPENROUTER_API_KEY"
+                "One OpenRouter key for Google Lyria 3 music generation "
+                "(text-to-music with optional lyrics); uses OPENROUTER_API_KEY"
             ),
             "env_vars": [
                 {
@@ -271,18 +271,38 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
             )
 
         resolved_model = (model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        # Reject models this backend doesn't serve. The catalog is scoped to
+        # the Lyria music family; openai/gpt-audio* require audio.voice and
+        # belong to text_to_speech, not audio generation. Honour the tool
+        # schema's promise that unknown models are rejected.
+        if not resolved_model.lower().startswith(_AUDIO_GEN_MODEL_PREFIXES):
+            return error_response(
+                error=(
+                    f"Model '{resolved_model}' is not an audio-generation model "
+                    f"for this backend. Use a Lyria model (e.g. {DEFAULT_MODEL}); "
+                    f"gpt-audio models are speech models — use text_to_speech."
+                ),
+                error_type="unsupported_model",
+                provider="openrouter", model=resolved_model, prompt=prompt,
+            )
         fmt = _clamp_format(audio_format)
+
+        # Clamp duration to the advertised range (matches video_gen's
+        # provider-side clamping; the tool layer does only soft validation).
+        clamped_duration: Optional[int] = None
+        if duration is not None:
+            try:
+                clamped_duration = max(1, min(int(duration), 60))
+            except (TypeError, ValueError):
+                clamped_duration = None
 
         # Build the user message. Lyrics ride along in the prompt text so
         # Lyria's song mode picks them up; instrumental models ignore them.
         user_content = prompt
         if lyrics:
             user_content = f"{prompt}\n\nLyrics:\n{lyrics.strip()}"
-        if duration:
-            try:
-                user_content = f"{user_content}\n\nTarget duration: ~{int(duration)} seconds."
-            except (TypeError, ValueError):
-                pass
+        if clamped_duration:
+            user_content = f"{user_content}\n\nTarget duration: ~{clamped_duration} seconds."
 
         # OpenRouter audio-output models (Lyria 3, etc.) require BOTH:
         #   * modalities == ["text", "audio"]  (NOT ["audio"] — rejected)
@@ -303,6 +323,8 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
         audio_parts: List[str] = []
         transcript_parts: List[str] = []
         usage: Optional[Dict[str, Any]] = None
+        saw_done = False
+        stream_error: Optional[str] = None
         try:
             with httpx.stream(
                 "POST",
@@ -311,7 +333,7 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
                 json=payload,
                 timeout=DEFAULT_TIMEOUT_SECONDS,
             ) as resp:
-                if resp.status_code >= 400:
+                if not 200 <= resp.status_code < 300:
                     detail = ""
                     try:
                         detail = resp.read().decode("utf-8", "replace")[:500]
@@ -323,15 +345,20 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
                         provider="openrouter", model=resolved_model, prompt=prompt,
                     )
                 for line in resp.iter_lines():
-                    if not line or not line.startswith("data: "):
+                    if not line or not line.startswith("data:"):
                         continue
-                    data = line[6:]
-                    if data.strip() == "[DONE]":
+                    data = line[5:].lstrip()
+                    if data == "[DONE]":
+                        saw_done = True
                         break
                     try:
                         chunk = json.loads(data)
                     except (ValueError, TypeError):
                         continue
+                    # Streaming APIs can emit an error object inside a 200.
+                    if isinstance(chunk.get("error"), dict):
+                        stream_error = str(chunk["error"].get("message") or chunk["error"])
+                        break
                     choices = chunk.get("choices") or []
                     delta = choices[0].get("delta") if choices else None
                     aud = delta.get("audio") if isinstance(delta, dict) else None
@@ -342,10 +369,29 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
                             transcript_parts.append(aud["transcript"])
                     if isinstance(chunk.get("usage"), dict):
                         usage = chunk["usage"]
+        except httpx.TimeoutException as exc:
+            return error_response(
+                error=f"OpenRouter audio request timed out: {exc}",
+                error_type="timeout",
+                provider="openrouter", model=resolved_model, prompt=prompt,
+            )
+        except httpx.HTTPError as exc:
+            return error_response(
+                error=f"OpenRouter audio network error: {exc}",
+                error_type="network_error",
+                provider="openrouter", model=resolved_model, prompt=prompt,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("OpenRouter audio gen unexpected failure: %s", exc, exc_info=True)
             return error_response(
                 error=f"OpenRouter audio generation failed: {exc}",
+                error_type="api_error",
+                provider="openrouter", model=resolved_model, prompt=prompt,
+            )
+
+        if stream_error:
+            return error_response(
+                error=f"OpenRouter audio stream error: {stream_error}",
                 error_type="api_error",
                 provider="openrouter", model=resolved_model, prompt=prompt,
             )
@@ -359,6 +405,19 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
                     "pick a Lyria model via `hermes tools` → Audio Generation."
                 ),
                 error_type="empty_response",
+                provider="openrouter", model=resolved_model, prompt=prompt,
+            )
+
+        # Guard against a stream that delivered partial audio then dropped
+        # before signalling completion — saving that as success would yield a
+        # truncated/corrupt file.
+        if not saw_done:
+            return error_response(
+                error=(
+                    "OpenRouter audio stream ended before completion "
+                    "([DONE] not received); the audio may be truncated."
+                ),
+                error_type="incomplete_stream",
                 provider="openrouter", model=resolved_model, prompt=prompt,
             )
 
@@ -382,7 +441,7 @@ class OpenRouterAudioGenProvider(AudioGenProvider):
             audio=str(path),
             model=resolved_model,
             prompt=prompt,
-            duration=int(duration) if duration else 0,
+            duration=clamped_duration or 0,
             audio_format=fmt,
             provider="openrouter",
             extra=extra or None,

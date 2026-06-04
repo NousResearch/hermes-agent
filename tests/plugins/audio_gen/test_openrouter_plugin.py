@@ -280,3 +280,70 @@ def test_catalog_scoped_to_lyria(monkeypatch):
     ids = [m["id"] for m in _REAL_FETCH_MODELS()]
     assert ids == ["google/lyria-3-pro-preview"]
     ora._models_cache = None
+
+
+def test_rejects_non_lyria_model_override(monkeypatch):
+    """An explicit gpt-audio (or any non-Lyria) model must be rejected before
+    any HTTP call — gpt-audio needs audio.voice and belongs to TTS."""
+    from plugins.audio_gen import openrouter as ora
+
+    provider = _provider(monkeypatch)
+    called = {"stream": False}
+    monkeypatch.setattr(ora.httpx, "stream", lambda *a, **k: called.__setitem__("stream", True))
+
+    out = provider.generate("a song", model="openai/gpt-audio")
+    assert out["success"] is False
+    assert out["error_type"] == "unsupported_model"
+    assert called["stream"] is False  # never hit the network
+
+
+def test_incomplete_stream_without_done_is_error(monkeypatch):
+    """Partial audio with no [DONE] must NOT be saved as success."""
+    from plugins.audio_gen import openrouter as ora
+
+    provider = _provider(monkeypatch)
+    b64 = base64.b64encode(b"partial").decode()
+    lines = [_sse({"choices": [{"delta": {"audio": {"data": b64}}}]})]  # no [DONE]
+
+    saved = {"called": False}
+    monkeypatch.setattr(ora.httpx, "stream", lambda *a, **k: _FakeStream(lines=lines))
+    monkeypatch.setattr(ora, "save_b64_audio",
+                        lambda *a, **k: saved.__setitem__("called", True))
+
+    out = provider.generate("a song")
+    assert out["success"] is False
+    assert out["error_type"] == "incomplete_stream"
+    assert saved["called"] is False  # never wrote a truncated file
+
+
+def test_stream_error_object_surfaces(monkeypatch):
+    """An error object inside a 200 stream is surfaced, not swallowed."""
+    from plugins.audio_gen import openrouter as ora
+
+    provider = _provider(monkeypatch)
+    lines = [_sse({"error": {"message": "model overloaded"}}), "data: [DONE]"]
+    monkeypatch.setattr(ora.httpx, "stream", lambda *a, **k: _FakeStream(lines=lines))
+
+    out = provider.generate("a song")
+    assert out["success"] is False
+    assert "model overloaded" in out["error"]
+
+
+def test_duration_is_clamped(monkeypatch):
+    """Out-of-range duration is clamped to the advertised 1..60 range."""
+    from plugins.audio_gen import openrouter as ora
+
+    provider = _provider(monkeypatch)
+    b64 = base64.b64encode(b"x").decode()
+    lines = [_sse({"choices": [{"delta": {"audio": {"data": b64}}}]}), "data: [DONE]"]
+    monkeypatch.setattr(ora.httpx, "stream", lambda *a, **k: _FakeStream(lines=lines))
+    monkeypatch.setattr(ora, "save_b64_audio",
+                        lambda d, *, prefix="a", extension="mp3": __import__("pathlib").Path(f"/tmp/x.{extension}"))
+
+    out = provider.generate("a song", duration=999999)
+    assert out["success"] is True
+    assert out["duration"] == 60  # clamped to max
+
+    out2 = provider.generate("a song", duration=-5)
+    assert out2["success"] is True
+    assert out2["duration"] == 1  # clamped to min

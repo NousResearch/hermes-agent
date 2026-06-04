@@ -250,14 +250,24 @@ def _coerce_int(value: Any) -> Optional[int]:
         return None
 
 
+def _coerce_str(value: Any) -> str:
+    """Return a stripped string, or '' for non-string/None inputs.
+
+    Tool-call args are advisory — a caller may send a non-string despite the
+    schema. Coercing here keeps the handler from raising AttributeError on
+    ``.strip()`` and lets it return a clean tool_error instead.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _handle_audio_generate(args: Dict[str, Any], **_kw: Any) -> str:
-    prompt = (args.get("prompt") or "").strip()
+    prompt = _coerce_str(args.get("prompt"))
     duration = _coerce_int(args.get("duration"))
-    audio_format = (args.get("audio_format") or DEFAULT_AUDIO_FORMAT).strip() or DEFAULT_AUDIO_FORMAT
-    negative_prompt = (args.get("negative_prompt") or "").strip() or None
-    lyrics = (args.get("lyrics") or "").strip() or None
+    audio_format = _coerce_str(args.get("audio_format")) or DEFAULT_AUDIO_FORMAT
+    negative_prompt = _coerce_str(args.get("negative_prompt")) or None
+    lyrics = _coerce_str(args.get("lyrics")) or None
     seed = _coerce_int(args.get("seed"))
-    model_override = (args.get("model") or "").strip() or None
+    model_override = _coerce_str(args.get("model")) or None
 
     if not prompt:
         return tool_error("prompt is required for audio generation")

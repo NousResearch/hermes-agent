@@ -128,3 +128,22 @@ class TestUnifiedDispatch:
         props = AUDIO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "lyrics" in props
         assert "audio_format" in props
+
+    def test_non_string_prompt_is_clean_error(self):
+        """A non-string prompt (tool args are advisory) must return a clean
+        tool_error, not raise AttributeError."""
+        provider = _RecordingProvider("rec")
+        audio_gen_registry.register_provider(provider)
+        result = self._run({"prompt": 123})
+        assert "error" in result
+        assert "prompt" in result["error"].lower()
+
+    def test_non_string_optional_args_coerced(self):
+        """Non-string optional args don't crash; they're treated as absent."""
+        provider = _RecordingProvider("rec")
+        audio_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a song", "lyrics": 5, "model": 7})
+        assert result["success"] is True
+        # bogus non-string overrides were dropped, not forwarded
+        assert "lyrics" not in provider.last_kwargs
+        assert provider.last_kwargs.get("model") == "model-a"

@@ -96,6 +96,15 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
 DEDUP_MAX_SIZE = 1000
 
+# Native streaming (msgtype: stream) constants — modeled on WeCom's official
+# OpenClaw plugin behavior. WeCom's AI Bot supports cumulative stream frames
+# via aibot_respond_msg; sending an empty first frame triggers the client's
+# "typing" animation, subsequent frames push cumulative content, and a final
+# frame with finish=true closes the stream.
+STREAM_EXPIRED_ERRCODE = 846608  # >6 min without update — stream is dead
+STREAM_NOT_SUBSCRIBED_ERRCODE = 846609  # ws connection lost the subscription
+MAX_STREAM_CONTENT_LENGTH = 20480  # WeCom server-enforced byte limit per frame
+
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VIDEO_MAX_BYTES = 10 * 1024 * 1024
 VOICE_MAX_BYTES = 2 * 1024 * 1024
@@ -140,11 +149,33 @@ def _entry_matches(entries: List[str], target: str) -> bool:
     return False
 
 
+class WeComStreamExpiredError(RuntimeError):
+    """Raised when WeCom returns errcode 846608 (stream update expired).
+
+    WeCom's stream protocol caps a stream session at ~6 minutes from the
+    first frame. After that window the server refuses further updates with
+    846608 and the entire stream id is dead — callers must fall back to a
+    proactive ``aibot_send_msg`` to deliver the remaining content.
+    """
+
+    def __init__(self, errcode: int = STREAM_EXPIRED_ERRCODE, errmsg: str = ""):
+        super().__init__(
+            f"WeCom stream expired (errcode={errcode}): {errmsg or 'no detail'}"
+        )
+        self.errcode = errcode
+        self.errmsg = errmsg
+
+
 class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False
+    # WeCom AI Bot supports msgtype: "stream" via aibot_respond_msg, which
+    # the gateway streaming consumer treats as a transport that bypasses the
+    # edit-based path. See ``send_stream_frame`` and ``supports_native_streaming``.
+    SUPPORTS_NATIVE_STREAMING = True
+    MAX_STREAM_CONTENT_LENGTH = MAX_STREAM_CONTENT_LENGTH
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -193,6 +224,20 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+
+        # Native streaming state — one logical stream per (chat_id, req_id).
+        # ``send_stream_frame`` initializes these on the first call of a turn
+        # and clears them on finalize / failure / 846608. While set, every
+        # subsequent frame in the same turn reuses the same stream id so the
+        # WeCom client renders updates in-place instead of as new bubbles.
+        self._active_stream_id: Optional[str] = None
+        self._active_stream_req_id: Optional[str] = None
+        self._active_stream_chat_id: Optional[str] = None
+        # Chats whose stream session has been retired (846608 / 846609 / no
+        # req_id). Cleared whenever a fresh inbound callback for the chat
+        # arrives — a new inbound message gives us a new req_id and the
+        # stream channel becomes usable again.
+        self._stream_expired_chats: set[str] = set()
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -947,6 +992,29 @@ class WeComAdapter(BasePlatformAdapter):
         self._last_chat_req_ids[normalized_chat_id] = normalized_req_id
         while len(self._last_chat_req_ids) > DEDUP_MAX_SIZE:
             self._last_chat_req_ids.pop(next(iter(self._last_chat_req_ids)))
+        # A fresh inbound req_id resurrects the stream channel — drop any
+        # stale "stream is dead" marker from prior 846608 responses so the
+        # next outbound turn can attempt native streaming again.
+        self._stream_expired_chats.discard(normalized_chat_id)
+
+    def _resolve_stream_req_id(
+        self, chat_id: str, reply_to: Optional[str]
+    ) -> Optional[str]:
+        """Pick a req_id for a stream reply.
+
+        Precedence: explicit ``reply_to`` (a prior message id we cached) →
+        last inbound req_id for this chat → ``None`` (stream impossible).
+        """
+        req_id = self._reply_req_id_for_message(reply_to)
+        if req_id:
+            return req_id
+        return self._last_chat_req_ids.get(str(chat_id or "").strip()) or None
+
+    def _reset_native_stream_state(self) -> None:
+        """Clear active stream tracking. Idempotent."""
+        self._active_stream_id = None
+        self._active_stream_req_id = None
+        self._active_stream_chat_id = None
 
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
@@ -1283,6 +1351,64 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    @staticmethod
+    def _truncate_stream_content(content: str, limit: int) -> str:
+        """Truncate ``content`` to fit within ``limit`` UTF-8 bytes.
+
+        WeCom enforces a byte-length cap on stream frames; truncating by
+        codepoints would still let multi-byte runs blow past the limit.
+        """
+        encoded = content.encode("utf-8")
+        if len(encoded) <= limit:
+            return content
+        return encoded[:limit].decode("utf-8", errors="ignore")
+
+    async def _send_stream_reply(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        content: str,
+        finish: bool = False,
+    ) -> Dict[str, Any]:
+        """Send a single ``msgtype: "stream"`` frame via aibot_respond_msg.
+
+        WeCom's stream protocol:
+          * the first frame for a turn establishes ``stream.id``;
+          * every subsequent frame reuses that id with ``content`` set to
+            the **cumulative** text (not an incremental delta);
+          * ``finish=True`` on the final frame closes the stream and
+            replaces the live "thinking" bubble with the final content;
+          * ``content`` is capped at 20480 bytes server-side — we
+            pre-truncate to stay safely below.
+
+        Raises :class:`WeComStreamExpiredError` on errcode 846608 so the
+        caller can fall back to a proactive markdown send.
+        """
+        truncated = self._truncate_stream_content(
+            content or "", self.MAX_STREAM_CONTENT_LENGTH,
+        )
+        if len(content or "") != len(truncated):
+            logger.warning(
+                "[%s] Stream content truncated for stream_id=%s",
+                self.name, stream_id,
+            )
+        body: Dict[str, Any] = {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "finish": bool(finish),
+                "content": truncated,
+            },
+        }
+        response = await self._send_reply_request(reply_req_id, body)
+        errcode = response.get("errcode", 0)
+        if errcode == STREAM_EXPIRED_ERRCODE:
+            raise WeComStreamExpiredError(
+                errcode=errcode, errmsg=str(response.get("errmsg") or ""),
+            )
+        self._raise_for_wecom_error(response, "send stream reply")
+        return response
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1530,9 +1656,135 @@ class WeComAdapter(BasePlatformAdapter):
             reply_to=reply_to,
         )
 
+    async def send_stream_frame(
+        self,
+        text: str,
+        *,
+        finalize: bool = False,
+        chat_id: Optional[str] = None,
+        reply_to: Optional[str] = None,
+    ) -> bool:
+        """Public entry-point for the gateway streaming consumer.
+
+        Native streaming lifecycle:
+          * **First call** for the turn (``self._active_stream_id is None``):
+            resolve a usable ``req_id`` from ``reply_to`` or the cached
+            chat req_id, mint a fresh ``stream_id``, and send an empty
+            seed frame so the WeCom client immediately renders its
+            "typing" animation.
+          * **Subsequent calls**: reuse the same ``stream_id`` and push
+            the cumulative ``text`` (not an incremental delta) so the
+            client replaces the visible content in place.
+          * **finalize=True**: send the closing ``finish: true`` frame
+            and clear stream state so the next turn starts fresh.
+
+        Returns ``True`` when the frame landed; ``False`` when the
+        stream is unavailable (no req_id, expired session, transport
+        error). On ``False`` the caller should fall back to
+        :meth:`send` to deliver the remaining content as a one-shot
+        markdown reply.
+        """
+        chat = (chat_id or self._active_stream_chat_id or "").strip()
+        if not chat:
+            logger.warning(
+                "[%s] send_stream_frame: chat_id required on first call",
+                self.name,
+            )
+            return False
+        if chat in self._stream_expired_chats:
+            return False
+
+        try:
+            if self._active_stream_id is None:
+                req_id = self._resolve_stream_req_id(chat, reply_to)
+                if not req_id:
+                    logger.debug(
+                        "[%s] send_stream_frame: no req_id available for chat %s",
+                        self.name, chat,
+                    )
+                    return False
+                self._active_stream_req_id = req_id
+                self._active_stream_chat_id = chat
+                self._active_stream_id = f"stream_{uuid.uuid4().hex[:12]}"
+                # Seed frame with empty content — this is what triggers the
+                # WeCom client's "typing" indicator before any text exists.
+                await self._send_stream_reply(
+                    req_id, self._active_stream_id, "", finish=False,
+                )
+
+            assert self._active_stream_id is not None
+            assert self._active_stream_req_id is not None
+            if finalize:
+                await self._send_stream_reply(
+                    self._active_stream_req_id,
+                    self._active_stream_id,
+                    text,
+                    finish=True,
+                )
+                self._reset_native_stream_state()
+            else:
+                await self._send_stream_reply(
+                    self._active_stream_req_id,
+                    self._active_stream_id,
+                    text,
+                    finish=False,
+                )
+            return True
+        except WeComStreamExpiredError:
+            logger.info(
+                "[%s] Stream expired (errcode=%d) for chat %s — switching to proactive send",
+                self.name, STREAM_EXPIRED_ERRCODE, chat,
+            )
+            self._stream_expired_chats.add(chat)
+            self._reset_native_stream_state()
+            return False
+        except Exception as exc:
+            logger.warning(
+                "[%s] Stream frame failed (resetting state): %s",
+                self.name, exc,
+            )
+            self._reset_native_stream_state()
+            return False
+
+    def supports_native_streaming(
+        self,
+        chat_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Probed by ``GatewayStreamConsumer`` to gate native streaming.
+
+        WeCom AI Bot supports stream frames in both DMs and groups; group
+        chats just need a cached inbound ``req_id`` (every group message
+        the bot receives populates ``_last_chat_req_ids``, so this is
+        effectively always satisfied for actively-used groups).
+        """
+        del chat_type, metadata
+        return True
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """WeCom does not expose typing indicators in this adapter."""
-        del chat_id, metadata
+        """Trigger WeCom's typing indicator by seeding an empty stream frame.
+
+        WeCom has no separate ``send_typing`` API, but seeding a stream
+        with empty content has the same client-side effect: the user sees
+        the "typing" bubble immediately. Subsequent calls within the same
+        turn are no-ops (the stream is already live).
+        """
+        del metadata
+        chat = str(chat_id or "").strip()
+        if not chat:
+            return
+        if self._active_stream_id is not None:
+            # Already streaming — typing indicator is already showing.
+            return
+        if chat in self._stream_expired_chats:
+            return
+        try:
+            await self.send_stream_frame("", chat_id=chat)
+        except Exception as exc:
+            # Best-effort — typing failure must not propagate to the caller.
+            logger.debug(
+                "[%s] send_typing best-effort failed: %s", self.name, exc,
+            )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal chat info."""

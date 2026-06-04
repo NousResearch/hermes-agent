@@ -332,6 +332,51 @@ class TestSessionLifecycle:
 
 
 # =========================================================================
+# In-memory ID resolution (TUI crash recovery)
+# =========================================================================
+
+class TestInMemoryIdResolution:
+    """Verify that sessions can be looked up by their in-memory UUID,
+    which the TUI stores as ``sid`` and sends during gateway crash recovery."""
+
+    def test_set_and_get_by_in_memory_id(self, db):
+        db.create_session(session_id="stored_key_123", source="tui")
+        db.set_session_in_memory_id("stored_key_123", "inmem_abc123")
+
+        session = db.get_session_by_in_memory_id("inmem_abc123")
+        assert session is not None
+        assert session["id"] == "stored_key_123"
+
+    def test_in_memory_id_none_when_not_set(self, db):
+        db.create_session(session_id="s1", source="tui")
+        session = db.get_session_by_in_memory_id("nonexistent")
+        assert session is None
+
+    def test_in_memory_id_overwrite(self, db):
+        db.create_session(session_id="s1", source="tui")
+        db.set_session_in_memory_id("s1", "old_uuid")
+        db.set_session_in_memory_id("s1", "new_uuid")
+
+        assert db.get_session_by_in_memory_id("old_uuid") is None
+        assert db.get_session_by_in_memory_id("new_uuid") is not None
+
+    def test_in_memory_id_survives_end_and_reopen(self, db):
+        """After a gateway crash, the session is ended then reopened.
+        The in_memory_id column must still resolve correctly."""
+        db.create_session(session_id="s1", source="tui")
+        db.set_session_in_memory_id("s1", "inmem_xyz")
+        db.end_session("s1", end_reason="tui_close")
+
+        session = db.get_session_by_in_memory_id("inmem_xyz")
+        assert session is not None
+        assert session["id"] == "s1"
+
+        db.reopen_session("s1")
+        session = db.get_session_by_in_memory_id("inmem_xyz")
+        assert session is not None
+
+
+# =========================================================================
 # Message storage
 # =========================================================================
 

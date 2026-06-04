@@ -265,6 +265,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    in_memory_id TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -1315,6 +1316,24 @@ class SessionDB:
             )
             row = cursor.fetchone()
         return dict(row) if row else None
+
+    def get_session_by_in_memory_id(self, in_memory_id: str) -> Optional[Dict[str, Any]]:
+        """Get a session by its in-memory UUID (set by TUI gateway)."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions WHERE in_memory_id = ?", (in_memory_id,)
+            )
+            row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def set_session_in_memory_id(self, session_id: str, in_memory_id: str) -> None:
+        """Store the in-memory UUID for a session so it can be resolved later."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET in_memory_id = ? WHERE id = ?",
+                (in_memory_id, session_id),
+            )
+        self._execute_write(_do)
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.

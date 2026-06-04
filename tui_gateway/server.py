@@ -702,7 +702,7 @@ def _register_session_cwd(session: dict | None) -> None:
         pass
 
 
-def _ensure_session_db_row(session: dict) -> None:
+def _ensure_session_db_row(session: dict, in_memory_id: str | None = None) -> None:
     """Idempotently persist the session's DB row on first real activity.
 
     Called from prompt.submit so a row only exists once the user actually sends
@@ -716,6 +716,10 @@ def _ensure_session_db_row(session: dict) -> None:
     picked a folder for gets grouped under whatever directory the desktop
     happened to launch in (e.g. "desktop"). Leaving it null groups them under
     "No workspace", which is the desired default.
+
+    When *in_memory_id* is provided (the TUI's in-process session UUID), it is
+    written to the ``in_memory_id`` column so that ``session.resume`` can
+    resolve the in-memory UUID back to the DB row after a gateway respawn.
     """
     key = session.get("session_key")
     if not key:
@@ -730,6 +734,11 @@ def _ensure_session_db_row(session: dict) -> None:
             model=_resolve_model(),
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
+        if in_memory_id:
+            try:
+                db.set_session_in_memory_id(key, in_memory_id)
+            except Exception:
+                logger.debug("failed to set in_memory_id on session row", exc_info=True)
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
 
@@ -2988,7 +2997,16 @@ def _(rid, params: dict) -> dict:
         if found:
             target = found["id"]
         else:
-            return _err(rid, 4007, "session not found")
+            # Fallback: the TUI stores an in-memory session UUID that is
+            # different from the DB primary key.  After a gateway respawn
+            # (crash recovery), the TUI sends this in-memory UUID.  Resolve
+            # it via the ``in_memory_id`` column stored by
+            # ``_ensure_session_db_row``.
+            found = db.get_session_by_in_memory_id(target)
+            if found:
+                target = found["id"]
+            else:
+                return _err(rid, 4007, "session not found")
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:
@@ -3959,7 +3977,7 @@ def _(rid, params: dict) -> dict:
         _start_inflight_turn(session, text)
 
     # Persist the DB row lazily, now that the user has actually sent a message.
-    _ensure_session_db_row(session)
+    _ensure_session_db_row(session, in_memory_id=sid)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:

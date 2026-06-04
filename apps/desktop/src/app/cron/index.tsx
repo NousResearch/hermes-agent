@@ -768,7 +768,7 @@ function CronEditorDialog({
           <div className="grid items-start gap-4 sm:grid-cols-2">
             <Field htmlFor="cron-frequency" label="Frequency">
               <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-frequency">
+                <SelectTrigger id="cron-frequency">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -783,7 +783,7 @@ function CronEditorDialog({
 
             <Field htmlFor="cron-deliver" label="Deliver to">
               <Select onValueChange={setDeliver} value={deliver}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-deliver">
+                <SelectTrigger id="cron-deliver">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

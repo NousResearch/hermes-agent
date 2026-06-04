@@ -651,7 +651,7 @@ function MessagingField({
       </div>
       <div className="flex items-center gap-2">
         <Input
-          className="h-9 rounded-lg font-mono text-sm"
+          className="font-mono"
           id={`messaging-field-${field.key}`}
           onChange={event => onEdit(field.key, event.target.value)}
           placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}

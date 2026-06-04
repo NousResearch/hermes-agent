@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { KbdGroup } from '@/components/ui/kbd'
+import { SearchField } from '@/components/ui/search-field'
 import {
   Sidebar,
   SidebarContent,
@@ -461,28 +462,13 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {sidebarOpen && showSessionSections && (
-          <div className="shrink-0 pb-1 pt-1">
-            <div className="flex items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 transition-colors focus-within:border-(--ui-stroke-tertiary)">
-              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="search" size="0.75rem" />
-              <input
-                aria-label="Search sessions"
-                className="h-6 min-w-0 flex-1 bg-transparent text-[0.8125rem] text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
-                onChange={event => setSearchQuery(event.target.value)}
-                placeholder="Search sessions…"
-                type="text"
-                value={searchQuery}
-              />
-              {searchQuery && (
-                <button
-                  aria-label="Clear search"
-                  className="grid size-4 shrink-0 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
-                  onClick={() => setSearchQuery('')}
-                  type="button"
-                >
-                  <Codicon name="close" size="0.75rem" />
-                </button>
-              )}
-            </div>
+          <div className="shrink-0 px-2 pb-1 pt-1">
+            <SearchField
+              aria-label="Search sessions"
+              onChange={setSearchQuery}
+              placeholder="Search sessions…"
+              value={searchQuery}
+            />
           </div>
         )}
 
@@ -648,7 +634,7 @@ function SidebarPinnedEmptyState() {
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
-      <span>Shift-click a chat to pin · drag to reorder</span>
+      <span>Shift-click a chat to pin</span>
     </div>
   )
 }

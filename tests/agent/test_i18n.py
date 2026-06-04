@@ -122,6 +122,8 @@ def test_default_when_nothing_set(monkeypatch):
     # Force config lookup to return None -- patch the cached reader.
     i18n.reset_language_cache()
     monkeypatch.setattr(i18n, "_config_language_cached", lambda: None)
+    # Mock system locale to return None so it falls back to default
+    monkeypatch.setattr(i18n, "get_system_locale", lambda: "en")
     assert i18n.get_language() == "en"
 
 

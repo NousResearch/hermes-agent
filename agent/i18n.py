@@ -30,6 +30,7 @@ Supported languages: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back t
 
 from __future__ import annotations
 
+import locale
 import logging
 import os
 import sysconfig
@@ -83,6 +84,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
+
+# 模块级变量存储运行时切换的语言
+_current_language: str | None = None
 
 
 def _locales_dir() -> Path:
@@ -238,14 +242,67 @@ def reset_language_cache() -> None:
         _catalog_cache.clear()
 
 
+def get_system_locale() -> str:
+    """检测系统语言。
+
+    Returns
+    -------
+    检测到的语言代码，或默认语言 'en'
+    """
+    try:
+        lang, _ = locale.getdefaultlocale()
+        if lang:
+            # 将下划线分隔的 locale 格式转换为连字符格式
+            # 例如 'zh_CN' -> 'zh-cn'，然后进行规范化
+            normalized = lang.replace("_", "-").lower()
+            return _normalize_lang(normalized)
+    except Exception:
+        pass
+    return DEFAULT_LANGUAGE
+
+
+def set_language(lang: str) -> None:
+    """运行时切换语言。
+
+    Parameters
+    ----------
+    lang : str
+        目标语言代码（如 'zh', 'en', 'ja'）
+    """
+    global _current_language
+    _current_language = _normalize_lang(lang)
+    reset_language_cache()
+
+    # 保存到配置
+    try:
+        from hermes_cli.config import save_config_value
+        save_config_value("display.language", _current_language)
+    except Exception as exc:
+        logger.warning("Failed to save language to config: %s", exc)
+
+
 def get_language() -> str:
-    """Resolve the active language using env > config > default order."""
+    """解析活跃语言（优先级：命令 > 配置 > 系统 > 默认）"""
+    # 1. 运行时切换的语言（最高优先级）
+    if _current_language:
+        return _current_language
+
+    # 2. 环境变量
     env_lang = os.environ.get("HERMES_LANGUAGE")
     if env_lang:
         return _normalize_lang(env_lang)
+
+    # 3. 配置文件
     cfg_lang = _config_language_cached()
     if cfg_lang:
         return cfg_lang
+
+    # 4. 系统 locale
+    system_lang = get_system_locale()
+    if system_lang != DEFAULT_LANGUAGE:
+        return system_lang
+
+    # 5. 默认值
     return DEFAULT_LANGUAGE
 
 
@@ -298,5 +355,7 @@ __all__ = [
     "DEFAULT_LANGUAGE",
     "t",
     "get_language",
+    "get_system_locale",
+    "set_language",
     "reset_language_cache",
 ]

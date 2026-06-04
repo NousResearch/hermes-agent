@@ -36,11 +36,11 @@ Verified:
   `4f4ddd6`. It restored the session-aware Slack E2E checker and added the
   deterministic `top_card_spenders_30d` shortcut on top of current production
   code.
-- Analytics PR #7, `[codex] Compact Slack dashboard links`, is open as a draft
-  from `codex/slack-link-compaction` at `3147e6f`. It formats saved-topic
-  dashboard links as Slack mrkdwn `Open dashboard` links and temporary ad hoc
-  payload links as `Open visualization` links while preserving relative
-  `dashboardUrlPath` fallback behavior.
+- Analytics PR #7, `[codex] Compact Slack dashboard links`, is merged to
+  `main` at `4d529dc`. It formats saved-topic dashboard links as Slack mrkdwn
+  `Open dashboard` links and temporary ad hoc payload links as `Open
+  visualization` links while preserving relative `dashboardUrlPath` fallback
+  behavior.
 - Latest local verification is green: `npm run lint` has no warnings,
   `npm test` passed 221 analytics tests, `npm run build` passed, strict release
   packaging passed, the smoke suite passed from `main`, and the live Slack log
@@ -50,6 +50,9 @@ Verified:
   `node ./node_modules/next/dist/bin/next build` passed, strict release
   packaging passed, the analytics smoke suite passed, and production-env ops
   readiness returned `overallStatus: "ready"` with no blockers.
+- Post-merge verification on analytics `main` passed focused formatter coverage
+  with 11 tests and production-env ops readiness returned
+  `overallStatus: "ready"` with no blockers.
 - `/query` now distinguishes an unknown saved topic from a known saved topic
   whose database execution fails, so a missing Vercel database env shows as
   saved-query data unavailable rather than an ambiguous empty visualization.
@@ -159,7 +162,7 @@ Verified:
   post-sign-in data rendering still needs either user-authenticated browser
   verification or a manual user check.
 - Vercel production deployment
-  `https://analytics-agent-c6o7dsrvz-ritikmdns-projects.vercel.app` is Ready
+  `https://analytics-agent-9y28kucl2-ritikmdns-projects.vercel.app` is Ready
   and aliased to `https://analytics.joinelixir.club`.
 
 Known gaps:
@@ -174,9 +177,8 @@ Known gaps:
   `NousResearch/hermes-agent` `main`, and focused Hermes verification passes
   253 tests. Opening a public upstream PR remains a product/privacy decision
   because the profile is Elixir-specific.
-- Slack answer polish now has a verified compact-link PR. It still needs
-  review, merge, production deploy, and one live Slack recheck before Milestone
-  14A is closed.
+- Slack answer polish is merged and production-deployed. It still needs one
+  live Slack recheck before Milestone 14A is closed.
 
 ## Milestones
 
@@ -195,7 +197,7 @@ Known gaps:
 | 11 | Slack end-to-end validation | Real Slack prompts prove saved, ad hoc, PostHog, clarification, and rejection flows. | Passed via live logs after PR #6 |
 | 12 | Hosted gateway | The Slack gateway is restart-safe beyond the local machine. | Local supervised; host decision pending |
 | 13 | Hermes upstream sync | The profile distribution is pushed or PR'd upstream. | Branch pushed/tested; public upstream PR decision pending |
-| 14 | Answer polish | Slack responses consistently include rows, assumptions, caveats, timings, and links. | Compact-link PR #7 open and verified; merge/deploy/live Slack recheck pending |
+| 14 | Answer polish | Slack responses consistently include rows, assumptions, caveats, timings, and links. | Compact-link PR #7 merged and deployed; live Slack recheck pending |
 | 15 | Operating cadence | Self-improvement review runs on a regular query-log cadence. | Checker built; scheduled/live usage pending |
 
 ## Production Gates
@@ -328,14 +330,17 @@ Done means user-list answers still include dashboard links, but the Slack messag
 stays compact enough for executive reading and does not expose executable query
 text in the URL.
 
-Current evidence: analytics PR #7 formats saved dashboard URLs as `Open
-dashboard` and temporary payload URLs as `Open visualization` in Slack-facing
-text. Local verification passed focused formatter tests, the full 221-test
-analytics suite, lint, Next.js build, strict release packaging, smoke suite, and
-production-env ops readiness.
+Current evidence: analytics PR #7 is merged to `main` at `4d529dc` and deployed
+to production at
+`https://analytics-agent-9y28kucl2-ritikmdns-projects.vercel.app`, aliased by
+`https://analytics.joinelixir.club`. Saved dashboard URLs format as `Open
+dashboard` and temporary payload URLs format as `Open visualization` in
+Slack-facing text. Verification passed focused formatter tests, the full
+221-test analytics suite, lint, Next.js build, strict release packaging, smoke
+suite, production-env ops readiness, and Vercel production inspection.
 
-Remaining work: review/merge PR #7, deploy it to Vercel, and run one live Slack
-answer check to confirm Slack renders the compact labels.
+Remaining work: run one live Slack answer check to confirm Slack renders the
+compact labels.
 
 ## Current Open Decisions
 

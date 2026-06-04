@@ -1525,3 +1525,79 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestGatewaySystemctlRestartGuard:
+    """Raw systemctl gateway restarts from inside the gateway must hard-block (#37453)."""
+
+    SESSION_KEY = "test-gateway-systemctl-restart"
+
+    def setup_method(self):
+        from tools import approval as mod
+
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION", "HERMES_YOLO_MODE", "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for key, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_blocks_raw_systemctl_restart_without_asking_for_approval(self, monkeypatch):
+        from tools import approval as mod
+
+        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "manual", "gateway_timeout": 1})
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards("systemctl --user restart hermes-gateway", "local")
+
+        assert result["approved"] is False
+        assert result.get("hardline") is True
+        assert "systemctl" in result["message"]
+        assert "hermes-gateway" in result["message"]
+        assert notified == []
+
+    def test_yolo_does_not_bypass_gateway_systemctl_restart_guard(self, monkeypatch):
+        from tools import approval as mod
+
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "off", "gateway_timeout": 1})
+
+        result = mod.check_all_command_guards("sudo systemctl restart hermes-gateway.service", "local")
+
+        assert result["approved"] is False
+        assert result.get("hardline") is True
+
+    def test_blocks_realistic_systemctl_variants(self, monkeypatch):
+        from tools import approval as mod
+
+        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "manual", "gateway_timeout": 1})
+
+        commands = [
+            "/usr/bin/systemctl --user restart hermes-gateway",
+            "systemctl --user --no-block restart hermes-gateway.service",
+            "sudo systemctl --system stop 'hermes-gateway-coder.service'",
+            "env FOO=bar /bin/systemctl restart hermes-gateway-coder",
+        ]
+
+        for command in commands:
+            result = mod.check_all_command_guards(command, "local")
+
+            assert result["approved"] is False, command
+            assert result.get("hardline") is True, command

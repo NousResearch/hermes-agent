@@ -360,6 +360,38 @@ def _sudo_stdin_block_result(description: str) -> dict:
     }
 
 
+_GATEWAY_SYSTEMCTL_RESTART_RE = re.compile(
+    _CMDPOS
+    + r'(?:[^\s;&|`]+/)?systemctl\s+'
+    + r'(?:(?:--[a-zA-Z0-9][a-zA-Z0-9-]*(?:=\S+)?|-[a-zA-Z0-9-]+)\s+)*'
+    + r'(?:restart|stop)\s+'
+    + r'(?:(?:--[a-zA-Z0-9][a-zA-Z0-9-]*(?:=\S+)?|-[a-zA-Z0-9-]+)\s+)*'
+    + r'["\']?hermes-gateway(?:-[A-Za-z0-9_.-]+)?(?:\.service)?["\']?'
+    + r'(?=$|\s|[;&|])',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_gateway_systemctl_restart_command(command: str) -> bool:
+    """Return True for raw systemctl commands that stop/restart this gateway."""
+    normalized = _normalize_command_for_detection(command)
+    return bool(_GATEWAY_SYSTEMCTL_RESTART_RE.search(normalized))
+
+
+def _gateway_systemctl_restart_block_result() -> dict:
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            "BLOCKED (hardline): raw systemctl stop/restart of hermes-gateway services "
+            "from inside a gateway session can kill the child systemctl process "
+            "mid-restart and leave the gateway offline. Do NOT retry or "
+            "rephrase this command. Use the gateway restart flow outside the "
+            "active gateway process."
+        ),
+    }
+
+
 # =========================================================================
 # Dangerous command patterns
 # =========================================================================
@@ -1002,6 +1034,10 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    if _is_gateway_approval_context() and _is_gateway_systemctl_restart_command(command):
+        logger.warning("Gateway self-restart block: %s", command[:200])
+        return _gateway_systemctl_restart_block_result()
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -1242,6 +1278,10 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    if _is_gateway_approval_context() and _is_gateway_systemctl_restart_command(command):
+        logger.warning("Gateway self-restart block: %s", command[:200])
+        return _gateway_systemctl_restart_block_result()
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

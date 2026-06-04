@@ -17,6 +17,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
+import { isImeComposing } from '@/lib/ime'
 import { exportSession } from '@/lib/session-export'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
@@ -224,7 +225,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
           disabled={submitting}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter') {
+            if (event.key === 'Enter' && !isImeComposing(event)) {
               event.preventDefault()
               void submit()
             } else if (event.key === 'Escape') {

@@ -20,6 +20,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { isImeComposing } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
@@ -599,6 +600,10 @@ export function ChatBar({
         void drainNextQueued()
       }
 
+      return
+    }
+
+    if (isImeComposing(event)) {
       return
     }
 

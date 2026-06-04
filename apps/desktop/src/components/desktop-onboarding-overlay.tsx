@@ -17,6 +17,7 @@ import {
   Sparkles,
   Terminal
 } from '@/lib/icons'
+import { isImeComposing } from '@/lib/ime'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
@@ -487,7 +488,7 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
           autoFocus
           className="font-mono"
           onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
+          onKeyDown={e => e.key === 'Enter' && !isImeComposing(e) && void submit()}
           placeholder={option.placeholder || 'Paste API key'}
           type={isLocal ? 'text' : 'password'}
           value={value}
@@ -555,7 +556,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submitOnboardingCode(ctx)}
+          onKeyDown={e => e.key === 'Enter' && !isImeComposing(e) && void submitOnboardingCode(ctx)}
           placeholder="Paste authorization code"
           value={flow.code}
         />
@@ -694,9 +695,11 @@ function ConfirmingModelPanel({
     queryKey: ['onboarding-model-options', flow.providerSlug],
     queryFn: () => getGlobalModelOptions()
   })
+
   const providerRow = options.data?.providers?.find(
     p => String(p.slug).toLowerCase() === flow.providerSlug.toLowerCase()
   )
+
   const price = providerRow?.pricing?.[flow.currentModel]
   const freeTier = providerRow?.free_tier
 

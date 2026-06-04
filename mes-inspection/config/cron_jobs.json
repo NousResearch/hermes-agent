@@ -1,0 +1,44 @@
+{
+  "jobs": [
+    {
+      "name": "mes-heartbeat",
+      "schedule": "every 1m",
+      "prompt": "执行 MES 关键指标心跳巡检：\n1. 运行 python3 scripts/nginx_check.py\n2. 运行 python3 scripts/jvm_check.py\n3. 如果任一脚本退出码为2（严重），立即用飞书推送 P0 告警\n4. 如果退出码为1（警告），记录到今日报告\n5. 如果退出码为0（正常），静默不推送\n\n注意：只在发现异常时才输出内容，正常时输出 [SILENT]",
+      "skills": ["mes-nginx-check", "mes-jvm-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-full-check",
+      "schedule": "every 5m",
+      "prompt": "执行 MES 全组件健康巡检：\n依次运行以下脚本，收集输出：\n- python3 scripts/nginx_check.py\n- python3 scripts/jvm_check.py\n- python3 scripts/rabbitmq_check.py\n- python3 scripts/oracle_check.py\n- python3 scripts/elk_check.py\n- python3 scripts/skywalking_check.py\n\n汇总分析所有输出，按以下规则处理：\n- 任何组件退出码=2：立即飞书推送 P0 告警，附详细诊断\n- 退出码=1 的组件超过3个：飞书推送 P1 警告\n- 全部正常：输出 [SILENT] 静默不推送",
+      "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-deep-analysis",
+      "schedule": "*/30 * * * *",
+      "prompt": "执行 MES 深度分析：\n1. 运行 oracle_check.py 检查慢查询和表空间\n2. 运行 elk_check.py 检查日志异常模式\n3. 分析趋势：对比前几次巡检数据\n4. 如果发现新增慢 SQL 或日志异常模式，飞书推送 P2 告警\n5. 正常则输出 [SILENT]",
+      "skills": ["mes-oracle-check", "mes-elk-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-daily-report",
+      "schedule": "0 8 * * *",
+      "prompt": "生成 MES 每日巡检报告：\n1. 运行全部 6 个巡检脚本\n2. 汇总所有组件健康状态\n3. 生成格式化报告，包含：\n   - 各组件状态概览\n   - 过去 24 小时异常汇总\n   - 建议优化项\n4. 通过飞书推送日报",
+      "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    },
+    {
+      "name": "mes-weekly-trend",
+      "schedule": "0 9 * * 1",
+      "prompt": "生成 MES 周度趋势分析报告：\n1. 运行全部巡检脚本\n2. 分析过去一周的故障模式\n3. 生成容量规划建议\n4. 通过飞书推送周报",
+      "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
+    }
+  ]
+}

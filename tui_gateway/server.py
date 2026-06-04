@@ -4712,6 +4712,12 @@ def _(rid, params: dict) -> dict:
         try:
             from run_agent import AIAgent
 
+            # The sudo password callback is thread-local (tools.terminal_tool
+            # _callback_tls), so wiring it on the session-build thread doesn't
+            # reach this background thread.  Re-wire here so sudo/secret prompts
+            # route to the parent session's overlay instead of falling through
+            # to /dev/tty and hanging.  (Mirrors _run_prompt_submit.)
+            _wire_callbacks(parent)
             result = AIAgent(
                 **_background_agent_kwargs(session["agent"], task_id)
             ).run_conversation(
@@ -4813,6 +4819,13 @@ def _(rid, params: dict) -> dict:
             if preview_cwd:
                 register_task_env_overrides(task_id, {"cwd": preview_cwd})
 
+            # The sudo password callback is thread-local (tools.terminal_tool
+            # _callback_tls), so wiring it on the session-build thread doesn't
+            # reach this preview thread.  Re-wire here; this agent explicitly
+            # enables the terminal toolset, so sudo prompts are realistic and
+            # must route to the parent session's overlay instead of /dev/tty.
+            # (Mirrors _run_prompt_submit.)
+            _wire_callbacks(parent)
             history_note = (
                 f" (with {len(parent_history)} parent-session messages of context)"
                 if parent_history

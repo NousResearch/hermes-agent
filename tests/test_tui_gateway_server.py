@@ -5533,3 +5533,168 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["session_start"] == "2026-01-01T12:00:00"
     assert payload["system_prompt"] == "You are Hermes."
     assert payload["messages"] == history
+
+
+# ── _wire_callbacks called on background / preview-restart threads ────────────
+
+
+def _make_fake_agent_ns():
+    """Minimal namespace that satisfies _background_agent_kwargs getattr calls."""
+    return types.SimpleNamespace(
+        base_url=None,
+        api_key=None,
+        provider=None,
+        api_mode=None,
+        acp_command=None,
+        acp_args=None,
+        model="test-model",
+        enabled_toolsets=None,
+        ephemeral_system_prompt=None,
+        providers_allowed=None,
+        providers_ignored=None,
+        providers_order=None,
+        provider_sort=None,
+        provider_require_parameters=False,
+        provider_data_collection=None,
+        openrouter_min_coding_score=None,
+        reasoning_config=None,
+        service_tier=None,
+        request_overrides={},
+        _fallback_model=None,
+    )
+
+
+def test_prompt_background_wires_callbacks_on_worker_thread(monkeypatch):
+    """prompt.background must call _wire_callbacks on the worker thread before
+    AIAgent.run_conversation so the thread-local sudo/secret callbacks are active.
+
+    The session-build thread wires callbacks once, but threading.local means
+    that wiring never reaches the background worker thread — any terminal
+    command requiring sudo or a skill needing a secret would fall through to
+    /dev/tty and hang the headless gateway.  The fix re-wires inside run().
+    """
+    sid = "bg-wire-sid"
+    wired = []
+    done = threading.Event()
+
+    class _FakeAIAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_conversation(self, **kwargs):
+            done.set()
+            return {"final_response": "ok"}
+
+    server._sessions[sid] = {
+        "agent": _make_fake_agent_ns(),
+        "session_key": "bg-key",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "cwd": "/tmp",
+    }
+
+    monkeypatch.setattr(server, "_wire_callbacks", lambda s: wired.append(s))
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["terminal"])
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp")
+
+    # run_agent triggers a long import chain unavailable in the test venv.
+    # Inject a fake module so the `from run_agent import AIAgent` inside run()
+    # resolves without touching real dependencies.
+    fake_ra = types.ModuleType("run_agent")
+    fake_ra.AIAgent = _FakeAIAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_ra)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.background",
+                "params": {"session_id": sid, "text": "run something"},
+            }
+        )
+        assert resp.get("result"), f"unexpected error: {resp.get('error')}"
+        assert done.wait(timeout=3.0), "background thread never completed run_conversation"
+        assert wired == [sid], (
+            f"_wire_callbacks was not called with the parent sid on the "
+            f"background worker thread; recorded calls: {wired}"
+        )
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_preview_restart_wires_callbacks_on_worker_thread(monkeypatch):
+    """preview.restart must call _wire_callbacks on the worker thread before
+    AIAgent.run_conversation.
+
+    This agent explicitly enables the terminal toolset, so sudo prompts are
+    realistic.  Without re-wiring, the thread-local sudo callback is unset and
+    the prompt falls through to /dev/tty, hanging the headless gateway.
+    """
+    sid = "pr-wire-sid"
+    wired = []
+    done = threading.Event()
+
+    class _FakeAIAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_conversation(self, **kwargs):
+            done.set()
+            return {"final_response": "server restarted"}
+
+    server._sessions[sid] = {
+        "agent": _make_fake_agent_ns(),
+        "session_key": "pr-key",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "cwd": "/tmp",
+    }
+
+    monkeypatch.setattr(server, "_wire_callbacks", lambda s: wired.append(s))
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["terminal"])
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp")
+
+    fake_ra = types.ModuleType("run_agent")
+    fake_ra.AIAgent = _FakeAIAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_ra)
+
+    # terminal_tool.register_task_env_overrides is called inside run().
+    # Stub it out so the test doesn't need the real tool chain.
+    fake_tt = types.ModuleType("tools.terminal_tool")
+    fake_tt.register_task_env_overrides = lambda *a, **kw: None
+    fake_tt.clear_task_env_overrides = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "tools.terminal_tool", fake_tt)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "preview.restart",
+                "params": {
+                    "session_id": sid,
+                    "url": "http://localhost:3000",
+                    "cwd": "",
+                    "context": "",
+                },
+            }
+        )
+        assert resp.get("result"), f"unexpected error: {resp.get('error')}"
+        assert done.wait(timeout=3.0), "preview.restart thread never completed run_conversation"
+        assert wired == [sid], (
+            f"_wire_callbacks was not called with the parent sid on the "
+            f"preview.restart worker thread; recorded calls: {wired}"
+        )
+    finally:
+        server._sessions.pop(sid, None)

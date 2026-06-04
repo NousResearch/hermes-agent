@@ -3,7 +3,13 @@ import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  chatMessageArraysEquivalent,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -92,29 +98,6 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
   const reasoningParts = previous.parts.filter(part => part.type === 'reasoning')
 
   return reasoningParts.length ? { ...message, parts: [...reasoningParts, ...message.parts] } : message
-}
-
-function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
-  if (
-    a.id !== b.id ||
-    a.role !== b.role ||
-    a.pending !== b.pending ||
-    a.error !== b.error ||
-    a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId
-  ) {
-    return false
-  }
-
-  if (a.parts.length !== b.parts.length) {
-    return false
-  }
-
-  return a.parts.every((part, index) => JSON.stringify(part) === JSON.stringify(b.parts[index]))
-}
-
-function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]): boolean {
-  return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
 function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {

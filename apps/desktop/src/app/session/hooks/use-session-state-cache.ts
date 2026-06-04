@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
+import { chatMessageArraysEquivalent, preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking } from '@/store/session'
@@ -88,7 +88,13 @@ export function useSessionStateCache({
       return
     }
 
-    setMessages(preserveLocalAssistantErrors(pending.state.messages, $messages.get()))
+    const currentMessages = $messages.get()
+    const nextMessages = preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+
+    if (!chatMessageArraysEquivalent(currentMessages, nextMessages)) {
+      setMessages(nextMessages)
+    }
+
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)

@@ -53,8 +53,7 @@ function ConfigField({
 
   if (schema.type === 'boolean') {
     return row(
-      <div className="flex items-center justify-end gap-3">
-        <span className="text-xs text-muted-foreground">{value ? 'On' : 'Off'}</span>
+      <div className="flex items-center justify-end">
         <Switch checked={Boolean(value)} onCheckedChange={onChange} />
       </div>
     )

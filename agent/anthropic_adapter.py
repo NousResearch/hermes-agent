@@ -2093,6 +2093,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    response_format: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -2299,5 +2300,12 @@ def build_anthropic_kwargs(
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    # Structured output (gateway response_format / Responses text.format) maps to
+    # Anthropic's output_config.format, merged alongside any output_config.effort
+    # the adaptive-thinking path set above.
+    if response_format:
+        from agent.structured_output import apply as _apply_structured_output
+        _apply_structured_output(kwargs, response_format, "anthropic_messages")
 
     return kwargs

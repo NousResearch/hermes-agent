@@ -2,7 +2,7 @@
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
-# Hermes Agent ☤ — zapabob Windows / Operations Fork
+# Hermes Agent - zapabob Windows / Operations Fork
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
@@ -11,17 +11,50 @@
   <a href="https://github.com/NousResearch/hermes-agent"><img src="https://img.shields.io/badge/Upstream-NousResearch-blueviolet?style=for-the-badge" alt="Upstream: NousResearch"></a>
 </p>
 
-**English deployment fork** of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) tuned for a single Windows 11 workstation: OpenCode Zen free models as primary inference, llama.cpp TurboQuant as local rollback, messaging gateway always-on, VRChat Quest 2 tooling, and companion WebUI.
+**zapabob/hermes-agent** is a Windows-first operations fork of
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent). It
+tracks the official API, Desktop, Dashboard, Gateway, TUI, memory, skills, cron,
+and CI surfaces while adding the pieces needed for a long-running native
+Windows workstation: Desktop integration, WebUI companion wiring, always-on
+messaging, free-model rotation, local fallback inference, Hypura/OpenClaw
+harness tooling, VRChat Quest 2 support, NotebookLM source workflows, and
+practical recovery scripts.
+
+## Fork Advantages
+
+This fork is for operators who want upstream Hermes freshness without losing
+the local behavior that keeps a real Windows machine usable day after day.
+
+| Advantage | What this fork adds |
+|---|---|
+| **Official freshness with local continuity** | Upstream `main` is merged regularly with fork-specific Windows, Gateway, Desktop, WebUI, and Harness behavior preserved instead of overwritten. |
+| **Native Windows reliability** | PowerShell launchers, Task Scheduler flows, UTF-8 safeguards, Windows subprocess environment repair, transient file-operation retry logic, and path-with-spaces handling are treated as first-class runtime concerns. |
+| **Desktop + dashboard operations** | Hermes Desktop is wired to a local dashboard backend and the same source checkout, so the graphical shell, dashboard admin pages, gateway state, and CLI workflows share one operational surface. |
+| **Always-on messaging stack** | Telegram, Discord, LINE, and gateway state are managed with profile-aware config, host-secret preference, restart verification, and Windows-friendly diagnostics. |
+| **Free cloud + local fallback inference** | OpenCode Zen `auto-free` rotation gives a free cloud-first path, while llama.cpp/TurboQuant and Hypura/OpenClaw tooling provide local rollback when cloud capacity or credentials are unavailable. |
+| **NotebookLM knowledge workflow** | The bundled NotebookLM plugin collects implementation logs and redacted X activity into NotebookLM-ready sources, can draft X post ideas, and supports NotebookLM Enterprise source ingestion when configured. |
+| **VRChat / Quest 2 operations** | Neuro/OSC helpers, Hypura Harness, VOICEVOX checks, OpenXR repair scripts, and Quest 2 diagnostics make VRChat automation auditable and recoverable on the same Windows host. |
+| **Security and CI discipline** | Dependency bounds, production audit checks, targeted pytest lanes, Desktop/TUI/Web builds, red-team issue triage, and upstream PR extraction keep fork improvements suitable for official contribution. |
 
 ### 日本語概要
 
-[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) をベースに、**OpenCode Zen 無料モデル自動ローテーション**、**RTX3080 llama.cpp ローカルフォールバック**、**OpenClaw 由来 API キー橋渡し**、**hermes-webui 連携**、**VRChat Quest2（OSC / neuro-sdk / OpenXR 修復）**、**Windows ログオン自動起動**を厚くした実運用 fork です。公式 upstream の TUI・ゲートウェイ・スキル・メモリ・cron はそのまま継承しつつ、ネイティブ Windows で落ちやすい subprocess 環境、UTF-8 設定ファイル、CRLF 差分、秘密キャッシュ権限の扱いをこの fork 側で補強しています。
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) を
+土台に、公式の TUI、Gateway、Desktop、Dashboard、Skills、Memory、Cron、CI を
+追いかけながら、native Windows で落ちやすい部分を補強した実運用 fork です。
+OpenCode Zen の free model rotation、llama.cpp/TurboQuant fallback、Hypura
+Harness、OpenClaw 由来のローカル資産、WebUI 連携、VRChat Quest 2 tooling、
+NotebookLM 向け source bundling をまとめて扱えます。
+
+この fork の価値は、独自機能を抱え込んで公式から離れることではありません。
+公式に戻せる修正は PR として切り出し、fork に残すべき Windows 運用、個人
+gateway、Desktop/WebUI 連携、VRChat、NotebookLM の作業導線は保ったまま、
+公式最新 API に追随します。
 
 ---
 
 ## Overview
 
-This checkout (`hermes-agent-upstream-sync`) is not generic upstream marketing — it is a **production stack** for:
+This checkout is not generic upstream marketing. It is a **production stack** for:
 
 1. **Cloud-first, free inference** — `opencode-zen` + virtual model `auto-free` with live catalog refresh and runtime rotation when limits hit.
 2. **Local rollback** — TurboQuant `llama-server` on `http://127.0.0.1:8080/v1` (RTX 3080 defaults: ngram-mod speculative, asymmetric KV).
@@ -31,7 +64,14 @@ This checkout (`hermes-agent-upstream-sync`) is not generic upstream marketing �
 
 Upstream Hermes still provides the core agent loop, TUI, toolsets, skills hub, memory providers, delegation, and cron. This fork adds the **operations layer** that makes those features survive on native Windows without WSL.
 
-Current baseline: merged `upstream/main` through `b9646276f` on 2026-06-02, then kept the fork-side Windows reliability and operations layer. This sync includes upstream dashboard system/admin/MCP/pairing/webhook pages, dashboard auth reauth hardening, desktop chat file-drop support, gateway undo rewind, curator skill lifecycle updates, Skills Hub guard/sync improvements, Docker stage2 browser discovery, model catalog refreshes, and Windows-safe `atomic_json_write` fixes. The fork-side Ebbinghaus idle sleep cycle, OpenCode free rotation, llama fallback, VRChat tooling, and native Windows hardening remain preserved. For future updates, compare against `upstream/main` via `git fetch upstream main` and the Python sync helpers under `scripts/`.
+Current baseline: merged `upstream/main` through `2e628ae97` on 2026-06-04,
+then kept the fork-side Windows reliability and operations layer. This sync
+includes upstream Desktop, Dashboard, Gateway, Docker, memory, installer, TUI,
+MCP, model routing, provider setup, and CI fixes while preserving fork-specific
+OpenCode free rotation, llama fallback, NotebookLM automation, Hypura Harness,
+VRChat tooling, WebUI companion wiring, and native Windows hardening. For future
+updates, compare against `upstream/main` via `git fetch upstream main` and the
+Python sync helpers under `scripts/`.
 
 Recent upstream contribution slice: [NousResearch/hermes-agent#36921](https://github.com/NousResearch/hermes-agent/pull/36921) extracts the Windows transient `os.replace` / `PermissionError` retry fix without `_docs` or fork-only operational features.
 
@@ -41,7 +81,7 @@ Recent upstream contribution slice: [NousResearch/hermes-agent#36921](https://gi
 
 | Field | Current public evidence |
 | --- | --- |
-| Agent surface | OpenCode Zen `auto-free` routing, llama.cpp TurboQuant fallback, gateway automation, Skills Hub, curator, cron, delegation, TUI, dashboard admin pages, and WebUI companion paths |
+| Agent surface | OpenCode Zen `auto-free` routing, llama.cpp TurboQuant fallback, gateway automation, NotebookLM automation, Skills Hub, curator, cron, delegation, TUI, dashboard admin pages, and WebUI companion paths |
 | Model/runtime surface | Free cloud model rotation, local GGUF fallback at `http://127.0.0.1:8080/v1`, RTX Windows launch scripts, and provider catalog refresh tooling |
 | Repro command | `pip install -e ".[all,dev]"`, `python -m hermes_cli.main setup`, `py -3 scripts/refresh_opencode_free_catalog.py --force`, and `hermes fallback list` |
 | Operational proof | Windows autostart scripts, gateway hardening, dashboard auth/admin tests, OpenClaw credential bridge, VRChat Quest 2 doctors, and profile-safe config/logging guidance |
@@ -56,6 +96,7 @@ Recent upstream contribution slice: [NousResearch/hermes-agent#36921](https://gi
 |---|---|
 | **OpenCode Zen `auto-free`** | Virtual model sentinel resolves to the first live free ID from `https://opencode.ai/zen/v1/models`. On `Free usage exceeded` and similar limits, Hermes walks the deduped free catalog automatically. Skill: `skills/autonomous-ai-agents/opencode-free-rotation/`. |
 | **Live catalog refresh** | `scripts/refresh_opencode_free_catalog.py` pulls the current Zen free list; use in cron or before long sessions. |
+| **NotebookLM automation** | `plugins/notebooklm` collects implementation logs and redacted `lm-twitterer` activity, drafts X post ideas through Hermes, and can upload raw text sources to NotebookLM Enterprise when project credentials are configured. |
 | **OpenClaw → OpenCode key bridge** | Shared `OPENCODE_API_KEY` (OpenClaw `.env` or `auth-profiles.json`) satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset. See `hermes_cli/auth.py` and `tests/hermes_cli/test_opencode_openclaw_bridge.py`. |
 | **Ebbinghaus idle sleep** | Optional `memory.sleep` config runs a lazy `ebbinghaus_memory(action="sleep")` cycle after idle time, consolidating high-salience memories and pruning low-value traces while staying compatible with upstream completed-turn memory context. |
 | **llama.cpp TurboQuant fallback** | `hermes_cli/llama_fallback_runtime.py` autostarts `llama-server` when the fallback chain reaches `llama-cpp`. RTX3080 script: `scripts/windows/start-hermes-llama-fallback-rtx3080.ps1` (ngram-mod speculative, `f16v_turbo4` KV). Example config: `docs/migration/opencode_free_webui_config.example.yaml`. |

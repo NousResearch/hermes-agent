@@ -695,9 +695,11 @@ function ConfirmingModelPanel({
     queryKey: ['onboarding-model-options', flow.providerSlug],
     queryFn: () => getGlobalModelOptions()
   })
+
   const providerRow = options.data?.providers?.find(
     p => String(p.slug).toLowerCase() === flow.providerSlug.toLowerCase()
   )
+
   const price = providerRow?.pricing?.[flow.currentModel]
   const freeTier = providerRow?.free_tier
 

@@ -313,6 +313,7 @@ export function useMessageStream({
     // commit and the synthetic harness shows longtask counts drop from ~5/5s
     // to ~1/5s on big sessions (see scripts/profile-typing-lag.md).
     const sinceLast = performance.now() - lastFlushAtRef.current
+
     const runFlush = () => {
       flushHandleRef.current = null
       lastFlushAtRef.current = performance.now()

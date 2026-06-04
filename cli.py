@@ -6235,7 +6235,12 @@ class HermesCLI:
 
         try:
             from hermes_cli.skin_engine import get_active_help_header
-            header = get_active_help_header("(^_^)? Available Commands")
+            from hermes_cli.strings import get_help_header as _get_i18n_help_header
+            _i18n_header = _get_i18n_help_header()
+            if _i18n_header and not _i18n_header.startswith("cli."):
+                header = _i18n_header
+            else:
+                header = get_active_help_header("(^_^)? Available Commands")
         except Exception:
             header = "(^_^)? Available Commands"
         header = (header or "").strip() or "(^_^)? Available Commands"

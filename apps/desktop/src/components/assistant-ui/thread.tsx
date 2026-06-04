@@ -47,6 +47,7 @@ import {
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { t } from '@/store/i18n'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -75,6 +76,7 @@ import {
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useTranslation } from '@/hooks/use-translation'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
@@ -142,6 +144,7 @@ export const Thread: FC<{
   sessionId = null,
   sessionKey
 }) => {
+  const { t } = useTranslation()
   const messageComponents = useMemo(
     () => ({
       AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
@@ -189,7 +192,7 @@ function pickPrimaryPreviewTarget(targets: string[]): string[] {
 
 const CenteredThreadSpinner: FC = () => (
   <div
-    aria-label="Loading session"
+    aria-label={t('chat.loadingSession')}
     className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
     role="status"
   >
@@ -285,7 +288,7 @@ const ResponseLoadingIndicator: FC = () => {
   const elapsed = useElapsedSeconds()
 
   return (
-    <StatusRow data-slot="aui_response-loading" label="Hermes is loading a response">
+    <StatusRow data-slot="aui_response-loading" label={t('chat.loadingResponse')}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -388,7 +391,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            Thinking
+            {t('chat.thinking')}
           </span>
           {pending && (
             <ActivityTimerText

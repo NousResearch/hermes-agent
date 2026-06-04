@@ -7,6 +7,7 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { PanelBottom, Send, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
+import { t } from '@/store/i18n'
 
 import type { ConsoleEntry, PreviewConsoleState } from './preview-console-state'
 
@@ -202,7 +203,7 @@ export function PreviewConsolePanel({
       style={{ '--preview-console-height': `${consoleHeight}px` } as CSSProperties}
     >
       <div
-        aria-label="Resize preview console"
+        aria-label={t('previewConsole.resizeLabel')}
         className="group absolute inset-x-0 -top-1 z-1 h-2 cursor-row-resize"
         onDoubleClick={() => consoleState.setHeight(CONSOLE_HEADER_HEIGHT)}
         onPointerDown={startConsoleResize}
@@ -278,7 +279,7 @@ export function PreviewConsolePanel({
             )
           })
         ) : (
-          <div className="py-2 text-muted-foreground/70">No console messages yet.</div>
+          <div className="py-2 text-muted-foreground/70">{t('previewConsole.noMessages')}</div>
         )}
       </div>
     </div>

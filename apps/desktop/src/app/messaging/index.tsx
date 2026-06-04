@@ -15,6 +15,8 @@ import {
 } from '@/hermes'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/hooks/use-translation'
+import { t } from '@/store/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -86,7 +88,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   TELEGRAM_ALLOWED_USERS: {
     label: 'Allowed Telegram user IDs',
-    help: 'Recommended. Comma-separated numeric IDs from @userinfobot. Without this, anyone can DM your bot.'
+    help: t('messaging.recommendedTelegram')
   },
   TELEGRAM_PROXY: {
     label: 'Proxy URL',
@@ -99,7 +101,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   DISCORD_ALLOWED_USERS: {
     label: 'Allowed Discord user IDs',
-    help: 'Recommended. Comma-separated Discord user IDs.'
+    help: t('messaging.recommendedDiscord')
   },
   DISCORD_REPLY_TO_MODE: {
     label: 'Reply style',
@@ -118,7 +120,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   SLACK_ALLOWED_USERS: {
     label: 'Allowed Slack user IDs',
-    help: 'Recommended. Comma-separated Slack user IDs.'
+    help: t('messaging.recommendedSlack')
   },
   MATTERMOST_URL: {
     label: 'Server URL',
@@ -129,7 +131,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   MATTERMOST_ALLOWED_USERS: {
     label: 'Allowed user IDs',
-    help: 'Recommended. Comma-separated Mattermost user IDs.'
+    help: t('messaging.recommendedMattermost')
   },
   MATRIX_HOMESERVER: {
     label: 'Homeserver URL',
@@ -144,7 +146,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   MATRIX_ALLOWED_USERS: {
     label: 'Allowed Matrix user IDs',
-    help: 'Recommended. Comma-separated user IDs in @user:server format.'
+    help: t('messaging.recommendedMatrix')
   },
   SIGNAL_HTTP_URL: {
     label: 'Signal bridge URL',
@@ -157,7 +159,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   SIGNAL_ALLOWED_USERS: {
     label: 'Allowed Signal users',
-    help: 'Recommended. Comma-separated Signal identifiers.'
+    help: t('messaging.recommendedSignal')
   },
   WHATSAPP_ENABLED: {
     label: 'Enable WhatsApp bridge',
@@ -170,7 +172,7 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   },
   WHATSAPP_ALLOWED_USERS: {
     label: 'Allowed WhatsApp users',
-    help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
+    help: t('messaging.recommendedWhatsApp')
   }
 }
 
@@ -186,6 +188,7 @@ function fieldCopy(field: MessagingEnvVarInfo) {
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+  const { t } = useTranslation()
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -463,7 +466,7 @@ function PlatformDetail({
                 <SetupPill active={platform.configured}>
                   {platform.configured ? 'Credentials set' : 'Needs setup'}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>Messaging gateway stopped</SetupPill>}
+                {!platform.gateway_running && <SetupPill active={false}>{t('messaging.gatewayStopped')}</SetupPill>}
               </div>
               <PlatformHint platform={platform} />
             </div>
@@ -477,7 +480,7 @@ function PlatformDetail({
           )}
 
           <section>
-            <SectionTitle>Get your credentials</SectionTitle>
+            <SectionTitle>{t('messaging.getCredentials')}</SectionTitle>
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
               {introCopy(platform)}
             </p>
@@ -492,7 +495,7 @@ function PlatformDetail({
           </section>
 
           <section>
-            <SectionTitle>Required</SectionTitle>
+            <SectionTitle>{t('messaging.required')}</SectionTitle>
             <div className="mt-3 space-y-4">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
@@ -515,7 +518,7 @@ function PlatformDetail({
 
           {optionalFields.length > 0 && (
             <section>
-              <SectionTitle>Recommended</SectionTitle>
+              <SectionTitle>{t('messaging.recommended')}</SectionTitle>
               <div className="mt-3 space-y-4">
                 {optionalFields.map(field => (
                   <MessagingField
@@ -575,7 +578,7 @@ function PlatformDetail({
           </label>
 
           <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+            {hasEdits && <span className="text-xs text-muted-foreground">{t('messaging.unsavedChanges')}</span>}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
               <Save />
               {isSavingEnv ? 'Saving...' : 'Save changes'}
@@ -647,7 +650,7 @@ function MessagingField({
         <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
           {copy.label}
         </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{t('messaging.saved')}</span>}
       </div>
       <div className="flex items-center gap-2">
         <Input

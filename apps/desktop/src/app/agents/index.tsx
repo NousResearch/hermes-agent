@@ -9,6 +9,8 @@ import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $activeSessionId } from '@/store/session'
+import { useTranslation } from '@/hooks/use-translation'
+import { t } from '@/store/i18n'
 import {
   $subagentsBySession,
   buildSubagentTree,
@@ -75,6 +77,7 @@ interface AgentsViewProps {
 }
 
 export function AgentsView({ onClose }: AgentsViewProps) {
+  const { t } = useTranslation()
   const activeSessionId = useStore($activeSessionId)
   const subagentsBySession = useStore($subagentsBySession)
 
@@ -93,8 +96,8 @@ export function AgentsView({ onClose }: AgentsViewProps) {
       rootClassName="mx-auto max-w-3xl"
     >
       <header className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-foreground">Spawn tree</h2>
-        <p className="text-xs text-muted-foreground/80">Live subagent activity for the current turn.</p>
+        <h2 className="text-sm font-semibold text-foreground">{t('agents.spawnTree')}</h2>
+        <p className="text-xs text-muted-foreground/80">{t('agents.liveSubagentActivity')}</p>
       </header>
       <SubagentTree tree={tree} />
     </OverlayView>
@@ -210,7 +213,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
     return (
       <div className="grid place-items-center gap-3 py-12 text-center">
         <Sparkles className="size-6 text-muted-foreground/60" />
-        <p className="text-sm font-medium text-foreground/90">No live subagents</p>
+        <p className="text-sm font-medium text-foreground/90">{t('agents.noLiveSubagents')}</p>
         <p className="max-w-md text-xs leading-relaxed text-muted-foreground/75">
           When a turn delegates work, child agents stream their progress here.
         </p>
@@ -366,7 +369,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
 
       {open && fileLines.length > 0 ? (
         <div className="grid min-w-0 gap-0.5 pl-6">
-          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">Files</p>
+          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">{t('agents.files')}</p>
           {fileLines.slice(0, 8).map(line => (
             <p className="wrap-break-word font-mono text-[0.67rem] leading-relaxed text-muted-foreground/80" key={line}>
               {line}

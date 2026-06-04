@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AlertCircle, Check, FileText, Globe, Loader2, Monitor } from '@/lib/icons'
+import { useTranslation } from '@/hooks/use-translation'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -68,6 +69,7 @@ function ModeCard({
 }
 
 export function GatewaySettings() {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -179,14 +181,14 @@ export function GatewaySettings() {
   }
 
   if (loading) {
-    return <LoadingState label="Loading gateway settings..." />
+    return <LoadingState label={t('gateway.loading')} />
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {
     return (
       <EmptyState
-        description="The desktop IPC bridge does not expose gateway settings."
-        title="Gateway settings unavailable"
+        description={t('gateway.unavailableDesc')}
+        title={t('gateway.unavailable')}
       />
     )
   }
@@ -196,12 +198,11 @@ export function GatewaySettings() {
       <div className="mb-5">
         <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
           <Globe className="size-4 text-muted-foreground" />
-          Gateway Connection
-          {state.envOverride ? <Pill tone="primary">env override</Pill> : null}
+          {t('gateway.connection')}
+          {state.envOverride ? <Pill tone="primary">{t('gateway.envOverride')}</Pill> : null}
         </div>
         <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          Hermes Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control
-          an already-running Hermes backend on another machine or behind a trusted proxy.
+          {t('gateway.desc')}
         </p>
       </div>
 
@@ -209,10 +210,9 @@ export function GatewaySettings() {
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <div>
-            <div className="font-medium">Environment variables are controlling this desktop session.</div>
+            <div className="font-medium">{t('gateway.envOverrideTitle')}</div>
             <div className="mt-1 leading-5">
-              Unset <code>HERMES_DESKTOP_REMOTE_URL</code> and <code>HERMES_DESKTOP_REMOTE_TOKEN</code> to use the saved
-              setting below.
+              {t('gateway.envOverrideDesc', { urlVar: 'HERMES_DESKTOP_REMOTE_URL', tokenVar: 'HERMES_DESKTOP_REMOTE_TOKEN' })}
             </div>
           </div>
         </div>
@@ -221,19 +221,19 @@ export function GatewaySettings() {
       <div className="grid gap-3 sm:grid-cols-2">
         <ModeCard
           active={state.mode === 'local'}
-          description="Start a private Hermes backend on localhost. This is the default and works offline."
+          description={t('gateway.localDesc')}
           disabled={state.envOverride}
           icon={Monitor}
           onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-          title="Local gateway"
+          title={t('gateway.localTitle')}
         />
         <ModeCard
           active={state.mode === 'remote'}
-          description="Connect this desktop shell to a remote Hermes backend using its session token."
+          description={t('gateway.remoteDesc')}
           disabled={state.envOverride}
           icon={Globe}
           onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-          title="Remote gateway"
+          title={t('gateway.remoteTitle')}
         />
       </div>
 
@@ -244,12 +244,12 @@ export function GatewaySettings() {
               className={cn('h-8', CONTROL_TEXT)}
               disabled={state.envOverride}
               onChange={event => setState(current => ({ ...current, remoteUrl: event.target.value }))}
-              placeholder="https://gateway.example.com/hermes"
+              placeholder={t('gateway.remoteUrlPlaceholder')}
               value={state.remoteUrl}
             />
           }
-          description="Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes."
-          title="Remote URL"
+          description={t('gateway.remoteUrlDesc')}
+          title={t('gateway.remoteUrl')}
         />
         <ListRow
           action={
@@ -259,14 +259,16 @@ export function GatewaySettings() {
               disabled={state.envOverride}
               onChange={event => setRemoteToken(event.target.value)}
               placeholder={
-                state.remoteTokenSet ? `Existing token ${state.remoteTokenPreview ?? 'saved'}` : 'Paste session token'
+                state.remoteTokenSet
+                  ? t('gateway.existingToken', { preview: state.remoteTokenPreview ?? t('gateway.tokenSaved') })
+                  : t('gateway.sessionTokenPlaceholder')
               }
               type="password"
               value={remoteToken}
             />
           }
-          description="The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token."
-          title="Session token"
+          description={t('gateway.sessionTokenDesc')}
+          title={t('gateway.sessionToken')}
         />
       </div>
 
@@ -279,14 +281,14 @@ export function GatewaySettings() {
           variant="outline"
         >
           {testing ? <Loader2 className="size-4 animate-spin" /> : null}
-          Test remote
+          {t('gateway.testRemote')}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(false)} variant="outline">
-          Save for next restart
+          {t('gateway.saveRestart')}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(true)}>
           {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-          Save and reconnect
+          {t('gateway.saveReconnect')}
         </Button>
       </div>
 
@@ -295,11 +297,11 @@ export function GatewaySettings() {
           action={
             <Button onClick={() => void window.hermesDesktop?.revealLogs()} variant="outline">
               <FileText className="size-4" />
-              Open logs
+              {t('gateway.openLogs')}
             </Button>
           }
-          description="Reveal desktop.log in your file manager — useful when the gateway fails to start."
-          title="Diagnostics"
+          description={t('gateway.diagnosticsDesc')}
+          title={t('gateway.diagnostics')}
         />
       </div>
     </SettingsContent>

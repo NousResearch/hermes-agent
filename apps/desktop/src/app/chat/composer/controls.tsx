@@ -8,6 +8,9 @@ import type { ConversationStatus } from './hooks/use-voice-conversation'
 import type { ChatBarState, VoiceStatus } from './types'
 
 export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
+import { useTranslation } from '@/hooks/use-translation'
+import { t } from '@/store/i18n'
+
 export const GHOST_ICON_BTN = cn(
   ICON_BTN,
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -54,6 +57,8 @@ export function ComposerControls({
   voiceStatus: VoiceStatus
   onDictate: () => void
 }) {
+  const { t } = useTranslation()
+
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
@@ -80,10 +85,10 @@ export function ComposerControls({
         </Button>
       ) : (
         <Button
-          aria-label={busy ? (busyAction === 'queue' ? 'Queue message' : 'Stop') : 'Send'}
+          aria-label={busy ? (busyAction === 'queue' ? t('composer.queue') : t('chat.stop')) : t('chat.send')}
           className={PRIMARY_ICON_BTN}
           disabled={disabled || !canSubmit}
-          title={busy ? (busyAction === 'queue' ? 'Queue message' : 'Stop') : 'Send'}
+          title={busy ? (busyAction === 'queue' ? t('composer.queue') : t('chat.stop')) : t('chat.send')}
           type="submit"
         >
           {busy ? (
@@ -115,19 +120,19 @@ function ConversationPill({
 
   const label =
     status === 'speaking'
-      ? 'Speaking'
+      ? t('composer.speaking')
       : status === 'transcribing'
-        ? 'Transcribing'
+        ? t('composer.transcribing')
         : status === 'thinking'
-          ? 'Thinking'
+          ? t('chat.thinking')
           : muted
-            ? 'Muted'
-            : 'Listening'
+            ? t('composer.muted')
+            : t('composer.listening')
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <Button
-        aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+        aria-label={muted ? t('composer.unmuteMic') : t('composer.muteMic')}
         aria-pressed={muted}
         className={cn(GHOST_ICON_BTN, 'p-0', muted && 'bg-muted text-muted-foreground')}
         disabled={disabled}
@@ -136,7 +141,7 @@ function ConversationPill({
           onToggleMute()
         }}
         size="icon"
-        title={muted ? 'Unmute microphone' : 'Mute microphone'}
+        title={muted ? t('composer.unmuteMic') : t('composer.muteMic')}
         type="button"
         variant="ghost"
       >
@@ -144,34 +149,34 @@ function ConversationPill({
       </Button>
       {listening && (
         <Button
-          aria-label="Stop listening and send"
+          aria-label={t('composer.stopListening')}
           className="h-(--composer-control-size) shrink-0 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           disabled={disabled}
           onClick={() => {
             triggerHaptic('submit')
             onStopTurn()
           }}
-          title="Stop listening and send"
+          title={t('composer.stopListening')}
           type="button"
           variant="ghost"
         >
           <Square className="fill-current" size={11} />
-          <span>Stop</span>
+          <span>{t('chat.stop')}</span>
         </Button>
       )}
       <Button
-        aria-label="End voice conversation"
+        aria-label={t('composer.endVoice')}
         className="h-(--composer-control-size) gap-1.5 rounded-full bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
         disabled={disabled}
         onClick={() => {
           triggerHaptic('close')
           onEnd()
         }}
-        title="End voice conversation"
+        title={t('composer.endVoice')}
         type="button"
       >
         <ConversationIndicator level={level} listening={listening} speaking={speaking} />
-        <span>End</span>
+        <span>{t('composer.end')}</span>
       </Button>
       <span className="sr-only" role="status">
         {label}
@@ -221,7 +226,7 @@ function DictationButton({
   const active = state.active || status !== 'idle'
 
   const aria =
-    status === 'recording' ? 'Stop dictation' : status === 'transcribing' ? 'Transcribing dictation' : 'Voice dictation'
+    status === 'recording' ? t('composer.stopDictation') : status === 'transcribing' ? t('composer.transcribingDictation') : t('composer.voiceDictation')
 
   return (
     <Button

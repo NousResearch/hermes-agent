@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { triggerHaptic } from '@/lib/haptics'
 import { HelpCircle, Loader2, PencilLine } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/hooks/use-translation'
 import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -75,6 +76,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const { t } = useTranslation()
 
   // Race: tool.start fires a tick before clarify.request, so request_id
   // arrives slightly after the tool block mounts. Show the question (from
@@ -84,13 +86,13 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const respond = useCallback(
     async (answer: string) => {
       if (!ready || !matchingRequest) {
-        notifyError(new Error('Clarify request is not ready yet'), 'Could not send clarify response')
+        notifyError(new Error('Clarify request is not ready yet'), t('clarify.couldNotSend'))
 
         return
       }
 
       if (!gateway) {
-        notifyError(new Error('Hermes gateway is not connected'), 'Could not send clarify response')
+        notifyError(new Error('Hermes gateway is not connected'), t('clarify.couldNotSend'))
 
         return
       }
@@ -107,7 +109,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
       } catch (error) {
-        notifyError(error, 'Could not send clarify response')
+        notifyError(error, t('clarify.couldNotSend'))
         setSubmitting(false)
       }
     },
@@ -173,10 +175,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         </span>
         <div className="grid flex-1 gap-0.5">
           <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground/85">
-            Hermes is asking
+            {t('clarify.hermesIsAsking')}
           </span>
           <span className="whitespace-pre-wrap leading-snug text-foreground">
-            {question || <em className="text-muted-foreground/70">Loading question…</em>}
+            {question || <em className="text-muted-foreground/70">{t('clarify.loadingQuestion')}</em>}
           </span>
         </div>
       </div>
@@ -219,7 +221,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             >
               <PencilLine className="size-3" />
             </span>
-            <span className="flex-1">Other (type your answer)</span>
+            <span className="flex-1">{t('clarify.otherTypeAnswer')}</span>
           </button>
         </div>
       )}
@@ -231,12 +233,12 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             disabled={submitting}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={handleTextareaKey}
-            placeholder="Type your answer…"
+            placeholder={t('clarify.placeholderAnswer')}
             ref={textareaRef}
             value={draft}
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[0.6875rem] text-muted-foreground/85">⌘/Ctrl + Enter to send</span>
+            <span className="text-[0.6875rem] text-muted-foreground/85">{t('clarify.cmdEnterToSend')}</span>
             <div className="flex items-center gap-1.5">
               {hasChoices && (
                 <Button
@@ -249,7 +251,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                   type="button"
                   variant="ghost"
                 >
-                  Back
+                  {t('clarify.back')}
                 </Button>
               )}
               <Button
@@ -259,10 +261,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 type="button"
                 variant="ghost"
               >
-                Skip
+                {t('clarify.skip')}
               </Button>
               <Button disabled={!ready || submitting || !draft.trim()} size="sm" type="submit">
-                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : 'Send'}
+                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : t('chat.send')}
               </Button>
             </div>
           </div>
@@ -271,14 +273,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       {!typing && hasChoices && (
         <div className="flex items-center justify-between text-[0.6875rem] text-muted-foreground/85">
-          <span>1–{choices.length} to pick</span>
+          <span>{t('clarify.pickLabel', { n: String(choices.length) })}</span>
           <button
             className="bg-transparent text-muted-foreground/85 underline-offset-4 decoration-current/20 hover:text-foreground hover:underline disabled:opacity-50"
             disabled={!ready || submitting}
             onClick={() => void respond('')}
             type="button"
           >
-            Skip
+            {t('clarify.skip')}
           </button>
         </div>
       )}

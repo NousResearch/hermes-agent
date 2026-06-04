@@ -14,6 +14,7 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { t } from '@/store/i18n'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
 
@@ -74,7 +75,7 @@ export function TitlebarControls({
     {
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: sidebarOpen ? 'Hide sidebar' : 'Show sidebar',
+      label: sidebarOpen ? t('titlebar.hideSidebar') : t('titlebar.showSidebar'),
       onSelect: () => {
         triggerHaptic('tap')
         toggleSidebarOpen()
@@ -84,12 +85,12 @@ export function TitlebarControls({
       active: commandCenterOpen,
       icon: <Codicon name="search" />,
       id: 'search',
-      label: 'Search',
+      label: t('titlebar.search'),
       onSelect: () => {
         triggerHaptic('open')
         onOpenSearch()
       },
-      title: 'Search sessions, views, and actions'
+      title: t('titlebar.searchTitle')
     },
     ...leftTools
   ]
@@ -98,7 +99,7 @@ export function TitlebarControls({
     active: fileBrowserOpen,
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: fileBrowserOpen ? 'Hide right sidebar' : 'Show right sidebar',
+    label: fileBrowserOpen ? t('titlebar.hideRightSidebar') : t('titlebar.showRightSidebar'),
     onSelect: () => {
       triggerHaptic('tap')
       toggleFileBrowserOpen()
@@ -111,13 +112,13 @@ export function TitlebarControls({
       active: hapticsMuted,
       icon: hapticsMuted ? <VolumeX /> : <Volume2 />,
       id: 'haptics',
-      label: hapticsMuted ? 'Unmute haptics' : 'Mute haptics',
+      label: hapticsMuted ? t('titlebar.unmuteHaptics') : t('titlebar.muteHaptics'),
       onSelect: toggleHaptics
     },
     {
       icon: <Codicon name="settings-gear" />,
       id: 'settings',
-      label: 'Open settings',
+      label: t('titlebar.openSettings'),
       onSelect: () => {
         triggerHaptic('open')
         onOpenSettings()
@@ -182,10 +183,10 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          aria-label="Profiles"
+          aria-label={t('titlebar.profiles')}
           className={cn(titlebarButtonClass, 'grid place-items-center bg-transparent select-none [&_svg]:size-4')}
           onPointerDown={event => event.stopPropagation()}
-          title="Profiles"
+          title={t('titlebar.profiles')}
           type="button"
         >
           <Codicon name="account" />
@@ -193,9 +194,9 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64" sideOffset={8}>
         <DropdownMenuLabel>
-          <div className="text-sm font-medium text-foreground">Profiles</div>
+          <div className="text-sm font-medium text-foreground">{t('titlebar.profiles')}</div>
           <div className="mt-1 text-xs font-normal leading-4 text-muted-foreground">
-            Advanced Hermes environments for separate personas, config, skills, and SOUL.md.
+            {t('titlebar.profilesDesc')}
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
@@ -206,7 +207,7 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
           }}
         >
           <Codicon name="account" size="1rem" />
-          <span>Manage profiles</span>
+          <span>{t('titlebar.manageProfiles')}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

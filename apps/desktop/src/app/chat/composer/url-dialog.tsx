@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Globe } from '@/lib/icons'
+import { t } from '@/store/i18n'
 
 const URL_HINT = /^https?:\/\//i
 
@@ -43,8 +44,8 @@ export function UrlDialog({
             <Globe className="size-4" />
           </span>
           <div className="grid gap-0.5 text-left">
-            <DialogTitle>Attach a URL</DialogTitle>
-            <DialogDescription>Hermes will fetch the page and include it as context for this turn.</DialogDescription>
+            <DialogTitle>{t('urlDialog.title')}</DialogTitle>
+            <DialogDescription>{t('urlDialog.description')}</DialogDescription>
           </div>
         </DialogHeader>
         <form
@@ -60,23 +61,23 @@ export function UrlDialog({
               autoCorrect="off"
               inputMode="url"
               onChange={e => onChange(e.target.value)}
-              placeholder="https://example.com/post"
+              placeholder={t('urlDialog.placeholder')}
               ref={inputRef}
               spellCheck={false}
               value={value}
             />
             {trimmed.length > 0 && !looksLikeUrl && (
               <p className="text-xs text-muted-foreground/85">
-                Include the full URL, e.g. <span className="font-mono">https://…</span>
+                {t('urlDialog.hint')} <span className="font-mono">https://…</span>
               </p>
             )}
           </div>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button disabled={!looksLikeUrl} type="submit">
-              Attach
+              {t('urlDialog.attach')}
             </Button>
           </DialogFooter>
         </form>

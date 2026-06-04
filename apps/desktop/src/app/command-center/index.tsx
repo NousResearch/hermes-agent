@@ -28,6 +28,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
+import { t } from '@/store/i18n'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
@@ -579,7 +580,7 @@ export function CommandCenterView({
           ) : section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
-                <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">No sessions yet.</OverlayCard>
+                <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">{t('commandCenter.noSessionsYet')}</OverlayCard>
               ) : (
                 <div className="grid gap-1.5">
                   {filteredSessions.map(session => {
@@ -671,13 +672,13 @@ export function CommandCenterView({
                     )}
                   </div>
                 ) : (
-                  <div className="text-xs text-muted-foreground">Loading status...</div>
+                  <div className="text-xs text-muted-foreground">{t('commandCenter.loadingStatus')}</div>
                 )}
               </OverlayCard>
 
               <OverlayCard className="min-h-0 overflow-hidden p-2">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">Recent logs</span>
+                  <span className="text-xs font-medium text-muted-foreground">{t('commandCenter.recentLogs')}</span>
                   {systemError && (
                     <span className="inline-flex items-center gap-1 text-xs text-destructive">
                       <AlertCircle className="size-3.5" />
@@ -796,7 +797,7 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
             />
           </div>
         ) : loading ? (
-          <div className="text-xs text-muted-foreground">Loading usage...</div>
+          <div className="text-xs text-muted-foreground">{t('commandCenter.loadingUsage')}</div>
         ) : (
           <div className="text-xs text-muted-foreground">
             No usage in the last {period} days.{' '}
@@ -810,7 +811,7 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
       <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
         <OverlayCard className="p-3">
           <div className="mb-2 flex items-baseline justify-between">
-            <span className="text-xs font-medium text-muted-foreground">Daily tokens</span>
+            <span className="text-xs font-medium text-muted-foreground">{t('commandCenter.dailyTokens')}</span>
             <span className="flex items-center gap-3 text-[0.65rem] text-muted-foreground">
               <span className="inline-flex items-center gap-1">
                 <span className="size-2 bg-[color:var(--dt-primary)]/60" /> input
@@ -821,7 +822,7 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
             </span>
           </div>
           {daily.length === 0 ? (
-            <div className="grid h-24 place-items-center text-xs text-muted-foreground">No daily activity.</div>
+            <div className="grid h-24 place-items-center text-xs text-muted-foreground">{t('commandCenter.noDailyActivity')}</div>
           ) : (
             <>
               <div className="flex h-24 items-end gap-px">
@@ -863,7 +864,7 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
                 Top models
               </div>
               {byModel.length === 0 ? (
-                <div className="text-xs text-muted-foreground">No model usage yet.</div>
+                <div className="text-xs text-muted-foreground">{t('commandCenter.noModelUsage')}</div>
               ) : (
                 <ul className="space-y-1">
                   {byModel.slice(0, 6).map(entry => (
@@ -887,7 +888,7 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
                 Top skills
               </div>
               {topSkills.length === 0 ? (
-                <div className="text-xs text-muted-foreground">No skill activity yet.</div>
+                <div className="text-xs text-muted-foreground">{t('commandCenter.noSkillActivity')}</div>
               ) : (
                 <ul className="space-y-1">
                   {topSkills.slice(0, 6).map(entry => (

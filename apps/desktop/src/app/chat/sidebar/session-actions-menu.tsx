@@ -1,6 +1,7 @@
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useTranslation } from '@/hooks/use-translation'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -20,6 +21,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
+import { t } from '@/store/i18n'
 
 interface SessionActions {
   sessionId: string
@@ -42,13 +44,14 @@ interface ItemSpec {
 }
 
 function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive, onDelete }: SessionActions) {
+  const { t } = useTranslation()
   const [renameOpen, setRenameOpen] = useState(false)
 
   const items: ItemSpec[] = [
     {
       disabled: !onPin,
       icon: 'pin',
-      label: pinned ? 'Unpin' : 'Pin',
+      label: pinned ? t('sessions.unpin') : t('sessions.pin'),
       onSelect: () => {
         triggerHaptic('selection')
         onPin?.()
@@ -57,7 +60,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !sessionId,
       icon: 'copy',
-      label: 'Copy ID',
+      label: t('sessions.copyId'),
       onSelect: event => {
         event.preventDefault()
         triggerHaptic('selection')
@@ -67,7 +70,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !sessionId,
       icon: 'cloud-download',
-      label: 'Export',
+      label: t('sessions.export'),
       onSelect: () => {
         triggerHaptic('selection')
         void exportSession(sessionId, { title })
@@ -76,7 +79,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !sessionId,
       icon: 'edit',
-      label: 'Rename',
+      label: t('sessions.rename'),
       onSelect: () => {
         triggerHaptic('selection')
         setRenameOpen(true)
@@ -85,7 +88,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !onArchive,
       icon: 'archive',
-      label: 'Archive',
+      label: t('sessions.archive'),
       onSelect: () => {
         triggerHaptic('selection')
         onArchive?.()
@@ -95,7 +98,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
       className: 'text-destructive focus:text-destructive',
       disabled: !onDelete,
       icon: 'trash',
-      label: 'Delete',
+      label: t('common.delete'),
       onSelect: () => {
         triggerHaptic('warning')
         onDelete?.()
@@ -133,7 +136,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
         <DropdownMenuContent
           align={align}
-          aria-label={`Actions for ${actions.title}`}
+          aria-label={`${t('sessions.actions')} ${actions.title}`}
           className="w-40"
           sideOffset={sideOffset}
         >
@@ -203,10 +206,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
       const result = await renameSession(sessionId, next)
       const finalTitle = result.title || next || ''
       setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
-      notify({ durationMs: 2_000, kind: 'success', message: 'Renamed' })
+      notify({ durationMs: 2_000, kind: 'success', message: t('sessions.renamed') })
       onOpenChange(false)
     } catch (err) {
-      notifyError(err, 'Rename failed')
+      notifyError(err, t('sessions.renameFailed'))
     } finally {
       setSubmitting(false)
     }
@@ -216,8 +219,8 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Rename session</DialogTitle>
-          <DialogDescription>Give this chat a memorable title. Leave empty to clear.</DialogDescription>
+          <DialogTitle>{t('sessions.renameDialog')}</DialogTitle>
+          <DialogDescription>{t('sessions.renameDesc')}</DialogDescription>
         </DialogHeader>
         <Input
           autoFocus
@@ -231,16 +234,16 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
               onOpenChange(false)
             }
           }}
-          placeholder="Untitled session"
+          placeholder={t('sessions.untitled')}
           ref={inputRef}
           value={value}
         />
         <DialogFooter>
           <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button disabled={submitting} onClick={() => void submit()} type="button">
-            Save
+            {t('common.save')}
           </Button>
         </DialogFooter>
       </DialogContent>

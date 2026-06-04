@@ -6,10 +6,22 @@ import { cn } from '@/lib/utils'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
+import { useTranslation } from '@/hooks/use-translation'
+import { SUPPORTED_LOCALES, type Locale } from '@/store/i18n'
 
 import { MODE_OPTIONS } from './constants'
 import { prettyName } from './helpers'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
+
+const LANGUAGE_LABELS: Record<Locale, string> = {
+  'en': 'English',
+  'zh-CN': '中文（简体）',
+  'ja': '日本語',
+  'ko': '한국어',
+  'de': 'Deutsch',
+  'es': 'Español',
+  'fr': 'Français',
+}
 
 function ThemePreview({ name }: { name: string }) {
   const t = BUILTIN_THEMES[name]
@@ -55,24 +67,24 @@ export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const activeTheme = availableThemes.find(t => t.name === themeName)
+  const { t: translate, locale, setLocale } = useTranslation()
 
   return (
     <SettingsContent>
       <div className="space-y-5">
         <div>
-          <SectionHeading icon={Palette} title="Appearance" />
+          <SectionHeading icon={Palette} title={translate('appearance.title')} />
           <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
-            chat surface styling.
+            {translate('appearance.description')}
           </p>
         </div>
 
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Color Mode</div>
+              <div className="text-sm font-medium">{translate('appearance.colorMode')}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Pick a fixed mode or let Hermes follow your system setting.
+                {translate('appearance.colorModeDesc')}
               </div>
             </div>
             <Pill>{prettyName(mode)}</Pill>
@@ -117,25 +129,25 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Tool Call Display</div>
+              <div className="text-sm font-medium">{translate('appearance.toolCallDisplay')}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Product hides raw tool payloads; Technical shows full input/output.
+                {translate('appearance.toolCallDisplayDesc')}
               </div>
             </div>
-            <Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>
+            <Pill>{toolViewMode === 'technical' ? translate('appearance.toolViewTechnical') : translate('appearance.toolViewProduct')}</Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {(
               [
                 {
                   id: 'product',
-                  label: 'Product',
-                  description: 'Human-friendly tool activity with concise summaries.'
+                  label: translate('appearance.toolViewProduct'),
+                  description: translate('appearance.toolViewProductDesc')
                 },
                 {
                   id: 'technical',
-                  label: 'Technical',
-                  description: 'Include raw tool args/results and low-level details.'
+                  label: translate('appearance.toolViewTechnical'),
+                  description: translate('appearance.toolViewTechnicalDesc')
                 }
               ] as const
             ).map(option => {
@@ -174,9 +186,9 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Theme</div>
+              <div className="text-sm font-medium">{translate('appearance.theme')}</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Desktop palettes only. The selected mode is applied on top.
+                {translate('appearance.themeDesc')}
               </div>
             </div>
             {activeTheme && <Pill>{activeTheme.label}</Pill>}
@@ -217,6 +229,40 @@ export function AppearanceSettings() {
                 </button>
               )
             })}
+          </div>
+        </section>
+
+        {/* Language selector */}
+        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">{translate('appearance.language')}</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {translate('appearance.languageDesc')}
+              </div>
+            </div>
+            <Pill>{LANGUAGE_LABELS[locale]}</Pill>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-4">
+            {SUPPORTED_LOCALES.map(code => (
+              <button
+                key={code}
+                onClick={() => {
+                  triggerHaptic('crisp')
+                  setLocale(code)
+                }}
+                className={cn(
+                  'flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
+                  code === locale
+                    ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
+                    : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
+                )}
+                type="button"
+              >
+                {code === locale && <Check className="size-3.5" />}
+                {LANGUAGE_LABELS[code]}
+              </button>
+            ))}
           </div>
         </section>
       </div>

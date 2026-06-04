@@ -22,6 +22,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/hooks/use-translation'
 import { notifyError } from '@/store/notifications'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
@@ -366,6 +367,7 @@ interface ArtifactsViewProps extends React.ComponentProps<'section'> {
 }
 
 export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ArtifactsViewProps) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
@@ -541,7 +543,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       ) : visibleArtifacts.length === 0 ? (
         <div className="grid h-full place-items-center px-6 text-center">
           <div>
-            <div className="text-sm font-medium">No artifacts found</div>
+            <div className="text-sm font-medium">{t('artifacts.noArtifactsFound')}</div>
             <div className="mt-1 text-xs text-muted-foreground">
               Generated images and file outputs will appear here as sessions produce them.
             </div>

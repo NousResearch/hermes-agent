@@ -25,6 +25,7 @@ import {
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
+import { t } from '@/store/i18n'
 import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
@@ -183,7 +184,7 @@ export function useStatusbarItems({
         icon: <Command className="size-3.5" />,
         id: 'command-center',
         onSelect: toggleCommandCenter,
-        title: commandCenterOpen ? 'Close Command Center' : 'Open Command Center',
+        title: commandCenterOpen ? t('commandCenter.close') : t('commandCenter.open'),
         variant: 'action'
       },
       {
@@ -191,10 +192,10 @@ export function useStatusbarItems({
         detail: gatewayDetail,
         icon: inferenceReady ? <Activity className="size-3" /> : <AlertCircle className="size-3" />,
         id: 'gateway-health',
-        label: 'Gateway',
+        label: t('gateway.label'),
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
-        title: inferenceStatus?.reason || 'Hermes inference gateway status',
+        title: inferenceStatus?.reason || t('gateway.inferenceStatus'),
         variant: 'menu'
       },
       {
@@ -219,16 +220,16 @@ export function useStatusbarItems({
             <Sparkles className="size-3" />
           ),
         id: 'agents',
-        label: 'Agents',
+        label: t('agents.label'),
         onSelect: openAgents,
-        title: agentsOpen ? 'Close agents' : 'Open agents',
+        title: agentsOpen ? t('agents.close') : t('agents.open'),
         variant: 'action'
       },
       {
         icon: <Clock className="size-3" />,
         id: 'cron',
-        label: 'Cron',
-        title: 'Open cron jobs',
+        label: t('cron.label'),
+        title: t('cron.open'),
         to: CRON_ROUTE,
         variant: 'action'
       }

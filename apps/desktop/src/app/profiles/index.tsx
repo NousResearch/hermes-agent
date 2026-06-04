@@ -26,7 +26,9 @@ import {
 } from '@/hermes'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/hooks/use-translation'
 import { notify, notifyError } from '@/store/notifications'
+import { t } from '@/store/i18n'
 
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { titlebarHeaderBaseClass } from '../shell/titlebar'
@@ -50,6 +52,7 @@ export function ProfilesView({
   setTitlebarToolGroup,
   ...props
 }: ProfilesViewProps) {
+  const { t } = useTranslation()
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedName, setSelectedName] = useState<null | string>(null)
@@ -166,7 +169,7 @@ export function ProfilesView({
   return (
     <section {...props} className="flex h-full min-w-0 flex-col overflow-hidden rounded-b-[0.9375rem] bg-background">
       <header className={titlebarHeaderBaseClass}>
-        <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">Profiles</h2>
+        <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">{t('profiles.title')}</h2>
         <span className="pointer-events-auto text-xs text-muted-foreground">
           {profiles ? `${profiles.length} ${profiles.length === 1 ? 'profile' : 'profiles'}` : ''}
         </span>
@@ -195,7 +198,7 @@ export function ProfilesView({
                   </li>
                 ))}
                 {profiles.length === 0 && (
-                  <li className="px-2 py-4 text-center text-xs text-muted-foreground">No profiles yet.</li>
+                  <li className="px-2 py-4 text-center text-xs text-muted-foreground">{t('profiles.noProfilesYet')}</li>
                 )}
               </ul>
             </aside>
@@ -212,7 +215,7 @@ export function ProfilesView({
                 <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
                   <div>
                     <Users className="mx-auto size-6 text-muted-foreground/60" />
-                    <p className="mt-3">Select a profile to view its details.</p>
+                    <p className="mt-3">{t('profiles.selectProfile')}</p>
                   </div>
                 </div>
               )}
@@ -230,7 +233,7 @@ export function ProfilesView({
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete profile?</DialogTitle>
+            <DialogTitle>{t('profiles.deleteProfile')}</DialogTitle>
             <DialogDescription>
               {pendingDelete ? (
                 <>
@@ -359,7 +362,7 @@ function ProfileDetail({
                     {profile.provider && <span className="text-muted-foreground"> · {profile.provider}</span>}
                   </>
                 ) : (
-                  <span className="text-muted-foreground">Not set</span>
+                  <span className="text-muted-foreground">{t('config.notSet')}</span>
                 )}
               </DetailRow>
               <DetailRow label="Skills">{profile.skill_count}</DetailRow>
@@ -449,12 +452,12 @@ function SoulEditor({ profileName }: { profileName: string }) {
     <section className="space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">SOUL.md</h4>
+          <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{t('profiles.soulMd')}</h4>
           <p className="text-xs text-muted-foreground">
             The system prompt and persona instructions baked into this profile.
           </p>
         </div>
-        {dirty && <span className="text-[0.65rem] text-muted-foreground">Unsaved changes</span>}
+        {dirty && <span className="text-[0.65rem] text-muted-foreground">{t('profiles.unsavedChanges')}</span>}
       </div>
 
       {loading ? (
@@ -541,7 +544,7 @@ function CreateProfileDialog({
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>New profile</DialogTitle>
+          <DialogTitle>{t('profiles.newProfile')}</DialogTitle>
           <DialogDescription>
             Profiles are independent Hermes environments: separate config, skills, and SOUL.md.
           </DialogDescription>
@@ -573,7 +576,7 @@ function CreateProfileDialog({
               type="checkbox"
             />
             <span>
-              <span className="font-medium">Clone from default</span>
+              <span className="font-medium">{t('profiles.cloneFromDefault')}</span>
               <span className="ml-2 text-xs text-muted-foreground">
                 Copy config, skills, and SOUL.md from your default profile.
               </span>
@@ -661,7 +664,7 @@ function RenameProfileDialog({
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Rename profile</DialogTitle>
+          <DialogTitle>{t('profiles.renameProfile')}</DialogTitle>
           <DialogDescription>
             Renaming updates the profile directory and any wrapper scripts in{' '}
             <span className="font-mono">~/.local/bin</span>.

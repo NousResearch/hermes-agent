@@ -17,6 +17,7 @@ import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-te
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useTranslation } from '@/hooks/use-translation'
 import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
@@ -133,6 +134,8 @@ export function ChatBar({
   const userInterruptedRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
+  const { t } = useTranslation()
+
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -162,9 +165,9 @@ export function ChatBar({
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
   const placeholder = disabled
     ? gatewayState === 'closed' || gatewayState === 'error'
-      ? 'Reconnecting to Hermes…'
-      : 'Starting Hermes...'
-    : 'Send follow-up'
+      ? t('chat.reconnecting')
+      : t('composer.startingHermes')
+    : t('composer.sendFollowUp')
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -1089,7 +1092,7 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label="Message"
+        aria-label={t('composer.message')}
         autoCorrect="off"
         autoCapitalize="off"
         className={cn(

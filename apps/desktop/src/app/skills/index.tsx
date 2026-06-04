@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
+import { useTranslation } from '@/hooks/use-translation'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
 import { asText, includesQuery, prettyName, toolNames } from '../settings/helpers'
@@ -66,6 +67,7 @@ interface SkillsViewProps extends React.ComponentProps<'section'> {
 }
 
 export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
+  const { t } = useTranslation()
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
   const [query, setQuery] = useState('')
@@ -184,7 +186,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         <>
           <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
             <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
-              Skills
+              {t('skills.title')}
             </TextTab>
             <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
               Toolsets
@@ -209,7 +211,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </>
       }
       onSearchChange={setQuery}
-      searchPlaceholder={mode === 'skills' ? 'Search skills...' : 'Search toolsets...'}
+      searchPlaceholder={mode === 'skills' ? t('skills.search') : 'Search toolsets...'}
       searchTrailingAction={
         <Button
           aria-label={refreshing ? 'Refreshing skills' : 'Refresh skills'}
@@ -231,7 +233,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       ) : mode === 'skills' ? (
         <div className="h-full overflow-y-auto px-4 py-3">
           {visibleSkills.length === 0 ? (
-            <EmptyState description="Try a broader search or different category." title="No skills found" />
+            <EmptyState description="Try a broader search or different category." title={t('skills.noResults')} />
           ) : (
             <div className="space-y-4">
               {skillGroups.map(([category, list]) => (

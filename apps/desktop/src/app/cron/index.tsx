@@ -29,6 +29,8 @@ import { AlertTriangle, Clock, Pause, Pencil, Play, Trash2, Zap } from '@/lib/ic
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useTranslation } from '@/hooks/use-translation'
+import { t } from '@/store/i18n'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
@@ -310,6 +312,7 @@ interface CronViewProps extends React.ComponentProps<'section'> {
 }
 
 export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
+  const { t } = useTranslation()
   const [jobs, setJobs] = useState<CronJob[] | null>(null)
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -461,7 +464,7 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
               : 'Try a broader search query.'
           }
           onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
-          title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
+          title={totalCount === 0 ? t('cron.noJobs') : 'No matches'}
         />
       ) : (
         <div className="h-full overflow-y-auto px-4 py-3">
@@ -498,7 +501,7 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete cron job?</DialogTitle>
+            <DialogTitle>{t('cron.deleteCronJob')}</DialogTitle>
             <DialogDescription>
               {pendingDelete ? (
                 <>
@@ -853,7 +856,7 @@ function Field({
     <div className="grid gap-1.5">
       <label className="flex items-baseline gap-2 text-xs font-medium text-foreground" htmlFor={htmlFor}>
         {label}
-        {optional && <span className="text-[0.65rem] font-normal text-muted-foreground">Optional</span>}
+        {optional && <span className="text-[0.65rem] font-normal text-muted-foreground">{t('cron.optional')}</span>}
       </label>
       {children}
     </div>

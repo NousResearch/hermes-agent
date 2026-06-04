@@ -1,5 +1,7 @@
 import { type CSSProperties, useState } from 'react'
 
+import { t } from '@/store/i18n'
+
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -169,9 +171,9 @@ export function Intro({ personality, seed }: IntroProps) {
           }
         >
           <span>
-            <span>HERMES AGENT</span>
+            <span>{t('intro.brand')}</span>
           </span>
-          <span aria-hidden="true">HERMES AGENT</span>
+          <span aria-hidden="true">{t('intro.brand')}</span>
         </p>
 
         <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>

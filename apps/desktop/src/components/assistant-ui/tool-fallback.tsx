@@ -22,6 +22,7 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
+import { t } from '@/store/i18n'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
 import {
@@ -387,7 +388,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {showRawSearchDrilldown && (
             <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'cursor-pointer mb-0')}>Raw response</summary>
+              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'cursor-pointer mb-0')}>{t('tool.rawResponse')}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
                 {view.rawResult}
               </pre>

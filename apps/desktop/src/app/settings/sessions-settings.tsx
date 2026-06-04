@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { t } from '@/store/i18n'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { useTranslation } from '@/hooks/use-translation'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
@@ -31,6 +33,7 @@ function workspaceLabel(cwd: null | string | undefined): string {
 }
 
 export function SessionsSettings({ query }: SearchProps) {
+  const { t } = useTranslation()
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -42,7 +45,7 @@ export function SessionsSettings({ query }: SearchProps) {
       const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
-      notifyError(err, 'Could not load archived sessions')
+      notifyError(err, t('sessions.loadFailed'))
     } finally {
       setLoading(false)
     }
@@ -61,9 +64,9 @@ export function SessionsSettings({ query }: SearchProps) {
       // Surface it again in the sidebar without waiting for a full refresh.
       setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
       triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: 'Restored' })
+      notify({ durationMs: 2_000, kind: 'success', message: t('sessions.restored') })
     } catch (err) {
-      notifyError(err, 'Unarchive failed')
+      notifyError(err, t('sessions.unarchiveFailed'))
     } finally {
       setBusyId(null)
     }
@@ -81,7 +84,7 @@ export function SessionsSettings({ query }: SearchProps) {
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       triggerHaptic('warning')
     } catch (err) {
-      notifyError(err, 'Delete failed')
+      notifyError(err, t('sessions.deleteFailed'))
     } finally {
       setBusyId(null)
     }
@@ -100,7 +103,7 @@ export function SessionsSettings({ query }: SearchProps) {
   }, [query, sessions])
 
   if (loading) {
-    return <LoadingState label="Loading archived sessions…" />
+    return <LoadingState label={t('sessions.loadingArchived')} />
   }
 
   return (
@@ -110,7 +113,7 @@ export function SessionsSettings({ query }: SearchProps) {
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
-        title="Archived sessions"
+        title={t('sessions.archivedTitle')}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to
@@ -119,8 +122,8 @@ export function SessionsSettings({ query }: SearchProps) {
 
       {filtered.length === 0 ? (
         <EmptyState
-          description={query.trim() ? 'No archived chats match your search.' : 'Archive a chat to hide it here.'}
-          title="Nothing archived"
+          description={query.trim() ? t('sessions.noSearchMatch') : t('sessions.archiveHint')}
+          title={t('sessions.nothingArchivedTitle')}
         />
       ) : (
         <div className="divide-y divide-border/30">
@@ -140,15 +143,15 @@ export function SessionsSettings({ query }: SearchProps) {
                       variant="outline"
                     >
                       {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                      <span>Unarchive</span>
+                      <span>{t('sessions.unarchive')}</span>
                     </Button>
                     <Button
-                      aria-label="Delete permanently"
+                      aria-label={t('sessions.deletePermanentlyTitle')}
                       className="text-muted-foreground hover:text-destructive"
                       disabled={busy}
                       onClick={() => void remove(session)}
                       size="icon"
-                      title="Delete permanently"
+                      title={t('sessions.deletePermanentlyTitle')}
                       type="button"
                       variant="ghost"
                     >
@@ -218,9 +221,9 @@ function DefaultProjectDirSetting() {
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
-      notify({ durationMs: 2_000, kind: 'success', message: 'Default project directory updated' })
+      notify({ durationMs: 2_000, kind: 'success', message: t('sessions.projectDirUpdated') })
     } catch (err) {
-      notifyError(err, 'Could not update default directory')
+      notifyError(err, t('sessions.updateDirFailed'))
     } finally {
       setBusy(false)
     }
@@ -237,7 +240,7 @@ function DefaultProjectDirSetting() {
       await settings.setDefaultProjectDir(null)
       setDir(null)
     } catch (err) {
-      notifyError(err, 'Could not clear default directory')
+      notifyError(err, t('sessions.clearDirFailed'))
     } finally {
       setBusy(false)
     }
@@ -245,7 +248,7 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title="Default project directory" />
+      <SectionHeading icon={FolderOpen} title={t('sessions.defaultProjectDirTitle')} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         New sessions start in this folder unless you pick another. Leave it unset to use your home directory.
       </p>
@@ -254,7 +257,7 @@ function DefaultProjectDirSetting() {
           <div className="flex items-center gap-1.5">
             <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="outline">
               <FolderOpen className="size-3.5" />
-              <span>{dir ? 'Change' : 'Choose'}</span>
+              <span>{dir ? t('sessions.change') : t('sessions.choose')}</span>
             </Button>
             {dir && (
               <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="ghost">

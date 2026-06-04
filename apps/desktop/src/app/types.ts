@@ -60,6 +60,7 @@ export interface SidebarNavItem {
   icon: React.ComponentType<{ className?: string }>
   route?: string
   action?: 'new-session'
+  labelKey?: string
 }
 
 export interface ClientSessionState {

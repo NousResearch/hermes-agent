@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
+import { useTranslation } from '@/hooks/use-translation'
 import { Check, Eye, EyeOff, Save, Settings2, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -43,12 +44,14 @@ function EnvActions({
   isRevealed,
   showReveal = true
 }: EnvActionsProps) {
+  const { t } = useTranslation()
+
   return (
     <div className="flex shrink-0 items-center gap-1.5">
       {info.url && (
-        <Button asChild size="xs" title="Open provider docs" variant="ghost">
+        <Button asChild size="xs" title={t('keys.openDocs')} variant="ghost">
           <a href={info.url} rel="noreferrer" target="_blank">
-            Docs
+            {t('keys.docs')}
           </a>
         </Button>
       )}
@@ -56,21 +59,21 @@ function EnvActions({
         <Button
           onClick={() => onReveal(varKey)}
           size="icon-xs"
-          title={isRevealed ? 'Hide value' : 'Reveal value'}
+          title={isRevealed ? t('keys.hideValue') : t('keys.revealValue')}
           variant="ghost"
         >
           {isRevealed ? <EyeOff /> : <Eye />}
         </Button>
       )}
       <Button onClick={onEdit} size="xs" variant="outline">
-        {info.is_set ? 'Replace' : 'Set'}
+        {info.is_set ? t('keys.replace') : t('keys.set')}
       </Button>
       {info.is_set && (
         <Button
           disabled={saving === varKey}
           onClick={() => onClear(varKey)}
           size="icon-xs"
-          title="Clear value"
+          title={t('keys.clearValue')}
           variant="ghost"
         >
           <Trash2 />
@@ -92,6 +95,7 @@ function EnvVarRow({
   onReveal,
   compact = false
 }: EnvRowProps) {
+  const { t } = useTranslation()
   const isEditing = edits[varKey] !== undefined
   const isRevealed = revealed[varKey] !== undefined
   const value = isRevealed ? revealed[varKey] : info.redacted_value
@@ -126,7 +130,7 @@ function EnvVarRow({
             <span className="font-mono text-xs font-medium">{varKey}</span>
             <Pill tone={info.is_set ? 'primary' : 'muted'}>
               {info.is_set && <Check className="size-3" />}
-              {info.is_set ? 'Set' : 'Not set'}
+              {info.is_set ? t('keys.set') : t('keys.notSet')}
             </Pill>
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{info.description}</p>
@@ -159,17 +163,17 @@ function EnvVarRow({
             autoFocus
             className={cn('min-w-56 flex-1 font-mono', CONTROL_TEXT)}
             onChange={e => setEdits(c => ({ ...c, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? 'Replace current value' : 'Enter value'}
+            placeholder={info.is_set ? t('keys.replaceValue') : t('keys.enterValue')}
             type={info.is_password ? 'password' : 'text'}
             value={edits[varKey]}
           />
           <Button disabled={saving === varKey || !edits[varKey]} onClick={() => onSave(varKey)} size="sm">
             <Save />
-            {saving === varKey ? 'Saving' : 'Save'}
+            {saving === varKey ? t('keys.saving') : t('keys.save')}
           </Button>
           <Button onClick={() => setEdits(c => withoutKey(c, varKey))} size="sm" variant="outline">
             <Codicon name="close" />
-            Cancel
+            {t('keys.cancel')}
           </Button>
         </div>
       )}
@@ -184,6 +188,7 @@ function EnvProviderGroup({
   group: ProviderGroup
   rowProps: Omit<EnvRowProps, 'varKey' | 'info'>
 }) {
+  const { t } = useTranslation()
   const setCount = group.entries.filter(([, info]) => info.is_set).length
   // Default-expand providers that already have at least one key set; the
   // user is much more likely to be coming back to edit those than to start
@@ -200,11 +205,11 @@ function EnvProviderGroup({
         <span className="flex min-w-0 items-center gap-2">
           <Zap className="size-4 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-medium">
-            {group.name === 'Other' ? 'Other providers' : group.name}
+            {group.name === 'Other' ? t('keys.otherProviders') : group.name}
           </span>
-          {setCount > 0 && <Pill tone="primary">{setCount} set</Pill>}
+          {setCount > 0 && <Pill tone="primary">{t('keys.countSet', { count: setCount })}</Pill>}
         </span>
-        <span className="text-xs text-muted-foreground">{group.entries.length} keys</span>
+        <span className="text-xs text-muted-foreground">{t('keys.countKeys', { count: group.entries.length })}</span>
       </button>
       {expanded && (
         <div className="grid gap-2 bg-muted/20 p-3">
@@ -218,12 +223,13 @@ function EnvProviderGroup({
 }
 
 export function KeysSettings({ query }: SearchProps) {
+  const { t } = useTranslation()
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
 
-  // We used to hide ~80% of rows behind a global "Show advanced" toggle, but
+  // We used to hide ~80% of rows behind a global t('keys.showAdvanced') toggle, but
   // everything in this view is configuration-level — "advanced" was a poor
   // distinction. The full list is rendered now and provider groups
   // default-collapsed-unless-set keep the surface manageable.
@@ -246,7 +252,7 @@ export function KeysSettings({ query }: SearchProps) {
           setVars(next)
         }
       } catch (err) {
-        notifyError(err, 'API keys failed to load')
+        notifyError(err, t('keys.loadFailed'))
       }
     })()
 
@@ -303,9 +309,9 @@ export function KeysSettings({ query }: SearchProps) {
     const q = query.trim().toLowerCase()
 
     const labels: Record<string, string> = {
-      tool: 'Tools',
-      messaging: 'Messaging',
-      setting: 'Settings'
+      tool: t('keys.categoryTools'),
+      messaging: t('keys.categoryMessaging'),
+      setting: t('keys.categorySettings')
     }
 
     return ['tool', 'messaging', 'setting'].flatMap(cat => {
@@ -339,7 +345,7 @@ export function KeysSettings({ query }: SearchProps) {
       await setEnvVar(key, value)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${key} updated.` })
+      notify({ kind: 'success', title: t('keys.credentialSaved'), message: `${key} updated.` })
     } catch (err) {
       notifyError(err, `Failed to save ${key}`)
     } finally {
@@ -358,7 +364,7 @@ export function KeysSettings({ query }: SearchProps) {
       await deleteEnvVar(key)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${key} removed.` })
+      notify({ kind: 'success', title: t('keys.credentialRemoved'), message: `${key} removed.` })
     } catch (err) {
       notifyError(err, `Failed to remove ${key}`)
     } finally {
@@ -382,7 +388,7 @@ export function KeysSettings({ query }: SearchProps) {
   }
 
   if (!vars) {
-    return <LoadingState label="Loading API keys and credentials..." />
+    return <LoadingState label={t('keys.loading')} />
   }
 
   const rowProps = {
@@ -402,8 +408,8 @@ export function KeysSettings({ query }: SearchProps) {
       <div className="mb-6">
         <SectionHeading
           icon={Zap}
-          meta={`${configuredCount} of ${providerGroups.length} configured`}
-          title="LLM providers"
+          meta={t('keys.configured', { count: configuredCount, total: providerGroups.length })}
+          title={t('settings.llmProviders')}
         />
         <div className="grid gap-2">
           {providerGroups.map(group => (
@@ -416,7 +422,7 @@ export function KeysSettings({ query }: SearchProps) {
         <div className="mb-6" key={group.category}>
           <SectionHeading
             icon={Settings2}
-            meta={`${group.entries.filter(([, i]) => i.is_set).length} of ${group.entries.length} set`}
+            meta={t('keys.setCount', { count: group.entries.filter(([, i]) => i.is_set).length, total: group.entries.length })}
             title={group.label}
           />
           <div className="grid gap-2">

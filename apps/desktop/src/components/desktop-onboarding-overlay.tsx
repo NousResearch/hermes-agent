@@ -39,6 +39,7 @@ import {
   submitOnboardingCode
 } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
+import { t } from '@/store/i18n'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -235,9 +236,9 @@ function Header() {
           <Sparkles className="size-5" />
         </div>
         <div>
-          <h2 className="text-[0.9375rem] font-semibold tracking-tight">Let's get you setup with Hermes Agent</h2>
+          <h2 className="text-[0.9375rem] font-semibold tracking-tight">{t('onboarding.setupTitle')}</h2>
           <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-            Connect a model provider to start chatting. Most options take one click.
+            {t('onboarding.setupDesc')}
           </p>
         </div>
       </div>
@@ -278,7 +279,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   }
 
   if (providers === null) {
-    return <Status>Looking up providers...</Status>
+    return <Status>{t('onboarding.lookingUp')}</Status>
   }
 
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
@@ -350,7 +351,7 @@ function FeaturedProviderRow({
           ) : (
             <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
               <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
-              Recommended
+              {t('onboarding.recommended')}
             </span>
           )}
         </div>
@@ -378,7 +379,7 @@ function KeyProviderRow({ onClick }: { onClick: () => void }) {
       type="button"
     >
       <div className="min-w-0">
-        <span className="text-sm font-semibold">OpenRouter</span>
+        <span className="text-sm font-semibold">{t('onboarding.openRouter')}</span>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">One key, hundreds of models — a solid default</p>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
@@ -478,7 +479,7 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
       <div className="grid gap-2">
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm leading-6 text-muted-foreground">{option.description}</p>
-          {option.docsUrl ? <DocsLink href={option.docsUrl}>Get a key</DocsLink> : null}
+          {option.docsUrl ? <DocsLink href={option.docsUrl}>{t('onboarding.getKey')}</DocsLink> : null}
         </div>
         <Input
           autoComplete="off"
@@ -544,11 +545,11 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
 
   if (flow.status === 'awaiting_user') {
     return (
-      <Step title={`Sign in with ${title}`}>
+      <Step title={`${t('onboarding.signInTitle')} ${title}`}>
         <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-          <li>We opened {title} in your browser.</li>
-          <li>Authorize Hermes there.</li>
-          <li>Copy the authorization code and paste it below.</li>
+          <li>{t('onboarding.step1')} {title}{t('onboarding.step1End')}</li>
+          <li>{t('onboarding.step2')}</li>
+          <li>{t('onboarding.step3')}</li>
         </ol>
         <Input
           autoFocus
@@ -557,7 +558,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
           placeholder="Paste authorization code"
           value={flow.code}
         />
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open authorization page</DocsLink>}>
+        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t('onboarding.reopenAuth')}</DocsLink>}>
           <CancelBtn />
           <Button disabled={!flow.code.trim()} onClick={() => void submitOnboardingCode(ctx)}>
             Continue
@@ -574,7 +575,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
           We opened {title} in your browser. Authorize Hermes there and you'll be connected
           automatically — nothing to copy or paste.
         </p>
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open sign-in page</DocsLink>}>
+        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t('onboarding.reopenSignIn')}</DocsLink>}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
             Waiting for you to authorize...
@@ -614,7 +615,7 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
     <Step title={`Sign in with ${title}`}>
       <p className="text-sm text-muted-foreground">We opened {title} in your browser. Enter this code there:</p>
       <CodeBlock copied={flow.copied} large onCopy={() => void copyDeviceCode()} text={flow.start.user_code} />
-      <FlowFooter left={<DocsLink href={flow.start.verification_url}>Re-open verification page</DocsLink>}>
+      <FlowFooter left={<DocsLink href={flow.start.verification_url}>{t('onboarding.reopenVerification')}</DocsLink>}>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />
           Waiting for you to authorize...
@@ -709,7 +710,7 @@ function ConfirmingModelPanel({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Default model</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('onboarding.defaultModel')}</p>
               {freeTier === true && (
                 <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
                   Free tier

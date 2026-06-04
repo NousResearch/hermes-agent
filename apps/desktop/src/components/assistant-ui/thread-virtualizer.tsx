@@ -2,6 +2,7 @@ import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import { type ComponentProps, type FC, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
+import { useTranslation } from '@/hooks/use-translation'
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 

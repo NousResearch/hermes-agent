@@ -5,8 +5,10 @@ import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
 import { Check, ExternalLink, Eye, EyeOff, Loader2, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/hooks/use-translation'
 import { notify, notifyError } from '@/store/notifications'
 import type { ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
+import { t } from '@/store/i18n'
 
 import { Pill } from './primitives'
 
@@ -33,6 +35,7 @@ interface EnvVarFieldProps {
 }
 
 function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
+  const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -109,7 +112,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {envVar.url && (
-            <Button asChild size="xs" title="Open provider docs" variant="ghost">
+            <Button asChild size="xs" title={t('keys.openProviderDocs')} variant="ghost">
               <a href={envVar.url} rel="noreferrer" target="_blank">
                 Docs
                 <ExternalLink className="size-3" />
@@ -117,7 +120,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             </Button>
           )}
           {isSet && (
-            <Button onClick={() => void handleReveal()} size="icon-xs" title="Reveal value" variant="ghost">
+            <Button onClick={() => void handleReveal()} size="icon-xs" title={t('keys.revealValue')} variant="ghost">
               {revealed !== null ? <EyeOff /> : <Eye />}
             </Button>
           )}
@@ -125,7 +128,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             {isSet ? 'Replace' : 'Set'}
           </Button>
           {isSet && (
-            <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" title="Clear value" variant="ghost">
+            <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" title={t('keys.clearValue')} variant="ghost">
               <Trash2 />
             </Button>
           )}
@@ -148,10 +151,10 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
           />
           <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-            Save
+            {t('common.save')}
           </Button>
           <Button onClick={() => setEditing(false)} size="sm" variant="outline">
-            Cancel
+            {t('common.cancel')}
           </Button>
         </div>
       )}
@@ -301,7 +304,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                   </p>
                 )}
                 {provider.env_vars.length === 0 ? (
-                  <p className="text-[0.72rem] text-muted-foreground">No API key required.</p>
+                  <p className="text-[0.72rem] text-muted-foreground">{t('toolset.noApiKeyRequired')}</p>
                 ) : (
                   provider.env_vars.map(ev => (
                     <EnvVarField

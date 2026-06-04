@@ -173,6 +173,9 @@ export interface HermesConfig {
     personality?: string
     skin?: string
   }
+  desktop?: {
+    yolo_default?: boolean
+  }
   terminal?: {
     cwd?: string
   }

@@ -9,7 +9,7 @@ import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
@@ -97,12 +97,8 @@ export function useStatusbarItems({
 
     setYoloActive(next)
 
-    if (!sid) {
-      return
-    }
-
     try {
-      await setSessionYolo(requestGateway, sid, next)
+      await setDesktopYoloMode(requestGateway, sid, next)
     } catch {
       setYoloActive(!next)
     }

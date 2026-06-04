@@ -19,7 +19,7 @@ import {
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode } from '@/lib/yolo-session'
 import {
   $composerAttachments,
   addComposerAttachment,
@@ -35,8 +35,7 @@ import {
   $yoloActive,
   setAwaitingResponse,
   setBusy,
-  setMessages,
-  setYoloActive
+  setMessages
 } from '@/store/session'
 
 import type { ClientSessionState, ImageAttachResponse, SlashExecResponse } from '../../types'
@@ -416,16 +415,14 @@ export function usePromptActions({
           const sid = sessionHint || activeSessionIdRef.current
           const next = !$yoloActive.get()
 
-          if (!sid) {
-            setYoloActive(next)
-            notify({ kind: 'success', message: next ? 'YOLO armed for this chat' : 'YOLO off' })
-
-            return
-          }
-
           try {
-            const active = await setSessionYolo(requestGateway, sid, next)
-            appendSessionTextMessage(sid, 'system', `YOLO ${active ? 'on' : 'off'} for this session`)
+            const active = await setDesktopYoloMode(requestGateway, sid, next)
+
+            if (sid) {
+              appendSessionTextMessage(sid, 'system', `YOLO ${active ? 'on' : 'off'} for this session`)
+            } else {
+              notify({ kind: 'success', message: active ? 'YOLO on by default' : 'YOLO off by default' })
+            }
           } catch {
             notify({ kind: 'error', title: 'YOLO', message: 'Could not toggle YOLO' })
           }

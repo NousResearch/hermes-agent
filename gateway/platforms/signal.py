@@ -1386,6 +1386,7 @@ class SignalAdapter(BasePlatformAdapter):
         # fresh rather than inheriting a cooldown from a prior conversation.
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)
+        await self._send_typing_stop(chat_id)
 
     async def _send_typing_stop(self, chat_id: str) -> None:
         """Send a best-effort platform-level typing stop."""
@@ -1409,7 +1410,6 @@ class SignalAdapter(BasePlatformAdapter):
         """Public interface for stopping typing — called by base adapter's
         _keep_typing finally block to clean up platform-level typing tasks."""
         await self._stop_typing_indicator(chat_id)
-        await self._send_typing_stop(chat_id)
 
     # ------------------------------------------------------------------
     # Reactions

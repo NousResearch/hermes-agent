@@ -874,12 +874,10 @@ class TestSignalStopTyping:
     async def test_stop_typing_calls_private_method(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         adapter._stop_typing_indicator = AsyncMock()
-        adapter._send_typing_stop = AsyncMock()
 
         await adapter.stop_typing("+155****4567")
 
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
-        adapter._send_typing_stop.assert_awaited_once_with("+155****4567")
 
     @pytest.mark.asyncio
     async def test_stop_typing_sends_signal_stop_for_dm(self, monkeypatch):
@@ -953,13 +951,48 @@ class TestSignalStopTyping:
         ]
 
     @pytest.mark.asyncio
+    async def test_private_stop_typing_indicator_sends_signal_stop(
+        self, monkeypatch
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        calls = []
+
+        async def _fake_rpc(method, params, rpc_id=None, **kwargs):
+            calls.append(
+                {
+                    "method": method,
+                    "params": dict(params),
+                    "rpc_id": rpc_id,
+                    "kwargs": dict(kwargs),
+                }
+            )
+            return {"ok": True}
+
+        adapter._rpc = _fake_rpc
+
+        await adapter._stop_typing_indicator("group:abc123")
+
+        assert calls == [
+            {
+                "method": "sendTyping",
+                "params": {
+                    "account": adapter.account,
+                    "groupId": "abc123",
+                    "stop": True,
+                },
+                "rpc_id": "typing-stop",
+                "kwargs": {"log_failures": False},
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_stop_typing_ignores_signal_stop_failure(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         adapter._typing_failures["group:abc123"] = 2
         adapter._typing_skip_until["group:abc123"] = 123.0
 
         async def _fake_rpc(method, params, rpc_id=None, **kwargs):
-            return None
+            raise ConnectionError("signal-cli unavailable")
 
         adapter._rpc = _fake_rpc
 

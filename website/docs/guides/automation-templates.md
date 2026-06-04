@@ -74,7 +74,7 @@ Review for:
 - Missing tests for new behavior
 
 Post a concise review. If the PR is a trivial docs/typo change, say so briefly." \
-  --skill github-code-review \
+   --skill code-review \
   --deliver github_comment
 ```
 
@@ -97,7 +97,7 @@ platforms:
             Author: {pull_request.user.login}
             Diff URL: {pull_request.diff_url}
             Review for security, performance, and code quality.
-          skills: ["github-code-review"]
+          skills: ["code-review"]
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"

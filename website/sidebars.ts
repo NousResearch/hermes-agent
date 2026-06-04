@@ -237,7 +237,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/github/github-codebase-inspection',
                     'user-guide/skills/bundled/github/github-github-auth',
-                    'user-guide/skills/bundled/github/github-github-code-review',
+                    'user-guide/skills/bundled/github/github-code-review-doc',  // removed skill, kept doc for redirects
                     'user-guide/skills/bundled/github/github-github-issues',
                     'user-guide/skills/bundled/github/github-github-pr-workflow',
                     'user-guide/skills/bundled/github/github-github-repo-management',

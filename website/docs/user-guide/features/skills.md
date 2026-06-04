@@ -299,7 +299,7 @@ Skill bundles are tiny YAML files that group several skills under a single slash
 ```bash
 # Create a bundle for backend feature work
 hermes bundles create backend-dev \
-  --skill github-code-review \
+   --skill code-review \
   --skill test-driven-development \
   --skill github-pr-workflow \
   -d "Backend feature work — review, test, PR workflow"
@@ -321,7 +321,7 @@ Bundles live in **`~/.hermes/skill-bundles/<slug>.yaml`** and look like this:
 name: backend-dev
 description: Backend feature work — review, test, PR workflow.
 skills:
-  - github-code-review
+   - code-review
   - test-driven-development
   - github-pr-workflow
 instruction: |

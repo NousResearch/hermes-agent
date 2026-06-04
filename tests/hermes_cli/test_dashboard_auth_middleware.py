@@ -149,10 +149,11 @@ def test_gated_static_asset_path_is_public(gated_app):
 # ---------------------------------------------------------------------------
 
 
-def test_full_login_round_trip_unlocks_gated_api(gated_app):
+def _login_with_stub_provider(client: TestClient) -> list[str]:
+    """Complete the in-process OAuth round trip and return callback cookies."""
     # 1) Click "Sign in with Stub IdP" — /auth/login redirects to the stub
     #    with a PKCE cookie on the response.
-    r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
+    r1 = client.get("/auth/login?provider=stub", follow_redirects=False)
     assert r1.status_code == 302
     pkce = next(
         (c for c in r1.headers.get_list("set-cookie")
@@ -169,7 +170,7 @@ def test_full_login_round_trip_unlocks_gated_api(gated_app):
 
     # 2) The browser would now follow the redirect to /auth/callback.
     #    TestClient automatically carries the PKCE cookie forward.
-    r2 = gated_app.get(
+    r2 = client.get(
         f"/auth/callback?code=stub_code&state={state}",
         follow_redirects=False,
     )
@@ -178,6 +179,11 @@ def test_full_login_round_trip_unlocks_gated_api(gated_app):
     set_cookies = r2.headers.get_list("set-cookie")
     assert any("hermes_session_at" in c for c in set_cookies)
     assert any("hermes_session_rt" in c for c in set_cookies)
+    return set_cookies
+
+
+def test_full_login_round_trip_unlocks_gated_api(gated_app):
+    _login_with_stub_provider(gated_app)
 
     # 3) A gated API route (``/api/sessions``) now succeeds because we
     #    have a valid session cookie. (We deliberately don't probe
@@ -189,6 +195,75 @@ def test_full_login_round_trip_unlocks_gated_api(gated_app):
         f"Expected 200 for /api/sessions post-login, got {r3.status_code}: "
         f"{r3.text}"
     )
+
+
+def test_full_login_round_trip_unlocks_legacy_token_guarded_api(
+    gated_app,
+    monkeypatch,
+):
+    """OAuth-gated requests must satisfy route-local legacy token guards.
+
+    Some dashboard endpoints keep explicit ``_require_token(request)`` calls
+    for loopback-mode API protection. In OAuth-gated mode the middleware has
+    already authenticated the cookie and attached ``request.state.session``;
+    those route-local guards must accept that validated session rather than
+    requiring the legacy ``_SESSION_TOKEN`` header that the gated SPA no
+    longer sends.
+    """
+    _login_with_stub_provider(gated_app)
+    monkeypatch.setattr(
+        web_server,
+        "_merged_plugins_hub",
+        lambda: {"plugins": [], "dashboard_plugins": [], "providers": {}},
+    )
+
+    r = gated_app.get("/api/dashboard/plugins/hub")
+    assert r.status_code == 200, (
+        "Expected a valid OAuth session cookie to unlock a route that also "
+        f"calls _require_token(); got {r.status_code}: {r.text}"
+    )
+    assert r.json() == {"plugins": [], "dashboard_plugins": [], "providers": {}}
+
+
+def test_legacy_token_guarded_api_still_requires_oauth_session(
+    gated_app,
+    monkeypatch,
+):
+    """The gated-mode _require_token path must not become a broad bypass."""
+    called = False
+
+    def fake_hub():
+        nonlocal called
+        called = True
+        return {"plugins": []}
+
+    monkeypatch.setattr(web_server, "_merged_plugins_hub", fake_hub)
+
+    r = gated_app.get("/api/dashboard/plugins/hub")
+    assert r.status_code == 401
+    assert called is False
+
+
+def test_legacy_session_token_does_not_unlock_gated_api_without_oauth_session(
+    gated_app,
+    monkeypatch,
+):
+    """Gated dashboards trust the OAuth cookie session, not legacy headers."""
+    called = False
+
+    def fake_hub():
+        nonlocal called
+        called = True
+        return {"plugins": []}
+
+    monkeypatch.setattr(web_server, "_merged_plugins_hub", fake_hub)
+
+    r = gated_app.get(
+        "/api/dashboard/plugins/hub",
+        headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+    )
+    assert r.status_code == 401
+    assert called is False
 
 
 def test_login_unknown_provider_returns_404(gated_app):

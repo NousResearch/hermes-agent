@@ -198,7 +198,20 @@ def _has_valid_session_token(request: Request) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    """Validate dashboard API authentication.  Raises 401 on mismatch.
+
+    Loopback-mode dashboard API calls use the legacy ephemeral session token.
+    OAuth-gated deployments are authenticated earlier by
+    ``gated_auth_middleware``, which validates the session cookie and attaches
+    the verified session to ``request.state.session``. Route-local guards must
+    accept that middleware-authenticated session instead of requiring the
+    legacy token header that the gated SPA no longer sends.
+    """
+    if getattr(request.app.state, "auth_required", False):
+        if getattr(request.state, "session", None) is not None:
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 

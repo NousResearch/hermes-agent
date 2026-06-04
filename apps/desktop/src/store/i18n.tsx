@@ -12,6 +12,12 @@ export const LANGUAGE_LABELS: Record<string, string> = {
   'de': 'Deutsch',
   'es': 'Español',
   'fr': 'Français',
+  'ar': 'العربية',
+  'hi': 'हिन्दी',
+  'th': 'ภาษาไทย',
+  'vi': 'Tiếng Việt',
+  'it': 'Italiano',
+  'ru': 'Русский',
   'pt-BR': 'Português (Brasil)',
 }
 

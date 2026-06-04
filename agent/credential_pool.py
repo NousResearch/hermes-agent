@@ -566,6 +566,9 @@ class CredentialPool:
                     last_status=None,
                     last_status_at=None,
                     last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
                 )
                 self._replace_entry(entry, updated)
                 self._persist()
@@ -959,6 +962,9 @@ class CredentialPool:
                             last_status=STATUS_OK,
                             last_status_at=None,
                             last_error_code=None,
+                            last_error_reason=None,
+                            last_error_message=None,
+                            last_error_reset_at=None,
                         )
                         self._replace_entry(synced, updated)
                         self._persist()

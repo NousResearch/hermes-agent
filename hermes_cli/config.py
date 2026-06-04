@@ -1692,6 +1692,24 @@ DEFAULT_CONFIG = {
         "subagent_auto_approve": False,
     },
 
+    # Mixture-of-Agents (tools/mixture_of_agents_tool.py) — override the models
+    # and sampling used by the `mixture_of_agents` tool. Every key is optional;
+    # an empty/None value falls back to the module's hardcoded default, so an
+    # absent or empty `moa:` section preserves the current behavior exactly.
+    # Precedence at call time: tool call-arg > this config > module constant.
+    "moa": {
+        "reference_models": [],            # [] = module defaults (REFERENCE_MODELS)
+        "aggregator_model": "",            # "" = module default (AGGREGATOR_MODEL)
+        "reference_temperature": None,     # None = module default (REFERENCE_TEMPERATURE)
+        "aggregator_temperature": None,    # None = module default (AGGREGATOR_TEMPERATURE)
+        "min_successful_references": None, # None = module default (MIN_SUCCESSFUL_REFERENCES)
+        "reasoning_effort": "xhigh",       # "" / "none" => omit the extra_body reasoning block
+                                           # (lets LiteLLM / local models that don't support it work)
+        "base_url": "",                    # "" = default OpenRouter path; set to route the tool's
+                                           # calls at an OpenAI-compatible endpoint (LiteLLM, vLLM, etc.)
+        "api_key": "",                     # "" = default OPENROUTER_API_KEY; paired with base_url
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
@@ -3937,7 +3955,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming",
+    "sessions", "streaming", "moa",
 }
 
 # Valid fields inside a custom_providers list entry

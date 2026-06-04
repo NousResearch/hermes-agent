@@ -21,10 +21,52 @@ existing optional ``hermes-agent[acp]`` extra is the only requirement.
 
 from __future__ import annotations
 
+
+class AcpClientUnavailable(RuntimeError):
+    """Raised when an ACP-client launch is requested but ``acp`` is missing.
+
+    Carries a remediation hint so callers (and the Kanban worker) can surface a
+    clear refusal and fall back to the default lane instead of crashing.
+    Adopted from prototype ``72bd6be09`` (design §2.9 "clear refusal").
+    """
+
+
+def acp_available() -> bool:
+    """Return whether the optional ``acp`` extra is importable.
+
+    Lazy ``import acp`` so importing this package never requires the optional
+    extra, mirroring ``acp_adapter``'s tolerance for a missing dependency.
+    """
+    try:
+        import acp  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+# ``transport`` is pure (stdlib only) and safe to import eagerly: it carries the
+# default-off selection seam and its constants are part of the stable surface.
+from acp_client.transport import (  # noqa: E402
+    LAUNCH_GUARD_ENV_VAR,
+    TRANSPORT_ACP,
+    TRANSPORT_ENV_VAR,
+    TRANSPORT_PTY,
+    TransportDecision,
+    resolve_transport,
+)
+
 # Re-exported lazily-importable names.  Importing this package must not require
 # the optional ``acp`` dependency, mirroring ``acp_adapter``'s tolerance for a
 # missing extra (see ``acp_adapter/entry.py``).
 __all__ = [
+    "AcpClientUnavailable",
+    "acp_available",
+    "LAUNCH_GUARD_ENV_VAR",
+    "TRANSPORT_ACP",
+    "TRANSPORT_ENV_VAR",
+    "TRANSPORT_PTY",
+    "TransportDecision",
+    "resolve_transport",
     "OutboundConnection",
     "OutboundSessionManager",
     "OutboundSessionState",

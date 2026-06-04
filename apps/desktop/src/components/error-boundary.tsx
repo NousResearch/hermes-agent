@@ -72,7 +72,7 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
             {error.message || String(error)}
           </div>
 
-          <div className="flex flex-wrap items-center gap-4">
+          <div className="flex flex-wrap items-center gap-2.5">
             <Button onClick={reset}>
               <RefreshCw className="size-4" />
               Try again

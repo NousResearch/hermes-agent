@@ -172,6 +172,8 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image_too_large",      # error_code variant
     "image size exceeds",   # variant
     "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
+    "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
+    "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
 ]

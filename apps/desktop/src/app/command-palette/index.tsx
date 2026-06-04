@@ -4,14 +4,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList
-} from '@/components/ui/command'
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { getHermesConfigRecord, listSessions } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -137,7 +130,11 @@ export function CommandPalette() {
 
   // Server-backed sources for the type-to-search groups, fetched lazily while
   // the palette is open. react-query handles caching/dedup/staleness.
-  const configQuery = useQuery({ queryKey: ['command-palette', 'config'], queryFn: getHermesConfigRecord, enabled: open })
+  const configQuery = useQuery({
+    queryKey: ['command-palette', 'config'],
+    queryFn: getHermesConfigRecord,
+    enabled: open
+  })
 
   const sessionsQuery = useQuery({
     queryKey: ['command-palette', 'sessions'],
@@ -154,7 +151,9 @@ export function CommandPalette() {
   const mcpServers = useMemo(() => {
     const raw = configQuery.data?.mcp_servers
 
-    return raw && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw as Record<string, unknown>).sort() : []
+    return raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? Object.keys(raw as Record<string, unknown>).sort()
+      : []
   }, [configQuery.data])
 
   const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])

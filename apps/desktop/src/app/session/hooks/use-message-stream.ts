@@ -326,10 +326,7 @@ export function useMessageStream({
       return
     }
 
-    flushHandleRef.current = window.setTimeout(
-      runFlush,
-      Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast)
-    )
+    flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLast))
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(

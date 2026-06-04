@@ -160,8 +160,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       await toggleToolset(toolset.name, enabled)
-      setToolsets(current =>
-        current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
+      setToolsets(
+        current =>
+          current?.map(row => (row.name === toolset.name ? { ...row, enabled, available: enabled } : row)) ?? current
       )
       notify({
         kind: 'success',
@@ -275,7 +276,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                             aria-expanded={expanded}
                             aria-label={`Configure ${label}`}
                             className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                            onClick={() => setExpandedToolset(current => (current === toolset.name ? null : toolset.name))}
+                            onClick={() =>
+                              setExpandedToolset(current => (current === toolset.name ? null : toolset.name))
+                            }
                             type="button"
                           >
                             <StatusPill active={toolset.configured}>
@@ -321,7 +324,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 function StatusPill({ active, children }: { active: boolean; children: string }) {
   return (
     <Badge
-      className={active ? 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'}
+      className={
+        active ? 'bg-(--ui-bg-tertiary) text-(--ui-text-secondary)' : 'bg-(--ui-bg-quinary) text-(--ui-text-tertiary)'
+      }
     >
       {children}
     </Badge>

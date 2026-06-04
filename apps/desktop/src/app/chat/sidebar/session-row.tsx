@@ -146,7 +146,12 @@ export function SidebarSessionRow({
               />
             </span>
           ) : (
-            <span className={cn('grid w-3.5 shrink-0 place-items-center', needsInput ? 'overflow-visible' : 'overflow-hidden')}>
+            <span
+              className={cn(
+                'grid w-3.5 shrink-0 place-items-center',
+                needsInput ? 'overflow-visible' : 'overflow-hidden'
+              )}
+            >
               <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}

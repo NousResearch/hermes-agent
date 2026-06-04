@@ -4,6 +4,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { setMutableRef } from '@/lib/mutable-ref'
 import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
@@ -38,7 +39,7 @@ export function useSessionStateCache({
   }, [activeSessionId])
 
   useEffect(() => {
-    busyRef.current = busy
+    setMutableRef(busyRef, busy)
   }, [busy, busyRef])
 
   useEffect(() => {
@@ -89,7 +90,7 @@ export function useSessionStateCache({
 
     setMessages(preserveLocalAssistantErrors(pending.state.messages, $messages.get()))
     setBusy(pending.state.busy)
-    busyRef.current = pending.state.busy
+    setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 

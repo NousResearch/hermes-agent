@@ -1,3 +1,20 @@
+import {
+  closestCenter,
+  DndContext,
+  type DragEndEvent,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors
+} from '@dnd-kit/core'
+import {
+  arrayMove,
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -9,13 +26,16 @@ import { profileColor, profileColorSoft } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
   $activeGatewayProfile,
+  $profileOrder,
   $profiles,
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
   refreshActiveProfile,
   selectProfile,
-  setShowAllProfiles
+  setProfileOrder,
+  setShowAllProfiles,
+  sortByProfileOrder
 } from '@/store/profile'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -29,6 +49,7 @@ export function ProfileRail() {
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
+  const order = useStore($profileOrder)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -38,7 +59,27 @@ export function ProfileRail() {
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 
-  const named = profiles.filter(profile => !profile.is_default).sort((a, b) => a.name.localeCompare(b.name))
+  const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
+
+  // distance constraint: a small drag reorders, a tap still selects the profile.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
+
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) {
+      return
+    }
+
+    const ids = named.map(profile => profile.name)
+    const from = ids.indexOf(String(active.id))
+    const to = ids.indexOf(String(over.id))
+
+    if (from >= 0 && to >= 0) {
+      setProfileOrder(arrayMove(ids, from, to))
+    }
+  }
 
   // Re-pull the running profile + list on mount so a profile created elsewhere
   // shows up; cheap and best-effort.
@@ -64,15 +105,19 @@ export function ProfileRail() {
       )}
 
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {named.map(profile => (
-          <ProfileSquare
-            active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-            color={profileColor(profile.name)}
-            key={profile.name}
-            label={profile.name}
-            onSelect={() => selectProfile(profile.name)}
-          />
-        ))}
+        <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd} sensors={sensors}>
+          <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
+            {named.map(profile => (
+              <ProfileSquare
+                active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                color={profileColor(profile.name)}
+                key={profile.name}
+                label={profile.name}
+                onSelect={() => selectProfile(profile.name)}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
 
         <Tip label="New profile">
           <button
@@ -131,26 +176,34 @@ interface ProfileSquareProps {
 
 // A profile *is* its colored square — no icon-button chrome. Soft profile-tint
 // fill + the initial in the full color; the active one pops to full opacity with
-// a color ring. These pack tightly so the rail reads as a strip of profiles.
+// a color ring. These pack tightly so the rail reads as a strip of profiles,
+// and drag-sort to reorder (a tap below the drag threshold still selects).
 function ProfileSquare({ active, color, label, onSelect }: ProfileSquareProps) {
   const hue = color ?? 'var(--ui-text-quaternary)'
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: label })
 
   return (
     <Tip label={label}>
       <button
-        aria-label={label}
-        aria-pressed={active}
         className={cn(
-          'grid size-5 shrink-0 place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
-          active ? 'opacity-100' : 'opacity-55'
+          'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+          active ? 'opacity-100' : 'opacity-55',
+          isDragging && 'cursor-grabbing opacity-90'
         )}
         onClick={onSelect}
+        ref={setNodeRef}
         style={{
           backgroundColor: profileColorSoft(hue, active ? 30 : 22),
           boxShadow: active ? `inset 0 0 0 1.5px ${hue}` : undefined,
-          color: color ?? undefined
+          color: color ?? undefined,
+          transform: CSS.Transform.toString(transform),
+          transition
         }}
         type="button"
+        {...attributes}
+        {...listeners}
+        aria-label={label}
+        aria-pressed={active}
       >
         {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
       </button>

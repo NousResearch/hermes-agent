@@ -95,6 +95,13 @@ uv pip install -e ".[all,dev]"
 npm install
 ```
 
+On native Windows, if `git clone` fails with `Filename too long`, enable Git's
+long-path support first and re-clone:
+
+```powershell
+git config --global core.longpaths true
+```
+
 ### Configure for development
 
 ```bash

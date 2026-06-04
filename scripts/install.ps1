@@ -1040,11 +1040,11 @@ function Install-Repository {
                 # Reset $LASTEXITCODE before the probe so we don't pick up
                 # a stale 0 from an earlier git call in this session.
                 $global:LASTEXITCODE = 0
-                $revParseOut = & git -c windows.appendAtomically=false rev-parse --is-inside-work-tree 2>&1
+                $revParseOut = & git -c windows.appendAtomically=false -c core.longpaths=true rev-parse --is-inside-work-tree 2>&1
                 $revParseOk = ($LASTEXITCODE -eq 0) -and ($revParseOut -match "true")
 
                 $global:LASTEXITCODE = 0
-                $null = & git -c windows.appendAtomically=false status --short 2>&1
+                $null = & git -c windows.appendAtomically=false -c core.longpaths=true status --short 2>&1
                 $statusOk = ($LASTEXITCODE -eq 0)
 
                 if ($revParseOk -and $statusOk) {
@@ -1075,9 +1075,10 @@ function Install-Repository {
                 # by pinning autocrlf=false on this clone, (2) discard any
                 # pre-existing dirt with a hard reset before the checkout. Safe
                 # because nothing here is user-authored.
-                git -c windows.appendAtomically=false config core.autocrlf false 2>$null
-                git -c windows.appendAtomically=false reset --hard HEAD 2>$null
-                git -c windows.appendAtomically=false fetch origin
+                git -c windows.appendAtomically=false -c core.longpaths=true config core.autocrlf false 2>$null
+                git -c windows.appendAtomically=false -c core.longpaths=true config core.longpaths true 2>$null
+                git -c windows.appendAtomically=false -c core.longpaths=true reset --hard HEAD 2>$null
+                git -c windows.appendAtomically=false -c core.longpaths=true fetch origin
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check
                 # out as detached HEAD intentionally -- they're meant to be
@@ -1085,17 +1086,17 @@ function Install-Repository {
                 if ($Commit) {
                     # Make sure we have the commit locally (a tag-less commit
                     # SHA isn't always reachable from any one branch fetch).
-                    git -c windows.appendAtomically=false fetch origin $Commit
-                    git -c windows.appendAtomically=false checkout --detach $Commit
+                    git -c windows.appendAtomically=false -c core.longpaths=true fetch origin $Commit
+                    git -c windows.appendAtomically=false -c core.longpaths=true checkout --detach $Commit
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
                 } elseif ($Tag) {
-                    git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
-                    git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                    git -c windows.appendAtomically=false -c core.longpaths=true fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                    git -c windows.appendAtomically=false -c core.longpaths=true checkout --detach "refs/tags/$Tag"
                     if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
                 } else {
-                    git -c windows.appendAtomically=false checkout $Branch
+                    git -c windows.appendAtomically=false -c core.longpaths=true checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    git -c windows.appendAtomically=false pull origin $Branch
+                    git -c windows.appendAtomically=false -c core.longpaths=true pull origin $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
                 }
             } finally {
@@ -1127,18 +1128,23 @@ function Install-Repository {
         # Fix Windows git "copy-fd: write returned: Invalid argument" error.
         # Git for Windows can fail on atomic file operations (hook templates,
         # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
-        # The -c flag injects config before any file I/O occurs.
+        # The -c flag injects config before any file I/O occurs. Native
+        # Windows clones also need core.longpaths=true so deeply nested docs
+        # paths don't fail checkout with "Filename too long".
         Write-Info "Configuring git for Windows compatibility..."
-        $env:GIT_CONFIG_COUNT = "1"
+        $env:GIT_CONFIG_COUNT = "2"
         $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
         $env:GIT_CONFIG_VALUE_0 = "false"
+        $env:GIT_CONFIG_KEY_1 = "core.longpaths"
+        $env:GIT_CONFIG_VALUE_1 = "true"
         git config --global windows.appendAtomically false 2>$null
+        git config --global core.longpaths true 2>$null
 
         # Try SSH first, then HTTPS, with -c flag for atomic write fix
         Write-Info "Trying SSH clone..."
         $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
         try {
-            git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlSsh $InstallDir
+            git -c windows.appendAtomically=false -c core.longpaths=true clone --branch $Branch $RepoUrlSsh $InstallDir
             if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
         } catch { }
         $env:GIT_SSH_COMMAND = $null
@@ -1147,7 +1153,7 @@ function Install-Repository {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
             Write-Info "SSH failed, trying HTTPS..."
             try {
-                git -c windows.appendAtomically=false clone --branch $Branch $RepoUrlHttps $InstallDir
+                git -c windows.appendAtomically=false -c core.longpaths=true clone --branch $Branch $RepoUrlHttps $InstallDir
                 if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
             } catch { }
         }
@@ -1186,8 +1192,9 @@ function Install-Repository {
 
                     # Initialize git repo so updates work later
                     Push-Location $InstallDir
-                    git -c windows.appendAtomically=false init 2>$null
-                    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+                    git -c windows.appendAtomically=false -c core.longpaths=true init 2>$null
+                    git -c windows.appendAtomically=false -c core.longpaths=true config windows.appendAtomically false 2>$null
+                    git -c windows.appendAtomically=false -c core.longpaths=true config core.longpaths true 2>$null
                     git remote add origin $RepoUrlHttps 2>$null
                     Pop-Location
                     Write-Success "Git repo initialized for future updates"
@@ -1210,12 +1217,13 @@ function Install-Repository {
 
     # Set per-repo config (harmless if it fails)
     Push-Location $InstallDir
-    git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
+    git -c windows.appendAtomically=false -c core.longpaths=true config windows.appendAtomically false 2>$null
+    git -c windows.appendAtomically=false -c core.longpaths=true config core.longpaths true 2>$null
     # Pin autocrlf=false on the managed clone so git never renormalizes the
     # repo's LF text files to CRLF in the working tree. Without this, the very
     # next `hermes update` checkout aborts on a "dirty" tree the user never
     # touched (see the update path above).
-    git -c windows.appendAtomically=false config core.autocrlf false 2>$null
+    git -c windows.appendAtomically=false -c core.longpaths=true config core.autocrlf false 2>$null
 
     # Post-clone pin: when a clone (or ZIP-fallback init) just landed us on
     # $Branch's tip, honour the higher-precedence $Commit / $Tag by checking
@@ -1230,15 +1238,15 @@ function Install-Repository {
         try {
             if ($Commit) {
                 Write-Info "Pinning to commit $Commit..."
-                git -c windows.appendAtomically=false fetch origin $Commit
-                git -c windows.appendAtomically=false checkout --detach $Commit
+                git -c windows.appendAtomically=false -c core.longpaths=true fetch origin $Commit
+                git -c windows.appendAtomically=false -c core.longpaths=true checkout --detach $Commit
                 if ($LASTEXITCODE -ne 0) {
                     throw "git checkout $Commit failed (exit $LASTEXITCODE)"
                 }
             } elseif ($Tag) {
                 Write-Info "Pinning to tag $Tag..."
-                git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
-                git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
+                git -c windows.appendAtomically=false -c core.longpaths=true fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
+                git -c windows.appendAtomically=false -c core.longpaths=true checkout --detach "refs/tags/$Tag"
                 if ($LASTEXITCODE -ne 0) {
                     throw "git checkout tag $Tag failed (exit $LASTEXITCODE)"
                 }

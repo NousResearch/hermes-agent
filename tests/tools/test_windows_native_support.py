@@ -460,6 +460,22 @@ class TestReadmeNoLongerSaysWindowsUnsupported:
         )
 
 
+class TestWindowsInstallerGitConfig:
+    """The Windows installer should preempt long-path clone failures."""
+
+    def test_install_ps1_enables_git_longpaths_for_clone(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        assert "git config --global core.longpaths true" in source, (
+            "scripts/install.ps1 must enable Git long-path support for native "
+            "Windows installs before cloning the repo"
+        )
+        assert "-c core.longpaths=true clone --branch $Branch" in source, (
+            "scripts/install.ps1 must pass core.longpaths=true on clone so "
+            "deeply nested files don't fail checkout with 'Filename too long'"
+        )
+
+
 # ---------------------------------------------------------------------------
 # pty_bridge graceful import on Windows
 # ---------------------------------------------------------------------------

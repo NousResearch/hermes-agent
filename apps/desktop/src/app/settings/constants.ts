@@ -302,9 +302,9 @@ export interface ModeOption {
 }
 
 export const MODE_OPTIONS: ModeOption[] = [
-  { id: 'light', label: 'Light', description: 'Bright desktop surfaces', icon: Sun },
-  { id: 'dark', label: 'Dark', description: 'Low-glare workspace', icon: Moon },
-  { id: 'system', label: 'System', description: 'Follow OS appearance', icon: Monitor }
+  { id: 'light', label: 'appearance.mode.light', description: 'appearance.mode.lightDesc', icon: Sun },
+  { id: 'dark', label: 'appearance.mode.dark', description: 'appearance.mode.darkDesc', icon: Moon },
+  { id: 'system', label: 'appearance.mode.system', description: 'appearance.mode.systemDesc', icon: Monitor }
 ]
 
 export const SEARCH_PLACEHOLDER: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string> = {

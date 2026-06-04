@@ -10,7 +10,6 @@ import { useTranslation } from '@/hooks/use-translation'
 import { SUPPORTED_LOCALES, type Locale } from '@/store/i18n'
 
 import { MODE_OPTIONS } from './constants'
-import { prettyName } from './helpers'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
 
 const LANGUAGE_LABELS: Record<Locale, string> = {
@@ -87,7 +86,7 @@ export function AppearanceSettings() {
                 {translate('appearance.colorModeDesc')}
               </div>
             </div>
-            <Pill>{prettyName(mode)}</Pill>
+            <Pill>{translate(`appearance.mode.${mode}`)}</Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
             {MODE_OPTIONS.map(({ id, label, description, icon: Icon }) => {
@@ -116,9 +115,9 @@ export function AppearanceSettings() {
                       </span>
                     )}
                   </div>
-                  <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">{label}</div>
+                  <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">{translate(label)}</div>
                   <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {description}
+                    {translate(description)}
                   </div>
                 </button>
               )
@@ -191,7 +190,7 @@ export function AppearanceSettings() {
                 {translate('appearance.themeDesc')}
               </div>
             </div>
-            {activeTheme && <Pill>{activeTheme.label}</Pill>}
+            {activeTheme && <Pill>{translate(`appearance.theme.${activeTheme.name}`)}</Pill>}
           </div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {availableThemes.map(theme => {
@@ -214,10 +213,10 @@ export function AppearanceSettings() {
                   <div className="mt-3 flex items-start justify-between gap-3 px-1">
                     <div className="min-w-0">
                       <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
-                        {theme.label}
+                        {translate(`appearance.theme.${theme.name}`)}
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                        {theme.description}
+                        {translate(`appearance.theme.${theme.name}Desc`)}
                       </div>
                     </div>
                     {active && (

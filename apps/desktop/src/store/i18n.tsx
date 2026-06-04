@@ -138,6 +138,50 @@ export function t(key: string, params?: Record<string, unknown>): string {
   return value
 }
 
+
+// --- Provider description translation ---
+// Maps known backend description strings to i18n keys.
+// When a provider description matches, use the translated version.
+const PROVIDER_DESC_KEYS: Record<string, string> = {
+  "Nous Portal base URL override": "provider.desc.nousPortal",
+  "OpenRouter API key (for vision, web scraping helpers, and MoA)": "provider.desc.openRouter",
+  "Google AI Studio API key (also recognized as GEMINI_API_KEY)": "provider.desc.google",
+  "Google AI Studio API key (alias for GOOGLE_API_KEY)": "provider.desc.gemini",
+  "Anthropic API key": "provider.desc.anthropic",
+  "DeepSeek API key": "provider.desc.deepseek",
+  "xAI API key": "provider.desc.xai",
+  "Hugging Face API token": "provider.desc.huggingface",
+  "Kimi API key (Moonshot)": "provider.desc.kimi",
+  "MiniMax API key": "provider.desc.minimax",
+  "MiniMax China API key": "provider.desc.minimaxCn",
+  "DashScope API key (Alibaba Qwen)": "provider.desc.dashscope",
+  "GLM API key (Z.AI)": "provider.desc.glm",
+  "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)": "provider.desc.nvidia",
+  "OpenCode Go API key": "provider.desc.opencodeGo",
+  "OpenCode Zen API key": "provider.desc.opencodeZen",
+  "Xiaomi MiMo API key": "provider.desc.xiaomi",
+  "Kilo Code API key": "provider.desc.kiloCode",
+  "AI Gateway API key (Vercel AI Gateway)": "provider.desc.aiGateway",
+  "BROWSERBASE_API_KEY": "provider.desc.browserbase",
+  "ElevenLabs API key": "provider.desc.elevenLabs",
+  "OpenAI API key (for voice processing via proxy)": "provider.desc.openai",
+  "Mistral API key (for STT/TTS)": "provider.desc.mistral",
+  "Groq API key (for STT)": "provider.desc.groq",
+  "TAVILY_API_KEY": "provider.desc.tavily",
+  "FIRECRAWL_API_KEY": "provider.desc.firecrawl",
+  "FAL_KEY": "provider.desc.fal",
+}
+
+export function translateProviderDesc(desc: string): string {
+  const key = PROVIDER_DESC_KEYS[desc]
+  if (key) {
+    const translations = allTranslations[_currentLocale]
+    const fallback = allTranslations['en']
+    return translations?.[key] ?? fallback?.[key] ?? desc
+  }
+  return desc
+}
+
 // --- Bootstrap: preload English + saved locale ---
 ;(async () => {
   await ensureLocale('en')

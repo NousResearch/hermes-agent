@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useTranslation } from '@/hooks/use-translation'
+import { translateProviderDesc } from '@/store/i18n'
 import { Check, Eye, EyeOff, Save, Settings2, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -106,7 +107,7 @@ function EnvVarRow({
       <div className="flex items-center justify-between gap-3 py-1.5">
         <div className="min-w-0">
           <div className="truncate font-mono text-[0.72rem] text-muted-foreground">{varKey}</div>
-          <div className="truncate text-[0.68rem] text-muted-foreground/70">{info.description}</div>
+          <div className="truncate text-[0.68rem] text-muted-foreground/70">{translateProviderDesc(info.description)}</div>
         </div>
         <EnvActions
           info={info}
@@ -133,7 +134,7 @@ function EnvVarRow({
               {info.is_set ? t('keys.set') : t('keys.notSet')}
             </Pill>
           </div>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{info.description}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{translateProviderDesc(info.description)}</p>
         </div>
         <EnvActions
           info={info}

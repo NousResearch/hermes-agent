@@ -362,6 +362,81 @@ class TestExtractMedia:
 
 
 # ---------------------------------------------------------------------------
+# extract_media — container→host path remapping (Docker sandbox)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractMediaContainerPathRemap:
+    """Models running inside the Docker sandbox emit container-internal paths
+    (e.g. /workspace/outbound/x.xlsx) in MEDIA: tags, but media delivery runs
+    in the gateway process on the host. extract_media must remap those paths
+    to the host-visible mount so the file actually uploads."""
+
+    def _make_host_workspace_file(self, rel_under_workspace: str) -> str:
+        from tools.environments.base import get_sandbox_dir
+
+        host_file = get_sandbox_dir() / "docker" / "default" / "workspace" / rel_under_workspace
+        host_file.parent.mkdir(parents=True, exist_ok=True)
+        host_file.write_bytes(b"xlsx-bytes")
+        return str(host_file)
+
+    def test_remaps_workspace_path_to_host_when_docker(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        host_path = self._make_host_workspace_file("outbound/report.xlsx")
+
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "Done.\nMEDIA:/workspace/outbound/report.xlsx"
+        )
+
+        assert media == [(host_path, False)]
+        assert "/workspace/outbound" not in cleaned
+
+    def test_remaps_root_path_to_host_home_when_docker(self, monkeypatch):
+        from tools.environments.base import get_sandbox_dir
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        host_file = get_sandbox_dir() / "docker" / "default" / "home" / "outbound" / "x.csv"
+        host_file.parent.mkdir(parents=True, exist_ok=True)
+        host_file.write_bytes(b"csv")
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/root/outbound/x.csv")
+
+        assert media == [(str(host_file), False)]
+
+    def test_leaves_workspace_path_unchanged_when_host_file_absent(self, monkeypatch):
+        """Never invent a path: if the remapped host file doesn't exist, leave
+        the original so the existing not-found diagnostics still fire."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/workspace/outbound/missing.xlsx")
+
+        assert media == [("/workspace/outbound/missing.xlsx", False)]
+
+    def test_no_remap_when_not_docker(self, monkeypatch):
+        """Outside the Docker backend the path is already host-correct; do not
+        touch it even if a same-named file happens to exist under the sandbox."""
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        self._make_host_workspace_file("outbound/report.xlsx")
+
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/workspace/outbound/report.xlsx")
+
+        assert media == [("/workspace/outbound/report.xlsx", False)]
+
+    def test_bare_container_image_path_is_remapped(self, monkeypatch):
+        """Small models often emit a bare container path (no MEDIA: prefix);
+        extract_local_files must remap it to the host mount so it uploads."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        host_path = self._make_host_workspace_file("outbound/chart.png")
+
+        paths, cleaned = BasePlatformAdapter.extract_local_files(
+            "Here is the chart: /workspace/outbound/chart.png"
+        )
+
+        assert paths == [host_path]
+        assert "/workspace/outbound/chart.png" not in cleaned
+
+
+# ---------------------------------------------------------------------------
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------
 

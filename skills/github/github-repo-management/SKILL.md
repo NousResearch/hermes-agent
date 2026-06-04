@@ -27,9 +27,17 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null; then
 else
   AUTH="git"
   if [ -z "$GITHUB_TOKEN" ]; then
-    if [ -f ~/.hermes/.env ] && grep -q "^GITHUB_TOKEN=" ~/.hermes/.env; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" ~/.hermes/.env | head -1 | cut -d= -f2 | tr -d '\n\r')
-    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
+    # The agent's .env is at ${HERMES_HOME}/.env — NOT ~/.hermes/.env (HOME is
+    # redirected to ${HERMES_HOME}/home in the tool subprocess). Resolve via
+    # $HERMES_HOME, honoring precedence GITHUB_PAT > GITHUB_TOKEN > GH_TOKEN.
+    HERMES_ENV="${HERMES_HOME:-$HOME/.hermes}/.env"
+    if [ -f "$HERMES_ENV" ]; then
+      for _v in GITHUB_PAT GITHUB_TOKEN GH_TOKEN; do
+        _l=$(grep -E "^${_v}=" "$HERMES_ENV" | head -1)
+        [ -n "$_l" ] && { GITHUB_TOKEN=$(printf '%s' "$_l" | cut -d= -f2- | tr -d '\n\r' | sed 's/^["'\'']//;s/["'\'']$//'); break; }
+      done
+    fi
+    if [ -z "$GITHUB_TOKEN" ] && grep -q "github.com" ~/.git-credentials 2>/dev/null; then
       GITHUB_TOKEN=$(grep "github.com" ~/.git-credentials 2>/dev/null | head -1 | sed 's|https://[^:]*:\([^@]*\)@.*|\1|')
     fi
   fi
@@ -56,17 +64,27 @@ REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
 
 ## 1. Cloning Repositories
 
-Cloning is pure `git` — works identically either way:
+Cloning is pure `git` — works identically either way.
+
+**Default to a shallow clone (`--depth 1`).** A full clone of a large repo can take
+minutes (and time out in the tool sandbox); `--depth 1` is typically a couple of
+seconds and is all you need to read, edit, branch, and push. Only do a full clone
+when you genuinely need history (e.g. `git log`, `git blame`, `git bisect`, or
+rebasing onto an old base) — and you can deepen a shallow clone later with
+`git fetch --unshallow`.
 
 ```bash
-# Clone via HTTPS (works with credential helper or token-embedded URL)
+# Default: shallow clone (fast — prefer this)
+git clone --depth 1 https://github.com/owner/repo-name.git
+
+# Shallow clone into a specific directory
+git clone --depth 1 https://github.com/owner/repo-name.git ./my-local-dir
+
+# Full clone (only when you need history — slower, can time out on big repos)
 git clone https://github.com/owner/repo-name.git
 
-# Clone into a specific directory
-git clone https://github.com/owner/repo-name.git ./my-local-dir
-
-# Shallow clone (faster for large repos)
-git clone --depth 1 https://github.com/owner/repo-name.git
+# Need history after a shallow clone? Deepen it in place:
+#   git fetch --unshallow
 
 # Clone a specific branch
 git clone --branch develop https://github.com/owner/repo-name.git

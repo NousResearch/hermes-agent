@@ -148,6 +148,34 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_timeout_defaults_to_none(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Test Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("question", "answer")
+        assert captured_kwargs["timeout"] is None
+
+    def test_explicit_timeout_passed_through(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Test Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            generate_title("question", "answer", timeout=120.0)
+        assert captured_kwargs["timeout"] == 120.0
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""

@@ -52,7 +52,7 @@ Use `clarify` for simple single-choice or open-ended questions. Use `interactive
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `interactive_prompt` | Present a structured interactive prompt with buttons and modal forms. Each option can return immediately (`action="return"`) or open a modal form (`action="modal"`) that collects additional structured input. Discord renders rich embed + buttons; other platforms fall back to numbered text list. Returns JSON with `status`, `choice`, `actor`, optional `fields` (modal values) and `files` (uploads, planned). | `agent.interactive_prompt_enabled: true` |
+| `interactive_prompt` | Present a structured interactive prompt with buttons and modal forms. Each option can return immediately (`action="return"`) or open a modal form (`action="modal"`) that collects additional structured input. Discord renders rich embed + buttons; other platforms fall back to numbered text list. Returns JSON with `status`, `choice`, `actor`, optional `fields` (modal values) and `files` (uploaded file metadata). | `agent.interactive_prompt_enabled: true` |
 
 **Key parameters:**
 
@@ -70,12 +70,22 @@ Use `clarify` for simple single-choice or open-ended questions. Use `interactive
 |------|--------|---------|---------------|
 | `text` | Freeform input (single-line or paragraph) | — | max 4000 chars |
 | `select` | Dropdown pick-one | 1–25 choices | — |
+| `file_upload` | Native file picker (platform file dialog) | — | size capped by Discord tier (25 MB free, 500 MB Nitro) |
 | `radio` | Exclusive single-choice group | 1–10 choices | — |
 | `checkbox` | Multi-select group | 1–10 choices | — |
 
 Max **5 fields per modal** (Discord API limit). Fields beyond 5 are silently dropped with a warning.
 
-> **Note:** `file_upload` is planned for a future release. It is not accepted by the current schema and will be rejected if submitted.
+**`file_upload` field properties:**
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `file_policy.max_files` | int | 1 | Max number of files (Discord range: 1–10) |
+| `file_policy.max_bytes` | int | 26,214,400 (25 MB) | Max total upload size in bytes, capped by Discord server tier |
+| `file_policy.allowed_extensions` | list[str] | `[]` (any) | Whitelist of extensions (e.g. `[".pdf", ".json"]`) |
+| `file_policy.allowed_mime_types` | list[str] | `[]` (any) | Whitelist of MIME types (e.g. `["application/pdf"]`) |
+
+Both `allowed_extensions` and `allowed_mime_types` combine as AND — a file must match at least one entry in each non-empty list.
 
 > ⚠️ **Auth policies have not been live-tested on Discord.** The auth enforcement logic is covered by 19 unit tests in `test_discord_component_auth.py` and shares infrastructure with the production `clarify`/approval views. Live verification (confirming ephemeral rejection messages render correctly for non-authorized users) is still pending.
 

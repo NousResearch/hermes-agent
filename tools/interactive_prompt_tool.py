@@ -155,8 +155,9 @@ INTERACTIVE_PROMPT_SCHEMA = {
                                                     "select",
                                                     "radio",
                                                     "checkbox",
+                                                    "file_upload",
                                                 ],
-                                                "description": "Input widget type. 'file_upload' is planned for a future release.",
+                                                "description": "Input widget type.",
                                             },
                                             "required": {
                                                 "type": "boolean",
@@ -185,7 +186,7 @@ INTERACTIVE_PROMPT_SCHEMA = {
                                             },
                                             "file_policy": {
                                                 "type": "object",
-                                                "description": "Constraints for file_upload fields (planned — not yet functional).",
+                                                "description": "Constraints for file_upload fields.",
                                                 "properties": {
                                                     "allowed_extensions": {
                                                         "type": "array",
@@ -361,7 +362,7 @@ def interactive_prompt_tool(
                 )
 
             # Per-field validation
-            VALID_FIELD_TYPES = {"text", "select", "radio", "checkbox"}
+            VALID_FIELD_TYPES = {"text", "select", "radio", "checkbox", "file_upload"}
             seen_keys: set = set()
             for fi, fld in enumerate(fields):
                 if not isinstance(fld, dict):
@@ -389,6 +390,38 @@ def interactive_prompt_tool(
                         f"Option {idx} modal field {fi} has invalid type "
                         f"'{field_type}'. Must be one of {sorted(VALID_FIELD_TYPES)}."
                     )
+
+                # file_policy validation (only relevant for file_upload fields)
+                if field_type == "file_upload":
+                    file_policy = fld.get("file_policy")
+                    if isinstance(file_policy, dict):
+                        max_files = file_policy.get("max_files")
+                        if max_files is not None:
+                            if not isinstance(max_files, int) or max_files < 1 or max_files > 10:
+                                return tool_error(
+                                    f"Option {idx} modal field {fi} "
+                                    f"file_policy.max_files must be 1–10 "
+                                    f"(got {max_files})."
+                                )
+                        max_bytes = file_policy.get("max_bytes")
+                        if max_bytes is not None:
+                            if not isinstance(max_bytes, int) or max_bytes <= 0:
+                                return tool_error(
+                                    f"Option {idx} modal field {fi} "
+                                    f"file_policy.max_bytes must be > 0 "
+                                    f"(got {max_bytes})."
+                                )
+                        allowed_extensions = file_policy.get("allowed_extensions")
+                        if allowed_extensions is not None:
+                            if not isinstance(allowed_extensions, list) or not all(
+                                isinstance(ext, str) and ext.startswith(".")
+                                for ext in allowed_extensions
+                            ):
+                                return tool_error(
+                                    f"Option {idx} modal field {fi} "
+                                    f"file_policy.allowed_extensions must be a "
+                                    f"list of strings each starting with '.'."
+                                )
 
     # --- callback guard ---
     if callback is None:

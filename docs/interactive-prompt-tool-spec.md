@@ -262,7 +262,7 @@ Pattern/conventions we follow:
 Entirely new (no upstream equivalent):
 - **Modal support** — none of the 5 existing views open modals. First modal-based interaction in the adapter.
 - **Select menus** — `ClarifyChoiceView` only renders buttons. New `discord.ui.Select` rendering for `display_type="select"`.
-- **File Upload fields** — doesn't exist anywhere in the codebase.
+- **File Upload fields** — native Discord file picker inside modals, with configurable `file_policy` constraints.
 - **Radio/Checkbox groups** — modal-only, not implemented upstream.
 - **Blocking tool pattern** — all existing views are fire-and-forget (resolve via gateway callbacks). Our tool blocks the LLM turn and returns the result directly.
 
@@ -273,17 +273,46 @@ Entirely new (no upstream equivalent):
 - **Timeout**: Interactive prompt views should have a configurable timeout (default 15 min) after which the tool returns `{"choice": null, "custom_response": null, "timed_out": True}`
 - **Component cap**: Respect Discord's 25-component-per-message limit when rendering buttons. If options > 24 (leaving room for "Other"), auto-fallback to select menu display_type.
 
+## File Upload Support
+
+`file_upload` is a fully supported `CustomField.type` that renders as a native Discord file-upload widget inside modal forms. When a user selects an option with `action="modal"` that includes a `file_upload` field, Discord opens its platform file picker (respects OS file dialogs).
+
+### file_policy constraints
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `max_files` | int | 1 | Maximum number of files the user can attach (Discord range: 1–10). |
+| `max_bytes` | int | 26_214_400 (25 MB) | Maximum total upload size in bytes. Capped by Discord tier (25 MB free, 500 MB with Nitro). |
+| `allowed_extensions` | list[str] | `[]` (any) | Whitelist of file extensions (e.g. `[".pdf", ".json", ".csv"]`). Empty list allows all. |
+| `allowed_mime_types` | list[str] | `[]` (any) | Whitelist of MIME types (e.g. `["application/pdf", "text/csv"]`). Empty list allows all. |
+
+Both `allowed_extensions` and `allowed_mime_types` combine as AND — a file must match at least one entry in each non-empty list to pass.
+
+### Example — requesting a report file
+```python
+interactive_prompt(
+    question="I need the **ScubaGear JSON report** for this tenant.",
+    options=[
+        {"label": "Attach Report", "value": "attach", "style": "primary", "action": "modal",
+         "modal": {
+             "title": "Upload Report",
+             "fields": [
+                 {"key": "report", "label": "ScubaGear Report", "type": "file_upload",
+                  "required": True,
+                  "file_policy": {"allowed_extensions": [".json"], "max_files": 1}},
+                 {"key": "notes", "label": "Notes", "type": "text", "multiline": True, "required": False},
+             ]
+         }},
+        {"label": "Skip for now", "value": "skip", "style": "secondary"},
+    ],
+)
+```
+
 ## Open Questions
 
-> **Note:** The following features are aspirational for v2 — only `display_type="buttons"` is implemented in v1.
-> - `display_type="select"` (select menu rendering, auto-fallback from buttons at 25+ options)
-> - `file_upload` modal field type (requires Discord modal file-upload permissions)
-> - Auto-fallback from buttons to select menu when options > 24
-
 1. **Should the tool auto-acknowledge selection?** After user clicks a button, should the message update with "✅ Selected: Strict" or leave the buttons disabled as-is?
-2. **Multi-select for buttons?** Discord buttons are inherently single-click. For "pick multiple slices", should we use checkbox group in a modal instead?
-3. **Re-prompt after timeout?** Should the tool re-send the interactive prompt or let the model handle it in its next turn?
-4. **Modal title character limit**: Discord modals max 45 chars. Long `question` text doesn't fit as the modal title — should we truncate to a summary?
+2. **Re-prompt after timeout?** Should the tool re-send the interactive prompt or let the model handle it in its next turn?
+3. **Modal title character limit**: Discord modals max 45 chars. Long `question` text doesn't fit as the modal title — should we truncate to a summary?
 
 ## Next Steps
 

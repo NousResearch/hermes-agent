@@ -117,6 +117,7 @@ def build_prompt_embed(
 # ---------------------------------------------------------------------------
 
 from tools.discord_auth_helpers import component_check_auth as _component_check_auth
+from tools.human_input_gateway import FileResult
 
 
 # =========================================================================
@@ -327,11 +328,8 @@ if discord is not None:
     class InteractivePromptModal(discord.ui.Modal):
         """Modal (form popup) for interactive-prompt options with ``action: "modal"``.
 
-        Supports ``"text"``, ``"select"``, ``"radio"``, and ``"checkbox"``
-        field types via ``discord.ui`` components.
-
-        TODO: ``"file_upload"`` — requires modal file-upload permissions
-              and ``discord.Attachment`` handling.
+        Supports ``"text"``, ``"select"``, ``"radio"``, ``"checkbox"``,
+        and ``"file_upload"`` field types via ``discord.ui`` components.
         """
 
         def __init__(
@@ -461,14 +459,20 @@ if discord is not None:
                     self.add_item(label)
 
                 elif field_type == "file_upload":
-                    # TODO: file_upload — requires modal file-upload
-                    # permissions and discord.Attachment handling.
-                    logger.warning(
-                        "file_upload modal field not yet implemented "
-                        "(prompt_id=%s, field=%s)",
-                        self.prompt_id,
-                        key,
+                    file_policy = field_spec.get("file_policy", {})
+                    file_upload = _ui.FileUpload(
+                        custom_id=key[:100],
+                        required=field_spec.get("required", False),
+                        max_values=file_policy.get("max_files", 1),
+                        min_values=file_policy.get("min_files", 0),
                     )
+                    label = _ui.Label(
+                        text=field_label,
+                        description=field_description[:_DISCORD_LABEL_DESCRIPTION_MAX] if field_description else None,
+                        component=file_upload,
+                    )
+                    self._field_keys.append(key)
+                    self.add_item(label)
 
                 else:
                     logger.warning(
@@ -499,6 +503,7 @@ if discord is not None:
             """Collect field values and resolve the prompt via the gateway."""
             # Gather values from children in order.
             fields: Dict[str, Any] = {}
+            files_collected: List[FileResult] = []
             children = getattr(self, "children", [])
             unwrapped = unwrap_modal_children(children)
             for idx, inner in enumerate(unwrapped):
@@ -511,6 +516,47 @@ if discord is not None:
                 # select → .values (list[str]), checkbox → .values (list[str])
                 elif isinstance(inner, (discord.ui.Select, discord.ui.CheckboxGroup)):
                     fields[field_key] = getattr(inner, "values", [])
+                # file_upload → download attachments to cache
+                elif isinstance(inner, _ui.FileUpload):
+                    attachments = getattr(inner, "values", [])
+                    file_results = []
+                    for att in attachments:
+                        try:
+                            data = await att.read() if hasattr(att, "read") else None
+                        except Exception as read_err:
+                            logger.warning(
+                                "Failed to download attachment %s for prompt %s: %s",
+                                getattr(att, "id", "?"),
+                                self.prompt_id,
+                                read_err,
+                            )
+                            data = None
+                        cached_path = ""
+                        if data:
+                            import os
+                            import uuid
+
+                            cache_dir = os.path.expanduser("~/.hermes/cache/uploads")
+                            os.makedirs(cache_dir, exist_ok=True)
+                            ext = os.path.splitext(att.filename)[1] or ".bin"
+                            cached_path = os.path.join(
+                                cache_dir, f"{uuid.uuid4().hex}{ext}"
+                            )
+                            with open(cached_path, "wb") as f:
+                                f.write(data)
+                        file_results.append(
+                            FileResult(
+                                field_key=field_key,
+                                attachment_id=str(att.id),
+                                filename=att.filename or "unknown",
+                                content_type=att.content_type
+                                or "application/octet-stream",
+                                size=att.size or 0,
+                                cached_path=cached_path,
+                            )
+                        )
+                    if file_results:
+                        files_collected.extend(file_results)
                 else:
                     fields[field_key] = getattr(inner, "value", None)
 
@@ -546,6 +592,7 @@ if discord is not None:
                     self.prompt_id,
                     choice_value,
                     fields=fields,
+                    files=files_collected if files_collected else None,
                     actor=actor,
                 )
                 logger.info(

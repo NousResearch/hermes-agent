@@ -444,3 +444,99 @@ class TestSchema:
         props = INTERACTIVE_PROMPT_SCHEMA["parameters"]["properties"]
         assert "buttons" in props["display_type"]["enum"]
         assert "select" not in props["display_type"]["enum"]
+
+
+# ===========================================================================
+# file_policy validation tests
+# ===========================================================================
+
+
+class TestFilePolicyValidation:
+    """Validation guardrails for file_policy on file_upload fields."""
+
+    def _call(self, options):
+        from tools.interactive_prompt_tool import interactive_prompt_tool
+        return interactive_prompt_tool(
+            question="Upload test",
+            options=options,
+            callback=lambda *a, **kw: None,
+        )
+
+    def _file_upload_field(self, **policy_kwargs):
+        field = {"key": "f", "label": "File", "type": "file_upload"}
+        if policy_kwargs:
+            field["file_policy"] = policy_kwargs
+        return {
+            "label": "Upload",
+            "value": "upload",
+            "action": "modal",
+            "modal": {"title": "Upload", "fields": [field]},
+        }
+
+    def test_valid_file_policy_passes(self):
+        """Valid file_policy constraints are accepted."""
+        result = self._call([
+            self._file_upload_field(
+                max_files=5, max_bytes=10_000_000,
+                allowed_extensions=[".pdf", ".png"],
+            ),
+        ])
+        # callback returns None → "result" is json.dumps(None) = "null"
+        assert json.loads(result) is None
+
+    def test_valid_file_policy_no_policy_passes(self):
+        """file_upload field with no file_policy is accepted."""
+        result = self._call([
+            self._file_upload_field(),
+        ])
+        assert json.loads(result) is None
+
+    def test_max_files_zero_rejected(self):
+        result = self._call([self._file_upload_field(max_files=0)])
+        assert "max_files" in result
+        assert "1–10" in result
+
+    def test_max_files_eleven_rejected(self):
+        result = self._call([self._file_upload_field(max_files=11)])
+        assert "max_files" in result
+        assert "1–10" in result
+
+    def test_max_files_negative_rejected(self):
+        result = self._call([self._file_upload_field(max_files=-1)])
+        assert "max_files" in result
+
+    def test_max_bytes_zero_rejected(self):
+        result = self._call([self._file_upload_field(max_bytes=0)])
+        assert "max_bytes" in result
+
+    def test_max_bytes_negative_rejected(self):
+        result = self._call([self._file_upload_field(max_bytes=-100)])
+        assert "max_bytes" in result
+
+    def test_allowed_extensions_without_dot_rejected(self):
+        result = self._call([self._file_upload_field(allowed_extensions=["pdf"])])
+        assert "allowed_extensions" in result
+        assert "starting with" in result
+
+    def test_allowed_extensions_string_rejected(self):
+        result = self._call([self._file_upload_field(allowed_extensions=".pdf")])
+        assert "allowed_extensions" in result
+
+    def test_allowed_extensions_valid(self):
+        result = self._call([
+            self._file_upload_field(allowed_extensions=[".pdf", ".docx"]),
+        ])
+        assert json.loads(result) is None
+
+    def test_file_policy_ignored_for_non_file_fields(self):
+        """file_policy on a text field doesn't cause validation errors."""
+        field = {
+            "key": "name", "label": "Name", "type": "text",
+            "file_policy": {"max_files": 999},
+        }
+        opt = {
+            "label": "Text", "value": "text", "action": "modal",
+            "modal": {"title": "T", "fields": [field]},
+        }
+        result = self._call([opt])
+        assert json.loads(result) is None

@@ -133,6 +133,7 @@ class TestComponentCheckAuth:
 # ===========================================================================
 
 discord = pytest.importorskip("discord")
+_ui = discord.ui
 
 from tools.discord_interactive_views import (
     InteractivePromptView,
@@ -433,15 +434,36 @@ class TestInteractivePromptModalFieldTypes:
         select = [c for c in inner if isinstance(c, discord.ui.Select)][0]
         assert len(select.custom_id) <= 100
 
-    def test_file_upload_field_skipped_with_warning(self):
-        """file_upload field type is silently skipped (not yet implemented)."""
+    def test_file_upload_field_creates_file_upload_component(self):
+        """file_upload field type creates a FileUpload wrapped in Label."""
         modal = self._modal_with_fields([
             {"key": "file", "label": "Upload", "type": "file_upload"},
         ])
-        # file_upload should NOT create any modal children
-        assert len(modal.children) == 0
-        # It should NOT be in field_keys either (no child to extract from)
-        assert "file" not in modal._field_keys
+        assert len(modal.children) == 1
+        label = modal.children[0]
+        assert isinstance(label, _ui.Label)
+        assert label.text == "Upload"
+        assert isinstance(label.component, _ui.FileUpload)
+        assert label.component.custom_id == "file"
+        assert label.component.required is False
+        assert label.component.max_values == 1
+        assert "file" in modal._field_keys
+
+    def test_file_upload_with_file_policy(self):
+        """file_policy.max_files and min_files are forwarded to FileUpload."""
+        modal = self._modal_with_fields([
+            {
+                "key": "files",
+                "label": "Reports",
+                "type": "file_upload",
+                "required": True,
+                "file_policy": {"max_files": 5, "min_files": 1},
+            },
+        ])
+        fu = modal.children[0].component
+        assert fu.required is True
+        assert fu.max_values == 5
+        assert fu.min_values == 1
 
 
 # ===========================================================================

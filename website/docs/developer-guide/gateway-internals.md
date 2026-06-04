@@ -292,10 +292,11 @@ Configured via `agent.interactive_prompt_timeout` (falls back to `agent.clarify_
 | `select` | `Select` | `list[str]` | 25 options |
 | `radio` | `RadioGroup` | `str \| None` | 10 options |
 | `checkbox` | `CheckboxGroup` | `list[str]` | 10 options |
+| `file_upload` | `FileUpload` | `list[FileResult]` | 10 files |
 
 Max 5 components per modal (Discord API hard limit). The renderer enforces this in `discord_interactive_views.py`; excess fields are logged and skipped.
 
-`file_upload` is planned for a future release — not yet implemented in the renderer or accepted by the schema.
+> **Permission note:** `file_upload` requires the `MANAGE_FILES` permission on the channel. Without it, the component silently fails to render. Uploaded files are cached locally at `~/.hermes/cache/uploads/`.
 
 ### Gateway cleanup
 

@@ -20,6 +20,22 @@ RUN apt-get update && \
     build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (`gh`) — not in Debian's repos, so we add GitHub's own signed apt
+# repo. The github-* skills prefer `gh` and only fall back to git+curl when it's
+# absent; shipping it makes the richer paths (PRs, issues, releases) work out of
+# the box. Arch-aware via `dpkg --print-architecture` (image builds amd64+arm64).
+# Kept as its own layer so the larger base apt layer above stays cached when the
+# gh repo metadata changes. The keyring gives signature verification.
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gh && \
+    rm -rf /var/lib/apt/lists/*
+
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
 # and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.

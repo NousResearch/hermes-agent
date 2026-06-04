@@ -15,27 +15,17 @@ import {
 } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { renameSession, setSessionIcon } from '@/hermes'
+import { renameSession } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
-import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
-
-// Curated glyphs for the per-session icon picker. Kept short so sessions from
-// different profiles stay visually distinguishable at a glance.
-const SESSION_ICON_CHOICES = [
-  '🦊', '🐙', '🦉', '🐝', '🐢', '🦄', '🚀', '⚡',
-  '🔥', '🌙', '⭐', '🎯', '🧪', '🔭', '🛠️', '🔒',
-  '💼', '📦', '🎨', '🧠'
-] as const
 
 interface SessionActions {
   sessionId: string
   title: string
   pinned?: boolean
   profile?: string
-  icon?: null | string
   onPin?: () => void
   onArchive?: () => void
   onDelete?: () => void
@@ -52,18 +42,8 @@ interface ItemSpec {
   variant?: 'destructive'
 }
 
-function useSessionActions({
-  sessionId,
-  title,
-  pinned = false,
-  profile,
-  icon,
-  onPin,
-  onArchive,
-  onDelete
-}: SessionActions) {
+function useSessionActions({ sessionId, title, pinned = false, profile, onPin, onArchive, onDelete }: SessionActions) {
   const [renameOpen, setRenameOpen] = useState(false)
-  const [iconOpen, setIconOpen] = useState(false)
 
   const items: ItemSpec[] = [
     {
@@ -104,15 +84,6 @@ function useSessionActions({
       }
     },
     {
-      disabled: !sessionId,
-      icon: 'symbol-color',
-      label: 'Icon',
-      onSelect: () => {
-        triggerHaptic('selection')
-        setIconOpen(true)
-      }
-    },
-    {
       disabled: !onArchive,
       icon: 'archive',
       label: 'Archive',
@@ -143,23 +114,13 @@ function useSessionActions({
     ))
 
   const renameDialog = (
-    <>
-      <RenameSessionDialog
-        currentTitle={title}
-        onOpenChange={setRenameOpen}
-        open={renameOpen}
-        profile={profile}
-        sessionId={sessionId}
-      />
-      <IconPickerDialog
-        currentIcon={icon ?? null}
-        onOpenChange={setIconOpen}
-        open={iconOpen}
-        profile={profile}
-        sessionId={sessionId}
-        title={title}
-      />
-    </>
+    <RenameSessionDialog
+      currentTitle={title}
+      onOpenChange={setRenameOpen}
+      open={renameOpen}
+      profile={profile}
+      sessionId={sessionId}
+    />
   )
 
   return { renameDialog, renderItems }
@@ -288,70 +249,6 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
           </Button>
           <Button disabled={submitting} onClick={() => void submit()} type="button">
             Save
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-interface IconPickerDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  sessionId: string
-  title: string
-  currentIcon: null | string
-  profile?: string
-}
-
-function IconPickerDialog({ open, onOpenChange, sessionId, title, currentIcon, profile }: IconPickerDialogProps) {
-  const [submitting, setSubmitting] = useState(false)
-
-  const apply = async (icon: string) => {
-    if (!sessionId || submitting) {
-      return
-    }
-
-    setSubmitting(true)
-
-    try {
-      const result = await setSessionIcon(sessionId, icon, profile)
-      const finalIcon = result.icon ?? null
-      setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, icon: finalIcon } : s)))
-      onOpenChange(false)
-    } catch (err) {
-      notifyError(err, 'Could not set icon')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Session icon</DialogTitle>
-          <DialogDescription>Pick a glyph for “{title || 'this session'}” so it stands out in the list.</DialogDescription>
-        </DialogHeader>
-        <div className="grid grid-cols-8 gap-1.5">
-          {SESSION_ICON_CHOICES.map(glyph => (
-            <button
-              className={cn(
-                'grid aspect-square place-items-center rounded-md border border-transparent text-lg transition-colors hover:bg-(--ui-control-hover-background)',
-                currentIcon === glyph && 'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background)'
-              )}
-              disabled={submitting}
-              key={glyph}
-              onClick={() => void apply(glyph)}
-              type="button"
-            >
-              {glyph}
-            </button>
-          ))}
-        </div>
-        <DialogFooter>
-          <Button disabled={submitting || !currentIcon} onClick={() => void apply('')} type="button" variant="ghost">
-            Clear icon
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1667,7 +1667,10 @@ async def get_profiles_sessions(
         if not db_path.exists():
             continue
         try:
-            db = SessionDB(db_path=db_path)
+            # Read-only: this loop runs on every sidebar refresh, so it must
+            # never DDL/write-lock another profile's live DB (see SessionDB
+            # read_only docstring).
+            db = SessionDB(db_path=db_path, read_only=True)
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
             continue
@@ -4840,9 +4843,6 @@ async def delete_session_endpoint(session_id: str):
 class SessionRename(BaseModel):
     title: Optional[str] = None
     archived: Optional[bool] = None
-    # Tri-state via the client contract: omit to leave unchanged, "" to clear,
-    # a short glyph to set. (None == omitted here.)
-    icon: Optional[str] = None
     # Mutate a session belonging to another profile (opens its state.db). Omit
     # for the current/default profile.
     profile: Optional[str] = None
@@ -4850,21 +4850,21 @@ class SessionRename(BaseModel):
 
 @app.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
-    """Update a session: rename (or clear its title), archive, and/or set icon.
+    """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
-    restores the session; ``icon`` sets a per-session glyph ("" clears it). Any
-    field may be omitted. ``profile`` targets another profile's session.
+    restores the session. Either field may be omitted. ``profile`` targets
+    another profile's session.
     """
     db = _open_session_db_for_profile(body.profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        if body.title is None and body.archived is None and body.icon is None:
+        if body.title is None and body.archived is None:
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title', 'archived', and/or 'icon'.",
+                detail="Nothing to update; provide 'title' and/or 'archived'.",
             )
         if body.title is not None:
             try:
@@ -4874,13 +4874,9 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 raise HTTPException(status_code=400, detail=str(e))
         if body.archived is not None:
             db.set_session_archived(sid, body.archived)
-        if body.icon is not None:
-            db.set_session_icon(sid, body.icon)
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)
-        if body.icon is not None:
-            result["icon"] = (body.icon or "").strip()[:16] or None
         return result
     finally:
         db.close()

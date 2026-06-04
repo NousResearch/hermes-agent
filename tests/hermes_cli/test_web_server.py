@@ -381,36 +381,6 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
 
-    def test_set_and_clear_session_icon_via_patch(self):
-        """PATCH icon sets a per-session glyph; "" clears it back to None."""
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        try:
-            db.create_session(session_id="icon-me", source="cli")
-        finally:
-            db.close()
-
-        resp = self.client.patch("/api/sessions/icon-me", json={"icon": "🦊"})
-        assert resp.status_code == 200
-        assert resp.json()["icon"] == "🦊"
-
-        db = SessionDB()
-        try:
-            assert db.get_session("icon-me")["icon"] == "🦊"
-        finally:
-            db.close()
-
-        resp = self.client.patch("/api/sessions/icon-me", json={"icon": ""})
-        assert resp.status_code == 200
-        assert resp.json()["icon"] is None
-
-        db = SessionDB()
-        try:
-            assert db.get_session("icon-me")["icon"] is None
-        finally:
-            db.close()
-
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""

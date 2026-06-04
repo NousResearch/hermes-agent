@@ -231,13 +231,12 @@ export function ModelEditSubmenu({
   )
 }
 
-function isThinkingEnabled(effort: string): boolean {
-  // Empty = Hermes default (medium) = on; only an explicit "none" is off.
-  return (effort || 'medium').trim().toLowerCase() !== 'none'
+export function isThinkingEnabled(effort: string): boolean {
+  return normalizeReasoningEffort(effort) !== 'none'
 }
 
-function normalizeEffort(effort: string): string {
-  const value = (effort || 'medium').trim().toLowerCase()
+export function normalizeEffort(effort: string): string {
+  const value = normalizeReasoningEffort(effort)
 
   // Thinking off → no effort selected in the radio group.
   if (value === 'none') {
@@ -245,4 +244,8 @@ function normalizeEffort(effort: string): string {
   }
 
   return EFFORT_OPTIONS.some(option => option.value === value) ? value : 'medium'
+}
+
+function normalizeReasoningEffort(effort: string): string {
+  return effort.trim().toLowerCase() || 'none'
 }

@@ -1910,6 +1910,12 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(reasoning_config=None)
     server._sessions["sid"] = _session(agent=agent)
+    emitted = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
 
     resp_effort = server.handle_request(
         {
@@ -1920,10 +1926,25 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     )
     assert resp_effort["result"]["value"] == "low"
     assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+    assert emitted[-1][0] == "session.info"
+    assert emitted[-1][1] == "sid"
+    assert emitted[-1][2]["reasoning_effort"] == "low"
+
+    resp_none = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "none"},
+        }
+    )
+    assert resp_none["result"]["value"] == "none"
+    assert agent.reasoning_config == {"enabled": False}
+    assert emitted[-1][0] == "session.info"
+    assert emitted[-1][2]["reasoning_effort"] == "none"
 
     resp_show = server.handle_request(
         {
-            "id": "2",
+            "id": "3",
             "method": "config.set",
             "params": {"session_id": "sid", "key": "reasoning", "value": "show"},
         }
@@ -1934,7 +1955,7 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
 
     resp_hide = server.handle_request(
         {
-            "id": "3",
+            "id": "4",
             "method": "config.set",
             "params": {"session_id": "sid", "key": "reasoning", "value": "hide"},
         }
@@ -2917,6 +2938,109 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     info = server._session_info(types.SimpleNamespace(tools=[], model=""))
 
     assert info["mcp_servers"] == fake_status
+
+
+def test_session_info_reports_reasoning_none_when_disabled(monkeypatch):
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "")
+    agent = types.SimpleNamespace(
+        model="qwen3-coder",
+        reasoning_config={"enabled": False},
+        tools=[],
+    )
+
+    info = server._session_info(agent)
+
+    assert info["reasoning_effort"] == "none"
+
+
+def test_session_info_reports_reasoning_none_when_agent_uses_default(monkeypatch):
+    """Desktop must not display AIAgent's implicit provider default as Medium.
+
+    In the TUI gateway, a missing reasoning_config is still effective Thinking
+    Off for status purposes; otherwise the desktop can flip from Off to Med as
+    soon as a lazy session starts.
+    """
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "")
+    agent = types.SimpleNamespace(
+        model="qwen3-coder",
+        reasoning_config=None,
+        tools=[],
+    )
+
+    info = server._session_info(agent)
+
+    assert info["reasoning_effort"] == "none"
+
+
+def test_load_reasoning_config_defaults_blank_to_disabled(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+
+    assert server._load_reasoning_config() == {"enabled": False}
+
+
+def test_make_agent_defaults_blank_reasoning_to_disabled(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+    monkeypatch.setattr(
+        server,
+        "_resolve_startup_runtime",
+        lambda: ("qwen3-coder", None),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["reasoning_config"] == {"enabled": False}
+
+
+def test_session_create_lazy_info_reports_reasoning_none(monkeypatch, tmp_path):
+    class NoopTimer:
+        daemon = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "qwen3-coder")
+    monkeypatch.setattr(server.threading, "Timer", NoopTimer)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "session-create",
+                "method": "session.create",
+                "params": {"cols": 96},
+            }
+        )
+
+        assert resp["result"]["info"]["reasoning_effort"] == "none"
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
 
 
 # ---------------------------------------------------------------------------

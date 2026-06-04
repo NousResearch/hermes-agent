@@ -17,7 +17,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
-import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { defaultReasoningEffortLabel, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
   $visibleModels,
@@ -157,7 +157,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // Grayed text: active row shows live state (Fast + effort);
                 // others show a fast-capability hint.
                 const meta = isCurrent
-                  ? [fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null, reasoningEffortLabel(currentReasoningEffort) || 'Med']
+                  ? [
+                      fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null,
+                      defaultReasoningEffortLabel(currentReasoningEffort)
+                    ]
                       .filter(Boolean)
                       .join(' ')
                   : caps?.fast || family.fastId

@@ -84,7 +84,7 @@
     "react": "^19.2.5",
     "react-arborist": "^3.5.0",
     "react-dom": "^19.2.5",
-    "react-router-dom": "^7.14.2",
+    "react-router-dom": "^7.17.0",
     "react-shiki": "^0.9.3",
     "remark-math": "^6.0.0",
     "shiki": "^4.0.2",

@@ -10982,7 +10982,8 @@ class GatewayRunner:
                         if not result.success:
                             return t("gateway.model.error_prefix", error=result.error_message)
 
-                        # Update cached agent in-place
+                        # Update cached agent in-place so the live session
+                        # immediately reflects the new model.  (#37621)
                         cached_entry = None
                         _cache_lock = getattr(_self, "_agent_cache_lock", None)
                         _cache = getattr(_self, "_agent_cache", None)
@@ -10997,6 +10998,10 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                )
+                                logger.info(
+                                    "Picker in-place model switch applied to live agent: %s -> %s (%s)",
+                                    _cur_model, result.new_model, result.target_provider,
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -11134,7 +11139,9 @@ class GatewayRunner:
         if not result.success:
             return t("gateway.model.error_prefix", error=result.error_message)
 
-        # If there's a cached agent, update it in-place
+        # If there's a cached agent, update it in-place so the live session
+        # immediately reflects the new model without waiting for the next
+        # turn to create a fresh agent.  (#37621)
         cached_entry = None
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         _cache = getattr(self, "_agent_cache", None)
@@ -11142,6 +11149,7 @@ class GatewayRunner:
             with _cache_lock:
                 cached_entry = _cache.get(session_key)
 
+        _inplace_ok = False
         if cached_entry and cached_entry[0] is not None:
             try:
                 cached_entry[0].switch_model(
@@ -11150,6 +11158,11 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                )
+                _inplace_ok = True
+                logger.info(
+                    "In-place model switch applied to live agent: %s -> %s (%s)",
+                    current_model, result.new_model, result.target_provider,
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -11178,7 +11191,8 @@ class GatewayRunner:
             f"Adjust your self-identification accordingly.]"
         )
 
-        # Store session override so next agent creation uses the new model
+        # Store session override so next agent creation uses the new model.
+        # This persists the switch across LRU-evictions and session resets.
         self._session_model_overrides[session_key] = {
             "model": result.new_model,
             "provider": result.target_provider,
@@ -11187,8 +11201,10 @@ class GatewayRunner:
             "api_mode": result.api_mode,
         }
 
-        # Evict cached agent so the next turn creates a fresh agent from the
-        # override rather than relying on cache signature mismatch detection.
+        # Always evict the cached agent so the next turn creates a fresh
+        # agent from the session override.  The in-place switch above keeps
+        # the live object consistent, but the cache signature still reflects
+        # the old model; evicting forces a clean rebuild with the new sig.
         self._evict_cached_agent(session_key)
 
         # Persist to config if --global

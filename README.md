@@ -57,7 +57,7 @@ If you already have Git installed, the installer detects it and uses that instea
 After installation:
 
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+source ~/.zshrc     # reload shell — zsh (macOS default); use ~/.bashrc for bash
 hermes              # start chatting!
 ```
 

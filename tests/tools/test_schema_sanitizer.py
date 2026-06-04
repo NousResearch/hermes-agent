@@ -700,3 +700,326 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# _sanitize_single_tool — uncovered branches
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_non_dict_tool_entry_returned_unchanged():
+    """A tool entry whose 'function' value is not a dict is returned as-is."""
+    # Line 63: _sanitize_single_tool returns out when fn is not a dict.
+    tool = {"type": "function", "function": "bad_value"}
+    out = sanitize_tool_schemas([tool])
+    assert out[0]["function"] == "bad_value"
+
+
+def test_tool_without_function_key_returned_unchanged():
+    """A tool dict with no 'function' key passes through without modification."""
+    # Line 62-63: fn = out.get("function") is None, not isinstance(fn, dict).
+    tool = {"type": "function", "name": "bare_tool"}
+    out = sanitize_tool_schemas([tool])
+    assert "function" not in out[0]
+    assert out[0]["name"] == "bare_tool"
+
+
+def test_non_dict_parameters_string_gets_default_schema():
+    """A string parameters value (not caught by existing test) gets replaced."""
+    # Lines 68-69: not isinstance(params, dict) branch with a non-None string.
+    tool = {"type": "function", "function": {"name": "t", "parameters": "bad"}}
+    out = sanitize_tool_schemas([tool])
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_post_recursion_top_not_dict_gets_default():
+    """If _sanitize_node returns a non-dict for the parameters, the top-level
+    fixup replaces it with the minimal valid schema (line 75)."""
+    # _sanitize_node on a bare-list node returns a list, which is not a dict.
+    # Construct parameters as a list directly to trigger the line 74-75 branch.
+    # We patch parameters via a raw dict that has a list as its "parameters" value;
+    # simulate by passing a list inside a dict that _sanitize_node normalizes to a list.
+    # The cleanest driver: pass parameters={"type": "array", "items": []} as the outer
+    # schema — after _sanitize_node it is still a dict, so we need a different approach.
+    # Use a parameters dict whose only key is a bare-string value that _sanitize_node
+    # turns into a dict — but that still ends up as a dict.
+    # The only way to get a non-dict top is to override the function entry directly:
+    from tools import schema_sanitizer
+    import copy
+
+    original_sanitize_node = schema_sanitizer._sanitize_node
+
+    def returning_list(node, path):
+        # Force the top-level call to return a list so line 75 fires.
+        if path == "t":
+            return ["not", "a", "dict"]
+        return original_sanitize_node(node, path)
+
+    import unittest.mock as mock
+    with mock.patch.object(schema_sanitizer, "_sanitize_node", side_effect=returning_list):
+        tools = [_tool("t", {"type": "object", "properties": {}})]
+        out = schema_sanitizer.sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_post_recursion_top_type_not_object_is_fixed():
+    """After recursion, if top-level type is not 'object', it is coerced (line 78)."""
+    # _sanitize_node preserves a 'string' type — pass a plain string schema as parameters.
+    # parameters={"type": "string"} passes _sanitize_node intact (it is a dict),
+    # then the top-level fixup on line 77-78 sets type='object'.
+    tool = {"type": "function", "function": {"name": "t", "parameters": {"type": "string"}}}
+    out = sanitize_tool_schemas([tool])
+    assert out[0]["function"]["parameters"]["type"] == "object"
+    assert out[0]["function"]["parameters"]["properties"] == {}
+
+
+def test_post_recursion_properties_non_dict_is_replaced():
+    """After recursion, a non-dict properties value at the top level is replaced (line 80)."""
+    # properties: ["list"] survives _sanitize_node unchanged (it's under key "properties"
+    # but the node loop copies it via the pass-through branch for unexpected types).
+    # However, the post-recursion check at line 79-80 fires because isinstance(list) != dict.
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "t",
+            "parameters": {"type": "object", "properties": ["bad"]},
+        },
+    }
+    out = sanitize_tool_schemas([tool])
+    assert out[0]["function"]["parameters"]["properties"] == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# _strip_top_level_combinators — non-dict input path and logger.debug path
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_strip_top_level_combinators_non_dict_passthrough():
+    """_strip_top_level_combinators returns the value unchanged for non-dict input (line 118)."""
+    from tools.schema_sanitizer import _strip_top_level_combinators
+    assert _strip_top_level_combinators("not-a-dict") == "not-a-dict"
+    assert _strip_top_level_combinators(None) is None
+    assert _strip_top_level_combinators([1, 2]) == [1, 2]
+
+
+def test_strip_top_level_combinators_logs_debug_on_strip(caplog):
+    """logger.debug fires when a forbidden key is stripped (lines 122, 127)."""
+    import logging
+    from tools.schema_sanitizer import _strip_top_level_combinators
+    with caplog.at_level(logging.DEBUG, logger="tools.schema_sanitizer"):
+        result = _strip_top_level_combinators(
+            {"type": "object", "properties": {}, "allOf": [{"required": ["x"]}]},
+            path="my_tool",
+        )
+    assert "allOf" not in result
+    # The debug message names the tool path and the stripped key.
+    assert any("my_tool" in r.message and "allOf" in r.message for r in caplog.records)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# strip_nullable_unions — keep_nullable_hint=False path; list input;
+# metadata carry-over
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_strip_nullable_unions_no_hint():
+    """keep_nullable_hint=False: collapsed replacement must NOT get nullable:true (line 185)."""
+    from tools.schema_sanitizer import strip_nullable_unions
+    schema = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+    result = strip_nullable_unions(schema, keep_nullable_hint=False)
+    assert result["type"] == "string"
+    assert "nullable" not in result
+
+
+def test_strip_nullable_unions_list_input():
+    """A top-level list is recursed into, each item processed independently."""
+    from tools.schema_sanitizer import strip_nullable_unions
+    items = [
+        {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        {"type": "string"},
+    ]
+    result = strip_nullable_unions(items)
+    assert isinstance(result, list)
+    assert result[0]["type"] == "integer"
+    assert result[1] == {"type": "string"}
+
+
+def test_strip_nullable_unions_metadata_carried_over():
+    """title/description/default/examples on the outer union node carry to the replacement."""
+    from tools.schema_sanitizer import strip_nullable_unions
+    schema = {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "description": "A name",
+        "default": None,
+        "title": "Name",
+    }
+    result = strip_nullable_unions(schema, keep_nullable_hint=False)
+    assert result["type"] == "string"
+    assert result["description"] == "A name"
+    assert result["default"] is None
+    assert result["title"] == "Name"
+
+
+def test_strip_nullable_unions_non_scalar_passthrough():
+    """A non-dict, non-list scalar is returned unchanged (line 165)."""
+    from tools.schema_sanitizer import strip_nullable_unions
+    assert strip_nullable_unions(42) == 42
+    assert strip_nullable_unions(True) is True
+    assert strip_nullable_unions(None) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# _sanitize_node — uncovered branches
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_sanitize_node_bare_string_primitive_becomes_type_dict():
+    """A bare-string schema 'string'/'integer'/etc. becomes {"type": X} (lines 206-212)."""
+    # Drive through sanitize_tool_schemas: put a bare string as a property value.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "count": "integer",
+            "flag": "boolean",
+            "ratio": "number",
+            "data": "array",
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["count"] == {"type": "integer"}
+    assert props["flag"] == {"type": "boolean"}
+    assert props["ratio"] == {"type": "number"}
+    assert props["data"] == {"type": "array"}
+
+
+def test_sanitize_node_bare_string_null_becomes_type_null():
+    """Bare string 'null' is a recognized type; becomes {"type": "null"} (lines 206-212)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"nothing": "null"},
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["properties"]["nothing"] == {"type": "null"}
+
+
+def test_sanitize_node_bare_unknown_string_becomes_empty_object():
+    """An unrecognized bare string (not a JSON Schema type) becomes an empty object (lines 219-223)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"bad": "not-a-type"},
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["properties"]["bad"] == {
+        "type": "object",
+        "properties": {},
+    }
+
+
+def test_sanitize_node_type_array_multi_non_null_picks_first_str():
+    """type: [X, Y] with multiple non-null string types picks the first (lines 244-246)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "ambiguous": {"type": ["string", "integer"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["ambiguous"]
+    assert prop["type"] == "string"
+
+
+def test_sanitize_node_type_array_all_null_becomes_object():
+    """type: ['null'] or type: [] collapses to 'object' (lines 249-250)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "only_null": {"type": ["null"]},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["only_null"]
+    assert prop["type"] == "object"
+
+
+def test_sanitize_node_items_bool_preserved():
+    """items: True/False is kept as-is without recursion (line 262)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "bag": {"type": "array", "items": True},
+            "nothing": {"type": "array", "items": False},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["bag"]["items"] is True
+    assert props["nothing"]["items"] is False
+
+
+def test_sanitize_node_allof_list_sanitized():
+    """allOf list inside a property schema is recursed into (line 266)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "config": {
+                "allOf": [
+                    {"type": "object"},   # bare object — should get properties: {}
+                    {"type": "string"},
+                ],
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    allof = out[0]["function"]["parameters"]["properties"]["config"]["allOf"]
+    assert allof[0] == {"type": "object", "properties": {}}
+    assert allof[1] == {"type": "string"}
+
+
+def test_sanitize_node_nested_object_without_properties_injected():
+    """Nested object nodes that lack properties get properties:{} injected (line 285)."""
+    # This is the _sanitize_node-level injection (separate from the top-level fixup).
+    # Drive it via a deeply nested object.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "outer": {
+                "type": "object",
+                "properties": {
+                    "inner": {"type": "object"},   # no properties — should get {}
+                },
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    inner = out[0]["function"]["parameters"]["properties"]["outer"]["properties"]["inner"]
+    assert inner == {"type": "object", "properties": {}}
+
+
+def test_sanitize_node_required_partial_prune():
+    """required with some valid and some missing property refs is trimmed to valid subset (line 296)."""
+    # A nested object (not the top level) so the line 296 path inside _sanitize_node fires.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "sub": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x", "ghost"],   # "ghost" does not exist in properties
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    sub = out[0]["function"]["parameters"]["properties"]["sub"]
+    assert sub["required"] == ["x"]
+
+
+def test_sanitize_node_non_dict_non_str_non_list_passthrough():
+    """A numeric or boolean node value is returned unchanged (line 229 path)."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"x": {"type": "string", "minimum": 0}},
+    })]
+    out = sanitize_tool_schemas(tools)
+    # minimum is an int; the else branch at line 280 returns it unchanged.
+    assert out[0]["function"]["parameters"]["properties"]["x"]["minimum"] == 0

@@ -295,46 +295,80 @@ class SlackStreamConsumer:
     async def _send_task_start(
         self, task_id: str, name: str, status: str, description: str,
     ) -> None:
-        """Send a task_start chunk to create a new step indicator."""
+        """Send a TaskUpdateChunk to create a new step indicator."""
         if not self._stream_ts:
             return
-        chunk = {
-            "type": "task_start",
-            "id": task_id,
-            "name": name,
-            "status": status,
-        }
-        if description:
-            chunk["description"] = description
         try:
+            from slack_sdk.models.messages.chunk import TaskUpdateChunk
+            chunk = TaskUpdateChunk(
+                id=task_id,
+                title=name,
+                status=status,
+                details=description or None,
+            )
             await self._client.chat_appendStream(
                 channel=self._channel_id,
                 ts=self._stream_ts,
                 chunks=[chunk],
             )
+        except ImportError:
+            # Fallback for slack_sdk < 3.35
+            chunk = {
+                "type": "task_start",
+                "id": task_id,
+                "name": name,
+                "status": status,
+            }
+            if description:
+                chunk["description"] = description
+            try:
+                await self._client.chat_appendStream(
+                    channel=self._channel_id,
+                    ts=self._stream_ts,
+                    chunks=[chunk],
+                )
+            except Exception as e:
+                logger.warning("[SlackStream] task_start failed for %s: %s", name, e)
         except Exception as e:
             logger.warning("[SlackStream] task_start failed for %s: %s", name, e)
 
     async def _send_task_update(
         self, task_id: str, name: str, status: str, description: str,
     ) -> None:
-        """Send a task_update chunk to update a step's status."""
+        """Send a TaskUpdateChunk to update a step's status."""
         if not self._stream_ts:
             return
-        chunk = {
-            "type": "task_update",
-            "id": task_id,
-            "name": name,
-            "status": status,
-        }
-        if description:
-            chunk["description"] = description
         try:
+            from slack_sdk.models.messages.chunk import TaskUpdateChunk
+            chunk = TaskUpdateChunk(
+                id=task_id,
+                title=name,
+                status=status,
+                details=description or None,
+            )
             await self._client.chat_appendStream(
                 channel=self._channel_id,
                 ts=self._stream_ts,
                 chunks=[chunk],
             )
+        except ImportError:
+            # Fallback for slack_sdk < 3.35
+            chunk = {
+                "type": "task_update",
+                "id": task_id,
+                "name": name,
+                "status": status,
+            }
+            if description:
+                chunk["description"] = description
+            try:
+                await self._client.chat_appendStream(
+                    channel=self._channel_id,
+                    ts=self._stream_ts,
+                    chunks=[chunk],
+                )
+            except Exception as e:
+                logger.warning("[SlackStream] task_update failed for %s: %s", name, e)
         except Exception as e:
             logger.warning("[SlackStream] task_update failed for %s: %s", name, e)
 

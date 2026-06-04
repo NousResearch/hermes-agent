@@ -100,7 +100,10 @@ class WSTransport:
             return not self._closed
         except Exception as exc:
             self._closed = True
-            _log.warning("ws write failed peer=%s error=%s", self._peer, exc)
+            _log.warning(
+                "ws write failed peer=%s error_type=%s error=%s",
+                self._peer, type(exc).__name__, exc,
+            )
             return False
 
     async def write_async(self, obj: dict) -> bool:
@@ -115,7 +118,10 @@ class WSTransport:
             await self._ws.send_text(line)
         except Exception as exc:
             self._closed = True
-            _log.warning("ws send failed peer=%s error=%s", self._peer, exc)
+            _log.warning(
+                "ws send failed peer=%s error_type=%s error=%s",
+                self._peer, type(exc).__name__, exc,
+            )
 
     def close(self) -> None:
         self._closed = True

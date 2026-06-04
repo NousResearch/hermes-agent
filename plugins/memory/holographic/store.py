@@ -366,6 +366,54 @@ class MemoryStore:
 
             return True
 
+    def supersede(
+        self,
+        old_id: int,
+        content: str,
+        category: str | None = None,
+        tags: str = "",
+    ) -> int:
+        """Replace a fact with a corrected version, preserving history.
+
+        Inserts `content` as a new live fact, marks `old_id` superseded
+        (superseded_at = now) so its wording stops surfacing in recall, and
+        records a fact_supersedes(new_id, old_id) edge for tracing the chain.
+        The new fact inherits the old fact's category unless `category` is given.
+
+        Returns the new fact_id. Raises KeyError if `old_id` does not exist,
+        and ValueError if the new content is empty or identical to the old.
+        """
+        with self._lock:
+            content = content.strip()
+            if not content:
+                raise ValueError("content must not be empty")
+
+            old = self._conn.execute(
+                "SELECT content, category FROM facts WHERE fact_id = ?", (old_id,)
+            ).fetchone()
+            if old is None:
+                raise KeyError(f"fact_id {old_id} not found")
+            if old["content"] == content:
+                raise ValueError("new content is identical to the existing fact")
+
+            new_id = self.add_fact(
+                content,
+                category=category or old["category"],
+                tags=tags,
+            )
+            self._conn.execute(
+                "UPDATE facts SET superseded_at = CURRENT_TIMESTAMP WHERE fact_id = ?",
+                (old_id,),
+            )
+            self._conn.execute(
+                "INSERT INTO fact_supersedes (new_id, old_id) VALUES (?, ?)",
+                (new_id, old_id),
+            )
+            self._conn.commit()
+            # Old fact is now retired; rebuild its bank so it drops out of HRR recall.
+            self._rebuild_bank(old["category"])
+            return new_id
+
     def remove_fact(self, fact_id: int) -> bool:
         """Delete a fact and its entity links. Returns True if the row existed."""
         with self._lock:

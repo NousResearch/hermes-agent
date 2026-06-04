@@ -56,7 +56,7 @@ FACT_STORE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "list"],
+                "enum": ["add", "search", "probe", "related", "reason", "contradict", "supersede", "update", "remove", "list"],
             },
             "content": {"type": "string", "description": "Fact content (required for 'add')."},
             "query": {"type": "string", "description": "Search query (required for 'search')."},
@@ -333,6 +333,15 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category"),
                 )
                 return json.dumps({"updated": updated})
+
+            elif action == "supersede":
+                new_id = store.supersede(
+                    int(args["fact_id"]),
+                    args["content"],
+                    category=args.get("category"),
+                    tags=args.get("tags", ""),
+                )
+                return json.dumps({"fact_id": new_id, "old_id": int(args["fact_id"]), "status": "superseded"})
 
             elif action == "remove":
                 removed = store.remove_fact(int(args["fact_id"]))

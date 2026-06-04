@@ -19,6 +19,7 @@ appear in ``/model`` without a Hermes release.
 
 from unittest.mock import patch
 
+import pytest
 
 from hermes_cli.models import (
     _MODELS_DEV_PREFERRED,
@@ -95,6 +96,21 @@ class TestProviderModelIdsPreferred:
             out = provider_model_ids("opencode-zen")
         assert "claude-opus-4-7" in out
         assert "kimi-k2.6" in out
+
+    @pytest.mark.parametrize("provider", ["minimax", "minimax-oauth", "minimax-cn"])
+    def test_minimax_variants_are_preferred(self, provider):
+        """MiniMax pickers should merge fresh models.dev entries without a release."""
+        assert provider in _MODELS_DEV_PREFERRED
+
+    @pytest.mark.parametrize("provider", ["minimax", "minimax-oauth", "minimax-cn"])
+    def test_minimax_variants_include_fresh_models_dev_entries(self, provider):
+        """MiniMax M3 should appear in all MiniMax picker variants."""
+        mdev = ["MiniMax-M2.5", "MiniMax-M3", "MiniMax-M2.5-highspeed"]
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+            out = provider_model_ids(provider)
+        assert "MiniMax-M3" in out
+        assert "MiniMax-M2.5" in out
+        assert "MiniMax-M2.5-highspeed" in out
 
 
 class TestOpenRouterAndNousUnchanged:

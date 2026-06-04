@@ -46,7 +46,8 @@ export function createClientSessionState(
     streamId: null,
     sawAssistantPayload: false,
     pendingBranchGroup: null,
-    interrupted: false
+    interrupted: false,
+    needsInput: false
   }
 }
 

@@ -73,4 +73,7 @@ export interface ClientSessionState {
   sawAssistantPayload: boolean
   pendingBranchGroup: string | null
   interrupted: boolean
+  /** A blocking clarify prompt is waiting on the user for this session. Drives
+   *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
+  needsInput: boolean
 }

@@ -193,24 +193,41 @@ export function noteSessionActivity(sessionId: string | null | undefined) {
   armSessionWatchdog(sessionId)
 }
 
+// Toggle an id's membership in a string-set atom, no-op when unchanged (keeps
+// the same array reference so subscribers don't churn).
+const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on: boolean) =>
+  set(current => {
+    const present = current.includes(id)
+
+    if (on) {
+      return present ? current : [...current, id]
+    }
+
+    return present ? current.filter(x => x !== id) : current
+  })
+
+// Stored session ids with a blocking prompt (clarify) waiting on the user.
+// Separate from $workingSessionIds: a session can be "working" (turn running)
+// AND need input. The sidebar row reads this for a persistent indicator that,
+// unlike a toast, survives window blur / alt-tab.
+export const $attentionSessionIds = atom<string[]>([])
+export const setAttentionSessionIds = (next: Updater<string[]>) => updateAtom($attentionSessionIds, next)
+
+export function setSessionAttention(sessionId: string | null | undefined, needsInput: boolean) {
+  if (sessionId) {
+    toggleMembership(setAttentionSessionIds, sessionId, needsInput)
+  }
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
     return
   }
 
-  setWorkingSessionIds(current => {
-    const alreadyWorking = current.includes(sessionId)
+  toggleMembership(setWorkingSessionIds, sessionId, working)
 
-    if (working) {
-      return alreadyWorking ? current : [...current, sessionId]
-    }
-
-    return alreadyWorking ? current.filter(id => id !== sessionId) : current
-  })
-
-  // Bookend the watchdog: arm it whenever a session enters "working",
-  // disarm it whenever it leaves. A subsequent noteSessionActivity() from
-  // a streaming event will refresh the timer.
+  // Bookend the watchdog: arm on enter, disarm on leave. A later
+  // noteSessionActivity() from a streaming event refreshes the timer.
   if (working) {
     armSessionWatchdog(sessionId)
   } else {

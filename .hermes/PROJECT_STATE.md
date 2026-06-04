@@ -623,3 +623,26 @@ No merge, deploy, production mutation, origin push, main push, dependency change
   - `/tmp/ua-p6-004-hermes-verified.diff`
   - `/tmp/ua-p6-wave1-combined-final.diff`
 - Scope: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying performed.
+
+### UA Phase 6 Wave 2 micro-swarm integrated locally — 2026-06-04T02:36:22Z
+
+- Base checkpoint: `147c76eef` (`feat(ua): add phase 6 wave 1 handoff safeguards`).
+- Beads executed in isolated worktrees:
+  - P6-005 Must-read map artifact via `codex-coder` on `swarm/p6-005-wave2`.
+  - P6-006 Runtime gate inventory via `codex-coder` on `swarm/p6-006-wave2`.
+- Per-bead Hermes verification:
+  - P6-005: scope PASS; forbidden PASS; py_compile PASS; focused 146 passed; full `tests/code_scan` 1030 passed; diff-check PASS; added-lines secret scan PASS; reviewer PASS.
+  - P6-006: scope PASS; forbidden PASS; py_compile PASS; focused 48 passed; full `tests/code_scan` 1027 passed; diff-check PASS; added-lines secret scan PASS; reviewer PASS.
+- Combined integration into main Phase 6 worktree: `git apply --check` PASS for both patches; applied locally only.
+- Combined verification after integration:
+  - Scope PASS.
+  - py_compile PASS for touched scanner scripts.
+  - Focused tests: 255 passed.
+  - Full `python -m pytest tests/code_scan -q`: 1032 passed.
+  - `git diff --check`: PASS.
+  - Added-lines secret scan: PASS.
+- Diff artifacts:
+  - `/tmp/ua-p6-wave2-prep/diffs/ua-p6-005.diff` — 570 lines / 27243 bytes.
+  - `/tmp/ua-p6-wave2-prep/diffs/ua-p6-006.diff` — 321 lines / 12399 bytes.
+  - `/tmp/ua-p6-wave2-prep/diffs/ua-p6-wave2-combined-final.diff` — 891 lines / 39642 bytes.
+- No commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying performed for Wave 2.

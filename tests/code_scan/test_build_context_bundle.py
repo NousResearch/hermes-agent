@@ -29,6 +29,7 @@ REQUIRED_TOP_KEYS = [
     "truncation_warnings",
     "suggested_questions",
     "critic_packs",  # UA-P5-008
+    "must_read_map",  # UA-P6-005
 ]
 
 REQUIRED_VALIDATION_KEYS = [
@@ -958,3 +959,104 @@ class TestCriticPacksViaRunUA:
         assert "critic_packs" in data
         for role in REQUIRED_ROLE_CRITIC_PACKS:
             assert role in data["critic_packs"]
+
+
+class TestMustReadMapUA_P6_005:
+    """UA-P6-005: subagent-context includes a bounded deterministic must-read map."""
+
+    REQUIRED_SECTIONS = [
+        "project_identity",
+        "app_entrypoints",
+        "auth_security",
+        "data_api",
+        "backend_serverless",
+        "db_rls",
+        "runtime_deployment",
+        "tests",
+        "docs_process",
+    ]
+
+    def _make_prl_like_bundle(self, tmp_path: Path) -> Path:
+        bundle = _make_minimal_bundle(tmp_path)
+        scan_path = bundle / "scan.json"
+        scan = json.loads(scan_path.read_text())
+        scan["total_files"] = 16
+        scan["total_lines"] = 31_000
+        scan["languages"] = {"typescript": 8, "sql": 1, "markdown": 2, "yaml": 1, "json": 3, "png": 1}
+        scan["files"] = [
+            {"path": "package.json", "lines": 80, "language": "json"},
+            {"path": "AGENTS.md", "lines": 60, "language": "markdown"},
+            {"path": "src/main.tsx", "lines": 90, "language": "typescript"},
+            {"path": "src/auth/session.ts", "lines": 120, "language": "typescript"},
+            {"path": "src/api/client.ts", "lines": 140, "language": "typescript"},
+            {"path": "supabase/functions/invite/index.ts", "lines": 85, "language": "typescript"},
+            {"path": "supabase/migrations/20260601000000_rls.sql", "lines": 75, "language": "sql"},
+            {"path": ".github/workflows/ci.yml", "lines": 45, "language": "yaml"},
+            {"path": "public/manifest.webmanifest", "lines": 25, "language": "json"},
+            {"path": "tests/auth.test.ts", "lines": 210, "language": "typescript"},
+            {"path": "README.md", "lines": 180, "language": "markdown"},
+            {"path": "package-lock.json", "lines": 20_000, "language": "json"},
+            {"path": "public/logo.png", "lines": 10_000, "language": "png"},
+        ]
+        scan_path.write_text(json.dumps(scan, indent=2))
+        (bundle / "graph_analytics.json").write_text(json.dumps({
+            "hub_nodes": [
+                {"node_id": "file:src/api/client.ts", "degree": 12, "label": "client.ts"},
+                {"node_id": "file:src/main.tsx", "degree": 9, "label": "main.tsx"},
+            ],
+        }, indent=2))
+        (bundle / "domain-surfaces.json").write_text(json.dumps({
+            "surfaces": [
+                {"surface": "ci_workflow", "path": ".github/workflows/ci.yml", "claim_type": "deterministic_inventory"},
+                {"surface": "pwa_manifest", "path": "public/manifest.webmanifest", "claim_type": "deterministic_inventory"},
+                {"surface": "supabase_function", "path": "supabase/functions/invite/index.ts", "claim_type": "deterministic_inventory"},
+                {"surface": "supabase_migration", "path": "supabase/migrations/20260601000000_rls.sql", "claim_type": "deterministic_inventory"},
+            ],
+            "summary": {"total_surfaces": 4, "surface_types": {"ci_workflow": 1, "pwa_manifest": 1, "supabase_function": 1, "supabase_migration": 1}},
+            "claim_type": "deterministic_inventory",
+            "semantic_status": "not_validated",
+        }, indent=2))
+        return bundle
+
+    def test_prl_like_fixture_has_must_read_map_sections(self, tmp_path: Path):
+        bundle = self._make_prl_like_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        data = json.loads(out.read_text())
+
+        must_read = data["must_read_map"]
+        assert must_read["purpose"] == "attention_routing_not_semantic_judgment"
+        assert "not prove security" in " ".join(must_read["boundaries"]).lower()
+        assert list(must_read["sections"].keys()) == self.REQUIRED_SECTIONS
+
+    def test_must_read_map_routes_expected_prl_surfaces_without_asset_domination(self, tmp_path: Path):
+        bundle = self._make_prl_like_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        sections = json.loads(out.read_text())["must_read_map"]["sections"]
+
+        paths_by_section = {
+            section: [item["path"] for item in items]
+            for section, items in sections.items()
+        }
+        assert "src/main.tsx" in paths_by_section["app_entrypoints"]
+        assert "supabase/functions/invite/index.ts" in paths_by_section["backend_serverless"]
+        assert "supabase/migrations/20260601000000_rls.sql" in paths_by_section["db_rls"]
+        assert ".github/workflows/ci.yml" in paths_by_section["runtime_deployment"]
+        assert "public/manifest.webmanifest" in paths_by_section["runtime_deployment"]
+        assert "README.md" in paths_by_section["docs_process"]
+        assert "tests/auth.test.ts" in paths_by_section["tests"]
+
+        flat_paths = [path for paths in paths_by_section.values() for path in paths]
+        assert "package-lock.json" not in flat_paths
+        assert "public/logo.png" not in flat_paths
+        assert len(flat_paths) <= 45
+
+    def test_markdown_handoff_renders_must_read_map(self, tmp_path: Path):
+        bundle = self._make_prl_like_bundle(tmp_path)
+        out = tmp_path / "context.json"
+        rc, stdout, stderr = _run_build_context(bundle, out)
+        assert rc == 0, stderr
+        assert "## Must-Read Map" in stdout
+        assert "Attention routing only" in stdout
+        assert "supabase/functions/invite/index.ts" in stdout

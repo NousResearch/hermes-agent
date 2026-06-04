@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from recommended_files import build_must_read_map, build_recommended_files
+
 # ── Bounded-list limits ───────────────────────────────────────────────
 
 MAX_READING_PLAN = 100
@@ -771,12 +773,22 @@ def build_report_data(
         domain_surfaces,
     )
 
+    # ── Build must-read map (UA-P6-005) ───────────────────────
+    recommended_files = build_recommended_files(scan, graph, None, None)
+    must_read_map = build_must_read_map(
+        recommended_files,
+        scan=scan,
+        domain_surfaces=domain_surfaces,
+        hub_rankings=hub_rankings,
+    )
+
     # ── Assemble report ────────────────────────────────────────
     return {
         "schema_version": SCHEMA_VERSION,
         "sources": sources,
         "sections": sections,
         "reading_plan": reading_plan,
+        "must_read_map": must_read_map,
         "warnings": warnings,
         "totals": totals,
         "confidence_labels": get_confidence_labels(),

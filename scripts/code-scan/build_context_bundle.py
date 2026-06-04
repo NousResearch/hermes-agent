@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from recommended_files import build_recommended_files
+from recommended_files import build_must_read_map, build_recommended_files
 
 HANDOFF_VERSION = "1.0.0"
 
@@ -219,6 +219,14 @@ def build_context_envelope(
         recommended_files, scan, graph,
     )
 
+    # --- must_read_map (UA-P6-005) ---
+    must_read_map = build_must_read_map(
+        recommended_files,
+        scan=scan,
+        domain_surfaces=domain_surfaces,
+        analytics=analytics,
+    )
+
     # --- suggested_questions ---
     suggested_questions = _build_suggested_questions(
         validation, severity, analytics, scan, bundle_dir,
@@ -250,6 +258,7 @@ def build_context_envelope(
         "validation": validation_section,
         "confidence": confidence,
         "recommended_files": recommended_files,
+        "must_read_map": must_read_map,
         "reading_budget": reading_budget,
         "truncation_warnings": truncation_warnings,
         "suggested_questions": suggested_questions,
@@ -798,6 +807,25 @@ def render_markdown_handoff(envelope: dict) -> str:
                 f"| `{entry['path']}` | {entry.get('reason', '')} | {lines_str}{lang_suffix} |"
             )
         lines.append("")
+
+    must_read = envelope.get("must_read_map", {})
+    if isinstance(must_read, dict) and must_read.get("sections"):
+        lines.append("## Must-Read Map")
+        lines.append("")
+        lines.append("Attention routing only — not semantic judgment, security proof, runtime proof, or final synthesis.")
+        lines.append("")
+        for section, items in must_read.get("sections", {}).items():
+            lines.append(f"### {section.replace('_', ' ').title()}")
+            lines.append("")
+            if not items:
+                lines.append("- —")
+            for item in items:
+                path = item.get("path", "")
+                reason = item.get("reason", "deterministic routing")
+                sources = ", ".join(item.get("sources", []))
+                suffix = f" ({sources})" if sources else ""
+                lines.append(f"- `{path}` — {reason}{suffix}")
+            lines.append("")
 
     # Confidence
     conf = envelope.get("confidence", {})

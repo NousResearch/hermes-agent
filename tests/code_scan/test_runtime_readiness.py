@@ -409,6 +409,87 @@ class TestNodeFixtureReadiness:
         assert any("node" in s.lower() for s in data["suggested_verification"])
 
 
+class TestRuntimeGateInventory:
+    """UA-P6-006: deterministic runtime gate inventory without execution."""
+
+    def _ensure_sys_path(self):
+        scan_dir = str(PROJECT_ROOT / "scripts" / "code-scan")
+        if scan_dir not in sys.path:
+            sys.path.insert(0, scan_dir)
+        import importlib
+        import runtime_readiness
+        importlib.reload(runtime_readiness)
+        return __import__("runtime_readiness")
+
+    def test_package_scripts_emit_gate_inventory(self, tmp_path: Path):
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "node_inventory"
+        target_dir.mkdir()
+        (target_dir / "package.json").write_text(json.dumps({
+            "name": "node-inventory",
+            "scripts": {
+                "test": "vitest run",
+                "build": "vite build",
+                "lint": "eslint .",
+                "typecheck": "tsc --noEmit",
+                "audit": "npm audit --audit-level=high",
+            },
+        }))
+
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        inventory = artifact.get("runtime_gate_inventory", [])
+
+        assert inventory, "package scripts must be represented as runtime gate inventory"
+        by_type = {gate["gate_type"]: gate for gate in inventory}
+        for gate_type in ("test", "build", "lint", "typecheck", "audit"):
+            assert gate_type in by_type
+            gate = by_type[gate_type]
+            assert gate["status"] == "suggested_not_run"
+            assert gate["execution_semantics"] == "suggested_not_run"
+            assert gate["source"].startswith("package.json:scripts.")
+            assert "command" in gate
+
+        optional_missing = [
+            c["command"] for c in artifact["required_commands"]
+            if c.get("classification") == "optional_alternative" and not c["available"]
+        ]
+        for blocker in artifact["blockers"]:
+            assert not any(pm in blocker for pm in optional_missing)
+
+    def test_ci_workflow_commands_emit_gate_inventory(self, tmp_path: Path):
+        rr = self._ensure_sys_path()
+        target_dir = tmp_path / "ci_inventory"
+        workflows_dir = target_dir / ".github" / "workflows"
+        workflows_dir.mkdir(parents=True)
+        (target_dir / "package.json").write_text(json.dumps({
+            "name": "ci-inventory",
+            "scripts": {"test": "vitest run"},
+        }))
+        (workflows_dir / "ci.yml").write_text(
+            "name: CI\n"
+            "jobs:\n"
+            "  test:\n"
+            "    steps:\n"
+            "      - run: npm ci\n"
+            "      - run: npm test\n"
+            "      - run: npm run build\n"
+            "      - run: npm run lint\n"
+        )
+
+        artifact = rr.build_readiness_artifact(str(target_dir))
+        inventory = artifact.get("runtime_gate_inventory", [])
+        ci_gates = [
+            gate for gate in inventory
+            if gate["source"].startswith(".github/workflows/ci.yml:")
+        ]
+
+        assert ci_gates, "CI run commands must be represented as runtime gate inventory"
+        assert {gate["gate_type"] for gate in ci_gates} >= {"install", "test", "build", "lint"}
+        for gate in ci_gates:
+            assert gate["status"] == "suggested_not_run"
+            assert gate["execution_semantics"] == "suggested_not_run"
+
+
 # ── GREEN: runtime_readiness module is importable ────────────────────────
 
 class TestRuntimeReadinessModule:

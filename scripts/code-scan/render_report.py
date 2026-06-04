@@ -563,6 +563,39 @@ def _render_readiness(readiness: Any) -> str:
     return "\n".join(lines)
 
 
+def _render_must_read_map(must_read_map: Any) -> str:
+    """Render bounded deterministic must-read attention map."""
+    lines = ["## Must-Read Map", ""]
+    if not isinstance(must_read_map, dict) or not must_read_map.get("sections"):
+        lines.append("*No must-read map available.*")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append("Attention routing only — not semantic judgment, security proof, runtime proof, or final synthesis.")
+    lines.append("")
+    for boundary in must_read_map.get("boundaries", []):
+        lines.append(f"- {_safe_inline(str(boundary))}")
+    lines.append("")
+
+    for section, items in must_read_map.get("sections", {}).items():
+        lines.append(f"### {section.replace('_', ' ').title()}")
+        lines.append("")
+        if not items:
+            lines.append("- —")
+            lines.append("")
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            path = _safe_inline(item.get("path", ""))
+            reason = _safe_inline(item.get("reason", "deterministic routing"))
+            sources = ", ".join(item.get("sources", [])) if isinstance(item.get("sources"), list) else ""
+            suffix = f" ({_safe_inline(sources)})" if sources else ""
+            lines.append(f"- `{path}` — {reason}{suffix}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _render_reading_plan(reading_plan: list) -> str:
     """Render Suggested Reading Path section."""
     lines = ["## Suggested Reading Path", ""]
@@ -802,6 +835,7 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
     """
     sections = report_data.get("sections", {})
     reading_plan = report_data.get("reading_plan", [])
+    must_read_map = report_data.get("must_read_map", {})
     warnings = report_data.get("warnings", [])
     sources = report_data.get("sources", {})
     totals = report_data.get("totals", {})
@@ -858,6 +892,9 @@ def render_report_data(report_data: dict, *, max_bytes: int = DEFAULT_MAX_BYTES)
 
     # 9b. Graph / Validation
     parts.append(_render_graph_analysis(graph))
+
+    # 9c. Must-Read Map
+    parts.append(_render_must_read_map(must_read_map))
 
     # 10. Suggested Reading Path
     parts.append(_render_reading_plan(reading_plan))

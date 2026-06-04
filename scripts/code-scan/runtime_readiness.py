@@ -18,7 +18,9 @@ Produces:
 - runtime-readiness.md (human-readable)
 """
 import glob
+import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -325,7 +327,14 @@ def _build_verification_gates(
         status = "suggested_not_run"
         lead = cmd_str.split()[0].lower() if cmd_str else ""
         # enough context: include 'stack' hint from first matching detected, if unambiguous
-        gate: dict = {"command": cmd_str, "status": status}
+        gate_type = _classify_gate_type(cmd_str) or "verification"
+        gate: dict = {
+            "command": cmd_str,
+            "source": "suggested_verification",
+            "gate_type": gate_type,
+            "status": status,
+            "execution_semantics": "suggested_not_run",
+        }
         # attach optional stack if determinable for this suggestion context
         if stacks and len(stacks) == 1:
             gate["stack"] = stacks[0]
@@ -349,6 +358,182 @@ def _build_verification_gates(
             gate["status"] = status
         gates.append(gate)
     return gates
+
+
+_PACKAGE_SCRIPT_GATE_NAMES = {
+    "test": "test",
+    "build": "build",
+    "lint": "lint",
+    "typecheck": "typecheck",
+    "type-check": "typecheck",
+    "type_check": "typecheck",
+    "check-types": "typecheck",
+    "audit": "audit",
+}
+
+
+def _classify_gate_type(command: str, script_name: str | None = None) -> Optional[str]:
+    """Classify known runtime gate commands without executing them."""
+    name = (script_name or "").lower().replace(":", "-")
+    for marker, gate_type in _PACKAGE_SCRIPT_GATE_NAMES.items():
+        if name == marker or name.startswith(f"{marker}-") or name.endswith(f"-{marker}"):
+            return gate_type
+
+    normalized = re.sub(r"\s+", " ", command.strip().lower())
+    if not normalized:
+        return None
+    if re.search(r"\b(npm|pnpm|yarn)\s+(ci|install)\b", normalized):
+        return "install"
+    if re.search(r"\b(pip|poetry|uv|pipenv)\s+.*\binstall\b", normalized):
+        return "install"
+    if re.search(r"\b(npm|pnpm|yarn)\s+(run\s+)?test\b", normalized):
+        return "test"
+    if any(token in normalized for token in ("pytest", "go test", "cargo test")):
+        return "test"
+    if re.search(r"\b(npm|pnpm|yarn)\s+(run\s+)?build\b", normalized):
+        return "build"
+    if "docker build" in normalized:
+        return "build"
+    if re.search(r"\b(npm|pnpm|yarn)\s+(run\s+)?lint\b", normalized):
+        return "lint"
+    if re.search(r"\b(eslint|ruff|flake8|pylint)\b", normalized):
+        return "lint"
+    if re.search(r"\b(npm|pnpm|yarn)\s+run\s+(typecheck|type-check|check-types)\b", normalized):
+        return "typecheck"
+    if re.search(r"\b(tsc|mypy|pyright)\b", normalized):
+        return "typecheck"
+    if re.search(r"\b(npm|pnpm|yarn)\s+(run\s+)?audit\b", normalized):
+        return "audit"
+    if re.search(r"\b(pip-audit|cargo audit|cargo-audit)\b", normalized):
+        return "audit"
+    return None
+
+
+def _gate_record(command: str, source: str, gate_type: str) -> dict:
+    return {
+        "command": command,
+        "source": source,
+        "gate_type": gate_type,
+        "status": "suggested_not_run",
+        "execution_semantics": "suggested_not_run",
+    }
+
+
+def _package_script_gates(target_dir: str) -> list[dict]:
+    """Read package.json scripts and expose recognized gates as inventory only."""
+    td = Path(target_dir)
+    pj_path = td / "package.json"
+    if not pj_path.exists():
+        return []
+
+    try:
+        package_json = json.loads(pj_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    scripts = package_json.get("scripts", {})
+    if not isinstance(scripts, dict):
+        return []
+
+    pm_name = _infer_pm(str(td)) or "npm"
+    gates: list[dict] = []
+    for script_name in sorted(scripts):
+        script_command = scripts.get(script_name)
+        if not isinstance(script_command, str):
+            continue
+        gate_type = _classify_gate_type(script_command, script_name)
+        if gate_type is None:
+            continue
+        command = f"{pm_name} test" if script_name == "test" else f"{pm_name} run {script_name}"
+        gates.append(_gate_record(
+            command=command,
+            source=f"package.json:scripts.{script_name}",
+            gate_type=gate_type,
+        ))
+    return gates
+
+
+def _workflow_run_commands(workflow_path: Path) -> list[tuple[int, str]]:
+    """Extract simple GitHub Actions run commands without YAML execution semantics."""
+    try:
+        lines = workflow_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    commands: list[tuple[int, str]] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        match = re.match(r"^\s*(?:-\s*)?run:\s*(.*)$", line)
+        if not match:
+            idx += 1
+            continue
+        value = match.group(1).strip()
+        line_no = idx + 1
+        if value in {"|", ">", "|-", ">-"}:
+            base_indent = len(line) - len(line.lstrip())
+            idx += 1
+            while idx < len(lines):
+                block_line = lines[idx]
+                if not block_line.strip():
+                    idx += 1
+                    continue
+                indent = len(block_line) - len(block_line.lstrip())
+                if indent <= base_indent:
+                    break
+                command = block_line.strip()
+                if command and not command.startswith("#"):
+                    commands.append((idx + 1, command))
+                idx += 1
+            continue
+        command = value.strip('"\'')
+        if command and not command.startswith("#"):
+            commands.append((line_no, command))
+        idx += 1
+    return commands
+
+
+def _ci_workflow_gates(target_dir: str) -> list[dict]:
+    """Parse GitHub Actions run commands conservatively as non-executed gates."""
+    td = Path(target_dir)
+    workflow_dir = td / ".github" / "workflows"
+    if not workflow_dir.exists():
+        return []
+
+    gates: list[dict] = []
+    workflow_files = sorted(
+        list(workflow_dir.glob("*.yml")) + list(workflow_dir.glob("*.yaml")),
+        key=lambda p: p.name,
+    )
+    for workflow_path in workflow_files:
+        rel_path = workflow_path.relative_to(td).as_posix()
+        for line_no, command in _workflow_run_commands(workflow_path):
+            gate_type = _classify_gate_type(command)
+            if gate_type is None:
+                continue
+            gates.append(_gate_record(
+                command=command,
+                source=f"{rel_path}:{line_no}",
+                gate_type=gate_type,
+            ))
+    return gates
+
+
+def _build_runtime_gate_inventory(target_dir: str, verification_gates: list[dict]) -> list[dict]:
+    """Combine inferred, package-script, and CI gates without executing them."""
+    gates = list(verification_gates)
+    gates.extend(_package_script_gates(target_dir))
+    gates.extend(_ci_workflow_gates(target_dir))
+
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict] = []
+    for gate in gates:
+        key = (gate["command"], gate["source"], gate["gate_type"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(gate)
+    return unique
 
 
 # ── Build completeness artifact ─────────────────────────────────────────
@@ -393,6 +578,7 @@ def build_readiness_artifact(target_dir: str) -> dict:
     verification_gates = _build_verification_gates(
         all_suggestions, all_commands, stacks
     )
+    runtime_gate_inventory = _build_runtime_gate_inventory(target_dir, verification_gates)
 
     return {
         "detected_stacks": stacks,
@@ -402,6 +588,7 @@ def build_readiness_artifact(target_dir: str) -> dict:
         "blockers": blockers,
         # UA-P5-007: explicit verification_gates for suggested commands (status contract only)
         "verification_gates": verification_gates,
+        "runtime_gate_inventory": runtime_gate_inventory,
     }
 
 

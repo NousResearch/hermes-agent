@@ -818,3 +818,46 @@ class TestUA_P5_006_BoundaryRendering:
         ]
         for phrase in forbidden:
             assert phrase not in md, f"Report overclaims with forbidden phrase: {phrase}"
+
+class TestUA_P6_005_MustReadMapRendering:
+    """UA-P6-005: rendered REPORT.md includes deterministic must-read map."""
+
+    def test_must_read_map_rendered_with_boundaries(self):
+        report = _make_report_data(
+            sections={
+                "scan": {
+                    "project_root": "/tmp/p",
+                    "scanned_at": "",
+                    "total_files": 3,
+                    "total_lines": 30,
+                    "languages": {},
+                    "categories": {},
+                    "frameworks": [],
+                },
+            },
+            must_read_map={
+                "purpose": "attention_routing_not_semantic_judgment",
+                "boundaries": [
+                    "Attention routing only; not semantic judgment.",
+                    "UA does not prove security, deployment readiness, RLS correctness, or runtime correctness.",
+                ],
+                "sections": {
+                    "project_identity": [{"path": "package.json", "reason": "bucket: project identity", "sources": ["recommended_files"], "score": 100}],
+                    "app_entrypoints": [{"path": "src/main.tsx", "reason": "bucket: entrypoints", "sources": ["recommended_files"], "score": 100}],
+                    "auth_security": [],
+                    "data_api": [],
+                    "backend_serverless": [{"path": "supabase/functions/invite/index.ts", "reason": "domain surface", "sources": ["domain_surfaces"], "score": 100}],
+                    "db_rls": [],
+                    "runtime_deployment": [],
+                    "tests": [],
+                    "docs_process": [],
+                },
+                "limits": {"max_files_per_section": 5, "max_total_files": 45},
+            },
+        )
+        md = render_report.render_report_data(report)
+        assert "## Must-Read Map" in md
+        assert "Attention routing only" in md
+        assert "not semantic judgment" in md
+        assert "src/main.tsx" in md
+        assert "supabase/functions/invite/index.ts" in md

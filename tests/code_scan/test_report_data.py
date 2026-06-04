@@ -834,3 +834,59 @@ class TestUA_P5_006_ConfidenceLabelModel:
         cb = result.get("claim_boundaries", {})
         assert cb.get("scan") == "deterministic_fact"
         assert "deterministic_fact" in cb.values()
+
+
+class TestUA_P6_005_MustReadMap:
+    """UA-P6-005: report-data emits bounded deterministic must-read map."""
+
+    def test_must_read_map_includes_required_sections_and_prl_surfaces(self):
+        scan = {
+            "project_root": "/tmp/prl",
+            "scanned_at": "2026-06-04T00:00:00Z",
+            "total_files": 13,
+            "total_lines": 31_000,
+            "languages": {"typescript": 8, "sql": 1, "markdown": 2, "yaml": 1, "png": 1},
+            "categories": {},
+            "frameworks": ["vite"],
+            "files": [
+                {"path": "package.json", "relative_path": "package.json", "lines": 80, "language": "json"},
+                {"path": "src/main.tsx", "relative_path": "src/main.tsx", "lines": 90, "language": "typescript"},
+                {"path": "src/auth/session.ts", "relative_path": "src/auth/session.ts", "lines": 120, "language": "typescript"},
+                {"path": "src/api/client.ts", "relative_path": "src/api/client.ts", "lines": 140, "language": "typescript"},
+                {"path": "supabase/functions/invite/index.ts", "relative_path": "supabase/functions/invite/index.ts", "lines": 85, "language": "typescript"},
+                {"path": "supabase/migrations/20260601000000_rls.sql", "relative_path": "supabase/migrations/20260601000000_rls.sql", "lines": 75, "language": "sql"},
+                {"path": ".github/workflows/ci.yml", "relative_path": ".github/workflows/ci.yml", "lines": 45, "language": "yaml"},
+                {"path": "public/manifest.webmanifest", "relative_path": "public/manifest.webmanifest", "lines": 25, "language": "json"},
+                {"path": "tests/auth.test.ts", "relative_path": "tests/auth.test.ts", "lines": 210, "language": "typescript"},
+                {"path": "README.md", "relative_path": "README.md", "lines": 180, "language": "markdown"},
+                {"path": "package-lock.json", "relative_path": "package-lock.json", "lines": 20_000, "language": "json"},
+                {"path": "public/logo.png", "relative_path": "public/logo.png", "lines": 10_000, "language": "png"},
+            ],
+        }
+        domain_surfaces = {
+            "surfaces": [
+                {"surface": "ci_workflow", "path": ".github/workflows/ci.yml", "claim_type": "deterministic_inventory"},
+                {"surface": "pwa_manifest", "path": "public/manifest.webmanifest", "claim_type": "deterministic_inventory"},
+                {"surface": "supabase_function", "path": "supabase/functions/invite/index.ts", "claim_type": "deterministic_inventory"},
+                {"surface": "supabase_migration", "path": "supabase/migrations/20260601000000_rls.sql", "claim_type": "deterministic_inventory"},
+            ],
+            "summary": {"total_surfaces": 4, "surface_types": {"ci_workflow": 1, "pwa_manifest": 1, "supabase_function": 1, "supabase_migration": 1}},
+        }
+        result = report_data.build_report_data(
+            scan=scan,
+            domain_surfaces=domain_surfaces,
+            hub_rankings={"hub_rankings": [{"file_path": "src/api/client.ts", "hub_score": 9, "in_degree": 4, "out_degree": 5, "confidence": "high"}]},
+        )
+        must_read = result["must_read_map"]
+        assert must_read["purpose"] == "attention_routing_not_semantic_judgment"
+        sections = must_read["sections"]
+        assert "src/main.tsx" in [item["path"] for item in sections["app_entrypoints"]]
+        assert "supabase/functions/invite/index.ts" in [item["path"] for item in sections["backend_serverless"]]
+        assert "supabase/migrations/20260601000000_rls.sql" in [item["path"] for item in sections["db_rls"]]
+        assert "public/manifest.webmanifest" in [item["path"] for item in sections["runtime_deployment"]]
+        assert "README.md" in [item["path"] for item in sections["docs_process"]]
+        assert "tests/auth.test.ts" in [item["path"] for item in sections["tests"]]
+        flat_paths = [item["path"] for items in sections.values() for item in items]
+        assert "package-lock.json" not in flat_paths
+        assert "public/logo.png" not in flat_paths
+        assert len(flat_paths) <= 45

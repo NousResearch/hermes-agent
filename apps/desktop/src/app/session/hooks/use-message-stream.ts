@@ -798,13 +798,16 @@ export function useMessageStream({
           )
         }
       } else if (event.type === 'clarify.request') {
-        if (!isActiveEvent) {
-          return
-        }
-
         // Surface the clarify tool's overlay. The Python side is blocked on
         // `clarify.respond`, so without this handler the agent would hang
         // forever (see tools/clarify_tool.py + tui_gateway/server.py:_block).
+        //
+        // Store the request for whichever session raised it — even a background
+        // one. clarify.request is a one-shot event; if we dropped it for an
+        // unfocused session, that session would block on `clarify.respond`
+        // indefinitely and re-focusing it could never recover (the event is
+        // gone). Parking it per-session lets the user answer once they switch
+        // over; the inline ClarifyTool reads the active session's entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
         const question = typeof payload?.question === 'string' ? payload.question : ''
 
@@ -815,6 +818,17 @@ export function useMessageStream({
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
             sessionId: sessionId ?? null
           })
+
+          // The transcript only renders the active session, so a background
+          // clarify is otherwise invisible (the row just keeps spinning like
+          // it's working). Nudge the user toward the chat that needs them.
+          if (!isActiveEvent) {
+            notify({
+              kind: 'info',
+              title: 'Another chat needs input',
+              message: 'Hermes asked a question in a background session. Open it to answer.'
+            })
+          }
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

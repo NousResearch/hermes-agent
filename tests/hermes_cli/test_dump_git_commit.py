@@ -11,6 +11,50 @@ These tests cover both paths plus the failure modes (no git, no baked file).
 from unittest.mock import MagicMock, patch
 
 
+def test_count_mcp_servers_uses_top_level_mcp_servers_config():
+    """Current config stores MCP servers at top-level ``mcp_servers``."""
+    from hermes_cli import dump
+
+    config = {
+        "mcp_servers": {
+            "filesystem": {"command": "npx", "args": ["-y", "server"]},
+            "github": {"url": "https://example.com/mcp"},
+        }
+    }
+
+    assert dump._count_mcp_servers(config) == 2
+
+
+def test_count_mcp_servers_ignores_disabled_servers():
+    """Disabled MCP entries are configured but not active/connected."""
+    from hermes_cli import dump
+
+    config = {
+        "mcp_servers": {
+            "enabled": {"command": "npx"},
+            "disabled_bool": {"command": "npx", "enabled": False},
+            "disabled_string": {"command": "npx", "enabled": "false"},
+        }
+    }
+
+    assert dump._count_mcp_servers(config) == 1
+
+
+def test_count_mcp_servers_keeps_legacy_nested_config_compatibility():
+    """Older config snapshots used ``mcp.servers``."""
+    from hermes_cli import dump
+
+    config = {
+        "mcp": {
+            "servers": {
+                "legacy": {"command": "npx"},
+            }
+        }
+    }
+
+    assert dump._count_mcp_servers(config) == 1
+
+
 def test_get_git_commit_uses_live_git_when_available(tmp_path):
     """Source install: ``git rev-parse --short=8 HEAD`` wins; no fallback."""
     from hermes_cli import dump

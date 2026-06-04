@@ -9,8 +9,7 @@ import {
   setEnvVar,
   setModelAssignment,
   startOAuthLogin,
-  submitOAuthCode,
-  validateProviderCredential
+  submitOAuthCode
 } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
@@ -253,12 +252,16 @@ async function completeWithModelConfirm(
   ctx: OnboardingContext,
   providerLabel: string,
   preferredSlugs: string[],
-  onFail: (reason: null | string) => void
+  onFail: (reason: null | string) => void,
+  // When true, a failing runtime check no longer blocks progression — the
+  // user is allowed through onboarding regardless. Used by the API-key path,
+  // where we intentionally don't validate the key (it blocked too many users).
+  ignoreRuntimeGate = false
 ) {
   await ctx.requestGateway('reload.env').catch(() => undefined)
   const runtime = await checkRuntime(ctx)
 
-  if (!runtime.ready) {
+  if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
     return
@@ -616,23 +619,13 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
     return { ok: false, message: 'Enter a value first.' }
   }
 
-  // Live-probe the credential BEFORE persisting so a mistyped key never lands
-  // in .env. A rejected key (reachable && !ok) hard-blocks; an unreachable
-  // probe (offline / provider down) falls through and saves with the usual
-  // runtime check, so we don't strand offline users.
-  try {
-    const probe = await validateProviderCredential(envKey, trimmed)
-    if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || `That ${label} key was rejected.` }
-    }
-  } catch {
-    // Validation endpoint unavailable — don't block; fall through to save.
-  }
-
+  // No key validation here on purpose: we previously live-probed the key and
+  // hard-blocked on a runtime check after saving, which rejected too many
+  // legitimate users (corporate proxies, regional blocks, flaky/rate-limited
+  // provider probes, self-hosted endpoints). We now save the value as-is and
+  // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
     await setEnvVar(envKey, trimmed)
-    let stillFailing = false
-    let runtimeFailure: null | string = null
     // For API-key flows we don't have a definitive provider id (the
     // user picked which API key they're entering, but the corresponding
     // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
@@ -640,19 +633,8 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
     // fetchProviderDefaultModel falls back to the first authenticated
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
-    await completeWithModelConfirm(ctx, label, slugCandidates, reason => {
-      stillFailing = true
-      runtimeFailure = reason
-    })
-
-    if (stillFailing) {
-      const failureDetail = (runtimeFailure ?? '').trim()
-
-      return {
-        ok: false,
-        message: failureDetail || `Saved, but Hermes still cannot reach ${label}. Double-check the value.`
-      }
-    }
+    // ignoreRuntimeGate=true: never block onboarding on the runtime check.
+    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
 
     return { ok: true }
   } catch (error) {

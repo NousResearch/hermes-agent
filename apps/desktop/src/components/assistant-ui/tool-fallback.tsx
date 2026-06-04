@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
+import { PendingToolApproval } from './tool-approval'
 import {
   groupCopyText as buildGroupCopyText,
   buildToolView,
@@ -309,6 +310,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           </span>
         </DisclosureRow>
       </div>
+      {isPending && <PendingToolApproval part={part} />}
       {open && (
         <div className="grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {!embedded && view.previewTarget && isPreviewableTarget(view.previewTarget) && (

@@ -547,7 +547,7 @@ function CronJobRow({
   return (
     <div className="grid gap-3 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <button
-        className="min-w-0 cursor-pointer rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="min-w-0 rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
         onClick={onEdit}
         type="button"
       >

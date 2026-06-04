@@ -338,7 +338,7 @@ export function ConfigSettings({
       {fields.length === 0 ? (
         <EmptyState description="Try a different search term or choose another section." title="No matching settings" />
       ) : (
-        <div className="divide-y divide-border/40">
+        <div className="grid gap-1">
           {fields.map(([key, field]) => (
             <ConfigField
               enumOptions={

@@ -92,7 +92,7 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 cursor-pointer items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()

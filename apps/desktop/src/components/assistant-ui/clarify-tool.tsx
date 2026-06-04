@@ -164,7 +164,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           {choices.map((choice, index) => (
             <button
               className={cn(
-                'flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-foreground/95',
+                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-foreground/95',
                 'transition-colors hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-55',
                 selectedChoice === choice && 'bg-accent/60'
               )}
@@ -192,7 +192,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           ))}
           <button
             className={cn(
-              'flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground',
+              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground',
               'transition-colors hover:bg-accent/40 hover:text-foreground'
             )}
             disabled={submitting}
@@ -256,7 +256,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       {!typing && hasChoices && (
         <div className="flex justify-end">
           <button
-            className="cursor-pointer bg-transparent text-[0.6875rem] text-muted-foreground/70 underline-offset-4 hover:text-foreground hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+            className="bg-transparent text-[0.6875rem] text-muted-foreground/70 underline-offset-4 hover:text-foreground hover:underline disabled:cursor-not-allowed disabled:opacity-50"
             disabled={!ready || submitting}
             onClick={() => void respond('')}
             type="button"

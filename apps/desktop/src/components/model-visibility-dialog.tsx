@@ -118,7 +118,6 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
                         </span>
                         <Switch
                           checked={visible.has(key)}
-                          className="cursor-pointer"
                           onCheckedChange={() => toggle(provider, family.id)}
                         />
                       </label>

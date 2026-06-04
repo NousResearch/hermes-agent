@@ -94,7 +94,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
         <DropdownMenuTrigger asChild>
           <button
             className={cn(
-              'inline-flex h-full cursor-pointer items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
+              'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
               item.className
             )}
             disabled={item.disabled}
@@ -168,7 +168,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     return (
       <a
         className={cn(
-          'inline-flex h-full cursor-pointer items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
+          'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
           item.className
         )}
         href={item.href}
@@ -184,7 +184,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   return (
     <button
       className={cn(
-        'inline-flex h-full cursor-pointer items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
+        'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
         item.className
       )}
       disabled={item.disabled}

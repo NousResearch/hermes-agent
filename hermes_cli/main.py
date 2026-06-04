@@ -12022,7 +12022,19 @@ def cmd_dashboard(args):
 
     from hermes_cli.web_server import start_server
 
-    embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
+    # Embedded chat (the /api/ws JSON-RPC transport the desktop GUI connects
+    # to, plus the in-browser /chat PTY tab) is ON BY DEFAULT — plain
+    # `hermes dashboard` must produce a dashboard the GUI can actually talk to.
+    # Explicit opt-out for hardened public binds: `--no-tui` or
+    # HERMES_DASHBOARD_TUI=0/false/off.  `--tui` / HERMES_DASHBOARD_TUI=1 remain
+    # as explicit-on (and win over a stale =0 env) for backward compatibility.
+    _tui_env = os.environ.get("HERMES_DASHBOARD_TUI", "").strip().lower()
+    if args.tui or _tui_env in ("1", "true", "yes", "on"):
+        embedded_chat = True
+    elif getattr(args, "no_tui", False) or _tui_env in ("0", "false", "no", "off"):
+        embedded_chat = False
+    else:
+        embedded_chat = True
     start_server(
         host=args.host,
         port=args.port,
@@ -15318,8 +15330,18 @@ Examples:
         "--tui",
         action="store_true",
         help=(
-            "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
-            "Alternatively set HERMES_DASHBOARD_TUI=1."
+            "Force the in-browser Chat tab on (embedded `hermes --tui` via "
+            "PTY/WebSocket). On by default; this flag is only needed to override "
+            "HERMES_DASHBOARD_TUI=0. Alternatively set HERMES_DASHBOARD_TUI=1."
+        ),
+    )
+    dashboard_parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        help=(
+            "Disable the in-browser Chat tab and its WebSocket transport. Use "
+            "for hardened public binds where the shell-capable embedded agent "
+            "should not be reachable. Alternatively set HERMES_DASHBOARD_TUI=0."
         ),
     )
     dashboard_parser.add_argument(

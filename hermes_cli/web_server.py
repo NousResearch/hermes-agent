@@ -8678,7 +8678,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     *,
-    embedded_chat: bool = False,
+    embedded_chat: bool = True,
 ):
     """Start the web UI server."""
     import uvicorn

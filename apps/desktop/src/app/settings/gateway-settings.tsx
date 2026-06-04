@@ -137,11 +137,11 @@ export function GatewaySettings() {
       setRemoteToken('')
       notify({
         kind: 'success',
-        title: apply ? 'Gateway connection restarting' : 'Gateway settings saved',
-        message: apply ? 'Hermes Desktop will reconnect using the saved settings.' : 'Saved for the next restart.'
+        title: apply ? '网关连接正在重启' : '网关设置已保存',
+        message: apply ? 'Hermes 桌面版将使用保存的设置重新连接。' : '已保存，下次重启生效。'
       })
     } catch (err) {
-      notifyError(err, apply ? 'Could not apply gateway settings' : 'Could not save gateway settings')
+      notifyError(err, apply ? '无法应用网关设置' : '无法保存网关设置')
     } finally {
       setSaving(false)
     }
@@ -151,8 +151,8 @@ export function GatewaySettings() {
     if (!canUseRemote) {
       notify({
         kind: 'warning',
-        title: 'Remote gateway incomplete',
-        message: 'Enter a remote URL and session token before testing.'
+        title: '远程网关不完整',
+        message: '测试前请输入远程 URL 和会话令牌。'
       })
 
       return
@@ -168,25 +168,25 @@ export function GatewaySettings() {
         remoteUrl: state.remoteUrl.trim()
       })
 
-      const message = `Connected to ${result.baseUrl}${result.version ? ` · Hermes ${result.version}` : ''}`
+      const message = `已连接到 ${result.baseUrl}${result.version ? ` · Hermes ${result.version}` : ''}`
       setLastTest(message)
-      notify({ kind: 'success', title: 'Remote gateway reachable', message })
+      notify({ kind: 'success', title: '远程网关可连接', message })
     } catch (err) {
-      notifyError(err, 'Remote gateway test failed')
+      notifyError(err, '远程网关测试失败')
     } finally {
       setTesting(false)
     }
   }
 
   if (loading) {
-    return <LoadingState label="Loading gateway settings..." />
+    return <LoadingState label="正在加载网关设置..." />
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {
     return (
       <EmptyState
-        description="The desktop IPC bridge does not expose gateway settings."
-        title="Gateway settings unavailable"
+        description="桌面 IPC 桥接不暴露网关设置。"
+        title="网关设置不可用"
       />
     )
   }
@@ -197,11 +197,10 @@ export function GatewaySettings() {
         <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
           <Globe className="size-4 text-muted-foreground" />
           Gateway Connection
-          {state.envOverride ? <Pill tone="primary">env override</Pill> : null}
+          {state.envOverride ? <Pill tone="primary">环境变量覆盖</Pill> : null}
         </div>
         <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          Hermes Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control
-          an already-running Hermes backend on another machine or behind a trusted proxy.
+          Hermes 桌面版默认启动自己的本地网关。当您希望此应用控制在另一台机器或受信任代理上已经运行的 Hermes 后端时，请使用远程网关。
         </p>
       </div>
 
@@ -209,10 +208,9 @@ export function GatewaySettings() {
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <div>
-            <div className="font-medium">Environment variables are controlling this desktop session.</div>
+            <div className="font-medium">环境变量正在控制此桌面会话。</div>
             <div className="mt-1 leading-5">
-              Unset <code>HERMES_DESKTOP_REMOTE_URL</code> and <code>HERMES_DESKTOP_REMOTE_TOKEN</code> to use the saved
-              setting below.
+              取消设置 <code>HERMES_DESKTOP_REMOTE_URL</code> 和 <code>HERMES_DESKTOP_REMOTE_TOKEN</code> 以使用下方保存的设置。
             </div>
           </div>
         </div>
@@ -221,19 +219,19 @@ export function GatewaySettings() {
       <div className="grid gap-3 sm:grid-cols-2">
         <ModeCard
           active={state.mode === 'local'}
-          description="Start a private Hermes backend on localhost. This is the default and works offline."
+          description="在 localhost 上启动私有的 Hermes 后端。这是默认设置，可离线工作。"
           disabled={state.envOverride}
           icon={Monitor}
           onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-          title="Local gateway"
+          title="本地网关"
         />
         <ModeCard
           active={state.mode === 'remote'}
-          description="Connect this desktop shell to a remote Hermes backend using its session token."
+          description="将此桌面 Shell 连接到远程 Hermes 后端，使用其会话令牌。"
           disabled={state.envOverride}
           icon={Globe}
           onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-          title="Remote gateway"
+          title="远程网关"
         />
       </div>
 
@@ -248,8 +246,8 @@ export function GatewaySettings() {
               value={state.remoteUrl}
             />
           }
-          description="Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes."
-          title="Remote URL"
+          description="远程仪表板后端的基础 URL。支持路径前缀，例如 /hermes。"
+          title="远程 URL"
         />
         <ListRow
           action={
@@ -259,14 +257,14 @@ export function GatewaySettings() {
               disabled={state.envOverride}
               onChange={event => setRemoteToken(event.target.value)}
               placeholder={
-                state.remoteTokenSet ? `Existing token ${state.remoteTokenPreview ?? 'saved'}` : 'Paste session token'
+                state.remoteTokenSet ? `现有令牌 ${state.remoteTokenPreview ?? '已保存'}` : '粘贴会话令牌'
               }
               type="password"
               value={remoteToken}
             />
           }
-          description="The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token."
-          title="Session token"
+          description="用于 REST 和 WebSocket 访问的仪表板会话令牌。留空以保留已保存的令牌。"
+          title="会话令牌"
         />
       </div>
 
@@ -279,14 +277,14 @@ export function GatewaySettings() {
           variant="outline"
         >
           {testing ? <Loader2 className="size-4 animate-spin" /> : null}
-          Test remote
+          测试远程
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(false)} variant="outline">
-          Save for next restart
+          保存，下次重启生效
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(true)}>
           {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-          Save and reconnect
+          保存并重新连接
         </Button>
       </div>
 
@@ -295,11 +293,11 @@ export function GatewaySettings() {
           action={
             <Button onClick={() => void window.hermesDesktop?.revealLogs()} variant="outline">
               <FileText className="size-4" />
-              Open logs
+              打开日志
             </Button>
           }
-          description="Reveal desktop.log in your file manager — useful when the gateway fails to start."
-          title="Diagnostics"
+          description="在文件管理器中显示 desktop.log — 当网关启动失败时很有用。"
+          title="诊断信息"
         />
       </div>
     </SettingsContent>

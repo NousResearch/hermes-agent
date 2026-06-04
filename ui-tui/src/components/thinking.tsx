@@ -454,7 +454,7 @@ function SubagentAccordion({
           }}
           open={openTools}
           t={t}
-          title="Tool calls"
+          title="工具调用"
         />
       ),
       key: 'tools',
@@ -1062,7 +1062,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openTools}
           suffix={toolTokensLabel}
           t={t}
-          title="Tool calls"
+          title="工具调用"
         />
       ),
       key: 'tools',
@@ -1136,7 +1136,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openSubagents}
           suffix={suffix}
           t={t}
-          title="Spawn tree"
+          title="生成树"
         />
       ),
       key: 'subagents',

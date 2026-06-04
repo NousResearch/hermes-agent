@@ -227,13 +227,28 @@ def _read_openai_version_fast() -> str | None:
 def _print_fast_version_info() -> None:
     from hermes_cli import __release_date__, __version__
 
+    # Try to use i18n (best-effort — runs before normal imports)
+    try:
+        from agent.i18n import t
+        _agent_label = t("banner.hermes_agent")
+        _project_label = t("cli_info.project")
+        _python_label = t("cli_info.python")
+        _openai_label = t("cli_info.openai_sdk")
+        _not_installed = t("cli_info.not_installed")
+    except Exception:
+        _agent_label = "Hermes Agent"
+        _project_label = "Project"
+        _python_label = "Python"
+        _openai_label = "OpenAI SDK"
+        _not_installed = "Not installed"
+
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
-    print(f"Project: {project_root}")
-    print(f"Python: {sys.version.split()[0]}")
+    print(f"{_agent_label} v{__version__} ({__release_date__})")
+    print(f"{_project_label}: {project_root}")
+    print(f"{_python_label}: {sys.version.split()[0]}")
 
     openai_version = _read_openai_version_fast()
-    print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
+    print(f"{_openai_label}: {openai_version}" if openai_version else f"{_openai_label}: {_not_installed}")
 
 
 def _try_termux_ultrafast_version() -> bool:
@@ -261,6 +276,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from agent.i18n import t
+
 
 def _add_accept_hooks_flag(parser) -> None:
     """Attach the ``--accept-hooks`` flag.  Shared across every agent
@@ -285,9 +302,7 @@ def _require_tty(command_name: str) -> None:
     """
     if not sys.stdin.isatty():
         print(
-            f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
-            f"It cannot be run through a pipe or non-interactive subprocess.\n"
-            f"Run it directly in your terminal instead.",
+            t("cli_error.requires_terminal", command_name=command_name),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -370,12 +385,12 @@ def _apply_profile_override() -> None:
 
             hermes_home = resolve_profile_env(profile_name)
         except (ValueError, FileNotFoundError) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(t("cli_error.profile_error", detail=str(exc)), file=sys.stderr)
             sys.exit(1)
         except Exception as exc:
             # A bug in profiles.py must NEVER prevent hermes from starting
             print(
-                f"Warning: profile override failed ({exc}), using default",
+                t("cli_error.profile_warning", detail=str(exc)),
                 file=sys.stderr,
             )
             return
@@ -749,7 +764,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     bug in tmux/iTerm when arrow keys are used.
     """
     if not sessions:
-        print("No sessions found.")
+        print(t("sessions.no_sessions_found"))
         return None
 
     # Try curses-based picker first
@@ -955,7 +970,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         pass
 
     # Fallback: numbered list (Windows without curses, etc.)
-    print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
+    print(t("sessions.browse_header") + "\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
         preview = (s.get("preview") or "").strip()
@@ -974,9 +989,9 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             idx = int(val) - 1
             if 0 <= idx < len(sessions):
                 return sessions[idx]["id"]
-            print(f"  Invalid selection. Enter 1-{len(sessions)} or q to cancel.")
+            print(t("sessions.invalid_selection", max_count=len(sessions)))
         except ValueError:
-            print("  Invalid input. Enter a number or q to cancel.")
+            print(t("sessions.invalid_input"))
         except (KeyboardInterrupt, EOFError):
             print()
             return None
@@ -1013,8 +1028,7 @@ def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
     except subprocess.TimeoutExpired:
         label = f"sudo {backend}" if via_sudo else backend
         print(
-            f"Error: timed out waiting for {label} to respond.\n"
-            f"The {backend} daemon may be unresponsive or starting up.",
+            t("cli_error.timeout_waiting", label=label, backend=backend),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1041,7 +1055,7 @@ def _exec_in_container(container_info: dict, cli_args: list):
     runtime = shutil.which(backend)
     if not runtime:
         print(
-            f"Error: {backend} not found on PATH. Cannot route to container.",
+            t("cli_error.not_on_path", backend=backend),
             file=sys.stderr,
         )
         sys.exit(1)

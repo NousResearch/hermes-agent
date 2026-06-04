@@ -182,7 +182,7 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
 }
 
 function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+  return `${count} 个会话`
 }
 
 function ctxBar(pct: number | undefined, w = 10) {

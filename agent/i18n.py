@@ -172,12 +172,24 @@ def _config_language_cached() -> str | None:
     ``reset_language_cache()`` clears this when config changes at runtime
     (e.g. after the setup wizard).
     """
+    # Read config file directly to get the actual user setting.
+    # We do NOT use load_config() here because if the user's config.yaml
+    # has a YAML error, load_config silently returns DEFAULT_CONFIG (with
+    # language="en") and never reports the error.  Reading the raw file
+    # ensures we get the user's actual language preference.
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        lang = (cfg.get("display") or {}).get("language")
-        if lang:
-            return _normalize_lang(lang)
+        import yaml
+        for candidate in (
+            Path(os.environ.get("HERMES_HOME", "")) / "config.yaml",
+            Path.home() / "AppData" / "Local" / "hermes" / "config.yaml",
+            Path.home() / ".hermes" / "config.yaml",
+        ):
+            if candidate.is_file():
+                with candidate.open("r", encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                lang = (raw.get("display") or {}).get("language")
+                if lang:
+                    return _normalize_lang(lang)
     except Exception as exc:
         logger.debug("Could not read display.language from config: %s", exc)
     return None
@@ -198,10 +210,25 @@ def get_language() -> str:
     """Resolve the active language using env > config > default order."""
     env_lang = os.environ.get("HERMES_LANGUAGE")
     if env_lang:
-        return _normalize_lang(env_lang)
+        result = _normalize_lang(env_lang)
+        return result
     cfg_lang = _config_language_cached()
     if cfg_lang:
         return cfg_lang
+    # User has display.language: zh in config — verify it's actually there
+    # before falling back to English.
+    try:
+        import yaml
+        for p in (Path(os.environ.get("HERMES_HOME", "")),
+                  Path.home() / "AppData" / "Local" / "hermes",
+                  Path.home() / ".hermes"):
+            cf = p / "config.yaml"
+            if cf.is_file():
+                raw = yaml.safe_load(cf.read_text(encoding="utf-8")) or {}
+                if (raw.get("display") or {}).get("language") in ("zh", "chinese", "zh-cn", "zh-hans"):
+                    return "zh"
+    except Exception:
+        pass
     return DEFAULT_LANGUAGE
 
 

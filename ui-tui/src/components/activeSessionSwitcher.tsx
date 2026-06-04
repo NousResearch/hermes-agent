@@ -45,10 +45,10 @@ const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
 export const activeSessionCountLabel = (count: number) =>
-  `${count} live ${count === 1 ? 'session' : 'sessions'}`
+  `${count} 个活跃会话`
 
 export const sessionsCountLabel = (liveCount: number, resumableCount: number) =>
-  `${liveCount} live · ${resumableCount} resumable`
+  `${liveCount} 活跃 · ${resumableCount} 可恢复`
 
 export type SessionRowKind = 'history' | 'live' | 'new'
 
@@ -109,31 +109,31 @@ export interface OrchestratorHintSegment {
 export const orchestratorContextHintSegments = (newSelected: boolean): OrchestratorHintSegment[] =>
   newSelected
     ? [
-        { role: 'label', text: 'New row:' },
-        { role: 'text', text: ' type prompt · ' },
+        { role: 'label', text: '新建行:' },
+        { role: 'text', text: ' 输入提示 · ' },
         { role: 'hotkey', text: 'Enter' },
-        { role: 'text', text: ' start · ' },
+        { role: 'text', text: ' 开始 · ' },
         { role: 'hotkey', text: 'Tab' },
-        { role: 'text', text: ' model' }
+        { role: 'text', text: ' 模型' }
       ]
     : [
-        { role: 'label', text: 'Session row:' },
+        { role: 'label', text: '会话行:' },
         { role: 'text', text: ' ' },
         { role: 'hotkey', text: 'Enter' },
-        { role: 'text', text: ' switch · ' },
+        { role: 'text', text: ' 切换 · ' },
         { role: 'hotkey', text: 'Ctrl+D' },
-        { role: 'text', text: ' close' }
+        { role: 'text', text: ' 关闭' }
       ]
 
 export const orchestratorGlobalHotkeyHintSegments: OrchestratorHintSegment[] = [
   { role: 'hotkey', text: '↑↓' },
-  { role: 'text', text: ' move · ' },
+  { role: 'text', text: ' 移动 · ' },
   { role: 'hotkey', text: 'Ctrl+N' },
-  { role: 'text', text: ' new · ' },
+  { role: 'text', text: ' 新建 · ' },
   { role: 'hotkey', text: 'Ctrl+R' },
-  { role: 'text', text: ' refresh · ' },
+  { role: 'text', text: ' 刷新 · ' },
   { role: 'hotkey', text: 'Esc' },
-  { role: 'text', text: ' close' }
+  { role: 'text', text: ' 关闭' }
 ]
 
 const hintText = (segments: readonly OrchestratorHintSegment[]) => segments.map(segment => segment.text).join('')
@@ -688,16 +688,16 @@ export function ActiveSessionSwitcher({
   const newRowStyle = newSelectedRow ? selectedSessionRowStyle(t) : null
   const newRowTextColor = newRowStyle?.color
   const newRowMarkerColor = newSessionMarkerColor(t, newSelectedRow)
-  const promptTitle = draftTitleFromPrompt(draft) || 'Start a new live session'
+  const promptTitle = draftTitleFromPrompt(draft) || '开始新的实时会话'
 
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Sessions
+        会话
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
 
-      {err && <Text color={t.color.label}>error: {err}</Text>}
+      {err && <Text color={t.color.label}>错误: {err}</Text>}
 
       <Box
         backgroundColor={newRowStyle?.backgroundColor}

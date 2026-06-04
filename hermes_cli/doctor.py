@@ -27,6 +27,8 @@ from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
+from agent.i18n import t
+
 
 _PROVIDER_ENV_HINTS = (
     "OPENROUTER_API_KEY",
@@ -282,7 +284,7 @@ def _check_s6_supervision(issues: list[str]) -> None:
     if detect_service_manager() != "s6":
         return
 
-    _section("s6 Supervision")
+    _section(t("doctor.section_s6_supervision"))
 
     mgr = S6ServiceManager()
 
@@ -338,7 +340,7 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     if not unit_path.exists():
         return
 
-    _section("Gateway Service")
+    _section(t("doctor.section_gateway_service"))
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is True:
         check_ok("Systemd linger enabled", "(gateway service survives logout)")
@@ -490,11 +492,11 @@ def run_doctor(args):
     fixed_count = 0
 
     print()
-    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
-    print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
-    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    print(color(t("doctor.banner_border_top"), Colors.CYAN))
+    print(color(t("doctor.banner_title"), Colors.CYAN))
+    print(color(t("doctor.banner_border_bottom"), Colors.CYAN))
 
-    _section("Security Advisories")
+    _section(t("doctor.section_security_advisories"))
     try:
         from hermes_cli.security_advisories import (
             detect_compromised,
@@ -540,7 +542,7 @@ def run_doctor(args):
         # Never let a bug in the advisory check block the rest of doctor.
         check_warn(f"Security advisory check failed: {e}")
     
-    _section("Python Environment")
+    _section(t("doctor.section_python_environment"))
     py_version = sys.version_info
     if py_version >= (3, 11):
         check_ok(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}")
@@ -568,7 +570,7 @@ def run_doctor(args):
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
     
-    _section("Required Packages")
+    _section(t("doctor.section_required_packages"))
     required_packages = [
         ("openai", "OpenAI SDK"),
         ("rich", "Rich (terminal UI)"),
@@ -597,7 +599,7 @@ def run_doctor(args):
         except ImportError:
             check_warn(name, "(optional, not installed)")
     
-    _section("Configuration Files")
+    _section(t("doctor.section_config_files"))
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
@@ -896,7 +898,7 @@ def run_doctor(args):
             from hermes_cli.config import validate_config_structure
             config_issues = validate_config_structure()
             if config_issues:
-                _section("Config Structure")
+                _section(t("doctor.section_config_structure"))
                 for ci in config_issues:
                     if ci.severity == "error":
                         check_fail(ci.message)
@@ -909,7 +911,7 @@ def run_doctor(args):
         except Exception:
             pass
 
-    _section("xAI Model Retirement (May 15, 2026)")
+    _section(t("doctor.section_xai_retirement"))
 
     try:
         from hermes_cli.config import load_config
@@ -934,7 +936,7 @@ def run_doctor(args):
     except Exception as _xai_check_err:
         check_warn("xAI retirement check skipped", f"({_xai_check_err})")
 
-    _section("Auth Providers")
+    _section(t("doctor.section_auth_providers"))
 
     try:
         from hermes_cli.auth import (
@@ -1005,7 +1007,7 @@ def run_doctor(args):
     except Exception:
         pass
 
-    _section("Directory Structure")
+    _section(t("doctor.section_directory_structure"))
     hermes_home = HERMES_HOME
     if hermes_home.exists():
         check_ok(f"{_DHH} directory exists")
@@ -1119,7 +1121,7 @@ def run_doctor(args):
     _check_s6_supervision(issues)
 
     if sys.platform != "win32":
-        _section("Command Installation")
+        _section(t("doctor.section_command_installation"))
         # Determine the venv entry point location
         _venv_bin = None
         for _venv_name in ("venv", ".venv"):
@@ -1193,7 +1195,7 @@ def run_doctor(args):
                 else:
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
 
-    _section("External Tools")
+    _section(t("doctor.section_external_tools"))
     # Git
     if _safe_which("git"):
         check_ok("git")
@@ -1444,7 +1446,7 @@ def run_doctor(args):
         for note in _termux_install_all_fallback_notes():
             check_info(note)
 
-    _section("API Connectivity")
+    _section(t("doctor.section_api_connectivity"))
     # Refactor: every connectivity probe below is HTTP-bound and fully
     # independent. Running them in series spent ~5s wall on a typical
     # workstation (2s of that was boto3's IMDS lookup for AWS credentials,

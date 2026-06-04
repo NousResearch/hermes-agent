@@ -20,24 +20,24 @@ const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases
 
 function relativeTime(ms: number | undefined) {
   if (!ms) {
-    return 'never'
+    return '从未'
   }
 
   const diff = Date.now() - ms
 
   if (diff < 60_000) {
-    return 'just now'
+    return '刚刚'
   }
 
   if (diff < 3_600_000) {
-    return `${Math.round(diff / 60_000)} min ago`
+    return `${Math.round(diff / 60_000)} 分钟前`
   }
 
   if (diff < 86_400_000) {
-    return `${Math.round(diff / 3_600_000)} hours ago`
+    return `${Math.round(diff / 3_600_000)} 小时前`
   }
 
-  return `${Math.round(diff / 86_400_000)} days ago`
+  return `${Math.round(diff / 86_400_000)} 天前`
 }
 
 export function AboutSettings() {
@@ -69,21 +69,21 @@ export function AboutSettings() {
   let statusTone: 'idle' | 'available' | 'error' = 'idle'
 
   if (!supported) {
-    statusLine = status?.message ?? "This build can't update itself from inside the app."
+    statusLine = status?.message ?? "此构建无法从应用内部自行更新。"
     statusTone = 'error'
   } else if (status?.error) {
-    statusLine = "We couldn't reach the update server."
+    statusLine = "无法连接到更新服务器。"
     statusTone = 'error'
   } else if (applying) {
-    statusLine = 'An update is currently installing.'
+    statusLine = '正在安装更新。'
     statusTone = 'available'
   } else if (behind > 0) {
-    statusLine = `A new update is ready (${behind} change${behind === 1 ? '' : 's'} included).`
+    statusLine = `有新更新可用（包含 ${behind} 个更改）。`
     statusTone = 'available'
   } else if (status) {
-    statusLine = "You're on the latest version."
+    statusLine = "您已在使用最新版本。"
   } else {
-    statusLine = 'Tap "Check now" to look for updates.'
+    statusLine = '点击"检查更新"以查找更新。'
   }
 
   return (
@@ -93,15 +93,15 @@ export function AboutSettings() {
           <Sparkles className="size-8" />
         </span>
         <div>
-          <h2 className="text-lg font-semibold tracking-tight">Hermes Desktop</h2>
+          <h2 className="text-lg font-semibold tracking-tight">Hermes 桌面版</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            {version?.appVersion ? `Version ${version.appVersion}` : 'Version unavailable'}
+            {version?.appVersion ? `版本 ${version.appVersion}` : '版本不可用'}
           </p>
         </div>
       </div>
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        <SectionHeading icon={RefreshCw} title="Updates" />
+        <SectionHeading icon={RefreshCw} title="更新" />
 
         <div
           className={cn(
@@ -121,7 +121,7 @@ export function AboutSettings() {
               <p className="font-medium">{statusLine}</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Last checked {relativeTime(status?.fetchedAt)}
-                {justChecked && !checking ? ' · just now' : ''}
+                {justChecked && !checking ? ' · 刚刚' : ''}
               </p>
             </div>
           </div>
@@ -134,12 +134,12 @@ export function AboutSettings() {
               variant="outline"
             >
               {checking ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-              {checking ? 'Checking…' : 'Check now'}
+              {checking ? '检查中…' : '检查更新'}
             </Button>
 
             {behind > 0 && supported && !applying && (
               <Button onClick={() => openUpdatesWindow()} size="sm">
-                See what&apos;s new
+                查看新内容
               </Button>
             )}
 
@@ -159,16 +159,16 @@ export function AboutSettings() {
                 target="_blank"
               >
                 <ExternalLink className="size-3" />
-                Release notes
+                发布说明
               </a>
             </Button>
           </div>
         </div>
 
         <ListRow
-          description="Hermes checks for updates automatically in the background and lets you know when one is ready."
-          hint={`Branch ${status?.branch ?? 'unknown'} · Commit ${status?.currentSha?.slice(0, 7) ?? 'unknown'}`}
-          title="Automatic updates"
+          description="Hermes 会在后台自动检查更新，并在准备好时通知您。"
+          hint={`分支 ${status?.branch ?? 'unknown'} · 提交 ${status?.currentSha?.slice(0, 7) ?? 'unknown'}`}
+          title="自动更新"
         />
       </div>
     </SettingsContent>

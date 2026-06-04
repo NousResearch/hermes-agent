@@ -554,14 +554,14 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         )}
 
         <Text color={t.color.muted} wrap="truncate-end">
-          {offset + VISIBLE < rows.length ? ` ↓ ${rows.length - offset - VISIBLE} more` : ' '}
+          {offset + VISIBLE < rows.length ? ` ↓ ${rows.length - offset - VISIBLE} 更多` : ' '}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
-          {allowPersistGlobal ? ' · ^g toggle' : ' only'}
+         持久化: {allowPersistGlobal ? (persistGlobal ? '全局' : '会话') : '会话'}
+          {allowPersistGlobal ? ' · ^g 切换' : ' 仅'}
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close</OverlayHint>
+        <OverlayHint t={t}>↑/↓ 选择 · Enter 选定 · ^d 断开 · Esc 清除/返回 · q 关闭</OverlayHint>
       </Box>
     )
   }
@@ -622,15 +622,15 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
       })}
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} more` : ' '}
+        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} 更多` : ' '}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
-        {allowPersistGlobal ? ' · ^g toggle' : ' only'}
+        持久化: {allowPersistGlobal ? (persistGlobal ? '全局' : '会话') : '会话'}
+        {allowPersistGlobal ? ' · ^g 切换' : ' 仅'}
       </Text>
       <OverlayHint t={t}>
-        {models.length ? '↑/↓ select · Enter switch · Esc clear/back · q close' : 'Esc back · q close'}
+        {models.length ? '↑/↓ 选择 · Enter 切换 · Esc 清除/返回 · q 关闭' : 'Esc 返回 · q 关闭'}
       </OverlayHint>
     </Box>
   )

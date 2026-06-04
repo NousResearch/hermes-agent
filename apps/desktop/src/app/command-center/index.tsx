@@ -55,15 +55,15 @@ interface CommandCenterViewProps {
 }
 
 const SECTION_LABELS: Record<CommandCenterSection, string> = {
-  sessions: 'Sessions',
-  system: 'System',
-  usage: 'Usage'
+  sessions: '会话',
+  system: '系统',
+  usage: '用量'
 }
 
 const SECTION_DESCRIPTIONS: Record<CommandCenterSection, string> = {
-  sessions: 'Search and manage sessions',
-  system: 'Status, logs, and system actions',
-  usage: 'Token, cost, and skill activity over time'
+  sessions: '搜索和管理会话',
+  system: '状态、日志和系统操作',
+  usage: 'Token、成本和技能活动随时间变化'
 }
 
 interface NavigationSearchEntry {
@@ -81,16 +81,16 @@ interface SectionSearchEntry {
 }
 
 const NAVIGATION_SEARCH_ENTRIES: readonly NavigationSearchEntry[] = [
-  { id: 'nav-new-chat', route: NEW_CHAT_ROUTE, title: 'New session', detail: 'Start a fresh session' },
-  { id: 'nav-settings', route: SETTINGS_ROUTE, title: 'Settings', detail: 'Configure Hermes desktop' },
-  { id: 'nav-skills', route: SKILLS_ROUTE, title: 'Skills & Tools', detail: 'Enable skills, toolsets, and providers' },
+  { id: 'nav-new-chat', route: NEW_CHAT_ROUTE, title: '新建会话', detail: '开始新的会话' },
+  { id: 'nav-settings', route: SETTINGS_ROUTE, title: '设置', detail: '配置 Hermes 桌面版' },
+  { id: 'nav-skills', route: SKILLS_ROUTE, title: '技能与工具', detail: '启用技能、工具集和提供商' },
   {
     id: 'nav-messaging',
     route: MESSAGING_ROUTE,
-    title: 'Messaging',
-    detail: 'Set up Telegram, Slack, Discord, and more'
+    title: '消息平台',
+    detail: '设置 Telegram、Slack、Discord 等'
   },
-  { id: 'nav-artifacts', route: ARTIFACTS_ROUTE, title: 'Artifacts', detail: 'Browse generated outputs' }
+  { id: 'nav-artifacts', route: ARTIFACTS_ROUTE, title: '产物', detail: '浏览生成的输出' }
 ]
 
 const SECTION_SEARCH_ENTRIES: readonly SectionSearchEntry[] = [
@@ -431,13 +431,13 @@ export function CommandCenterView({
 
   return (
     <OverlayView
-      closeLabel="Close command center"
+      closeLabel="关闭命令中心"
       headerContent={
         <OverlaySearchInput
           containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
           loading={searchLoading}
           onChange={next => setQuery(next)}
-          placeholder="Search sessions, views, and actions"
+          placeholder="搜索会话、视图和操作"
           value={query}
         />
       }
@@ -465,13 +465,13 @@ export function CommandCenterView({
             {section === 'system' && (
               <OverlayActionButton disabled={systemLoading} onClick={() => void refreshSystem()}>
                 <IconRefresh className={cn('mr-1.5 size-3.5', systemLoading && 'animate-spin')} />
-                {systemLoading ? 'Refreshing...' : 'Refresh'}
+                {systemLoading ? '刷新中...' : '刷新'}
               </OverlayActionButton>
             )}
             {section === 'usage' && (
               <OverlayActionButton disabled={usageLoading} onClick={() => void refreshUsage(usagePeriod)}>
                 <IconRefresh className={cn('mr-1.5 size-3.5', usageLoading && 'animate-spin')} />
-                {usageLoading ? 'Refreshing...' : 'Refresh'}
+                {usageLoading ? '刷新中...' : '刷新'}
               </OverlayActionButton>
             )}
           </header>
@@ -480,7 +480,7 @@ export function CommandCenterView({
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               {!hasGlobalSearchResults ? (
                 <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">
-                  No matching results found.
+                  未找到匹配结果。
                 </OverlayCard>
               ) : (
                 <div className="grid gap-3">
@@ -517,7 +517,7 @@ export function CommandCenterView({
                                     event.stopPropagation()
                                     pinned ? unpinSession(result.sessionId) : pinSession(result.sessionId)
                                   }}
-                                  title={pinned ? 'Unpin session' : 'Pin session'}
+                                  title={pinned ? '取消固定会话' : '固定会话'}
                                 >
                                   {pinned ? (
                                     <IconBookmarkFilled className="size-3.5" />
@@ -531,7 +531,7 @@ export function CommandCenterView({
                                     event.stopPropagation()
                                     void exportSession(result.sessionId, { title: result.title })
                                   }}
-                                  title="Export session"
+                                  title="导出会话"
                                 >
                                   <IconDownload className="size-3.5" />
                                 </OverlayIconButton>
@@ -542,7 +542,7 @@ export function CommandCenterView({
                                     event.stopPropagation()
                                     void onDeleteSession(result.sessionId)
                                   }}
-                                  title="Delete session"
+                                  title="删除会话"
                                 >
                                   <IconTrash className="size-3.5" />
                                 </OverlayIconButton>
@@ -596,20 +596,20 @@ export function CommandCenterView({
                         </button>
                         <OverlayIconButton
                           onClick={() => (pinned ? unpinSession(session.id) : pinSession(session.id))}
-                          title={pinned ? 'Unpin session' : 'Pin session'}
+                          title={pinned ? '取消固定会话' : '固定会话'}
                         >
                           {pinned ? <IconBookmarkFilled className="size-3.5" /> : <IconBookmark className="size-3.5" />}
                         </OverlayIconButton>
                         <OverlayIconButton
                           onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                          title="Export session"
+                          title="导出会话"
                         >
                           <IconDownload className="size-3.5" />
                         </OverlayIconButton>
                         <OverlayIconButton
                           className="hover:text-destructive"
                           onClick={() => void onDeleteSession(session.id)}
-                          title="Delete session"
+                          title="删除会话"
                         >
                           <IconTrash className="size-3.5" />
                         </OverlayIconButton>
@@ -779,20 +779,20 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
       <OverlayCard className="p-3">
         {totals ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <UsageStat label="Sessions" value={formatInteger(totals.total_sessions)} />
-            <UsageStat label="API calls" value={formatInteger(totals.total_api_calls)} />
+            <UsageStat label="会话" value={formatInteger(totals.total_sessions)} />
+            <UsageStat label="API 调用" value={formatInteger(totals.total_api_calls)} />
             <UsageStat
-              label="Tokens in/out"
+              label="Token 输入/输出"
               value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
             />
             <UsageStat
-              hint={totals.total_actual_cost > 0 ? `actual ${formatCost(totals.total_actual_cost)}` : undefined}
-              label="Est. cost"
+              hint={totals.total_actual_cost > 0 ? `实际 ${formatCost(totals.total_actual_cost)}` : undefined}
+              label="预估成本"
               value={formatCost(totals.total_estimated_cost)}
             />
           </div>
         ) : loading ? (
-          <div className="text-xs text-muted-foreground">Loading usage...</div>
+          <div className="text-xs text-muted-foreground">加载用量中...</div>
         ) : (
           <div className="text-xs text-muted-foreground">
             No usage in the last {period} days.{' '}

@@ -48,7 +48,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !onPin,
       icon: 'pin',
-      label: pinned ? 'Unpin' : 'Pin',
+      label: pinned ? '取消固定' : '固定',
       onSelect: () => {
         triggerHaptic('selection')
         onPin?.()
@@ -57,7 +57,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !sessionId,
       icon: 'copy',
-      label: 'Copy ID',
+      label: '复制 ID',
       onSelect: event => {
         event.preventDefault()
         triggerHaptic('selection')
@@ -67,7 +67,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !sessionId,
       icon: 'cloud-download',
-      label: 'Export',
+      label: '导出',
       onSelect: () => {
         triggerHaptic('selection')
         void exportSession(sessionId, { title })
@@ -76,7 +76,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !sessionId,
       icon: 'edit',
-      label: 'Rename',
+      label: '重命名',
       onSelect: () => {
         triggerHaptic('selection')
         setRenameOpen(true)
@@ -85,7 +85,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
     {
       disabled: !onArchive,
       icon: 'archive',
-      label: 'Archive',
+      label: '归档',
       onSelect: () => {
         triggerHaptic('selection')
         onArchive?.()
@@ -95,7 +95,7 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
       className: 'text-destructive focus:text-destructive',
       disabled: !onDelete,
       icon: 'trash',
-      label: 'Delete',
+      label: '删除',
       onSelect: () => {
         triggerHaptic('warning')
         onDelete?.()
@@ -203,10 +203,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
       const result = await renameSession(sessionId, next)
       const finalTitle = result.title || next || ''
       setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
-      notify({ durationMs: 2_000, kind: 'success', message: 'Renamed' })
+      notify({ durationMs: 2_000, kind: 'success', message: '已重命名' })
       onOpenChange(false)
     } catch (err) {
-      notifyError(err, 'Rename failed')
+      notifyError(err, '重命名失败')
     } finally {
       setSubmitting(false)
     }
@@ -216,8 +216,8 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Rename session</DialogTitle>
-          <DialogDescription>Give this chat a memorable title. Leave empty to clear.</DialogDescription>
+          <DialogTitle>重命名会话</DialogTitle>
+          <DialogDescription>给此对话起一个易记的名称。留空则清除。</DialogDescription>
         </DialogHeader>
         <Input
           autoFocus
@@ -231,16 +231,16 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle }: Re
               onOpenChange(false)
             }
           }}
-          placeholder="Untitled session"
+          placeholder="未命名会话"
           ref={inputRef}
           value={value}
         />
         <DialogFooter>
           <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
-            Cancel
+            取消
           </Button>
           <Button disabled={submitting} onClick={() => void submit()} type="button">
-            Save
+            保存
           </Button>
         </DialogFooter>
       </DialogContent>

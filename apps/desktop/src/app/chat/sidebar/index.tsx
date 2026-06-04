@@ -76,18 +76,18 @@ const NEW_SESSION_KBD: readonly string[] =
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
-    label: 'New session',
+    label: '新建会话',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
   },
   {
     id: 'skills',
-    label: 'Skills & Tools',
+    label: '技能与工具',
     icon: props => <Codicon name="symbol-misc" {...props} />,
     route: SKILLS_ROUTE
   },
-  { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  { id: 'messaging', label: '消息平台', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
+  { id: 'artifacts', label: '产物', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
 const WORKSPACE_PAGE = 5
@@ -551,7 +551,7 @@ export function ChatSidebar({
               // a phantom click target.
               agentSessions.length > 0 ? (
                 <Button
-                  aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+                  aria-label={agentsGrouped ? '以单列表显示会话' : '按工作区分组会话'}
                   className={cn(
                     'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
                     agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
@@ -562,14 +562,14 @@ export function ChatSidebar({
                     setSidebarAgentsGrouped(!agentsGrouped)
                   }}
                   size="icon-xs"
-                  title={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}
+                  title={agentsGrouped ? '取消分组' : '按工作区分组'}
                   variant="ghost"
                 >
                   <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
                 </Button>
               ) : null
             }
-            label="Sessions"
+            label="会话"
             labelMeta={countLabel(agentSessions.length, knownSessionTotal)}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}

@@ -60,19 +60,18 @@ export function AppearanceSettings() {
     <SettingsContent>
       <div className="space-y-5">
         <div>
-          <SectionHeading icon={Palette} title="Appearance" />
+          <SectionHeading icon={Palette} title="外观" />
           <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
-            chat surface styling.
+            这些是仅限桌面的显示偏好。模式控制亮度；主题控制色调和聊天界面样式。
           </p>
         </div>
 
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Color Mode</div>
+              <div className="text-sm font-medium">颜色模式</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Pick a fixed mode or let Hermes follow your system setting.
+                选择固定模式或让 Hermes 跟随系统设置。
               </div>
             </div>
             <Pill>{prettyName(mode)}</Pill>
@@ -117,25 +116,25 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Tool Call Display</div>
+              <div className="text-sm font-medium">工具调用显示</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Product hides raw tool payloads; Technical shows full input/output.
+                产品模式隐藏原始工具载荷；技术模式显示完整输入/输出。
               </div>
             </div>
-            <Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>
+            <Pill>{toolViewMode === 'technical' ? '技术模式' : '产品模式'}</Pill>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {(
               [
                 {
                   id: 'product',
-                  label: 'Product',
-                  description: 'Human-friendly tool activity with concise summaries.'
+                  label: '产品模式',
+                  description: '人性化的工具活动摘要。'
                 },
                 {
                   id: 'technical',
-                  label: 'Technical',
-                  description: 'Include raw tool args/results and low-level details.'
+                  label: '技术模式',
+                  description: '包含原始工具参数/结果和底层细节。'
                 }
               ] as const
             ).map(option => {
@@ -174,9 +173,9 @@ export function AppearanceSettings() {
         <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-medium">Theme</div>
+              <div className="text-sm font-medium">主题</div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Desktop palettes only. The selected mode is applied on top.
+                仅桌面调色板。所选模式会在其上应用。
               </div>
             </div>
             {activeTheme && <Pill>{activeTheme.label}</Pill>}

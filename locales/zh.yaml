@@ -14,6 +14,8 @@ approval:
   denied:          "      ✗ 已拒绝"
   cancelled:       "      ✗ 已取消"
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
+  hardline_blocked: "已被拦截（硬限制）：{description}。此命令位于无条件拦截列表中，无法通过代理执行 — 即使使用 --yolo、/yolo、approvals.mode=off 或 cron 批准模式也不行。如果你确实需要运行它，请在代理外部的终端中自行运行。"
+  sudo_stdin_blocked: "已被拦截：{description}。不要通过管道将密码传递给 'sudo -S' — 这是一种暴力破解攻击向量。如果代理需要免密码 sudo，请在 .env 文件中设置 SUDO_PASSWORD，或者在你的终端中手动运行 sudo 命令。"
 
 gateway:
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
@@ -353,3 +355,82 @@ gateway:
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+banner:
+  # 启动横幅 — 显示在 CLI/TUI 会话起始处的欢迎信息
+  version_label:     "Hermes Agent"
+  upstream:          "上游"
+  local:             "本地"
+  carried:           "携带"
+  commit:            "提交"
+  commits:           "提交"
+  context:           "上下文"
+  nous_research:     "Nous Research"
+  nous_hermes:       "⚕ NOUS HERMES"
+  nous_hermes_framework: "⚕ NOUS HERMES - AI 代理框架"
+  hermes_agent:      "Hermes 代理"
+  ai_agent_framework: "AI 代理框架"
+  yolo_mode:         "⚠ YOLO 模式"
+  yolo_mode_desc:    "— 已绕过所有批准提示"
+  session:           "会话"
+  available_tools:   "可用工具"
+  other_toolsets:    "（还有 {count} 个工具集…）"
+  mcp_servers:       "MCP 服务器"
+  tool_count:        "{count} 个工具"
+  failed:            "— 失败"
+  available_skills:  "可用技能"
+  more_skills:       "+{count} 更多"
+  no_skills:         "未安装技能"
+  tools_count:       "{count} 个工具"
+  skills_count:      "{count} 个技能"
+  mcp_count:         "{count} 个 MCP 服务器"
+  help_hint:         "/help 查看命令"
+  runtime:           "运行时"
+  runtime_desc:      "（终端/文件操作/MCP 在 codex 内运行）"
+  profile:           "配置文件"
+  update_behind:     "⚠ 落后 {count} 个提交"
+  run_to_update:     "运行 {cmd} 以更新"
+  update_available:  "⚠ 有可用更新"
+  pip_warning_title: "⚠ pip 安装非官方支持"
+  pip_warning_desc:  "仅供内部/CI 使用，并非用户安装方式；可能存在不稳定和无法帮助处理的问题"
+
+# CLI 错误消息 — 当 CLI 子命令失败或使用不当时显示。
+cli_error:
+  requires_terminal: "错误：'hermes {command_name}' 需要交互式终端。\n无法通过管道或非交互式子进程运行。\n请直接在终端中运行。"
+  profile_error: "错误：{detail}"
+  profile_warning: "警告：配置文件覆盖失败（{detail}），使用默认配置"
+  timeout_waiting: "错误：等待 {label} 响应超时。\n{backend} 守护进程可能无响应或正在启动中。"
+  not_on_path: "错误：未在 PATH 中找到 {backend}。无法路由到容器。"
+
+# CLI 信息标签 — 在版本输出等处显示。
+cli_info:
+  project: "项目"
+  python: "Python"
+  openai_sdk: "OpenAI SDK"
+  not_installed: "未安装"
+
+# 会话浏览器 — 在交互式恢复或浏览会话时显示。
+sessions:
+  no_sessions_found: "未找到会话。"
+  browse_header: "  浏览会话（输入编号恢复，输入 q 取消）"
+  invalid_selection: "  无效选择。请输入 1-{max_count} 或按 q 取消。"
+  invalid_input: "  无效输入。请输入数字或按 q 取消。"
+
+# Doctor 命令 — 诊断部分的标题和状态消息。
+doctor:
+  banner_border_top: "┌─────────────────────────────────────────────────────────┐"
+  banner_title: "│                 🩺 Hermes 诊断                         │"
+  banner_border_bottom: "└─────────────────────────────────────────────────────────┘"
+  section_security_advisories: "安全公告"
+  section_python_environment: "Python 环境"
+  section_required_packages: "必需的包"
+  section_config_files: "配置文件"
+  section_config_structure: "配置结构"
+  section_xai_retirement: "xAI 模型退役（2026 年 5 月 15 日）"
+  section_auth_providers: "认证提供商"
+  section_directory_structure: "目录结构"
+  section_s6_supervision: "s6 监督"
+  section_gateway_service: "网关服务"
+  section_command_installation: "命令安装"
+  section_external_tools: "外部工具"
+  section_api_connectivity: "API 连接"

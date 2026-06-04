@@ -115,10 +115,10 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
 const FLOW_SUBTITLES: Record<OAuthProvider['flow'], string> = {
-  pkce: 'Opens your browser to sign in, then continues here',
-  device_code: 'Opens a verification page in your browser — Hermes connects automatically',
-  loopback: 'Opens your browser to sign in — Hermes connects automatically',
-  external: 'Sign in once in your terminal, then come back to chat'
+  pkce: '打开浏览器登录，然后在此继续',
+  device_code: '在浏览器中打开验证页面 — Hermes 自动连接',
+  loopback: '在浏览器中打开登录页面 — Hermes 自动连接',
+  external: '在终端中登录一次，然后回来聊天'
 }
 
 const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
@@ -205,9 +205,9 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
   return (
     <div className="grid gap-3" role="status">
       <p className="text-sm text-muted-foreground">
-        {installing
-          ? 'Hermes is finishing install. This usually takes under a minute on first run.'
-          : 'Starting Hermes…'}
+      {installing
+      ? 'Hermes 正在完成安装。首次运行通常只需不到一分钟。'
+      : '正在启动 Hermes…'}
       </p>
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
@@ -235,9 +235,9 @@ function Header() {
           <Sparkles className="size-5" />
         </div>
         <div>
-          <h2 className="text-[0.9375rem] font-semibold tracking-tight">Let's get you setup with Hermes Agent</h2>
+          <h2 className="text-[0.9375rem] font-semibold tracking-tight">开始设置 Hermes Agent</h2>
           <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-            Connect a model provider to start chatting. Most options take one click.
+            连接一个模型提供商即可开始聊天。大多数选项只需点击一次。
           </p>
         </div>
       </div>
@@ -246,7 +246,7 @@ function Header() {
 }
 
 const FEATURED_ID = 'nous'
-const FEATURED_PITCH = 'One subscription, 300+ frontier models — the recommended way to run Hermes'
+const FEATURED_PITCH = '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式'
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {
@@ -278,7 +278,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   }
 
   if (providers === null) {
-    return <Status>Looking up providers...</Status>
+    return <Status>正在查找提供商...</Status>
   }
 
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
@@ -306,7 +306,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           onClick={() => setShowAll(persistShowAll(!showAll))}
           type="button"
         >
-          {showAll ? 'Collapse' : 'Other providers'}
+          {showAll ? '收起' : '其他提供商'}
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
         </button>
       ) : null}
@@ -316,7 +316,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           onClick={() => setOnboardingMode('apikey')}
           type="button"
         >
-          I have an API key
+          我有 API 密钥
         </button>
       </div>
     </div>
@@ -350,7 +350,7 @@ function FeaturedProviderRow({
           ) : (
             <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
               <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
-              Recommended
+              推荐
             </span>
           )}
         </div>
@@ -365,7 +365,7 @@ function ConnectedTag() {
   return (
     <span className="inline-flex items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
       <Check className="size-3" />
-      Connected
+      已连接
     </span>
   )
 }
@@ -379,7 +379,7 @@ function KeyProviderRow({ onClick }: { onClick: () => void }) {
     >
       <div className="min-w-0">
         <span className="text-sm font-semibold">OpenRouter</span>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">One key, hundreds of models — a solid default</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">一个密钥，数百种模型 — 一个可靠的默认选择</p>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </button>

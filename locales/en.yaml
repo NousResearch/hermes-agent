@@ -24,6 +24,8 @@ approval:
   denied:          "      ✗ Denied"
   cancelled:       "      ✗ Cancelled"
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
+  hardline_blocked: "BLOCKED (hardline): {description}. This command is on the unconditional blocklist and cannot be executed via the agent — not even with --yolo, /yolo, approvals.mode=off, or cron approve mode. If you genuinely need to run it, run it yourself in a terminal outside the agent."
+  sudo_stdin_blocked: "BLOCKED: {description}. Do not pipe passwords to 'sudo -S' — this is a brute-force attack vector. Set SUDO_PASSWORD in your .env file if the agent needs passwordless sudo, or run the sudo command manually in your own terminal."
 
 gateway:
   # Messenger replies to slash commands and implicit state changes.
@@ -368,3 +370,82 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+banner:
+  # Welcome banner — shown at CLI/TUI session start
+  version_label:     "Hermes Agent"
+  upstream:          "upstream"
+  local:             "local"
+  carried:           "carried"
+  commit:            "commit"
+  commits:           "commits"
+  context:           "context"
+  nous_research:     "Nous Research"
+  nous_hermes:       "⚕ NOUS HERMES"
+  nous_hermes_framework: "⚕ NOUS HERMES - AI Agent Framework"
+  hermes_agent:      "Hermes Agent"
+  ai_agent_framework: "AI Agent Framework"
+  yolo_mode:         "⚠ YOLO mode"
+  yolo_mode_desc:    "— all approval prompts bypassed"
+  session:           "Session"
+  available_tools:   "Available Tools"
+  other_toolsets:    "(and {count} more toolsets...)"
+  mcp_servers:       "MCP Servers"
+  tool_count:        "{count} tool(s)"
+  failed:            "— failed"
+  available_skills:  "Available Skills"
+  more_skills:       "+{count} more"
+  no_skills:         "No skills installed"
+  tools_count:       "{count} tools"
+  skills_count:      "{count} skills"
+  mcp_count:         "{count} MCP servers"
+  help_hint:         "/help for commands"
+  runtime:           "Runtime"
+  runtime_desc:      "(terminal/file ops/MCP run inside codex)"
+  profile:           "Profile"
+  update_behind:     "⚠ {count} behind"
+  run_to_update:     "run {cmd} to update"
+  update_available:  "⚠ update available"
+  pip_warning_title: "⚠ pip install not officially supported"
+  pip_warning_desc:  "exists for reasons other than user install; expect instability and an inability to support issues"
+
+# CLI error messages — shown when CLI subcommands fail or are misused.
+cli_error:
+  requires_terminal: "Error: 'hermes {command_name}' requires an interactive terminal.\nIt cannot be run through a pipe or non-interactive subprocess.\nRun it directly in your terminal instead."
+  profile_error: "Error: {detail}"
+  profile_warning: "Warning: profile override failed ({detail}), using default"
+  timeout_waiting: "Error: timed out waiting for {label} to respond.\nThe {backend} daemon may be unresponsive or starting up."
+  not_on_path: "Error: {backend} not found on PATH. Cannot route to container."
+
+# CLI info labels — shown in version output etc.
+cli_info:
+  project: "Project"
+  python: "Python"
+  openai_sdk: "OpenAI SDK"
+  not_installed: "Not installed"
+
+# Session browser — shown when resuming or browsing sessions interactively.
+sessions:
+  no_sessions_found: "No sessions found."
+  browse_header: "  Browse sessions  (enter number to resume, q to cancel)"
+  invalid_selection: "  Invalid selection. Enter 1-{max_count} or q to cancel."
+  invalid_input: "  Invalid input. Enter a number or q to cancel."
+
+# Doctor command — diagnostic section titles and status messages.
+doctor:
+  banner_border_top: "┌─────────────────────────────────────────────────────────┐"
+  banner_title: "│                 🩺 Hermes Doctor                        │"
+  banner_border_bottom: "└─────────────────────────────────────────────────────────┘"
+  section_security_advisories: "Security Advisories"
+  section_python_environment: "Python Environment"
+  section_required_packages: "Required Packages"
+  section_config_files: "Configuration Files"
+  section_config_structure: "Config Structure"
+  section_xai_retirement: "xAI Model Retirement (May 15, 2026)"
+  section_auth_providers: "Auth Providers"
+  section_directory_structure: "Directory Structure"
+  section_s6_supervision: "s6 Supervision"
+  section_gateway_service: "Gateway Service"
+  section_command_installation: "Command Installation"
+  section_external_tools: "External Tools"
+  section_api_connectivity: "API Connectivity"

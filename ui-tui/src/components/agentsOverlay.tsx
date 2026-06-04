@@ -43,17 +43,17 @@ const SORT_ORDER: readonly SortMode[] = ['depth-first', 'tools-desc', 'duration-
 const FILTER_ORDER: readonly FilterMode[] = ['all', 'running', 'failed', 'leaf']
 
 const SORT_LABEL: Record<SortMode, string> = {
-  'depth-first': 'spawn order',
-  'duration-desc': 'slowest',
-  status: 'status',
-  'tools-desc': 'busiest'
+  'depth-first': '生成顺序',
+  'duration-desc': '最慢优先',
+  status: '状态',
+  'tools-desc': '最忙优先'
 }
 
 const FILTER_LABEL: Record<FilterMode, string> = {
-  all: 'all',
-  failed: 'failed',
-  leaf: 'leaves',
-  running: 'running'
+  all: '全部',
+  failed: '失败',
+  leaf: '叶子节点',
+  running: '运行中'
 }
 
 const STATUS_RANK: Record<Status, number> = {
@@ -428,30 +428,30 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
-        {item.model ? <Field name="model" t={t} value={item.model} /> : null}
-        {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
-        <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
+        <Field name="深度" t={t} value={`${item.depth} · ${item.status}`} />
+        {item.model ? <Field name="模型" t={t} value={item.model} /> : null}
+        {item.toolsets?.length ? <Field name="工具集" t={t} value={item.toolsets.join(', ')} /> : null}
+        <Field name="工具" t={t} value={`${item.toolCount ?? 0} (子树 ${agg.totalTools})`} />
         <Field
-          name="subtree"
+          name="子树"
           t={t}
-          value={`${agg.descendantCount} agent${agg.descendantCount === 1 ? '' : 's'} · d${agg.maxDepthFromHere} · ⚡${agg.activeCount}`}
+          value={`${agg.descendantCount} 个子代理 · d${agg.maxDepthFromHere} · ⚡${agg.activeCount}`}
         />
-        {item.durationSeconds ? <Field name="elapsed" t={t} value={fmtDur(item.durationSeconds)} /> : null}
-        {item.iteration != null ? <Field name="iteration" t={t} value={String(item.iteration)} /> : null}
-        {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
+        {item.durationSeconds ? <Field name="耗时" t={t} value={fmtDur(item.durationSeconds)} /> : null}
+        {item.iteration != null ? <Field name="迭代" t={t} value={String(item.iteration)} /> : null}
+        {item.apiCalls ? <Field name="API 调用" t={t} value={String(item.apiCalls)} /> : null}
       </Box>
 
       {localTokens > 0 || localCost > 0 ? (
-        <OverlaySection defaultOpen t={t} title="Budget">
+        <OverlaySection defaultOpen t={t} title="预算">
           {localTokens > 0 ? (
             <Field
-              name="tokens"
+              name="Token"
               t={t}
               value={
                 <>
-                  {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
-                  {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} reasoning` : ''}
+                  {fmtTokens(inputTokens)} 输入 · {fmtTokens(outputTokens)} 输出
+                  {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} 推理` : ''}
                 </>
               }
             />
@@ -459,18 +459,18 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
 
           {localCost > 0 ? (
             <Field
-              name="cost"
+              name="成本"
               t={t}
               value={
                 <>
                   {fmtCost(localCost)}
-                  {subtreeCost >= 0.01 ? ` · subtree +${fmtCost(subtreeCost)}` : ''}
+                  {subtreeCost >= 0.01 ? ` · 子树 +${fmtCost(subtreeCost)}` : ''}
                 </>
               }
             />
           ) : null}
 
-          {subtreeTokens > 0 ? <Field name="subtree tokens" t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
+          {subtreeTokens > 0 ? <Field name="子树 Token" t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
         </OverlaySection>
       ) : null}
 
@@ -493,7 +493,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
       ) : null}
 
       {toolLines.length > 0 ? (
-        <OverlaySection count={toolLines.length} defaultOpen t={t} title="Tool calls">
+        <OverlaySection count={toolLines.length} defaultOpen t={t} title="工具调用">
           {toolLines.map((line, i) => (
             <Text color={t.color.text} key={i} wrap="wrap">
               <Text color={t.color.muted}>·</Text> {line}
@@ -556,7 +556,7 @@ function ListRow({
   const heatIdx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
   const heatMarker = heatIdx >= 2 ? palette[heatIdx]! : null
 
-  const goal = compactPreview(node.item.goal || 'subagent', width - 28 - node.item.depth * 2)
+  const goal = compactPreview(node.item.goal || '子代理', width - 28 - node.item.depth * 2)
   const toolsCount = node.aggregate.totalTools > 0 ? ` ·${node.aggregate.totalTools}t` : ''
   const kids = node.children.length ? ` ·${node.children.length}↓` : ''
   const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
@@ -618,7 +618,7 @@ function DiffPane({
 
             return (
               <Text color={t.color.muted} key={s.id} wrap="truncate-end">
-                <Text color={color}>{glyph}</Text> {s.goal || 'subagent'}
+                <Text color={color}>{glyph}</Text> {s.goal || '子代理'}
               </Text>
             )
           })}
@@ -673,17 +673,17 @@ function DiffView({
         </Text>
 
         <Text color={t.color.text}>
-          {diffMetricLine('agents', aTotals.descendantCount, bTotals.descendantCount, round)}
+          {diffMetricLine('代理', aTotals.descendantCount, bTotals.descendantCount, round)}
         </Text>
-        <Text color={t.color.text}>{diffMetricLine('tools', aTotals.totalTools, bTotals.totalTools, round)}</Text>
+        <Text color={t.color.text}>{diffMetricLine('工具', aTotals.totalTools, bTotals.totalTools, round)}</Text>
         <Text color={t.color.text}>
-          {diffMetricLine('depth', aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
+          {diffMetricLine('深度', aTotals.maxDepthFromHere, bTotals.maxDepthFromHere, round)}
         </Text>
         <Text color={t.color.text}>
-          {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
+          {diffMetricLine('耗时', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
         </Text>
-        <Text color={t.color.text}>{diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
-        <Text color={t.color.text}>{diffMetricLine('cost', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
+        <Text color={t.color.text}>{diffMetricLine('Token', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
+        <Text color={t.color.text}>{diffMetricLine('成本', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
       </Box>
     </Box>
   )
@@ -767,7 +767,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     if (historyIndex === 0 && prev > 0 && liveSubagents.length === 0 && history.length > 0) {
       setHistoryIndex(1)
       setCursor(0)
-      setFlash('turn finished · inspect freely · q to close')
+      setFlash('回合完成 · 自由查看 · 按 q 关闭')
     }
   }, [history.length, historyIndex, liveSubagents.length])
 
@@ -793,7 +793,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const guardLive = (action: () => void) => {
     if (replayMode) {
-      setFlash('replay mode — controls disabled')
+      setFlash('回放模式 — 控制已禁用')
     } else {
       action()
     }
@@ -815,7 +815,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     guardLive(() => {
       const ids = [node.item.id, ...descendantIds(node)]
       ids.forEach(id => interrupt(id).catch(() => {}))
-      setFlash(`killing subtree · ${ids.length} node${ids.length === 1 ? '' : 's'}`)
+      setFlash(`正在终止子树 · ${ids.length} 个节点`)
     })
 
   const togglePause = () =>
@@ -824,9 +824,9 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
         .then(raw => {
           const r = asRpcResult<DelegationPauseResponse>(raw)
           applyDelegationStatus({ paused: r?.paused })
-          setFlash(r?.paused ? 'spawning paused' : 'spawning resumed')
+          setFlash(r?.paused ? '已暂停生成' : '已恢复生成')
         })
-        .catch(() => setFlash('pause failed'))
+        .catch(() => setFlash('暂停失败'))
     })
 
   const stepHistory = (delta: -1 | 1) =>
@@ -835,7 +835,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       if (next !== idx) {
         setCursor(0)
-        setFlash(next === 0 ? 'live turn' : `replay · ${next}/${history.length}`)
+        setFlash(next === 0 ? '当前回合' : `回放 · ${next}/${history.length}`)
       }
 
       return next
@@ -973,16 +973,16 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const title =
     replayMode && effectiveSnapshot
-      ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
+      ? `${historyIndex > 0 ? `回放 ${historyIndex}/${history.length}` : '上一回合'} · 完成于 ${new Date(
           effectiveSnapshot.finishedAt
         ).toLocaleTimeString()}`
-      : `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
+      : `生成树${delegation.paused ? ' · ⏸ 已暂停' : ''}`
 
   const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
 
   const controlsHint = replayMode
-    ? ' · controls locked'
-    : ` · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
+    ? ' · 控制已锁定'
+    : ` · x 终止 · X 终止子树 · p ${delegation.paused ? '继续' : '暂停'}`
 
   // ── Rendering ──────────────────────────────────────────────────────
 

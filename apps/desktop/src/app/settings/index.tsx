@@ -128,13 +128,13 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           <OverlayNavItem
             active={activeView === 'gateway'}
             icon={Globe}
-            label="Gateway"
+            label="网关"
             onClick={() => setActiveView('gateway')}
           />
           <OverlayNavItem
             active={activeView === 'keys'}
             icon={KeyRound}
-            label="API Keys"
+            label="API 密钥"
             onClick={() => setActiveView('keys')}
           />
           <OverlayNavItem
@@ -146,18 +146,18 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           <OverlayNavItem
             active={activeView === 'sessions'}
             icon={Archive}
-            label="Archived Chats"
+            label="已存档的聊天"
             onClick={() => setActiveView('sessions')}
           />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'about'}
             icon={Info}
-            label="About"
+            label="关于"
             onClick={() => setActiveView('about')}
           />
           <div className="mt-auto flex items-center gap-1 pt-2">
-            <OverlayIconButton onClick={() => void exportConfig()} title="Export config">
+            <OverlayIconButton onClick={() => void exportConfig()} title="导出配置">
               <IconDownload className="size-3.5" />
             </OverlayIconButton>
             <OverlayIconButton
@@ -165,7 +165,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 triggerHaptic('open')
                 importInputRef.current?.click()
               }}
-              title="Import config"
+              title="导入配置"
             >
               <IconUpload className="size-3.5" />
             </OverlayIconButton>
@@ -175,7 +175,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
                 triggerHaptic('warning')
                 void resetConfig()
               }}
-              title="Reset to defaults"
+              title="重置为默认值"
             >
               <IconRefresh className="size-3.5" />
             </OverlayIconButton>

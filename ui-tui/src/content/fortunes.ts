@@ -1,20 +1,20 @@
 const FORTUNES = [
-  'you are one clean refactor away from clarity',
-  'a tiny rename today prevents a huge bug tomorrow',
-  'your next commit message will be immaculate',
-  'the edge case you are ignoring is already solved in your head',
-  'minimal diff, maximal calm',
-  'today favors bold deletions over new abstractions',
-  'the right helper is already in your codebase',
-  'you will ship before overthinking catches up',
-  'tests are about to save your future self',
-  'your instincts are correctly suspicious of that one branch'
+  '一次干净的重构，就能让一切豁然开朗',
+  '今天一个小小重命名，明天省去一个大 Bug',
+  '你的下一条提交信息将完美无瑕',
+  '你忽略的边界情况，已在脑中解决',
+  '最少的变更，最大的从容',
+  '今日宜大胆删除，而非新增抽象',
+  '合适的工具函数就在你的代码库中',
+  '你将在过度思考追上之前发布',
+  '测试即将拯救未来的你',
+  '你的直觉在正确地质疑那个分支'
 ]
 
 const LEGENDARY = [
-  'legendary drop: one-line fix, first try',
-  'legendary drop: every flaky test passes cleanly',
-  'legendary drop: your diff teaches by itself'
+  '🌟 传奇掉落：一行修复，一次通过',
+  '🌟 传奇掉落：所有不稳定测试顺利通过',
+  '🌟 传奇掉落：你的差异不教自明'
 ]
 
 const hash = (s: string) => [...s].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261) >>> 0

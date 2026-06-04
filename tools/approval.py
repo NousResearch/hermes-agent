@@ -301,31 +301,20 @@ def detect_hardline_command(command: str) -> tuple:
 
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
+    from agent.i18n import t
     return {
         "approved": False,
         "hardline": True,
-        "message": (
-            f"BLOCKED (hardline): {description}. "
-            "This command is on the unconditional blocklist and cannot "
-            "be executed via the agent — not even with --yolo, /yolo, "
-            "approvals.mode=off, or cron approve mode. If you genuinely "
-            "need to run it, run it yourself in a terminal outside the "
-            "agent."
-        ),
+        "message": t("approval.hardline_blocked", description=description),
     }
 
 
 def _sudo_stdin_block_result(description: str) -> dict:
     """Build the standard block result for sudo stdin guard."""
+    from agent.i18n import t
     return {
         "approved": False,
-        "message": (
-            f"BLOCKED: {description}. "
-            "Do not pipe passwords to 'sudo -S' — this is a brute-force "
-            "attack vector. Set SUDO_PASSWORD in your .env file if the "
-            "agent needs passwordless sudo, or run the sudo command "
-            "manually in your own terminal."
-        ),
+        "message": t("approval.sudo_stdin_blocked", description=description),
     }
 
 

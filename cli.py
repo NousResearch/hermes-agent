@@ -2810,6 +2810,8 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 
 def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
+    from agent.i18n import t
+
     try:
         from hermes_cli.skin_engine import get_active_skin
         _skin = get_active_skin()
@@ -2822,24 +2824,24 @@ def _build_compact_banner() -> str:
     dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
 
     if skin_name == "default":
-        line1 = "⚕ NOUS HERMES - AI Agent Framework"
-        tiny_line = "⚕ NOUS HERMES"
+        line1 = t("banner.nous_hermes_framework")
+        tiny_line = t("banner.nous_hermes")
     else:
-        agent_name = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
-        line1 = f"{agent_name} - AI Agent Framework"
+        agent_name = _skin.get_branding("agent_name", t("banner.hermes_agent")) if _skin else t("banner.hermes_agent")
+        line1 = f"{agent_name} - {t('banner.ai_agent_framework')}"
         tiny_line = agent_name
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
         from hermes_cli import __release_date__ as _release_date
         from hermes_cli import __version__ as _version
 
-        version_line = f"Hermes Agent v{_version} ({_release_date})"
+        version_line = f"{t('banner.hermes_agent')} v{_version} ({_release_date})"
     else:
         version_line = format_banner_version_label()
 
     w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
-        return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
+        return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- {t('banner.nous_research')}[/]\n"
 
     inner = w - 2  # inside the box border
     bar = "═" * w

@@ -8,7 +8,7 @@ import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 import { TextInput } from './textInput.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
-const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
+const LABELS = { always: '始终允许', deny: '拒绝', once: '允许一次', session: '本次会话允许' } as const
 const CMD_PREVIEW_LINES = 10
 
 type ApprovalKey = {

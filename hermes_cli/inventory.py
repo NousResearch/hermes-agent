@@ -83,6 +83,7 @@ def load_picker_context() -> ConfigContext:
     ``tui_gateway/server.py`` (×2 sites) used to do.
     """
     from hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_cli.model_normalize import normalize_model_for_provider
 
     cfg = load_config()
     model_cfg = cfg.get("model", {})
@@ -95,6 +96,16 @@ def load_picker_context() -> ConfigContext:
         current_model = str(model_cfg) if model_cfg else ""
         current_provider = ""
         current_base_url = ""
+    if current_model and current_provider:
+        # Mirror runtime normalization before exposing the value to pickers.
+        # Stale configs may contain user-facing aggregator-style IDs such as
+        # ``openai/gpt-5.5`` while the selected provider (``openai-codex``)
+        # and its model list use the native bare slug (``gpt-5.5``). Returning
+        # the raw config value makes Desktop/TUI unable to mark the row as
+        # selected even though the agent itself starts with the normalized
+        # model. Keep config writes untouched; this is only the display/runtime
+        # context every inventory consumer shares.
+        current_model = normalize_model_for_provider(current_model, current_provider)
     raw = cfg.get("providers")
     return ConfigContext(
         current_provider=current_provider,

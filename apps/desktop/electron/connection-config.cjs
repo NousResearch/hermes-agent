@@ -65,6 +65,24 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+function buildBackendApiUrl(baseUrl, requestPath) {
+  const base = normalizeRemoteBaseUrl(baseUrl)
+  const rawPath = String(requestPath || '')
+
+  if (!rawPath.startsWith('/') || rawPath.startsWith('//')) {
+    throw new Error('Hermes backend API path must start with a single /.')
+  }
+
+  const parsed = new URL(base)
+  const requestUrl = new URL(rawPath, 'http://hermes.local')
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+  const suffix = requestUrl.pathname.replace(/^\/+/, '')
+  parsed.pathname = `${prefix}/${suffix}`
+  parsed.search = requestUrl.search
+
+  return parsed.toString()
+}
+
 function tokenPreview(value) {
   const raw = String(value || '')
 
@@ -109,6 +127,7 @@ function cookiesHaveSession(cookies) {
 module.exports = {
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
+  buildBackendApiUrl,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,

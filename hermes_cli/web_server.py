@@ -1846,6 +1846,19 @@ def get_model_info():
             base_url = ""
             config_ctx = None
 
+        if provider and model_name:
+            # Keep dashboard/Desktop model state in the same provider-native
+            # form the runtime and model picker use. Older configs can contain
+            # aggregator-style slugs like ``openai/gpt-5.5`` for openai-codex;
+            # the agent normalizes those to ``gpt-5.5`` on startup, so returning
+            # the raw config value here makes the UI think no picker row matches.
+            try:
+                from hermes_cli.model_normalize import normalize_model_for_provider
+
+                model_name = normalize_model_for_provider(model_name, provider)
+            except Exception:
+                pass
+
         if not model_name:
             return dict(_EMPTY_MODEL_INFO, provider=provider)
 

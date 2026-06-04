@@ -16,6 +16,7 @@ const assert = require('node:assert/strict')
 const {
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
+  buildBackendApiUrl,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
@@ -78,6 +79,25 @@ test('buildGatewayWsUrlWithTicket uses ?ticket= not ?token=', () => {
 
 test('buildGatewayWsUrlWithTicket url-encodes the ticket', () => {
   assert.equal(buildGatewayWsUrlWithTicket('https://host', 'a+b/c'), 'wss://host/api/ws?ticket=a%2Bb%2Fc')
+})
+
+// --- buildBackendApiUrl ---
+
+test('buildBackendApiUrl joins a backend base URL and API path', () => {
+  assert.equal(buildBackendApiUrl('http://127.0.0.1:9120', '/api/model/set'), 'http://127.0.0.1:9120/api/model/set')
+})
+
+test('buildBackendApiUrl preserves remote gateway path prefixes', () => {
+  assert.equal(
+    buildBackendApiUrl('https://gw.example.com/hermes/', '/api/model/options?provider=openai-codex'),
+    'https://gw.example.com/hermes/api/model/options?provider=openai-codex'
+  )
+})
+
+test('buildBackendApiUrl rejects renderer paths that are not absolute API paths', () => {
+  assert.throws(() => buildBackendApiUrl('https://gw.example.com', 'api/model/set'), /must start with/)
+  assert.throws(() => buildBackendApiUrl('https://gw.example.com', '//evil.example.com/api/model/set'), /must start with/)
+  assert.throws(() => buildBackendApiUrl('https://gw.example.com', undefined), /must start with/)
 })
 
 // --- authModeFromStatus ---

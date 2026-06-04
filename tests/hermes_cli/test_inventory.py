@@ -91,6 +91,20 @@ def test_load_picker_context_empty_config():
     assert ctx.custom_providers == []
 
 
+def test_load_picker_context_normalizes_current_model_for_provider():
+    """Pickers should expose the same provider-native model the runtime uses.
+
+    Regression: stale configs could keep ``openai/gpt-5.5`` while
+    ``openai-codex`` model rows contain bare ``gpt-5.5``. Desktop then could
+    not mark the selected row even though startup normalized the model.
+    """
+    cfg = _cfg(model={"default": "openai/gpt-5.5", "provider": "openai-codex"})
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+    assert ctx.current_model == "gpt-5.5"
+    assert ctx.current_provider == "openai-codex"
+
+
 # ─── with_overrides ────────────────────────────────────────────────────
 
 

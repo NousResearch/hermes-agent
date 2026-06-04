@@ -29,6 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const {
   authModeFromStatus,
+  buildBackendApiUrl,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
@@ -4114,7 +4115,7 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 ipcMain.handle('hermes:api', async (_event, request) => {
   const connection = await startHermes()
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-  const url = `${connection.baseUrl}${request.path}`
+  const url = buildBackendApiUrl(connection.baseUrl, request.path)
   // OAuth gateways authenticate REST via the HttpOnly session cookie held in
   // the OAuth partition — route through Electron's net stack bound to that
   // session so the cookie attaches automatically. Token/local modes keep using

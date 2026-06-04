@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [delegation, subagent, implementation, workflow, parallel]
-    related_skills: [writing-plans, requesting-code-review, test-driven-development]
+    related_skills: [plan, requesting-code-review, test-driven-development]
 ---
 
 # Subagent-Driven Development
@@ -22,7 +22,7 @@ Execute implementation plans by dispatching fresh subagents per task with system
 ## When to Use
 
 Use this skill when:
-- You have an implementation plan (from writing-plans skill or user requirements)
+- You have an implementation plan (from the `plan` skill or user requirements)
 - Tasks are mostly independent
 - Quality and spec compliance are important
 - You want automated review between tasks
@@ -254,10 +254,10 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 
 ## Integration with Other Skills
 
-### With writing-plans
+### With plan
 
-This skill EXECUTES plans created by the writing-plans skill:
-1. User requirements → writing-plans → implementation plan
+This skill EXECUTES plans created by the `plan` skill:
+1. User requirements → plan → implementation plan
 2. Implementation plan → subagent-driven-development → working code
 
 ### With test-driven-development

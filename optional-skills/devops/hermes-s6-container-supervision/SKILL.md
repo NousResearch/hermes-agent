@@ -4,6 +4,8 @@ description: Modify, debug, or extend the s6-overlay supervision tree inside the
 version: 1.0.0
 author: Hermes Agent
 license: MIT
+platforms: [linux]
+environments: [s6]
 metadata:
   hermes:
     tags: [docker, s6, supervision, gateway, profiles]

@@ -1,13 +1,3 @@
----
-name: webhook-subscriptions
-description: "Webhook subscriptions: event-driven agent runs."
-version: 1.1.0
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [webhook, events, automation, integrations, notifications, push]
----
-
 # Webhook Subscriptions
 
 Create dynamic webhook subscriptions so external services (GitHub, GitLab, Stripe, CI/CD, IoT sensors, monitoring tools) can trigger Hermes agent runs by POSTing events to a URL.

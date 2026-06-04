@@ -462,6 +462,98 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _prune_cron_sessions_from_config() -> None:
+    """Apply config-driven retention for completed cron sessions."""
+    try:
+        _cfg = load_config() or {}
+        _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+        retention_days = int(_cron_cfg.get("session_retention_days") or 0)
+        if retention_days <= 0:
+            return
+
+        from hermes_state import SessionDB
+
+        _session_db = SessionDB()
+        try:
+            removed = _session_db.prune_sessions(
+                older_than_days=retention_days,
+                source="cron",
+            )
+            if removed:
+                logger.info(
+                    "Pruned %d cron session(s) older than %d day(s)",
+                    removed,
+                    retention_days,
+                )
+        finally:
+            _session_db.close()
+    except Exception as exc:
+        logger.warning("Cron session retention cleanup failed: %s", exc)
+
+
+@contextmanager
+def _job_profile_context(job_id: str, profile: Optional[str]):
+    """Temporarily run a job under a specific Hermes profile.
+
+    Cron jobs are stored and scheduled by the profile running the scheduler, but
+    an individual job can opt into a different runtime profile. While active,
+    the scheduler's test/override hook and a context-local Hermes home override
+    both point at the resolved profile directory so _get_hermes_home(),
+    .env/config loading, script resolution, AIAgent construction, and downstream
+    get_hermes_home() callers agree on the same home.
+
+    Some existing provider/config paths still load profile .env values through
+    os.environ, so profile jobs also snapshot and restore the process
+    environment on exit. tick() runs profile jobs sequentially to keep that
+    temporary mutation isolated from other scheduled jobs.
+    """
+    raw_profile = str(profile or "").strip()
+    if not raw_profile:
+        yield None
+        return
+
+    global _hermes_home
+    prior_override = _hermes_home
+    env_snapshot = os.environ.copy()
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    normalized_profile = normalize_profile_name(raw_profile)
+    try:
+        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            "Job '%s': configured profile %r no longer valid (%s) — "
+            "falling back to scheduler default",
+            job_id, raw_profile, exc,
+        )
+        yield None
+        return
+
+    override_token = None
+    try:
+        override_token = set_hermes_home_override(profile_home)
+        _hermes_home = profile_home
+        logger.info(
+            "Job '%s': using Hermes profile '%s' (%s)",
+            job_id,
+            normalized_profile,
+            profile_home,
+        )
+        yield normalized_profile
+    finally:
+        _hermes_home = prior_override
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
+        # Delta-based restore: remove added keys, restore changed keys.
+        # Avoids a brief window where other threads see an empty env.
+        added = set(os.environ.keys()) - set(env_snapshot.keys())
+        for k in added:
+            os.environ.pop(k, None)
+        for k, v in env_snapshot.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -3593,6 +3685,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     logger.error("Cron job future failed: %s", exc)
                     _results.append(False)
             _sweep_mcp_orphans()
+            _prune_cron_sessions_from_config()
             return sum(_results)
 
         # Async (gateway ticker) mode: don't block.  Sweep orphans via a
@@ -3611,12 +3704,14 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     pass
                 if _remaining[0] <= 0:
                     _sweep_mcp_orphans()
+                    _prune_cron_sessions_from_config()
 
             for _f in _all_futures:
                 _f.add_done_callback(_on_done)
         else:
             # Nothing dispatched (all skipped / no due jobs) — sweep inline.
             _sweep_mcp_orphans()
+            _prune_cron_sessions_from_config()
 
         return sum(_results)
     finally:

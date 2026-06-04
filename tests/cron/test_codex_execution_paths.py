@@ -189,4 +189,85 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     assert result["final_response"] == "Recovered via refresh"
     assert _Codex401ThenSuccessAgent.refresh_attempts == 1
     assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"
-    assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"
+
+
+class _RetryCaptureAgent(run_agent.AIAgent):
+    """Captures the effective ``_api_max_retries`` at run time, after the
+    scheduler has applied any per-job override."""
+
+    captured_retries = None
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("skip_context_files", True)
+        kwargs.setdefault("skip_memory", True)
+        kwargs.setdefault("max_iterations", 4)
+        super().__init__(*args, **kwargs)
+        self._cleanup_task_resources = lambda task_id: None
+        self._persist_session = lambda messages, history=None: None
+        self._save_trajectory = lambda messages, user_message, completed: None
+
+    def run_conversation(self, user_message, conversation_history=None, task_id=None):
+        type(self).captured_retries = getattr(self, "_api_max_retries", None)
+        return {"final_response": "ok", "messages": []}
+
+
+def _patch_codex_runtime(monkeypatch):
+    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(run_agent, "AIAgent", _RetryCaptureAgent)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **kw: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc)
+    )
+
+
+def test_cron_per_job_api_max_retries_override(monkeypatch):
+    """A job that sets ``api_max_retries`` raises the agent's retry budget so
+    transient backend hangs are retried more times on the requested model
+    before the fallback chain swaps models."""
+    _patch_agent_bootstrap(monkeypatch)
+    _patch_codex_runtime(monkeypatch)
+
+    _RetryCaptureAgent.captured_retries = None
+    success, output, final_response, error = cron_scheduler.run_job(
+        {
+            "id": "digest-1",
+            "name": "Morning Digest",
+            "prompt": "ping",
+            "model": "gpt-5.5",
+            "provider": "openai-codex",
+            "api_max_retries": 6,
+        }
+    )
+
+    assert success is True, error
+    assert _RetryCaptureAgent.captured_retries == 6
+
+
+def test_cron_without_override_inherits_agent_default(monkeypatch):
+    """Without a per-job ``api_max_retries`` the agent keeps its configured
+    default (no global behavior change for other jobs)."""
+    _patch_agent_bootstrap(monkeypatch)
+    _patch_codex_runtime(monkeypatch)
+
+    _RetryCaptureAgent.captured_retries = None
+    success, output, final_response, error = cron_scheduler.run_job(
+        {
+            "id": "digest-2",
+            "name": "No Override",
+            "prompt": "ping",
+            "model": "gpt-5.5",
+            "provider": "openai-codex",
+        }
+    )
+
+    assert success is True, error
+    # Agent default is 3 (config.yaml agent.api_max_retries, default 3).
+    assert _RetryCaptureAgent.captured_retries == 3

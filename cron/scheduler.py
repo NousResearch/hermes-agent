@@ -1760,7 +1760,31 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
-        
+
+        # Per-job API retry override. By default the agent inherits the global
+        # agent.api_max_retries (config.yaml, default 3). Jobs that pin a flaky
+        # subscription backend (e.g. the openai-codex morning digest) can set a
+        # higher per-job count so transient backend hangs are retried more times
+        # on the requested model before the fallback chain swaps to another
+        # model. Combined with the fast-reconnect Codex TTFB watchdog, extra
+        # attempts are cheap (~40s each) and keep the job on its requested model
+        # in almost all cases. Only ever raises the floor; never lowers below 1.
+        _job_max_retries = job.get("api_max_retries")
+        if _job_max_retries is not None:
+            try:
+                _job_retries = max(int(_job_max_retries), 1)
+                _prev_retries = getattr(agent, "_api_max_retries", 3)
+                agent._api_max_retries = _job_retries  # type: ignore[attr-defined]
+                logger.info(
+                    "Job '%s': per-job api_max_retries override = %d (was %d)",
+                    job_id, _job_retries, _prev_retries,
+                )
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Job '%s': invalid api_max_retries=%r; using agent default",
+                    job_id, _job_max_retries,
+                )
+
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured

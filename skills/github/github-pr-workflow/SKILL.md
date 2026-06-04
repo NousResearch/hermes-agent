@@ -149,6 +149,27 @@ The response JSON includes the PR `number` — save it for later commands.
 
 To create as a draft, add `"draft": true` to the JSON body.
 
+### Kanban handoff metadata
+
+When this PR belongs to a Hermes Kanban coding task, finish the worker run with PR metadata instead of marking the work truly done. `kanban_complete` with `pr_url` or `pr_number` moves the task to the existing `review` column, preserves the run handoff, and keeps dependents blocked until review/merge is complete.
+
+```python
+kanban_complete(
+    summary="opened PR #123 for the auth flow; unit tests pass locally",
+    metadata={
+        "changed_files": ["src/auth.py", "tests/test_auth.py"],
+        "tests_run": ["python -m pytest tests/test_auth.py -q"],
+        "github": {
+            "repo": "OWNER/REPO",
+            "pr_number": 123,
+            "pr_url": "https://github.com/OWNER/REPO/pull/123",
+        },
+        "branch": "feat/add-user-authentication",
+        "worktree_path": "/absolute/path/to/worktree",
+    },
+)
+```
+
 ## 4. Monitoring CI Status
 
 ### Check CI Status
@@ -162,6 +183,14 @@ gh pr checks
 # Watch until all checks finish (polls every 10s)
 gh pr checks --watch
 ```
+
+For a Kanban task, operators can do a one-shot poll without running a long watch:
+
+```bash
+hermes kanban pr-review-poll <task_id>
+```
+
+The poll records pending checks, failed checks, requested changes, unresolved review threads, and closed-unmerged PRs as Kanban events/comments. It deliberately keeps the task in `review`; the existing `sdlc-review` flow or a human operator handles merge/deploy and final completion.
 
 **With git + curl:**
 

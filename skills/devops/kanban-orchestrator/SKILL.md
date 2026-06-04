@@ -154,7 +154,7 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 **Parallel implementation + validation:** one implementer card makes the change while one explorer/researcher card verifies config, docs, or source mapping. A reviewer card can depend on both. Do not make the implementer own unrelated verification just because the user mentioned both in one sentence.
 
-**Pipeline with gates:** `planner → implementer → reviewer`. Each stage's `parents=[previous_task]`. Reviewer blocks or completes; if reviewer blocks, the operator unblocks with feedback and respawns.
+**Pipeline with PR review gate:** `planner → implementer → reviewer`. Each stage's `parents=[previous_task]`. When an implementer opens a PR and completes with `metadata.github.pr_url` or `metadata.github.pr_number`, Hermes moves that same task to `review` instead of `done`; dependent tasks stay gated. The dispatcher then starts the existing `sdlc-review` flow. `hermes kanban pr-review-poll <task_id>` is a one-shot operator command for recording CI failures, requested changes, unresolved review threads, pending checks, or a closed-unmerged PR on the same card. Review agents are expected to merge/deploy or explicitly complete only after the PR is actually terminal.
 
 **Same-profile queue:** N tasks, all assigned to the same profile, no dependencies between them. Dispatcher serializes — that profile processes them in priority order, accumulating experience in its own memory.
 
@@ -170,7 +170,7 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 **Forgetting dependency links.** If the task graph says `research -> implement -> review`, do not create all tasks as independent ready cards. Use parent links so implement/review cannot run before their inputs exist.
 
-**Reassignment vs. new task.** If a reviewer blocks with "needs changes," create a NEW task linked from the reviewer's task — don't re-run the same task with a stern look. The new task is assigned to the original implementer profile.
+**Reassignment vs. PR review feedback.** For PR-bearing coding tasks, keep fixes on the same `review` card so the review agent sees the PR metadata, poll events, and latest run handoff. Create a new task only when the feedback is genuinely separate work outside the PR loop.
 
 **Argument order for links.** `kanban_link(parent_id=..., child_id=...)` — parent first. Mixing them up demotes the wrong task to `todo`.
 

@@ -2766,6 +2766,7 @@ def _synthesize_ended_run(
     task_id: str,
     *,
     outcome: str,
+    status: Optional[str] = None,
     summary: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
@@ -2803,7 +2804,7 @@ def _synthesize_ended_run(
         """,
         (
             task_id, profile, step_key,
-            outcome, outcome,
+            status or outcome, outcome,
             summary, error,
             json.dumps(metadata, ensure_ascii=False) if metadata else None,
             now, now,
@@ -3517,6 +3518,61 @@ def _scan_prose_for_phantom_ids(
     return [m for m in unique if m not in existing]
 
 
+def extract_pr_metadata(metadata: Optional[dict]) -> Optional[dict]:
+    """Return normalized PR metadata from a worker handoff, if present."""
+    if not isinstance(metadata, dict):
+        return None
+    sources: list[dict] = [metadata]
+    github = metadata.get("github")
+    if isinstance(github, dict):
+        sources.insert(0, github)
+    pr: dict[str, Any] = {}
+    for source in sources:
+        for key in (
+            "pr_url", "pr_number", "repo", "repository", "branch",
+            "head_ref", "base_ref", "worktree", "worktree_path", "repo_path",
+        ):
+            value = source.get(key)
+            if value is not None and value != "":
+                pr[key] = value
+    if "pr_url" not in pr and "url" in (github or {}):
+        pr["pr_url"] = github["url"]
+    if "pr_number" not in pr and "number" in (github or {}):
+        pr["pr_number"] = github["number"]
+    if "repo" not in pr and "full_name" in (github or {}):
+        pr["repo"] = github["full_name"]
+    if "pr_url" not in pr and "pr_number" not in pr:
+        return None
+    return pr
+
+
+def _run_claimed_from_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: Optional[int],
+) -> bool:
+    """Return True if ``run_id`` was spawned from the review column."""
+    if run_id is None:
+        return False
+    row = conn.execute(
+        """
+        SELECT payload
+          FROM task_events
+         WHERE task_id = ? AND run_id = ? AND kind = 'claimed'
+         ORDER BY id DESC
+         LIMIT 1
+        """,
+        (task_id, int(run_id)),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return False
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return False
+    return isinstance(payload, dict) and payload.get("source_status") == "review"
+
+
 class HallucinatedCardsError(ValueError):
     """Raised by ``complete_task`` when ``created_cards`` contains ids
     that don't exist or weren't created by the completing worker.
@@ -3574,6 +3630,7 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    pr_metadata = extract_pr_metadata(metadata)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -3603,28 +3660,37 @@ def complete_task(
         verified_cards = []
 
     with write_txn(conn):
+        current = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        active_run_id = expected_run_id
+        if active_run_id is None and current and current["current_run_id"] is not None:
+            active_run_id = int(current["current_run_id"])
+        from_review = _run_claimed_from_review(conn, task_id, active_run_id)
+        target_status = "review" if pr_metadata and not from_review else "done"
         if expected_run_id is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = ?,
                        result       = ?,
-                       completed_at = ?,
+                       completed_at = CASE WHEN ? = 'done' THEN ? ELSE completed_at END,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (target_status, result, target_status, now, task_id),
             )
         else:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = ?,
                        result       = ?,
-                       completed_at = ?,
+                       completed_at = CASE WHEN ? = 'done' THEN ? ELSE completed_at END,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
@@ -3632,13 +3698,13 @@ def complete_task(
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (target_status, result, target_status, now, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
             conn, task_id,
-            outcome="completed", status="done",
+            outcome="completed", status=target_status,
             summary=summary if summary is not None else result,
             metadata=metadata,
         )
@@ -3650,6 +3716,7 @@ def complete_task(
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
+                status=target_status,
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
@@ -3679,11 +3746,21 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
-        _append_event(
-            conn, task_id, "completed",
-            completed_payload,
-            run_id=run_id,
-        )
+        pr_review_handoff = bool(pr_metadata and target_status == "review")
+        if pr_review_handoff:
+            review_payload = dict(completed_payload)
+            review_payload["pr"] = pr_metadata
+            _append_event(
+                conn, task_id, "review_requested",
+                review_payload,
+                run_id=run_id,
+            )
+        else:
+            _append_event(
+                conn, task_id, "completed",
+                completed_payload,
+                run_id=run_id,
+            )
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -3710,10 +3787,45 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
-    # Clean up the scratch workspace and any stale tmux session for the worker.
-    _cleanup_workspace(conn, task_id)
+    if target_status == "done":
+        # Recompute ready status for dependents (separate txn so children see done).
+        recompute_ready(conn)
+        # Clean up the scratch workspace and any stale tmux session for the worker.
+        _cleanup_workspace(conn, task_id)
+    return True
+
+
+def record_pr_review_poll(
+    conn: sqlite3.Connection,
+    task_id: str,
+    payload: dict,
+    *,
+    comment: Optional[str] = None,
+    author: str = "kanban-pr-review-poll",
+) -> bool:
+    """Record a one-shot PR review poll result and keep the task in review."""
+    with write_txn(conn):
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            return False
+        if row["status"] not in {"done", "running"}:
+            conn.execute(
+                "UPDATE tasks SET status = 'review', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+                (task_id,),
+            )
+        _append_event(conn, task_id, "pr_review_poll", payload)
+        if comment and comment.strip():
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, author, comment.strip(), now),
+            )
+            _append_event(
+                conn, task_id, "commented",
+                {"author": author, "len": len(comment.strip())},
+            )
     return True
 
 

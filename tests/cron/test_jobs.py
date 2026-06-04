@@ -19,6 +19,7 @@ from cron.jobs import (
     remove_job,
     mark_job_run,
     advance_next_run,
+    claim_dispatch,
     get_due_jobs,
     save_job_output,
 )
@@ -669,6 +670,115 @@ class TestAdvanceNextRun:
         assert len(due_after) == 0, "Job should not be due after advance_next_run"
 
 
+class TestClaimDispatch:
+    """Tests for claim_dispatch — pre-run dispatch claim for one-shot jobs."""
+
+    def test_increments_completed(self, tmp_cron_dir):
+        """claim_dispatch atomically increments repeat.completed for a one-shot."""
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        assert job["repeat"]["completed"] == 0
+
+        result = claim_dispatch(job["id"])
+        assert result is True
+
+        updated = get_job(job["id"])
+        assert updated["repeat"]["completed"] == 1
+
+    def test_rejects_when_at_limit(self, tmp_cron_dir):
+        """claim_dispatch returns False when repeat.completed >= repeat.times."""
+        job = create_job(prompt="Once", schedule="30m", repeat=2)
+        # First dispatch
+        assert claim_dispatch(job["id"]) is True
+        # Second dispatch
+        assert claim_dispatch(job["id"]) is True
+        # Third dispatch — should be rejected and job removed
+        assert claim_dispatch(job["id"]) is False
+        # Job should be cleaned up
+        assert get_job(job["id"]) is None
+
+    def test_no_repeat_always_dispatches(self, tmp_cron_dir):
+        """Jobs without repeat limits always return True."""
+        job = create_job(prompt="Forever", schedule="every 1h")
+        # No repeat limit set
+        for _ in range(5):
+            assert claim_dispatch(job["id"]) is True
+        # Job still exists
+        assert get_job(job["id"]) is not None
+
+    def test_infinite_repeat_always_dispatches(self, tmp_cron_dir):
+        """Jobs with repeat=-1 or repeat=0 always return True."""
+        job = create_job(prompt="Forever", schedule="every 1h", repeat=-1)
+        assert claim_dispatch(job["id"]) is True
+        assert claim_dispatch(job["id"]) is True
+        assert get_job(job["id"]) is not None
+
+        job2 = create_job(prompt="Forever2", schedule="every 1h", repeat=0)
+        assert claim_dispatch(job2["id"]) is True
+        assert get_job(job2["id"]) is not None
+
+    def test_recurring_repeat_limit_not_mutated(self, tmp_cron_dir):
+        """Finite recurring jobs use advance_next_run, not one-shot dispatch claims."""
+        job = create_job(prompt="Every hour", schedule="every 1h", repeat=2)
+
+        assert claim_dispatch(job["id"]) is True
+        assert claim_dispatch(job["id"]) is True
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["repeat"]["completed"] == 0
+
+    def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
+        """A successful pre-claimed one-shot records status without a second increment."""
+        job = create_job(prompt="Once", schedule="30m", repeat=2)
+
+        assert claim_dispatch(job["id"]) is True
+        assert get_job(job["id"])["repeat"]["completed"] == 1
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["repeat"]["completed"] == 1
+        assert updated["last_status"] == "ok"
+
+    def test_claim_persists_without_mark_job_run(self, tmp_cron_dir):
+        """The claim survives even if mark_job_run never runs (simulates gateway death).
+
+        This is the core fix for #38758: if the gateway dies mid-execution,
+        the pre-run claim ensures the job won't re-fire infinitely.
+        """
+        job = create_job(prompt="Suicide", schedule="30m", repeat=1)
+        assert job["repeat"]["completed"] == 0
+
+        # Claim the dispatch (simulates pre-run claim)
+        assert claim_dispatch(job["id"]) is True
+
+        # Simulate gateway death — never call mark_job_run.
+        # On restart, the job is still present with completed=1
+        updated = get_job(job["id"])
+        assert updated is not None, "Job should still exist after claim"
+        assert updated["repeat"]["completed"] == 1
+
+        # Next claim attempt should reject (already dispatched)
+        assert claim_dispatch(job["id"]) is False
+        # Job should be cleaned up by the rejection path
+        assert get_job(job["id"]) is None
+
+    def test_unknown_job_id_returns_false(self, tmp_cron_dir):
+        """claim_dispatch for a non-existent job returns False."""
+        assert claim_dispatch("nonexistent-job-id") is False
+
+    def test_does_not_mark_status(self, tmp_cron_dir):
+        """claim_dispatch only touches repeat.completed; it does NOT set
+        last_run_at or last_status — those are mark_job_run's job."""
+        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        claim_dispatch(job["id"])
+        updated = get_job(job["id"])
+        assert updated["last_run_at"] is None
+        assert updated["last_status"] is None
+        assert updated["repeat"]["completed"] == 1
+
+
 class TestGetDueJobs:
     def test_past_due_within_window_returned(self, tmp_cron_dir):
         """Jobs within the dynamic grace window are still considered due (not stale).
@@ -847,6 +957,46 @@ class TestGetDueJobs:
         if recovered_dt.tzinfo is None:
             recovered_dt = recovered_dt.replace(tzinfo=timezone.utc)
         assert recovered_dt > now
+
+    def test_oneshot_at_dispatch_limit_not_due(self, tmp_cron_dir, monkeypatch):
+        """A one-shot with repeat.completed >= repeat.times is not returned as due.
+
+        This is the post-restart guard for #38758: if the gateway died
+        after claim_dispatch but before mark_job_run could remove the
+        job, get_due_jobs must skip (and clean up) the stale job.
+        """
+        now = datetime(2026, 3, 18, 4, 22, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        run_at = "2026-03-18T04:22:00+00:00"
+        save_jobs(
+            [{
+                "id": "oneshot-dispatched",
+                "name": "Already dispatched",
+                "prompt": "Word of the day",
+                "schedule": {"kind": "once", "run_at": run_at, "display": "once at 2026-03-18 04:22"},
+                "schedule_display": "once at 2026-03-18 04:22",
+                "repeat": {"times": 1, "completed": 1},  # already dispatched!
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T04:21:00+00:00",
+                "next_run_at": run_at,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        # Job is past-due but already at dispatch limit
+        due = get_due_jobs()
+        assert due == [], "One-shot at dispatch limit should not be due"
+
+        # Job should be cleaned up
+        assert get_job("oneshot-dispatched") is None, "Stale dispatched job should be removed"
 
 
 class TestEnabledToolsets:

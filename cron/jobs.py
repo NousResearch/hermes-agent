@@ -929,13 +929,27 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 
-                # Increment completed count
+                # Increment completed count.  One-shot jobs with a finite
+                # repeat limit are pre-claimed by claim_dispatch() before the
+                # side effect runs, so do not double-count them here.  Direct
+                # mark_job_run() callers (no pre-run claim) still get the
+                # legacy increment because completed will still be zero.
                 if job.get("repeat"):
-                    job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                    
+                    repeat = job["repeat"]
+                    times = repeat.get("times")
+                    completed = repeat.get("completed", 0)
+                    kind = job.get("schedule", {}).get("kind")
+                    preclaimed_oneshot = (
+                        kind == "once"
+                        and times is not None
+                        and times > 0
+                        and completed > 0
+                    )
+                    if not preclaimed_oneshot:
+                        completed += 1
+                        repeat["completed"] = completed
+
                     # Check if we've hit the repeat limit
-                    times = job["repeat"].get("times")
-                    completed = job["repeat"]["completed"]
                     if times is not None and times > 0 and completed >= times:
                         # Remove the job (limit reached)
                         jobs.pop(i)
@@ -978,6 +992,64 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+
+
+def claim_dispatch(job_id: str) -> bool:
+    """Atomically claim a one-shot job dispatch BEFORE execution.
+
+    Increments ``repeat.completed`` under lock and persists the claim
+    immediately so that if the gateway process dies mid-execution the
+    dispatch is not lost.  Returns ``True`` if the claim succeeded
+    (completed < times), ``False`` if the job has already been
+    dispatched the maximum number of times.
+
+    This converts one-shot jobs from *at-least-once* to *at-most-times*
+    semantics — a job that self-destructs (gateway kill, OOM, segfault)
+    will fire at most ``repeat.times`` times instead of infinitely.
+
+    Only acts on jobs that have ``repeat.times > 0`` and
+    ``schedule.kind == "once"``.  Recurring jobs and infinite-repeat
+    jobs are left unchanged.
+    """
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] == job_id:
+                if job.get("schedule", {}).get("kind") != "once":
+                    return True  # recurring jobs use advance_next_run(), not dispatch claims
+                repeat = job.get("repeat")
+                if not repeat:
+                    return True  # no repeat limit — always dispatch
+                times = repeat.get("times")
+                if times is None or times <= 0:
+                    return True  # infinite — always dispatch
+                completed = repeat.get("completed", 0)
+                if completed >= times:
+                    # Already dispatched the max number of times.
+                    # Clean up: remove the job so it doesn't keep
+                    # appearing as due on every tick.
+                    jobs.pop(i)
+                    save_jobs(jobs)
+                    logger.info(
+                        "Job '%s': dispatch limit reached (%d/%d) — removing",
+                        job.get("name", job["id"]),
+                        completed,
+                        times,
+                    )
+                    return False
+                # Claim this dispatch
+                repeat["completed"] = completed + 1
+                save_jobs(jobs)
+                logger.debug(
+                    "Job '%s': claimed dispatch %d/%d",
+                    job.get("name", job["id"]),
+                    repeat["completed"],
+                    times,
+                )
+                return True
+
+        logger.warning("claim_dispatch: job_id %s not found", job_id)
+        return False
 
 
 def advance_next_run(job_id: str) -> bool:
@@ -1102,6 +1174,33 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             needs_save = True
                             break
                     continue  # Skip this run
+
+            # ── One-shot dispatch limit guard (issue #38758) ──────────
+            # A one-shot that was dispatched (via claim_dispatch) but
+            # whose gateway died before mark_job_run could clean it up
+            # will have repeat.completed >= repeat.times.  Skip it and
+            # remove it so it doesn't keep appearing as due on every
+            # tick.
+            if kind == "once":
+                repeat = job.get("repeat")
+                if repeat:
+                    times = repeat.get("times")
+                    if times is not None and times > 0:
+                        completed = repeat.get("completed", 0)
+                        if completed >= times:
+                            logger.info(
+                                "Job '%s': one-shot dispatch limit reached "
+                                "(%d/%d) — removing stale due entry",
+                                job.get("name", job["id"]),
+                                completed,
+                                times,
+                            )
+                            for rj in raw_jobs:
+                                if rj["id"] == job["id"]:
+                                    raw_jobs.pop(raw_jobs.index(rj))
+                                    needs_save = True
+                                    break
+                            continue
 
             due.append(job)
 

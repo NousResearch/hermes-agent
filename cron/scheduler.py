@@ -147,7 +147,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1970,8 +1970,28 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             )
 
         def _process_job(job: dict) -> bool:
-            """Run one due job end-to-end: execute, save, deliver, mark."""
+            """Run one due job end-to-end: claim, execute, save, deliver, mark."""
             try:
+                # ── Pre-run dispatch claim (issue #38758) ──────────────
+                # Atomically claim finite one-shot executions BEFORE running
+                # the job. If the gateway dies mid-execution (kill, OOM,
+                # segfault), the claim persists so the job won't re-fire
+                # infinitely. Recurring jobs use advance_next_run() instead.
+                repeat = job.get("repeat") or {}
+                times = repeat.get("times")
+                schedule = job.get("schedule") if isinstance(job.get("schedule"), dict) else {}
+                should_claim_dispatch = (
+                    schedule.get("kind") == "once"
+                    and times is not None
+                    and times > 0
+                )
+                if should_claim_dispatch and not claim_dispatch(job["id"]):
+                    logger.info(
+                        "Job '%s': dispatch already claimed — skipping",
+                        job.get("name", job["id"]),
+                    )
+                    return True  # not an error — already handled
+
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)

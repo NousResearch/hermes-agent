@@ -9688,6 +9688,44 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _resolve_update_target(
+    git_cmd: list[str], cwd: Path, branch: str
+) -> tuple[str, str, str]:
+    """Return the remote, remote branch, and compare ref for ``branch``.
+
+    ``hermes update`` historically hard-coded ``origin/<branch>``. That works
+    for normal installs, but managed desktop installs can have ``origin`` point
+    at upstream while their local ``main`` tracks a fork remote. Honor the
+    branch's configured upstream when it exists so update checks and pulls the
+    ref Git would use for that branch.
+    """
+    fallback_remote = "origin"
+    fallback_ref = f"{fallback_remote}/{branch}"
+    try:
+        result = subprocess.run(
+            git_cmd
+            + [
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                f"refs/heads/{branch}",
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return fallback_remote, branch, fallback_ref
+
+    upstream_ref = result.stdout.strip() if result.returncode == 0 else ""
+    if "/" not in upstream_ref:
+        return fallback_remote, branch, fallback_ref
+
+    remote, remote_branch = upstream_ref.split("/", 1)
+    if not remote or not remote_branch:
+        return fallback_remote, branch, fallback_ref
+    return remote, remote_branch, upstream_ref
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -10373,9 +10411,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
+        update_remote, update_remote_branch, update_ref = _resolve_update_target(
+            git_cmd, PROJECT_ROOT, branch
+        )
+        if update_remote != "origin":
+            fetch_target_result = subprocess.run(
+                git_cmd + ["fetch", update_remote],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if fetch_target_result.returncode != 0:
+                stderr = fetch_target_result.stderr.strip()
+                print(f"✗ Failed to fetch updates from {update_remote}.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+                sys.exit(1)
+
         # Check if there are updates
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{update_ref}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -10439,7 +10494,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["pull", "--ff-only", update_remote, update_remote_branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -10452,17 +10507,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd + ["reset", "--hard", update_ref],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to {update_ref}.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  Try manually: git fetch {update_remote} && git reset --hard {update_ref}"
                     )
                     sys.exit(1)
 

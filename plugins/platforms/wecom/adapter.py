@@ -293,6 +293,9 @@ class WeComAdapter(BasePlatformAdapter):
         """Disconnect from WeCom."""
         self._running = False
         self._mark_disconnected()
+        # Force-close any lingering stream so the WeCom client doesn't show
+        # a permanent typing bubble after the gateway goes down.
+        self._reset_native_stream_state()
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -1538,13 +1541,56 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
+        """Send markdown to a WeCom chat.
+
+        If a native stream is active for this chat (from send_typing or the
+        streaming consumer's seed frame), close it via finish=true so the
+        typing animation is replaced by the final content. Otherwise fall
+        through to proactive ``aibot_send_msg`` or passive reply markdown.
+        """
         del metadata
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
         try:
+            # If we have an active stream for this chat, finalize it with the
+            # content — this closes the typing animation and delivers the text
+            # in the same bubble the user was already watching.
+            # WeCom client ignores invisible finish frames (whitespace-only),
+            # so we always supply at least a visible placeholder when content
+            # is empty — mirrors the official OpenClaw plugin's "📎 文件已发送"
+            # pattern to prevent lingering typing bubbles.
+            if (
+                self._active_stream_id is not None
+                and self._active_stream_chat_id == chat_id.strip()
+            ):
+                finish_content = content.strip() if content else ""
+                if not finish_content:
+                    finish_content = "✅"  # minimal visible char to close typing
+                try:
+                    await self._send_stream_reply(
+                        self._active_stream_req_id,
+                        self._active_stream_id,
+                        finish_content,
+                        finish=True,
+                    )
+                    self._reset_native_stream_state()
+                    return SendResult(
+                        success=True,
+                        message_id=self._active_stream_id or uuid.uuid4().hex[:12],
+                    )
+                except WeComStreamExpiredError:
+                    # Stream is dead — fall through to proactive markdown send
+                    self._stream_expired_chats.add(chat_id.strip())
+                    self._reset_native_stream_state()
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Stream finalize in send() failed, falling through: %s",
+                        self.name, exc,
+                    )
+                    self._reset_native_stream_state()
+
             reply_req_id = self._reply_req_id_for_message(reply_to)
 
             if not reply_req_id and chat_id in self._last_chat_req_ids:

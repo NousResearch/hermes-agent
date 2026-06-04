@@ -67,6 +67,25 @@ hermes doctor       # 诊断问题
 
 ---
 
+## 中文界面
+
+Hermes 对**静态系统文案**提供简体中文与繁体中文支持（审批提示、部分网关固定回复、Web 管理面板 UI）。Agent 生成的回复、日志、工具输出和斜杠命令说明**不会**自动翻译；若希望对话使用中文，请在提示词或 `SOUL.md` 中说明。
+
+**CLI / 网关静态消息** — 写入 `~/.hermes/config.yaml`：
+
+```yaml
+display:
+  language: zh        # 简体中文；繁体请用 zh-hant
+```
+
+也可按会话覆盖：`HERMES_LANGUAGE=zh hermes gateway`
+
+**Web 管理面板**（`hermes dashboard`）— 在侧栏语言切换器中选择「简体中文」或「繁體中文」（与 `display.language` 独立，保存在浏览器本地）。
+
+配置项说明见 [配置文档（中文）](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)。
+
+---
+
 ## 省去到处收集 API Key — Nous Portal
 
 Hermes 始终允许你使用任意服务商，这点不会改变。但如果你不想为模型、网页搜索、图像生成、TTS、云浏览器分别去申请五个不同的 API Key，**[Nous Portal](https://portal.nousresearch.com)** 用一个订阅就能覆盖全部：

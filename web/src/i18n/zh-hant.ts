@@ -43,6 +43,9 @@ export const zhHant: Translations = {
     expand: "展開",
     general: "一般",
     messaging: "訊息平台",
+    gateway: "閘道",
+    gatewayHint:
+      "訊息平台、API 伺服器與 Webhook 在「頻道」頁面設定。此處為閘道層級設定（代理/中繼模式以及全域允許清單）。",
     pluginLoadFailed:
       "無法載入此外掛的指令碼。請檢查網路請求（dashboard-plugins/…）以及伺服器上的外掛路徑。",
     pluginNotRegistered:
@@ -308,6 +311,38 @@ export const zhHant: Translations = {
     created: "已建立",
     deleted: "已刪除",
     renamed: "已重新命名",
+    activeProfile: "目前設定檔",
+    activeBadge: "目前",
+    setActive: "設為目前",
+    activeSet: "已設為目前設定檔",
+    gatewayRunning: "閘道執行中",
+    gatewayStopped: "閘道已停止",
+    gatewayRunningWarning:
+      "此設定檔的閘道正在執行 — 它將被停止。",
+    aliasBadge: "別名",
+    description: "描述",
+    descriptionPlaceholder:
+      "此設定檔擅長什麼？用於依角色將看板任務路由給它。",
+    noDescription: "無描述",
+    editDescription: "編輯描述",
+    descriptionSaved: "描述已儲存",
+    reviewBadge: "審核",
+    autoGenerate: "自動產生",
+    generating: "產生中…",
+    describeFailed: "無法產生描述",
+    distribution: "分發",
+    advancedOptions: "進階選項",
+    cloneAll: "複製全部（記憶、工作階段、技能、狀態）",
+    noSkillsOption: "不預載內建技能",
+    descriptionOptional: "描述（選填）",
+    modelOptional: "模型（選填）",
+    modelInherit: "繼承自複製來源 / 預設",
+    modelLoading: "正在載入模型…",
+    modelNone: "沒有已驗證的提供方 — 請先設定金鑰",
+    editModel: "變更模型",
+    modelSaved: "模型已更新",
+    modelSelect: "選擇模型",
+    actions: "操作",
   },
 
   pluginsPage: {
@@ -627,6 +662,9 @@ export const zhHant: Translations = {
     createTask: "在此欄建立任務",
     noTasks: "— 沒有任務 —",
     unassigned: "未指派",
+    needsAssignee: "需指定負責人",
+    needsAssigneeHint:
+      "相依項目已滿足，但排程器會跳過此任務，直到你為其指派一個設定檔。",
     untitled: "（無標題）",
     loadingDetail: "載入中…",
     addComment: "新增留言…（按 Enter 送出）",
@@ -731,6 +769,8 @@ export const zhHant: Translations = {
       "封存此任務？它將從預設看板檢視中消失。",
     confirmBlocked:
       "將此任務標記為已封鎖？工作者的領取將被釋放。",
+    confirmScheduled:
+      "將此任務移到「已排程」？請在已知時間延遲（而非人工封鎖）時使用。",
     completionSummary:
       "{label} 的完成摘要。這將作為任務結果儲存。",
     completionSummaryRequired:

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { mergeSessionPage, sessionPinId } from './session'
+import { $attentionSessionIds, mergeSessionPage, sessionPinId, setSessionAttention } from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -21,6 +21,34 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...over
+})
+
+describe('setSessionAttention', () => {
+  it('adds and removes a session id without duplicating it', () => {
+    $attentionSessionIds.set([])
+
+    setSessionAttention('s1', true)
+    setSessionAttention('s1', true)
+    expect($attentionSessionIds.get()).toEqual(['s1'])
+
+    setSessionAttention('s2', true)
+    expect($attentionSessionIds.get()).toEqual(['s1', 's2'])
+
+    setSessionAttention('s1', false)
+    expect($attentionSessionIds.get()).toEqual(['s2'])
+
+    $attentionSessionIds.set([])
+  })
+
+  it('ignores empty ids and no-op clears', () => {
+    $attentionSessionIds.set([])
+
+    setSessionAttention(null, true)
+    setSessionAttention(undefined, true)
+    setSessionAttention('', true)
+    setSessionAttention('missing', false)
+    expect($attentionSessionIds.get()).toEqual([])
+  })
 })
 
 describe('sessionPinId', () => {

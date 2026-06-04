@@ -11,15 +11,15 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { listOAuthProviders } from '@/hermes'
-import { ChevronDown, ExternalLink, KeyRound, Loader2, Save, Sparkles, Trash2 } from '@/lib/icons'
+import { ChevronDown, ExternalLink, Loader2, Save, Sparkles, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
-import { includesQuery, providerGroup, providerMeta, providerPriority } from './helpers'
+import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
-import type { EnvRowProps, SearchProps } from './types'
+import type { EnvRowProps } from './types'
 
 // Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
 export const PROVIDER_VIEWS = ['accounts', 'keys'] as const
@@ -83,11 +83,6 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
 
   return groups.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
 }
-
-const groupMatchesQuery = (group: ProviderKeyGroup, q: string) =>
-  group.name.toLowerCase().includes(q) ||
-  includesQuery(group.description, q) ||
-  [group.primary, ...group.advanced].some(([k, i]) => k.toLowerCase().includes(q) || includesQuery(i.description, q))
 
 // A single inline credential field: an always-visible input (Cursor-style)
 // that shows the redacted current value as its placeholder so a set key reads
@@ -233,15 +228,7 @@ function ProviderKeyCard({
 // Selecting a provider hands off to the shared onboarding overlay, which runs
 // that provider's real sign-in flow; the key affordances open the API-key
 // catalog below.
-function OAuthPicker({
-  onWantApiKey,
-  providers,
-  query
-}: {
-  onWantApiKey: () => void
-  providers: OAuthProvider[]
-  query: string
-}) {
+function OAuthPicker({ onWantApiKey, providers }: { onWantApiKey: () => void; providers: OAuthProvider[] }) {
   const [showAll, setShowAll] = useState(false)
   const ordered = useMemo(() => sortProviders(providers), [providers])
 
@@ -250,28 +237,6 @@ function OAuthPicker({
   }
 
   const select = (p: OAuthProvider) => startManualProviderOAuth(p.id)
-  const q = query.trim().toLowerCase()
-
-  // While searching, flatten the featured/connected/disclosure structure into a
-  // single matched list so it reads the same as the API-keys grid does.
-  if (q) {
-    const matches = ordered.filter(p => p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
-
-    return (
-      <section className="grid gap-2">
-        <SettingsCategoryHeading
-          count={`${matches.length} match${matches.length === 1 ? '' : 'es'}`}
-          icon={Sparkles}
-          title="Accounts"
-        />
-        {matches.length === 0 ? (
-          <EmptyMatches query={query} />
-        ) : (
-          matches.map(p => <ProviderRow key={p.id} onSelect={select} provider={p} />)
-        )}
-      </section>
-    )
-  }
 
   const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
@@ -331,15 +296,15 @@ function OAuthPicker({
   )
 }
 
-function EmptyMatches({ query }: { query: string }) {
+function NoProviderKeys() {
   return (
     <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-      No providers match “{query.trim()}”.
+      No provider API keys available.
     </div>
   )
 }
 
-export function ProvidersSettings({ onViewChange, query, view }: ProvidersSettingsProps) {
+export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   // Single-open accordion for the per-provider "advanced options" panels.
@@ -376,34 +341,21 @@ export function ProvidersSettings({ onViewChange, query, view }: ProvidersSettin
     return <LoadingState label="Loading providers..." />
   }
 
-  const q = query.trim().toLowerCase()
   const hasOauth = oauthProviders.length > 0
   // The sidebar subnav owns the Accounts/API-keys split now; with no OAuth
   // providers there's nothing for the "Accounts" view to show, so fall to keys.
   const showApiKeys = view === 'keys' || !hasOauth
 
-  // Search stays inside the active sub-view and uses its native format — the
-  // OAuth picker filters its rows, the key list filters its provider cards —
-  // so results never drop back to a different-looking layout. While searching,
-  // every match is expanded so a hit on an advanced var (e.g. base URL) shows.
   const keyGroups = buildProviderKeyGroups(vars)
-  const visibleGroups = q ? keyGroups.filter(g => groupMatchesQuery(g, q)) : keyGroups
 
   if (showApiKeys) {
     return (
       <SettingsContent>
-        {q && (
-          <SettingsCategoryHeading
-            count={`${visibleGroups.length} match${visibleGroups.length === 1 ? '' : 'es'}`}
-            icon={KeyRound}
-            title="API keys"
-          />
-        )}
-        {visibleGroups.length > 0 ? (
+        {keyGroups.length > 0 ? (
           <div className="grid gap-2">
-            {visibleGroups.map(group => (
+            {keyGroups.map(group => (
               <ProviderKeyCard
-                expanded={Boolean(q) || openProvider === group.name}
+                expanded={openProvider === group.name}
                 group={group}
                 key={group.name}
                 onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
@@ -412,7 +364,7 @@ export function ProvidersSettings({ onViewChange, query, view }: ProvidersSettin
             ))}
           </div>
         ) : (
-          <EmptyMatches query={query} />
+          <NoProviderKeys />
         )}
       </SettingsContent>
     )
@@ -420,7 +372,7 @@ export function ProvidersSettings({ onViewChange, query, view }: ProvidersSettin
 
   return (
     <SettingsContent>
-      <OAuthPicker onWantApiKey={() => onViewChange('keys')} providers={oauthProviders} query={query} />
+      <OAuthPicker onWantApiKey={() => onViewChange('keys')} providers={oauthProviders} />
     </SettingsContent>
   )
 }
@@ -437,7 +389,7 @@ interface ProviderKeyGroup {
   priority: number
 }
 
-interface ProvidersSettingsProps extends SearchProps {
+interface ProvidersSettingsProps {
   onViewChange: (view: ProviderView) => void
   view: ProviderView
 }

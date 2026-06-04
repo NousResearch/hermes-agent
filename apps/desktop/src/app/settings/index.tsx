@@ -1,5 +1,5 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
-import { useEffect, useRef, useState } from 'react'
+import { useRef } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
@@ -8,20 +8,19 @@ import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
-import { OverlaySearchInput } from '../overlays/overlay-search-input'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
-import { SEARCH_PLACEHOLDER, SECTIONS } from './constants'
+import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeysSettings } from './keys-settings'
 import { McpSettings } from './mcp-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
-import type { SettingsPageProps, SettingsQueryKey, SettingsView as SettingsViewId } from './types'
+import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
@@ -44,22 +43,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
     setProviderView(view)
   }
 
-  const [queries, setQueries] = useState<Record<SettingsQueryKey, string>>({
-    about: '',
-    config: '',
-    gateway: '',
-    keys: '',
-    mcp: '',
-    providers: '',
-    sessions: ''
-  })
-
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
-
-  const queryKey: SettingsQueryKey = activeView.startsWith('config:') ? 'config' : (activeView as SettingsQueryKey)
-  const query = queries[queryKey]
-  const setQuery = (next: string) => setQueries(c => ({ ...c, [queryKey]: next }))
 
   const exportConfig = async () => {
     try {
@@ -91,40 +75,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
     }
   }
 
-  // OverlayView handles Esc; this just adds Cmd/Ctrl+P → focus search.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
-        e.preventDefault()
-        searchInputRef.current?.focus()
-        searchInputRef.current?.select()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
   return (
-    <OverlayView
-      closeLabel="Close settings"
-      headerContent={
-        <OverlaySearchInput
-          containerClassName="w-[min(32rem,calc(100vw-34rem))] min-w-72"
-          inputRef={searchInputRef}
-          onChange={setQuery}
-          placeholder={SEARCH_PLACEHOLDER[queryKey]}
-          value={query}
-        />
-      }
-      // The split layout has a 13rem sidebar; nudge the search bar right by
-      // half that so it reads as centered over the content column rather
-      // than the whole panel. Reverts to true-center once the sidebar
-      // collapses at the layout's narrow breakpoint.
-      headerContentClassName="left-[calc(50%+6.5rem)] max-[47.5rem]:left-1/2"
-      onClose={onClose}
-    >
+    <OverlayView closeLabel="Close settings" onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(s => {
@@ -132,7 +84,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
 
             return (
               <OverlayNavItem
-                active={activeView === view && !queries.config.trim()}
+                active={activeView === view}
                 icon={s.icon}
                 key={s.id}
                 label={s.label}
@@ -222,7 +174,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           </div>
         </OverlaySidebar>
 
-        <OverlayMain className="p-0">
+        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
           {activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
@@ -235,16 +187,15 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
               importInputRef={importInputRef}
               onConfigSaved={onConfigSaved}
               onMainModelChanged={onMainModelChanged}
-              query={queries.config}
             />
           ) : activeView === 'providers' ? (
-            <ProvidersSettings onViewChange={setProviderView} query={queries.providers} view={providerView} />
+            <ProvidersSettings onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
-            <KeysSettings query={queries.keys} />
+            <KeysSettings />
           ) : activeView === 'mcp' ? (
-            <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} query={queries.mcp} />
+            <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
           ) : (
-            <SessionsSettings query={queries.sessions} />
+            <SessionsSettings />
           )}
         </OverlayMain>
       </OverlaySplitLayout>

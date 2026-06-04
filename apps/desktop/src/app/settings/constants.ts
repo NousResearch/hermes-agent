@@ -34,7 +34,7 @@ interface ProviderPrefix {
 }
 
 export const EMPTY_SELECT_VALUE = '__hermes_empty__'
-export const CONTROL_TEXT = 'text-[0.8125rem]'
+export const CONTROL_TEXT = 'text-xs'
 
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
   {
@@ -457,25 +457,11 @@ export const SECTIONS: DesktopConfigSection[] = [
 export interface ModeOption {
   id: ThemeMode
   label: string
-  description: string
   icon: IconComponent
 }
 
 export const MODE_OPTIONS: ModeOption[] = [
-  { id: 'light', label: 'Light', description: 'Bright desktop surfaces', icon: Sun },
-  { id: 'dark', label: 'Dark', description: 'Low-glare workspace', icon: Moon },
-  { id: 'system', label: 'System', description: 'Follow OS appearance', icon: Monitor }
+  { id: 'light', label: 'Light', icon: Sun },
+  { id: 'dark', label: 'Dark', icon: Moon },
+  { id: 'system', label: 'System', icon: Monitor }
 ]
-
-export const SEARCH_PLACEHOLDER: Record<
-  'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'providers' | 'sessions',
-  string
-> = {
-  about: 'About Hermes Desktop',
-  config: 'Search settings...',
-  gateway: 'Gateway connection...',
-  keys: 'Search tools & integrations...',
-  mcp: 'Search MCP servers...',
-  providers: 'Search providers...',
-  sessions: 'Search archived sessions...'
-}

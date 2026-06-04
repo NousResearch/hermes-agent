@@ -1,13 +1,12 @@
 import { useMemo, useState } from 'react'
 
-import { type IconComponent, Settings2, Wrench } from '@/lib/icons'
+import { Settings2, Wrench } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
 
-import { EnvVarRow, SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
-import { asText, includesQuery } from './helpers'
+import { EnvVarRow, useEnvCredentials } from './env-credentials'
+import { asText } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
-import type { SearchProps } from './types'
 
 // Providers live on their own page; messaging-platform credentials live on the
 // dedicated Messaging page (and are hidden here via `channel_managed`). This
@@ -41,10 +40,6 @@ function tabForCategory(category: string): KeyCategoryId | null {
   }
 
   return null
-}
-
-function matchesQuery(info: EnvVarInfo, key: string, q: string): boolean {
-  return !q || key.toLowerCase().includes(q) || includesQuery(info.description, q)
 }
 
 function CategoryTabs({
@@ -93,7 +88,7 @@ function CategoryTabs({
   )
 }
 
-export function KeysSettings({ query }: SearchProps) {
+export function KeysSettings() {
   const { rowProps, vars } = useEnvCredentials()
   const [activeCategory, setActiveCategory] = useState<KeyCategoryId>('tool')
 
@@ -102,25 +97,19 @@ export function KeysSettings({ query }: SearchProps) {
       return []
     }
 
-    const q = query.trim().toLowerCase()
-
     return KEY_TABS.map(t => t.id).flatMap(tab => {
       const cats = TAB_CATEGORIES[tab]
 
       const entries = Object.entries(vars)
-        .filter(
-          ([key, info]) =>
-            !info.channel_managed && cats.includes(asText(info.category)) && matchesQuery(info, key, q)
-        )
+        .filter(([, info]) => !info.channel_managed && cats.includes(asText(info.category)))
         .sort(([a], [b]) => a.localeCompare(b))
 
       return entries.length === 0 ? [] : [{ category: tab, label: CATEGORY_LABELS[tab], entries }]
     })
-  }, [query, vars])
+  }, [vars])
 
-  // Tab badge counts reflect how many keys are set per tab, independent of the
-  // current search query. Channel-managed credentials are owned by the
-  // Messaging page and excluded here.
+  // Tab badge counts reflect how many keys are set per tab. Channel-managed
+  // credentials are owned by the Messaging page and excluded here.
   const categoryCounts = useMemo<Record<KeyCategoryId, number>>(() => {
     const counts: Record<KeyCategoryId, number> = { setting: 0, tool: 0 }
 
@@ -147,23 +136,14 @@ export function KeysSettings({ query }: SearchProps) {
     return <LoadingState label="Loading API keys and credentials..." />
   }
 
-  const isSearching = query.trim().length > 0
-  const visible = groups.filter(g => isSearching || g.category === activeCategory)
-  const tabIcon = (cat: KeyCategoryId): IconComponent => KEY_TABS.find(t => t.id === cat)?.icon ?? Settings2
+  const visible = groups.filter(g => g.category === activeCategory)
 
   return (
     <SettingsContent>
-      {!isSearching && <CategoryTabs active={activeCategory} counts={categoryCounts} onSelect={setActiveCategory} />}
+      <CategoryTabs active={activeCategory} counts={categoryCounts} onSelect={setActiveCategory} />
 
       {visible.map(group => (
         <section className="mb-6" key={group.category}>
-          {isSearching && (
-            <SettingsCategoryHeading
-              count={`${group.entries.filter(([, i]) => i.is_set).length} of ${group.entries.length} set`}
-              icon={tabIcon(group.category)}
-              title={group.label}
-            />
-          )}
           <div className="grid gap-2">
             {group.entries.map(([key, info]: [string, EnvVarInfo]) => (
               <EnvVarRow info={info} key={key} varKey={key} {...rowProps} />
@@ -174,7 +154,7 @@ export function KeysSettings({ query }: SearchProps) {
 
       {visible.length === 0 && (
         <div className="rounded-lg border border-dashed border-(--ui-stroke-tertiary) px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
-          {isSearching ? `No keys match “${query.trim()}”.` : 'Nothing configured in this category yet.'}
+          Nothing configured in this category yet.
         </div>
       )}
     </SettingsContent>

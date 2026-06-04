@@ -8,7 +8,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 本页记录 Hermes 的内置工具，按工具集分组。可用性因平台、凭据和已启用的工具集而异。
 
-**当前注册表快速统计：** 约 70 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、10 个 RL 工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、7 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`mixture_of_agents`、`send_message`、`todo`、`computer_use`、`process`）。
+**当前注册表快速统计：** 约 70 个工具 —— 10 个浏览器工具（核心）+ 2 个 CDP 门控浏览器工具、4 个文件工具、10 个 RL 工具、4 个 Home Assistant 工具、2 个终端工具、2 个 Web 工具、5 个 Feishu 工具、7 个 Spotify 工具（由内置 `spotify` 插件注册）、5 个 Yuanbao 工具、7 个 kanban 工具（在 kanban 调度器生成 agent 时注册）、2 个 Discord 工具，以及若干独立工具（`memory`、`clarify`、`delegate_task`、`execute_code`、`cronjob`、`session_search`、`skill_view`/`skill_manage`/`skills_list`、`text_to_speech`、`image_generate`、`video_generate`、`vision_analyze`、`video_analyze`、`mixture_of_agents`、`send_message`、`todo`、`computer_use`、`process`）。如果你的 profile 使用更高层的 dispatcher wrapper，它位于这一层工具之上，应参阅单独的 orchestration 文档。
 
 :::tip MCP 工具
 除内置工具外，Hermes 还可从 MCP 服务器动态加载工具。MCP 工具以 `mcp_<server>_` 为前缀（例如，`github` MCP 服务器的 `mcp_github_create_issue`）。配置方法见 [MCP 集成](/user-guide/features/mcp)。
@@ -60,7 +60,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
-| `delegate_task` | 生成一个或多个子 agent，在隔离上下文中处理任务。每个子 agent 拥有独立的对话、终端会话和工具集。仅返回最终摘要——中间工具结果不会进入你的上下文窗口。两种… | — |
+| `delegate_task` | 生成一个或多个子 agent，在隔离上下文中处理任务。每个子 agent 拥有独立的对话、终端会话和工具集。仅返回最终摘要——中间工具结果不会进入你的上下文窗口。两种… 将它视为底层 delegation primitive；生产型 dispatcher profile 往往会在其上包一层稳定的角色路由，并附加完整的 context packet / verification 规则。 | — |
 
 ## `feishu_doc` 工具集
 
@@ -117,7 +117,7 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `kanban` 工具集
 
-在以下情况下注册：(a) agent 由 kanban 调度器生成（设置了 `HERMES_KANBAN_TASK` 环境变量），或 (b) 在显式启用 `kanban` 工具集的 profile 中运行。任务范围的 worker 使用生命周期工具处理其分配的任务；编排器 profile 还额外获得 `kanban_list` 和 `kanban_unblock` 等看板路由工具。完整工作流见 [Kanban 多 Agent](/user-guide/features/kanban)。
+在以下情况下注册：(a) agent 由 kanban 调度器生成（设置了 `HERMES_KANBAN_TASK` 环境变量），或 (b) 在显式启用 `kanban` 工具集的 profile 中运行。任务范围的 worker 使用生命周期工具处理其分配的任务；编排器 profile 还额外获得 `kanban_list` 和 `kanban_unblock` 等看板路由工具。在面向 dispatcher 的栈中，这些 lane 通常位于稳定的 routing contract 与 verification gate 之后。完整工作流见 [Kanban 多 Agent](/user-guide/features/kanban)。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|

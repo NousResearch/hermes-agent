@@ -8,6 +8,8 @@ description: "使用 delegate_task 为并行工作流生成隔离的子智能体
 
 `delegate_task` 工具会生成具有隔离上下文、受限工具集和独立终端会话的子 AIAgent 实例。每个子智能体获得全新的对话并独立运行——只有其最终摘要会进入父智能体的上下文。
 
+在 production dispatcher 体系中，`delegate_task` 更适合作为底层 primitive，而不是唯一的操作约定。常见做法是在其上再包一层稳定的角色路由接口（例如 `delegate_role_task(role, goal, context)`），把工作分配给 `architect`、`coder`、`infra`、`logic` 等 specialist roles，同时保持底层生成机制不变。
+
 ## 单任务
 
 ```python

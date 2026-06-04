@@ -646,6 +646,8 @@ Profiles 是构建在 `HERMES_HOME` 之上的托管层。您*可以*在每次命
 
 **解决方案：委托配置。** Hermes 可以自动将子智能体路由到不同的模型。在 `~/.hermes/config.yaml` 中设置：
 
+在 production dispatcher 体系中，这通常作用于底层 delegation substrate（`delegate_task`），即使日常对外暴露的是其上层稳定的角色路由接口。
+
 ```yaml
 delegation:
   model: "google/gemini-3-flash-preview"   # 子智能体使用此模型

@@ -34,6 +34,8 @@ hermes profile create mybot
 
 如果你计划将此 profile 用作 kanban（看板）工作节点（或希望 kanban 编排器将任务路由到它），在创建时传入 `--description "<角色>"` 以便编排器了解其能力：
 
+在 dispatcher 风格体系中，这些描述应尽量简洁且角色化。它们会成为构建稳定 specialist lanes 的路由提示，而不是临时性的 delegation target。
+
 ```bash
 hermes profile create researcher --description "Reads source code and external docs, writes findings."
 ```

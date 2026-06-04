@@ -16,6 +16,8 @@ dashboard 是**你**观察系统最便捷的地方。dispatcher 生成的 agent 
 
 在本教程中，**标注为 `bash` 的代码块是*你*运行的命令。** 标注为 `# worker tool calls` 的代码块是生成的 worker 模型发出的工具调用——展示在这里是为了让你能端到端地了解整个循环，而不是让你自己去运行它们。
 
+如果你把 Kanban 作为 dispatcher 风格编排栈的一部分来运行，可以把下面这些故事视为同一套操作 doctrine 的具体示例：先 triage，再组装完整的 context packet，再路由到正确的 specialist lane，完成前必须经过 verification，然后同步文档并沉淀可复用经验。调试类故事遵循 investigate before fix；基础设施类故事以 health check 和 rollback note 收尾。
+
 ## 看板概览
 
 ![Kanban board overview](/img/kanban-tutorial/01-board-overview.png)
@@ -142,7 +144,7 @@ hermes gateway start
 
 ## 场景三 — 角色流水线与重试
 
-这正是 Kanban 相比普通 TODO 列表的价值所在。PM 编写规格说明，工程师实现，审查者拒绝第一次尝试，工程师修改后再次尝试，审查者批准。
+这正是 Kanban 相比普通 TODO 列表的价值所在。在 dispatcher 风格的体系中，这种模式通常会映射到稳定角色，例如 `architect` → `coder` → reviewer（或根据任务映射到 `logic` / `infra`）。PM 编写规格说明，工程师实现，审查者拒绝第一次尝试，工程师修改后再次尝试，审查者批准。
 
 dashboard 视图，按 `auth-project` 筛选：
 
@@ -225,6 +227,8 @@ kanban_complete(
 
 父任务链接指向已完成的实现任务。当审查者的 worker 在 `Review password reset PR` 上生成并调用 `kanban_show()` 时，返回的 `worker_context` 包含父任务最近一次已完成 run 的 summary 和 metadata——因此审查者在查看 diff 之前就已读到"added zxcvbn strength check, reset tokens are now single-use"，并掌握了变更文件列表。
 
+这里的 doctrine 要点是：reviewer 扮演的是 verification gate，而不只是另一个 worker。在 dispatcher 风格编排里，不能因为实现完成就把任务标记为 done——收尾产物必须能证明 acceptance criteria 真的被满足。
+
 ## 场景四 — 熔断器与崩溃恢复
 
 真实的 worker 会失败。缺少凭证、OOM 终止、瞬时网络错误。dispatcher 有两道防线：**熔断器**（circuit breaker）在连续 N 次失败后自动阻塞任务，防止看板无限抖动；**崩溃检测**（crash detection）在 worker PID 于 TTL 到期前消失时回收任务。
@@ -240,6 +244,8 @@ hermes kanban create "Deploy to staging (missing creds)" \
 ```
 
 dispatcher 尝试生成 worker。生成失败（`RuntimeError: AWS_ACCESS_KEY_ID not set`）。dispatcher 释放认领，递增失败计数器，并在下一次 tick 重试。由于本示例设置了 `--max-retries 3`，在三次连续失败后熔断器触发：任务进入 `blocked` 状态，outcome 为 `gave_up`。如果省略该标志，Hermes 使用 `kanban.failure_limit`（默认值：2）。在人工解除阻塞之前不再重试。
+
+对于这种 infra 类卡片，人工/运维的后续动作不应停留在“凭据修好了”。标准收尾应该是：先 investigate 失败原因，再重试任务，执行变更后的 health check，并在 handoff 或评论里记录 rollback note。
 
 点击被阻塞的任务：
 

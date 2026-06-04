@@ -156,9 +156,11 @@ for each tool_call in response.tool_calls:
 | `todo` | 读写 agent 本地任务状态 |
 | `memory` | 向持久化内存文件写入内容（有字符限制） |
 | `session_search` | 通过 agent 的 session DB 查询 session 历史 |
-| `delegate_task` | 以隔离上下文生成子 agent |
+| `delegate_task` | 以隔离上下文生成子 agent（低层 delegation primitive；生产 dispatcher 通常在其上包稳定的角色路由层） |
 
 这些工具直接修改 agent 状态，并返回合成的工具结果，不经过注册表。
+
+在更高层的 orchestration docs 中，通常应把 `delegate_task` 视为底层 primitive，而不是唯一推荐的生产模式。Dispatcher 风格的 profile 往往会在其上再包稳定的角色路由层，并要求完整的 context packet 与显式 verification gate。
 
 ## 回调接口
 

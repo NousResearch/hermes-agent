@@ -9,6 +9,7 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
+import os
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -243,33 +244,73 @@ class TestExtractCacheBustingConfig:
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
 
+    def test_reads_auxiliary_compression_subkeys(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {
+                "auxiliary": {
+                    "compression": {
+                        "provider": "summary-provider",
+                        "model": "summary-model",
+                        "base_url": "https://summary.example/v1",
+                        "api_mode": "chat_completions",
+                        "context_length": 272_000,
+                        "fallback_chain": [
+                            {
+                                "provider": "fallback-provider",
+                                "model": "fallback-model",
+                                "api_key": "not-retained-in-cache-metadata",
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+        assert out["auxiliary.compression.provider"] == "summary-provider"
+        assert out["auxiliary.compression.model"] == "summary-model"
+        assert out["auxiliary.compression.base_url"] == "https://summary.example/v1"
+        assert out["auxiliary.compression.api_mode"] == "chat_completions"
+        assert out["auxiliary.compression.context_length"] == 272_000
+        fingerprint = out["auxiliary.compression.fallback_chain"]
+        assert isinstance(fingerprint, str)
+        assert "not-retained-in-cache-metadata" not in fingerprint
+        assert len(fingerprint) == 64
+
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config({})
         # Every documented cache-busting key must be present, even if None
-        for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
-            assert f"{section}.{key}" in out
-            assert out[f"{section}.{key}"] is None
+        for path in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
+            key = ".".join(path)
+            assert key in out
+            assert out[key] is None
 
     def test_non_dict_section_treated_as_missing(self):
         from gateway.run import GatewayRunner
 
         # compression is a string — should not crash, all compression.* keys None
         out = GatewayRunner._extract_cache_busting_config(
-            {"compression": "broken", "model": {"context_length": 100_000}}
+            {
+                "compression": "broken",
+                "model": {"context_length": 100_000},
+                "auxiliary": {"compression": "broken"},
+            }
         )
         assert out["compression.enabled"] is None
         assert out["compression.threshold"] is None
         assert out["model.context_length"] == 100_000
+        assert out["auxiliary.compression.provider"] is None
+        assert out["auxiliary.compression.model"] is None
 
     def test_none_config_is_safe(self):
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config(None)
-        for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
-            assert out[f"{section}.{key}"] is None
+        for path in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
+            assert out[".".join(path)] is None
         assert "tools.registry_generation" in out
 
     def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
@@ -381,7 +422,12 @@ class TestExtractCacheBustingConfig:
         assert first["honcho.user_peer_aliases"] == [("123", "eri")]
         assert parse_calls == [config_path]
 
+        before_stat = config_path.stat()
         config_path.write_text("{\n  \"changed\": true\n}")
+        os.utime(
+            config_path,
+            ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns + 1_000_000_000),
+        )
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first
@@ -413,6 +459,70 @@ class TestExtractCacheBustingConfig:
         assert sig_before != sig_after, (
             "Editing compression.threshold in config.yaml must bust the "
             "gateway's cached agent so the new threshold takes effect."
+        )
+
+    def test_full_round_trip_busts_cache_on_auxiliary_compression_edit(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        cfg_before = {
+            "auxiliary": {
+                "compression": {"provider": "provider-a", "model": "summary-model-a"}
+            }
+        }
+        cfg_after = {
+            "auxiliary": {
+                "compression": {"provider": "provider-b", "model": "summary-model-b"}
+            }
+        }
+
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_before),
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_after),
+        )
+        assert sig_before != sig_after, (
+            "Editing auxiliary.compression.model/provider must bust the "
+            "gateway's cached agent so the new compression model takes effect."
+        )
+
+    def test_full_round_trip_busts_cache_on_auxiliary_fallback_chain_edit(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        cfg_before = {
+            "auxiliary": {
+                "compression": {
+                    "fallback_chain": [
+                        {"provider": "provider-a", "model": "summary-model-a"}
+                    ]
+                }
+            }
+        }
+        cfg_after = {
+            "auxiliary": {
+                "compression": {
+                    "fallback_chain": [
+                        {"provider": "provider-b", "model": "summary-model-b"}
+                    ]
+                }
+            }
+        }
+
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_before),
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_after),
+        )
+        assert sig_before != sig_after, (
+            "Editing auxiliary.compression.fallback_chain must bust the "
+            "gateway's cached agent so compression preflight is rebuilt."
         )
 
 

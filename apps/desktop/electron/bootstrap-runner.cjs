@@ -450,14 +450,25 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
   })
 
   const durationMs = Date.now() - startedAt
+  const json = parseStageResult(result.stdout)
 
   if (result.killed) {
-    const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: 'cancelled by user' }
+    // Quit/repair can SIGTERM the child after install.sh already emitted
+    // { ok: true } for this stage — don't mislabel that as a user cancel.
+    if (json?.ok) {
+      const ev = { type: 'stage', name: stage.name, state: 'succeeded', durationMs, json }
+      emit(ev)
+      return ev
+    }
+
+    const tail = (result.stderr || result.stdout || '').trim().split(/\r?\n/).slice(-4).join('\n')
+    const err = tail
+      ? `bootstrap stage interrupted (${result.signal || 'SIGTERM'}): ${tail}`
+      : 'cancelled by user'
+    const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: err }
     emit(ev)
     return ev
   }
-
-  const json = parseStageResult(result.stdout)
 
   if (!json) {
     const ev = {

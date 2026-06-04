@@ -2910,6 +2910,174 @@ async def get_mission_control_active_envelope():
     }
 
 
+def _read_json_records(directory: Path, pattern: str) -> list[dict[str, Any]]:
+    if not directory.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in sorted(directory.glob(pattern)):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            records.append(data)
+    return records
+
+
+def _first_text(value: Any, fallback: str) -> str:
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text or fallback
+
+
+def _safe_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
+def _token_estimates(envelope: dict[str, Any] | None, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    metadata = envelope.get("metadata") if isinstance(envelope, dict) else {}
+    budget = {}
+    if isinstance(metadata, dict):
+        budget = (
+            metadata.get("context_budget")
+            or metadata.get("token_context_budget")
+            or metadata.get("token_budget")
+        )
+    if not isinstance(budget, dict):
+        budget = {}
+    estimated_input = budget.get("estimated_input_tokens", budget.get("input_estimate"))
+    estimated_output = budget.get("estimated_output_tokens", budget.get("output_estimate"))
+    if not isinstance(estimated_input, int):
+        estimated_input = min(12000, 1200 + sum(len(str(card.get("summary") or "")) for card in evidence))
+    if not isinstance(estimated_output, int):
+        estimated_output = 1800
+    return {
+        "estimated_input_tokens": estimated_input,
+        "estimated_output_tokens": estimated_output,
+        "remaining_context_window": _first_text(budget.get("remaining_context_window"), "unknown"),
+        "show_token_estimates": True,
+        "conservation_behavior": "summary_first_details_on_demand_no_transcript_load",
+    }
+
+
+def _active_lane_dashboard_payload() -> dict[str, Any]:
+    from hermes_cli.mission_control_approval_slices import state_dir as approval_slice_state_dir
+    from hermes_cli.mission_control_evidence_cards import state_dir as evidence_card_state_dir
+    from hermes_cli.mission_control_task_control_envelopes import state_dir as envelope_state_dir
+
+    envelopes = [
+        record
+        for record in _read_json_records(envelope_state_dir(), "envelope_*.json")
+        if record.get("status") == "active"
+    ]
+    envelopes.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    envelope = envelopes[0] if envelopes else None
+    lane_lock = envelope.get("lane_lock") if isinstance(envelope, dict) and isinstance(envelope.get("lane_lock"), dict) else {}
+    repo_context = envelope.get("repo_context") if isinstance(envelope, dict) and isinstance(envelope.get("repo_context"), dict) else {}
+    metadata = envelope.get("metadata") if isinstance(envelope, dict) and isinstance(envelope.get("metadata"), dict) else {}
+
+    slices = [
+        record
+        for record in _read_json_records(approval_slice_state_dir(), "slice_*.json")
+        if record.get("status") == "active"
+    ]
+    slices.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    latest_slice = slices[0] if slices else None
+
+    evidence_cards = _read_json_records(evidence_card_state_dir(), "card_*.json")
+    evidence_cards.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    evidence_summaries = [
+        {
+            "id": card.get("id"),
+            "kind": card.get("kind"),
+            "title": card.get("title"),
+            "summary": card.get("summary"),
+            "source": card.get("source", ""),
+            "created_at": card.get("created_at"),
+            "trusted_for_execution": False,
+            "inert_context_only": True,
+            "authorizing": False,
+        }
+        for card in evidence_cards[:5]
+    ]
+
+    allowed_actions = _safe_string_list((envelope or {}).get("allowed_actions"))
+    forbidden_actions = _safe_string_list((envelope or {}).get("forbidden_actions"))
+    checkpoint = None
+    checkpoints = _safe_string_list((envelope or {}).get("checkpoints"))
+    if checkpoints:
+        checkpoint = checkpoints[0]
+
+    start_gate_status = _first_text(metadata.get("start_gate_status"), "unknown")
+    next_action = _first_text(
+        metadata.get("next_recommended_action"),
+        "Attach a Task Control Envelope before starting lane work.",
+    )
+    quarantine_warning = _first_text(
+        metadata.get("quarantine_warning"),
+        "No parent scans or quarantined path access are allowed from this dashboard.",
+    )
+
+    return {
+        "mode": "local_read_only",
+        "active_lane": {
+            "label": _first_text(lane_lock.get("active_lane"), "No active lane"),
+            "mode": (envelope or {}).get("mode"),
+            "status": (envelope or {}).get("status", "none"),
+            "source": "persisted_task_control_envelope" if envelope else "no_persisted_envelope",
+        },
+        "task_control_envelope": {
+            "exists": envelope is not None,
+            "id": (envelope or {}).get("id"),
+            "summary": (envelope or {}).get("title"),
+            "mode_label": (envelope or {}).get("mode_label", ""),
+            "checkpoint": checkpoint,
+            "selected_from_count": len(envelopes),
+            "trusted_for_execution": False,
+            "inert_context_only": True,
+        },
+        "approval_tier": {
+            "label": _first_text(metadata.get("approval_tier"), "No approval slice" if not latest_slice else "approval slice active"),
+            "active_slice_count": len(slices),
+            "latest_slice_id": (latest_slice or {}).get("id"),
+            "latest_slice_title": (latest_slice or {}).get("title"),
+        },
+        "allowed_actions": allowed_actions,
+        "forbidden_actions": forbidden_actions,
+        "start_gate": {
+            "status": start_gate_status,
+            "source": _first_text(repo_context.get("source"), "not_probed"),
+            "repo_state": _first_text(repo_context.get("dirty_state"), "unknown"),
+        },
+        "evidence": {
+            "count": len(evidence_cards),
+            "summaries": evidence_summaries,
+            "details_on_demand": True,
+        },
+        "next_recommended_action": next_action,
+        "token_context_budget": _token_estimates(envelope, evidence_cards),
+        "safety": {
+            "quarantine_parent_scan_warning": quarantine_warning,
+            "parent_scan_performed": False,
+            "quarantined_path_accessed": False,
+            "transcript_loaded": False,
+            "execution_controls": False,
+            "runner_integration": False,
+            "tool_interception": False,
+        },
+        "trusted_for_execution": False,
+        "inert_context_only": True,
+    }
+
+
+@app.get("/api/mission-control/lane-dashboard")
+async def get_mission_control_lane_dashboard():
+    return _active_lane_dashboard_payload()
+
+
 @app.get("/api/mission-control/artifacts")
 async def get_mission_control_artifacts(kind: str | None = None, status: str | None = None):
     from hermes_cli.mission_control_artifacts import list_artifacts

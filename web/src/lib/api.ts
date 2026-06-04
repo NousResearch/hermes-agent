@@ -219,6 +219,8 @@ export const api = {
     fetchJSON<MissionBriefDetailResponse>(`/api/mission-control/mission-briefs/${encodeURIComponent(briefId)}`, { cache: "no-store" }),
   getMissionControlActiveEnvelope: () =>
     fetchJSON<MissionControlActiveEnvelopeResponse>("/api/mission-control/active-envelope", { cache: "no-store" }),
+  getMissionControlLaneDashboard: () =>
+    fetchJSON<MissionControlLaneDashboardResponse>("/api/mission-control/lane-dashboard", { cache: "no-store" }),
   listApprovalSlices: () =>
     fetchJSON<ApprovalSlicesResponse>("/api/mission-control/approval-slices?include_inactive=true", { cache: "no-store" }),
   createMissionBrief: (body: MissionBriefCreate) =>
@@ -999,6 +1001,75 @@ export interface MissionControlActiveEnvelopeResponse {
     selected_from_count: number;
     ambiguous: boolean;
     selection_reason: string;
+  };
+  trusted_for_execution: false;
+  inert_context_only: true;
+}
+
+export interface MissionControlLaneEvidenceSummary {
+  id?: string | null;
+  kind?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  source?: string | null;
+  created_at?: string | null;
+  trusted_for_execution: false;
+  inert_context_only: true;
+  authorizing: false;
+}
+
+export interface MissionControlLaneDashboardResponse {
+  mode: "local_read_only";
+  active_lane: {
+    label: string;
+    mode?: string | null;
+    status: string;
+    source: string;
+  };
+  task_control_envelope: {
+    exists: boolean;
+    id?: string | null;
+    summary?: string | null;
+    mode_label?: string | null;
+    checkpoint?: string | null;
+    selected_from_count: number;
+    trusted_for_execution: false;
+    inert_context_only: true;
+  };
+  approval_tier: {
+    label: string;
+    active_slice_count: number;
+    latest_slice_id?: string | null;
+    latest_slice_title?: string | null;
+  };
+  allowed_actions: string[];
+  forbidden_actions: string[];
+  start_gate: {
+    status: string;
+    source: string;
+    repo_state: string;
+  };
+  evidence: {
+    count: number;
+    summaries: MissionControlLaneEvidenceSummary[];
+    details_on_demand: boolean;
+  };
+  next_recommended_action: string;
+  token_context_budget: {
+    estimated_input_tokens: number;
+    estimated_output_tokens: number;
+    remaining_context_window: string;
+    show_token_estimates: true;
+    conservation_behavior: string;
+  };
+  safety: {
+    quarantine_parent_scan_warning: string;
+    parent_scan_performed: false;
+    quarantined_path_accessed: false;
+    transcript_loaded: false;
+    execution_controls: false;
+    runner_integration: false;
+    tool_interception: false;
   };
   trusted_for_execution: false;
   inert_context_only: true;

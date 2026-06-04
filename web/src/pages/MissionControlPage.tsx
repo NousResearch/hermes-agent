@@ -35,6 +35,7 @@ import { ActiveEnvelopePanel } from "@/components/ActiveEnvelopePanel";
 import { ApprovalSlicesPanel } from "@/components/ApprovalSlicesPanel";
 import { ArtifactWorkspaceBrowser } from "@/components/ArtifactWorkspaceBrowser";
 import { MissionBriefsPanel } from "@/components/MissionBriefsPanel";
+import { MissionControlLaneDashboard } from "@/components/MissionControlLaneDashboard";
 import { MissionPacketsPanel } from "@/components/MissionPacketsPanel";
 import { ProjectRoomsPanel } from "@/components/ProjectRoomsPanel";
 import { api } from "@/lib/api";
@@ -1428,6 +1429,7 @@ export default function MissionControlPage() {
         )}
 
         <ActiveEnvelopePanel />
+        <MissionControlLaneDashboard />
         <ApprovalSlicesPanel />
         {missionBriefsEnabled && <MissionBriefsPanel />}
         <ArtifactWorkspaceBrowser />

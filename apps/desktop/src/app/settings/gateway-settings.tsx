@@ -237,7 +237,7 @@ export function GatewaySettings() {
         />
       </div>
 
-      <div className="mt-5 divide-y divide-border/40">
+      <div className="mt-5 grid gap-1">
         <ListRow
           action={
             <Input
@@ -290,7 +290,7 @@ export function GatewaySettings() {
         </Button>
       </div>
 
-      <div className="mt-6 divide-y divide-border/40">
+      <div className="mt-6 grid gap-1">
         <ListRow
           action={
             <Button onClick={() => void window.hermesDesktop?.revealLogs()} variant="outline">

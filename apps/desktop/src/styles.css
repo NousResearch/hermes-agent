@@ -425,6 +425,25 @@
   display: none;
 }
 
+/* Primitive-level pointer cursor for every interactive control (buttons,
+   selects, menu items, switches, tabs, summaries). Keeps individual
+   components from having to hardcode `cursor-pointer`; explicit cursor
+   utilities (cursor-grab, cursor-default, disabled:cursor-*) still win since
+   they live in the utilities layer. */
+@layer base {
+  button:not(:disabled):not([aria-disabled='true']),
+  summary,
+  [role='button']:not([aria-disabled='true']),
+  [role='menuitem']:not([aria-disabled='true']),
+  [role='menuitemradio']:not([aria-disabled='true']),
+  [role='menuitemcheckbox']:not([aria-disabled='true']),
+  [role='option']:not([aria-disabled='true']),
+  [role='switch']:not([aria-disabled='true']),
+  [role='tab']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}
+
 @layer utilities {
   [class*='rounded-full'],
   [class*=':rounded-full'] {

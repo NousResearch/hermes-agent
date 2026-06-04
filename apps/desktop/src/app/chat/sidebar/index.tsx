@@ -430,7 +430,7 @@ export function ChatSidebar({
                     <SidebarMenuButton
                       aria-disabled={!isInteractive}
                       className={cn(
-                        'flex h-7 w-full cursor-pointer justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
                         active &&
                           'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
                         !isInteractive &&
@@ -472,7 +472,7 @@ export function ChatSidebar({
               {searchQuery && (
                 <button
                   aria-label="Clear search"
-                  className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
+                  className="grid size-4 shrink-0 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
                   onClick={() => setSearchQuery('')}
                   type="button"
                 >
@@ -554,7 +554,7 @@ export function ChatSidebar({
                 <Button
                   aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
                   className={cn(
-                    'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                    'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
                     agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
                   )}
                   onClick={event => {
@@ -604,7 +604,7 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSe
   return (
     <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
       <button
-        className="group/section-label flex w-fit cursor-pointer items-center gap-1 bg-transparent text-left leading-none"
+        className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
         onClick={onToggle}
         type="button"
       >
@@ -848,7 +848,7 @@ function SidebarWorkspaceGroup({
     <div className={cn('grid gap-px', dragging && 'z-10 opacity-60', className)} ref={ref} style={style} {...rest}>
       <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
         <button
-          className="flex min-w-0 cursor-pointer items-center gap-1 bg-transparent text-left hover:text-(--ui-text-secondary)"
+          className="flex min-w-0 items-center gap-1 bg-transparent text-left hover:text-(--ui-text-secondary)"
           onClick={() => setOpen(value => !value)}
           title={group.path ?? undefined}
           type="button"
@@ -863,7 +863,7 @@ function SidebarWorkspaceGroup({
         {onNewSession && (
           <button
             aria-label={`New session in ${group.label}`}
-            className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+            className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
             onClick={() => onNewSession(group.path)}
             title={`New session in ${group.label}`}
             type="button"
@@ -895,7 +895,7 @@ function SidebarWorkspaceGroup({
           {hiddenCount > 0 && (
             <button
               aria-label={`Show ${nextCount} more in ${group.label}`}
-              className="ml-auto grid size-5 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+              className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
               onClick={() => setVisibleCount(count => count + WORKSPACE_PAGE)}
               title={`Show ${nextCount} more in ${group.label}`}
               type="button"
@@ -949,7 +949,7 @@ function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps)
 
   return (
     <button
-      className="flex min-h-5 cursor-pointer items-center gap-1 self-start bg-transparent pl-2 text-left text-[0.6875rem] text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:text-foreground hover:transition-none disabled:cursor-default disabled:opacity-60 disabled:hover:text-(--ui-text-tertiary)"
+      className="flex min-h-5 items-center gap-1 self-start bg-transparent pl-2 text-left text-[0.6875rem] text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:text-foreground hover:transition-none disabled:cursor-default disabled:opacity-60 disabled:hover:text-(--ui-text-tertiary)"
       disabled={loading}
       onClick={onClick}
       type="button"

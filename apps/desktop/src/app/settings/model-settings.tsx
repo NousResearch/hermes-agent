@@ -256,7 +256,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         <p className="mb-2 text-xs text-muted-foreground">
           Helper tasks run on the main model by default. Assign a dedicated model to any task to override.
         </p>
-        <div className="divide-y divide-border/40">
+        <div className="grid gap-1">
           {AUX_TASKS.map(meta => {
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
@@ -289,7 +289,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 }
                 below={
                   isEditing && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border/40 pt-2">
+                    <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
                       <Select
                         onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
                         value={auxDraft.provider}

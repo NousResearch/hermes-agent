@@ -123,7 +123,7 @@ export function SessionsSettings({ query }: SearchProps) {
           title="Nothing archived"
         />
       ) : (
-        <div className="divide-y divide-border/30">
+        <div className="grid gap-1">
           {filtered.map(session => {
             const label = workspaceLabel(session.cwd)
             const busy = busyId === session.id

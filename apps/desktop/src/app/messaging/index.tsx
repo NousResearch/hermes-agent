@@ -699,13 +699,15 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+  const t = useTranslation()
+
   if (!platform.enabled || platform.state === 'connected') {
     return null
   }
 
   const hint = HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
 
-  return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
+  return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{t(hint)}</p> : null
 }
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {

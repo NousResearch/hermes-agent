@@ -75,10 +75,12 @@ export function AppearanceSettings() {
   const { isSavingLanguage, language, setLanguage } = useI18n()
   const t = useTranslation()
   const toolViewMode = useStore($toolViewMode)
+
   const languageOptions = DESKTOP_LANGUAGES.map(option => ({
     id: option.id,
     label: t(option.translationKey)
   }))
+
   const modeOptions = MODE_OPTIONS.map(option => ({
     id: option.id,
     icon: option.icon,

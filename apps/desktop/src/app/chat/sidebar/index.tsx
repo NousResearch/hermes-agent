@@ -989,6 +989,7 @@ interface SidebarLoadMoreRowProps {
 
 function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps) {
   const t = useTranslation()
+
   const label = loading
     ? t('common.loading')
     : step > 0

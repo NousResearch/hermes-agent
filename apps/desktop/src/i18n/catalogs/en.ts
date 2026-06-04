@@ -957,7 +957,7 @@ export const en = {
     'Start a private Hermes backend on localhost. This is the default and works offline.',
   'settings.gateway.local.title': 'Local gateway',
   'settings.gateway.remote.description':
-    'Connect this desktop shell to a remote Hermes backend using its session token.',
+    'Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
   'settings.gateway.remote.title': 'Remote gateway',
   'settings.gateway.remoteIncomplete.switchMessage': 'Enter a remote URL and session token before switching to remote.',
   'settings.gateway.remoteIncomplete.testMessage': 'Enter a remote URL and session token before testing.',
@@ -974,8 +974,13 @@ export const en = {
     'This gateway uses OAuth. You are signed in; the session refreshes automatically.',
   'settings.gateway.oauth.connectedToProvider': 'Connected to {provider}.',
   'settings.gateway.oauth.identityProvider': 'your identity provider',
+  'settings.gateway.oauth.passwordConnectedDescription':
+    'This gateway uses a username and password. You are signed in; the session refreshes automatically.',
+  'settings.gateway.oauth.passwordSignInDescription':
+    'This gateway uses a username and password. Sign in to authorize this desktop app.',
   'settings.gateway.oauth.probeFailed':
     'Could not reach this gateway yet. Check the URL - the auth method will appear once it responds.',
+  'settings.gateway.oauth.signIn': 'Sign in',
   'settings.gateway.oauth.signInDescription':
     'This gateway uses OAuth. Sign in with {provider} to authorize this desktop app.',
   'settings.gateway.oauth.signInFailed': 'Sign-in failed',

@@ -212,6 +212,19 @@ export function GatewaySettings() {
     return t('settings.gateway.oauth.identityProvider')
   }, [probe, t])
 
+  // A username/password gateway authenticates through a credential form on the
+  // gateway's /login page (POST /auth/password-login) rather than an OAuth
+  // redirect. Everything downstream — the session cookie, the ws-ticket mint,
+  // the persistent partition — is identical, so the desktop drives it through
+  // the same sign-in window; only the button copy changes. We treat the
+  // gateway as password-style only when EVERY advertised provider supports
+  // password, so a mixed deployment keeps the generic OAuth copy.
+  const isPasswordProvider = useMemo(() => {
+    const providers: DesktopAuthProvider[] = probe?.providers ?? []
+
+    return providers.length > 0 && providers.every(p => p.supportsPassword)
+  }, [probe])
+
   const oauthConnected = state.remoteOauthConnected
 
   const canUseRemote = useMemo(() => {
@@ -464,7 +477,7 @@ export function GatewaySettings() {
           </div>
         ) : null}
 
-        {/* OAuth gateways: present a sign-in button + connection status. */}
+        {/* OAuth / password gateways: present a sign-in button + connection status. */}
         {state.mode === 'remote' && authResolved && authMode === 'oauth' ? (
           <ListRow
             action={
@@ -481,14 +494,20 @@ export function GatewaySettings() {
               ) : (
                 <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
                   {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  {t('settings.gateway.oauth.signInWith', { provider: providerLabel })}
+                  {isPasswordProvider
+                    ? t('settings.gateway.oauth.signIn')
+                    : t('settings.gateway.oauth.signInWith', { provider: providerLabel })}
                 </Button>
               )
             }
             description={
               oauthConnected
-                ? t('settings.gateway.oauth.connectedDescription')
-                : t('settings.gateway.oauth.signInDescription', { provider: providerLabel })
+                ? isPasswordProvider
+                  ? t('settings.gateway.oauth.passwordConnectedDescription')
+                  : t('settings.gateway.oauth.connectedDescription')
+                : isPasswordProvider
+                  ? t('settings.gateway.oauth.passwordSignInDescription')
+                  : t('settings.gateway.oauth.signInDescription', { provider: providerLabel })
             }
             title={t('settings.gateway.oauth.authentication')}
           />

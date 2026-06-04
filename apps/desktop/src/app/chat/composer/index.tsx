@@ -1251,9 +1251,11 @@ export function ChatBar({
           onDrop={handleDrop}
           onSubmit={e => {
             e.preventDefault()
+
             if (composingRef.current) {
               return
             }
+
             submitDraft()
           }}
           ref={composerRef}

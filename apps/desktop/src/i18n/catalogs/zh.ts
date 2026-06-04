@@ -928,7 +928,8 @@ export const zh = {
   'settings.gateway.loading': '正在加载网关设置...',
   'settings.gateway.local.description': '在本机 localhost 启动私有 Hermes 后端。这是默认模式，也可离线工作。',
   'settings.gateway.local.title': '本地网关',
-  'settings.gateway.remote.description': '使用 session token 将这个桌面壳连接到远程 Hermes 后端。',
+  'settings.gateway.remote.description':
+    '将这个桌面壳连接到远程 Hermes 后端。托管网关使用 OAuth 或用户名密码；自托管网关可能使用 session token。',
   'settings.gateway.remote.title': '远程网关',
   'settings.gateway.remoteIncomplete.switchMessage': '切换到远程前，请先填写远程 URL 和 session token。',
   'settings.gateway.remoteIncomplete.testMessage': '测试前请先填写远程 URL 和 session token。',
@@ -943,7 +944,11 @@ export const zh = {
   'settings.gateway.oauth.connectedDescription': '这个网关使用 OAuth。你已登录，session 会自动刷新。',
   'settings.gateway.oauth.connectedToProvider': '已连接到 {provider}。',
   'settings.gateway.oauth.identityProvider': '你的身份提供方',
+  'settings.gateway.oauth.passwordConnectedDescription':
+    '这个网关使用用户名和密码。你已登录，session 会自动刷新。',
+  'settings.gateway.oauth.passwordSignInDescription': '这个网关使用用户名和密码。请登录并授权这个桌面应用。',
   'settings.gateway.oauth.probeFailed': '暂时无法连接这个网关。请检查 URL；网关响应后会显示认证方式。',
+  'settings.gateway.oauth.signIn': '登录',
   'settings.gateway.oauth.signInDescription': '这个网关使用 OAuth。请用 {provider} 登录并授权这个桌面应用。',
   'settings.gateway.oauth.signInFailed': '登录失败',
   'settings.gateway.oauth.signInIncomplete': '登录未完成',

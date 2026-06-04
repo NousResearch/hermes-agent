@@ -165,6 +165,7 @@ function NoProviderKeys() {
 export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps) {
   const { rowProps, vars } = useEnvCredentials()
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
+  const [openProvider, setOpenProvider] = useState<null | string>(null)
   // The onboarding overlay owns the OAuth flow. Watch its `manual` flag so we
   // re-read connection state when the user finishes (or dismisses) a sign-in
   // they launched from this page — otherwise the cards keep their stale status.
@@ -208,9 +209,16 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
     return (
       <SettingsContent>
         {keyGroups.length > 0 ? (
-          <div className="grid gap-1">
+          <div className="grid gap-2">
             {keyGroups.map(group => (
-              <ProviderKeyRows group={group} key={group.name} rowProps={rowProps} />
+              <ProviderKeyRows
+                expanded={openProvider === group.name}
+                group={group}
+                key={group.name}
+                onExpand={() => setOpenProvider(group.name)}
+                onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                rowProps={rowProps}
+              />
             ))}
           </div>
         ) : (

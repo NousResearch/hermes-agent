@@ -28,7 +28,6 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
-| `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
 
 ```bash
 # Custom port
@@ -39,9 +38,6 @@ hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
-
-# Enable the in-browser Chat tab
-hermes dashboard --tui
 ```
 
 ## Prerequisites
@@ -56,7 +52,7 @@ The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
-The Chat tab is intentionally off for a plain `hermes dashboard` launch. Start the dashboard with `hermes dashboard --tui` or set `HERMES_DASHBOARD_TUI=1` when you want the embedded browser chat pane.
+The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket) is always available, with no extra flag required.
 
 ## Pages
 
@@ -101,9 +97,8 @@ Hermes Desktop normally launches its own local backend, but it can also attach t
 
 Desktop's "remote backend is ready" probe only hits `GET /api/status`, which is a public endpoint — it answers as soon as *any* dashboard is running on the host. The live chat connection is a **separate** WebSocket to `/api/ws` (and `/api/pty`), and that socket is gated by two more checks the status probe never touches:
 
-1. **The embedded chat must be enabled.** `/api/ws` and `/api/pty` close immediately with WS code **4403** unless the dashboard was started with `--tui` (or `HERMES_DASHBOARD_TUI=1`). A plain `hermes dashboard` or `hermes gateway` serves the status page but refuses the chat socket.
-2. **The session token must match.** Even with chat enabled, the socket closes with WS code **4401** if the token Desktop sends doesn't match the dashboard's session token. By default the dashboard generates a **fresh random token on every restart**, so a token you saved in Desktop yesterday is invalid after the service restarts. Pin it by setting `HERMES_DASHBOARD_SESSION_TOKEN` to a stable value.
-3. **The bind host must allow the client and match the Host header.** A loopback bind (`127.0.0.1`) only accepts loopback clients, so a remote machine is rejected at the socket layer regardless of token. Bind to a non-loopback address (`--host 0.0.0.0 --insecure` for a trusted LAN) so the peer-IP guard lets the remote client through. The remote URL you enter in Desktop must reach the dashboard by the same host it bound to — the DNS-rebinding guard requires the Host header to match.
+1. **The session token must match.** The socket closes with WS code **4401** if the token Desktop sends doesn't match the dashboard's session token. By default the dashboard generates a **fresh random token on every restart**, so a token you saved in Desktop yesterday is invalid after the service restarts. Pin it by setting `HERMES_DASHBOARD_SESSION_TOKEN` to a stable value.
+2. **The bind host must allow the client and match the Host header.** A loopback bind (`127.0.0.1`) only accepts loopback clients, so a remote machine is rejected at the socket layer regardless of token. Bind to a non-loopback address (`--host 0.0.0.0 --insecure` for a trusted LAN) so the peer-IP guard lets the remote client through. The remote URL you enter in Desktop must reach the dashboard by the same host it bound to — the DNS-rebinding guard requires the Host header to match.
 
 #### Remote dashboard setup
 
@@ -603,6 +598,132 @@ The `/auth/password-login` endpoint is rate-limited per client IP (default 10 at
 
 `basic` is just one implementation of an extension point. Any plugin can register a password provider: set `supports_password = True` on your `DashboardAuthProvider` subclass and implement `complete_password_login(*, username, password) -> Session` (raise `InvalidCredentialsError` on rejection, `ProviderError` if your backing store is down). The OAuth `start_login` / `complete_login` methods can be left as `NotImplementedError` stubs for a pure-password provider. This is the path for LDAP-bind, a credentials database, or any other non-redirect auth scheme — the framework handles the form, the route, the cookies, and refresh for you.
 
+### Self-hosted OIDC provider
+
+If you run your own identity provider, the bundled `plugins/dashboard_auth/self_hosted` plugin authenticates the dashboard against it using **standard OpenID Connect** — no per-IDP code, no Nous Portal involved. It's verified against and works with any conformant OIDC server:
+
+> **Authentik · Keycloak · Zitadel · Authelia · Auth0 · Okta · Google · …**
+
+Like the Nous provider, it auto-loads and only registers itself once it's configured, so it's a no-op for loopback / `--insecure` dashboards.
+
+#### Configuration
+
+Configure an **issuer** and a **client_id** (a public PKCE client — no client secret). The plugin fetches the IDP's `authorization_endpoint`, `token_endpoint`, and `jwks_uri` from `{issuer}/.well-known/openid-configuration`, so you never hardcode endpoint URLs.
+
+**`config.yaml`** — the canonical surface:
+
+```yaml
+dashboard:
+  oauth:
+    provider: self-hosted
+    self_hosted:
+      issuer: https://auth.example.com/application/o/hermes/   # required
+      client_id: hermes-dashboard                              # required
+      scopes: "openid profile email"                           # optional (this is the default)
+```
+
+**Environment variables** — operator overrides (env wins over `config.yaml` when set non-empty; an empty value is treated as unset):
+
+| Env var | Overrides | Notes |
+|---------|-----------|-------|
+| `HERMES_DASHBOARD_OIDC_ISSUER` | `dashboard.oauth.self_hosted.issuer` | OIDC issuer URL — required |
+| `HERMES_DASHBOARD_OIDC_CLIENT_ID` | `dashboard.oauth.self_hosted.client_id` | Public client id — required |
+| `HERMES_DASHBOARD_OIDC_SCOPES` | `dashboard.oauth.self_hosted.scopes` | Defaults to `openid profile email` |
+
+In your IDP, register a **public** application/client with the authorization-code + PKCE (S256) grant and add the dashboard's callback as an allowed redirect URI. The callback is `<dashboard public URL>/auth/callback` (see [Public URL override](#public-url-override) for how the dashboard derives its public URL behind a proxy).
+
+#### What it verifies
+
+The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. Standard OIDC claims map onto the dashboard session:
+
+| Session field | Claim(s) |
+|---------------|----------|
+| `user_id` | `sub` (required) |
+| `email` | `email` |
+| `display_name` | `name` → `preferred_username` → `nickname` → `email` |
+| `org_id` | `org_id` / `organization`, else joined `groups` |
+
+The ID token is what establishes identity — the access token is treated as opaque (the OIDC spec does not require it to be a JWT). Endpoint URLs are required to be HTTPS (loopback `http://` is allowed for local-dev IDPs), and the discovery document's advertised `issuer` must match your configured one (a trailing-slash difference is tolerated). Refresh tokens, when the IDP issues them, are used for silent re-auth via the standard `refresh_token` grant; logout calls the IDP's RFC 7009 `revocation_endpoint` when advertised.
+
+> **Confidential clients** (those with a `client_secret`) are not supported yet — configure a public + PKCE client, which is the typical choice for a browser-facing dashboard.
+
+#### Worked example: Keycloak
+
+[Keycloak](https://www.keycloak.org/) is one of the easiest self-hosted OIDC servers to stand up for a local test — it runs as a single container in dev mode (in-memory DB) and exposes textbook OIDC discovery. This walkthrough gets you from nothing to a working dashboard login in a few minutes.
+
+**1. Run Keycloak with a pre-configured realm.** Save this realm export as `realm-hermes.json` — it defines a `hermes` realm, a **public PKCE client** (`hermes-dashboard`), and a test user, all imported on boot so there's nothing to click in the admin UI:
+
+```json
+{
+  "realm": "hermes",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "hermes-dashboard",
+      "name": "Hermes Agent Dashboard",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:9119/auth/callback"],
+      "webOrigins": ["http://localhost:9119"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    }
+  ],
+  "users": [
+    {
+      "username": "testuser",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "testuser@example.com",
+      "firstName": "Test",
+      "lastName": "User",
+      "credentials": [
+        { "type": "password", "value": "testpassword", "temporary": false }
+      ]
+    }
+  ]
+}
+```
+
+Start it (Keycloak 26+), mounting that file into the import directory:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+  -v "$PWD/realm-hermes.json:/opt/keycloak/data/import/realm-hermes.json:ro" \
+  quay.io/keycloak/keycloak:26.0 \
+  start-dev --import-realm
+```
+
+Once it's up, the realm advertises standard OIDC discovery at
+`http://localhost:8080/realms/hermes/.well-known/openid-configuration` (issuer
+`http://localhost:8080/realms/hermes`). The admin console is at
+`http://localhost:8080/` (`admin` / `admin`).
+
+**2. Point the dashboard at it.** The self-hosted plugin permits a loopback `http://` issuer (HTTPS is required for any non-loopback issuer), so the local Keycloak works as-is:
+
+```bash
+export HERMES_DASHBOARD_OIDC_ISSUER="http://localhost:8080/realms/hermes"
+export HERMES_DASHBOARD_OIDC_CLIENT_ID="hermes-dashboard"
+export HERMES_DASHBOARD_PUBLIC_URL="http://localhost:9119"
+hermes dashboard --host 0.0.0.0 --port 9119 --no-open
+```
+
+`HERMES_DASHBOARD_PUBLIC_URL` tells the dashboard its OAuth callback is
+`http://localhost:9119/auth/callback` — the redirect URI the realm registered
+above. Binding to `0.0.0.0` (a non-loopback bind) without `--insecure` is what
+engages the OAuth gate.
+
+**3. Log in.** Open `http://localhost:9119/`, you'll be bounced to `/login`. Click **Sign in with Self-Hosted OIDC** → authenticate at Keycloak as `testuser` / `testpassword` → land back on the authenticated dashboard. The sidebar shows `Logged in as Test User via self-hosted`, and `GET /api/auth/me` returns the verified session (`provider: self-hosted`, `email: testuser@example.com`).
+
+> If you bind or browse on a different host/port, add that origin's
+> `…/auth/callback` to the client's **Valid redirect URIs** in the Keycloak
+> admin console (Clients → hermes-dashboard → Settings). The same pattern works
+> for Authentik, Zitadel, Authelia, and other OIDC servers — only the issuer
+> URL and client registration UI differ.
+
 ### Public URL override
 
 By default, the dashboard reconstructs the OAuth callback URL from the request — `X-Forwarded-Host` + `X-Forwarded-Proto` + `X-Forwarded-Prefix` (when uvicorn is configured with `proxy_headers=True`, which `start_server` enables under the gate). This works out of the box on Fly.io, which sets all three headers correctly.
@@ -716,8 +837,6 @@ The "session token" is the dashboard's session token — the same secret the loc
 
 The desktop app sends the token as an `X-Hermes-Session-Token` header. The backend accepts it only in legacy session-token mode — i.e. when bound non-loopback **with `--insecure`**. A non-loopback bind *without* `--insecure` engages the [OAuth gate](#oauth-authentication-gated-mode) instead, which ignores the session token. So a remote desktop connection means: `--insecure` + a token you control.
 
-The backend must also be started with **`--tui`** (or `HERMES_DASHBOARD_TUI=1`). The desktop's chat runs over the `/api/ws` + `/api/pty` WebSockets, and those are refused unless the embedded-chat surface is enabled. Without `--tui` the desktop still passes the `/api/status` health check (so the app reports the backend "ready") but the chat WebSocket is closed on connect — connects, looks ready, chat stays dead. A plain `hermes dashboard` or `hermes gateway` is not enough.
-
 ### On the backend (the remote machine)
 
 ```bash
@@ -731,11 +850,9 @@ chmod 600 ~/.hermes/.env
 echo "$TOKEN"   # copy this value into the desktop app
 
 # 2. Run the dashboard bound to a reachable address.
-#    --tui enables the embedded chat (the /api/ws + /api/pty WebSockets the
-#    desktop drives) — without it the app connects but chat stays dead.
 #    --insecure is required for any non-loopback bind and keeps the
 #    legacy session-token auth path (instead of the OAuth gate).
-hermes dashboard --tui --no-open --insecure --host 0.0.0.0 --port 9119
+hermes dashboard --no-open --insecure --host 0.0.0.0 --port 9119
 ```
 
 If you run the dashboard as a systemd service, `~/.hermes/.env` is picked up automatically when the unit has `EnvironmentFile=%h/.hermes/.env`, so the token is in the environment at boot.
@@ -770,7 +887,6 @@ Both must be set together — setting only the URL is an error.
 
 - **"Remote gateway incomplete"** — you haven't entered both a URL and a token. The token only needs re-entering if `remoteTokenSet` is false (no saved token yet).
 - **Test remote fails with 401** — the token doesn't match the backend's `HERMES_DASHBOARD_SESSION_TOKEN`, or the backend is running *without* `--insecure` on a non-loopback bind (the OAuth gate is on and ignores the session token). Confirm `--insecure` and that the env var is actually loaded (`curl -s -H "X-Hermes-Session-Token: $TOKEN" http://<host>:9119/api/status` should return JSON, not 401).
-- **Backend reports "ready" but chat does nothing** — the backend was started without `--tui` (or `HERMES_DASHBOARD_TUI=1`), so `/api/status` answers but the chat WebSocket (`/api/ws` / `/api/pty`) is refused. Restart the backend with `--tui`.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 - **No token anywhere to copy** — expected. You mint it (`HERMES_DASHBOARD_SESSION_TOKEN`); Hermes never auto-surfaces the default ephemeral one.
 

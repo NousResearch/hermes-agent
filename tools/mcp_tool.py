@@ -1411,6 +1411,33 @@ class ElicitationHandler:
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
 
+def _is_initialize_request(body) -> bool:
+    """Return True when *body* is a JSON-RPC request whose method is 'initialize'.
+
+    Handles bytes, str, and batch (list) payloads. Returns False for anything
+    that cannot be decoded or parsed as JSON-RPC.
+    """
+    if not body:
+        return False
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            body = body.decode("utf-8")
+        except (UnicodeDecodeError, AttributeError):
+            return False
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(payload, dict):
+        return payload.get("method") == "initialize"
+    if isinstance(payload, list):
+        return any(
+            isinstance(item, dict) and item.get("method") == "initialize"
+            for item in payload
+        )
+    return False
+
+
 class MCPServerTask:
     """Manages a single MCP server connection in a dedicated asyncio Task.
 
@@ -2026,12 +2053,11 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
-        # Some MCP servers require MCP-Protocol-Version on the initial
-        # initialize request and reject session-less POSTs otherwise.
-        # Seed it as a client-level default, but treat user overrides as
-        # case-insensitive so conventional casing is preserved.
-        if not any(key.lower() == "mcp-protocol-version" for key in headers):
-            headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+        # Track whether the caller pinned a protocol version so hook and legacy
+        # path can both respect it without adding a duplicate.
+        _user_set_protocol_version = any(
+            key.lower() == "mcp-protocol-version" for key in headers
+        )
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
@@ -2156,11 +2182,26 @@ class MCPServerTask:
                         response.next_request.headers.pop("authorization", None)
                         response.next_request.headers.pop("Authorization", None)
 
+            async def _add_protocol_version_after_initialize(request):
+                # Skip the initialize request: the MCP spec requires the header
+                # only on requests AFTER initialization, not on initialize itself.
+                if _is_initialize_request(request.content):
+                    return
+                if "mcp-protocol-version" not in request.headers:
+                    request.headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+
+            _request_hooks = []
+            if not _user_set_protocol_version:
+                _request_hooks.append(_add_protocol_version_after_initialize)
+
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": {
+                    "request": _request_hooks,
+                    "response": [_strip_auth_on_cross_origin_redirect],
+                },
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -2192,6 +2233,11 @@ class MCPServerTask:
                             )
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
+            # The legacy transport has no per-request hook support, so seed the
+            # header at the client level for all requests. This is best-effort:
+            # the spec violation on initialize is unavoidable on this code path.
+            if not _user_set_protocol_version:
+                headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
             _http_kwargs: dict = {
                 "headers": headers,
                 "timeout": float(connect_timeout),

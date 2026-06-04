@@ -5502,10 +5502,14 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
         # Packaged Electron loads the desktop renderer over file://, so its
         # WebSocket handshake carries a non-web Origin such as file:// or null.
         # DNS-rebinding attacks originate from an http(s) site; they cannot
-        # forge a file:// origin and still hold the loopback session token.
-        # Public/gated binds have no legitimate non-web client, so keep
-        # rejecting these origins there.
-        return bound_host.lower() in _LOOPBACK_HOST_VALUES
+        # forge a file:// origin and still hold the dashboard session token.
+        #
+        # Allow non-web origins whenever the legacy session-token gate is the
+        # active auth boundary (loopback and explicit --insecure non-loopback
+        # binds). That is what Hermes Desktop uses when it connects directly
+        # to a remote dashboard backend. Keep rejecting them in OAuth-gated
+        # public mode, where browser cookie auth expects a real web origin.
+        return not bool(getattr(app.state, "auth_required", False))
 
     if not parsed.netloc:
         return False

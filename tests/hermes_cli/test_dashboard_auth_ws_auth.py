@@ -380,9 +380,10 @@ class TestWsHostOriginGuardOrigins:
 
     Electron loads the packaged renderer over ``file://``, so its WebSocket
     handshake carries ``Origin: file://`` (or the opaque ``null``). The
-    DNS-rebinding guard only needs to block cross-site http(s) origins. On a
-    loopback bind these non-web origins are trusted because the session token
-    is the real gate. Public/gated binds keep rejecting them.
+    DNS-rebinding guard only needs to block cross-site http(s) origins. In
+    loopback and explicit ``--insecure`` public modes these non-web origins are
+    trusted because the session token is the real gate. OAuth-gated public binds
+    keep rejecting them because cookie auth expects a real web origin.
     """
 
     def _ws(self, *, origin, host):
@@ -413,8 +414,21 @@ class TestWsHostOriginGuardOrigins:
         ws = self._ws(origin="http://evil.test", host="127.0.0.1:8080")
         assert web_server._ws_host_origin_is_allowed(ws) is False
 
+    def test_insecure_public_file_origin_allowed(self, insecure_public_app):
+        ws = self._ws(origin="file://", host="192.168.0.222:9120")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_insecure_public_null_origin_allowed(self, insecure_public_app):
+        ws = self._ws(origin="null", host="192.168.0.222:9120")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
+    def test_explicit_insecure_host_file_origin_allowed(self, insecure_explicit_host_app):
+        ws = self._ws(origin="file://", host="100.64.0.10:9119")
+        assert web_server._ws_host_origin_is_allowed(ws) is True
+
     def test_gated_file_origin_rejected(self, gated_app):
-        # A public/gated bind has no legitimate file:// client.
+        # OAuth-gated public mode uses cookie auth, so it still requires a
+        # browser-style http(s) origin.
         ws = self._ws(origin="file://", host="fly-app.fly.dev")
         assert web_server._ws_host_origin_is_allowed(ws) is False
 

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
@@ -17,6 +18,9 @@ import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
+import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { ListRow } from '../settings/primitives'
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -41,11 +45,11 @@ const STATE_LABELS: Record<string, string> = {
   startup_failed: 'Startup failed'
 }
 
-const PILL_TONE: Record<StatusTone, string> = {
-  good: 'bg-primary/10 text-primary',
-  muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
+const TONE_VARIANT: Record<StatusTone, BadgeProps['variant']> = {
+  good: 'default',
+  muted: 'muted',
+  warn: 'warn',
+  bad: 'destructive'
 }
 
 const HINT_BY_STATE: Record<string, string> = {
@@ -104,6 +108,47 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   DISCORD_REPLY_TO_MODE: {
     label: 'Reply style',
     help: 'first, all, or off.',
+    advanced: true
+  },
+  DISCORD_ALLOW_ALL_USERS: {
+    label: 'Allow all Discord users',
+    help: 'Development only. When true, anyone can DM the bot without an allowlist.',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL: {
+    label: 'Home channel ID',
+    help: 'Channel where the bot sends proactive messages (cron output, reminders).',
+    advanced: true
+  },
+  DISCORD_HOME_CHANNEL_NAME: {
+    label: 'Home channel name',
+    help: 'Display name for the home channel in logs and status output.',
+    advanced: true
+  },
+  BLUEBUBBLES_ALLOW_ALL_USERS: {
+    label: 'Allow all iMessage users',
+    help: 'When true, skip the BlueBubbles allowlist.',
+    advanced: true
+  },
+  MATTERMOST_ALLOW_ALL_USERS: {
+    label: 'Allow all Mattermost users',
+    advanced: true
+  },
+  MATTERMOST_HOME_CHANNEL: {
+    label: 'Home channel',
+    advanced: true
+  },
+  QQ_ALLOW_ALL_USERS: {
+    label: 'Allow all QQ users',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL: {
+    label: 'QQ home channel',
+    help: 'Default channel or group for cron delivery.',
+    advanced: true
+  },
+  QQBOT_HOME_CHANNEL_NAME: {
+    label: 'QQ home channel name',
     advanced: true
   },
   SLACK_BOT_TOKEN: {
@@ -212,6 +257,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       }
     }
   }, [])
+
+  useRefreshHotkey(() => void refreshPlatforms())
 
   useEffect(() => {
     void refreshPlatforms()
@@ -343,15 +390,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
+      searchHidden={(platforms?.length ?? 0) === 0}
       searchPlaceholder="Search messaging..."
-      searchTrailingAction={null}
       searchValue={query}
     >
       {!platforms ? (
         <PageLoader label="Loading messaging platforms..." />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto border-b border-(--ui-stroke-tertiary) p-2 lg:border-b-0 lg:border-r">
+          <aside className="min-h-0 overflow-y-auto p-2">
             <ul className="space-y-1">
               {visiblePlatforms.map(platform => (
                 <li key={platform.id}>
@@ -406,8 +453,8 @@ function PlatformRow({
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
         active
-          ? 'bg-(--ui-bg-tertiary) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+          ? 'bg-(--ui-row-active-background) text-foreground'
+          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
       )}
       onClick={onSelect}
       type="button"
@@ -482,7 +529,7 @@ function PlatformDetail({
               {introCopy(platform)}
             </p>
             <div className="mt-3">
-              <Button asChild size="sm" variant="outline">
+              <Button asChild size="sm" variant="textStrong">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
                   Open setup guide
                   <ExternalLink className="size-3.5" />
@@ -493,7 +540,7 @@ function PlatformDetail({
 
           <section>
             <SectionTitle>Required</SectionTitle>
-            <div className="mt-3 space-y-4">
+            <div className="mt-3 grid gap-1">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
                   <MessagingField
@@ -516,7 +563,7 @@ function PlatformDetail({
           {optionalFields.length > 0 && (
             <section>
               <SectionTitle>Recommended</SectionTitle>
-              <div className="mt-3 space-y-4">
+              <div className="mt-3 grid gap-1">
                 {optionalFields.map(field => (
                   <MessagingField
                     edits={edits}
@@ -542,7 +589,7 @@ function PlatformDetail({
                 <DisclosureCaret open={showAdvanced} size="0.875rem" />
               </button>
               {showAdvanced && (
-                <div className="mt-3 space-y-4">
+                <div className="mt-3 grid gap-1">
                   {advancedFields.map(field => (
                     <MessagingField
                       edits={edits}
@@ -560,19 +607,15 @@ function PlatformDetail({
         </div>
       </div>
 
-      <footer className="border-t border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-5 py-2.5">
+      <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
-            <Switch
-              aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
-              checked={platform.enabled}
-              disabled={saving === `enabled:${platform.id}`}
-              onCheckedChange={onToggle}
-            />
-            <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </label>
+          <Switch
+            aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
+            checked={platform.enabled}
+            disabled={saving === `enabled:${platform.id}`}
+            onCheckedChange={onToggle}
+            size="xs"
+          />
 
           <div className="ml-auto flex items-center gap-2">
             {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
@@ -640,45 +683,48 @@ function MessagingField({
   saving: string | null
 }) {
   const copy = fieldCopy(field)
+  const fieldId = `messaging-field-${field.key}`
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
-          {copy.label}
-        </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          className="h-9 rounded-lg font-mono text-sm"
-          id={`messaging-field-${field.key}`}
-          onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
-          type={field.is_password ? 'password' : 'text'}
-          value={edits[field.key] || ''}
-        />
-        {field.url && (
-          <Button asChild size="icon-sm" title="Open docs" variant="ghost">
-            <a href={field.url} rel="noreferrer" target="_blank">
-              <ExternalLink className="size-3.5" />
-            </a>
-          </Button>
-        )}
-        {field.is_set && (
-          <Button
-            disabled={saving === `clear:${field.key}`}
-            onClick={() => onClear(field.key)}
-            size="icon-sm"
-            title={`Clear ${field.key}`}
-            variant="ghost"
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        )}
-      </div>
-      {copy.help && <p className="text-xs leading-5 text-muted-foreground">{copy.help}</p>}
-    </div>
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            className={CREDENTIAL_CONTROL_CLASS}
+            id={fieldId}
+            onChange={event => onEdit(field.key, event.target.value)}
+            placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
+            type={field.is_password ? 'password' : 'text'}
+            value={edits[field.key] || ''}
+          />
+          {field.url && (
+            <Button asChild className="size-8 shrink-0" title="Open docs" variant="ghost">
+              <a href={field.url} rel="noreferrer" target="_blank">
+                <ExternalLink className="size-3.5" />
+              </a>
+            </Button>
+          )}
+          {field.is_set && (
+            <Button
+              className="size-8 shrink-0"
+              disabled={saving === `clear:${field.key}`}
+              onClick={() => onClear(field.key)}
+              title={`Clear ${field.key}`}
+              variant="ghost"
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      }
+      description={copy.help}
+      title={
+        <span className="flex flex-wrap items-center gap-2">
+          <label htmlFor={fieldId}>{copy.label}</label>
+          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+        </span>
+      }
+    />
   )
 }
 
@@ -698,27 +744,13 @@ function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
   return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[tone]
-      )}
-    >
+    <Badge variant={TONE_VARIANT[tone]}>
       <StatusDot tone={tone} />
       {children}
-    </span>
+    </Badge>
   )
 }
 
 function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[active ? 'good' : 'muted']
-      )}
-    >
-      {children}
-    </span>
-  )
+  return <Badge variant={active ? 'default' : 'muted'}>{children}</Badge>
 }

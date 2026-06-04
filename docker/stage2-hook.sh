@@ -85,11 +85,12 @@ fi
 # is a no-op if the dir already exists. (#18482, salvages #18488)
 mkdir -p "$HERMES_HOME"
 
-# Numeric UID/GID validation: must be digits only, 1000-65534
+# Numeric UID/GID validation: must be digits only, non-root, 1-65534.
+# NAS hosts such as Unraid commonly use low non-root IDs (99:100).
 validate_uid_gid() {
     case "$1" in
         ''|*[!0-9]*) return 1 ;;
-        *) [ "$1" -ge 1000 ] && [ "$1" -le 65534 ] ;;
+        *) [ "$1" -ge 1 ] && [ "$1" -le 65534 ] ;;
     esac
 }
 
@@ -198,7 +199,7 @@ if [ "$needs_chown" = true ]; then
     # Hermes-owned subdirs: recursive chown is safe here because these are
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
-    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles; do
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing; do
         if [ -e "$HERMES_HOME/$sub" ]; then
             chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
                 echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
@@ -215,6 +216,10 @@ fi
 #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
 #     is set) and writes to ui-tui/dist/. Without this chown the new
 #     hermes UID can't write the build output (#28851).
+#   - gateway: Python writes __pycache__ and runtime artifacts beneath the
+#     gateway package on first import. After a UID remap those source-owned
+#     paths still belong to the build-time UID (10000) unless repaired here,
+#     producing EACCES for the supervised gateway (#27221).
 #   - node_modules: root-level dependencies (puppeteer, web tooling)
 #     that runtime code may walk/update.
 # The set mirrors the build-time `chown -R hermes:hermes` line in the
@@ -240,6 +245,7 @@ if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
     chown -R hermes:hermes \
         "$INSTALL_DIR/.venv" \
         "$INSTALL_DIR/ui-tui" \
+        "$INSTALL_DIR/gateway" \
         "$INSTALL_DIR/node_modules" \
         2>/dev/null || \
         echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"
@@ -308,7 +314,9 @@ as_hermes mkdir -p \
     "$HERMES_HOME/skins" \
     "$HERMES_HOME/plans" \
     "$HERMES_HOME/workspace" \
-    "$HERMES_HOME/home"
+    "$HERMES_HOME/home" \
+    "$HERMES_HOME/pairing" \
+    "$HERMES_HOME/platforms/pairing"
 
 # --- Install-method stamp (read by detect_install_method() in hermes status) ---
 # Preserved from the tini-era entrypoint (PR #27843). Must be written as

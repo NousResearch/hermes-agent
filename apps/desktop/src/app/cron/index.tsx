@@ -1,7 +1,7 @@
-import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -13,6 +13,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { SearchField } from '@/components/ui/search-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -25,12 +26,13 @@ import {
   triggerCronJob,
   updateCronJob
 } from '@/hermes'
-import { AlertTriangle, Clock, Pause, Pencil, Play, Trash2, Zap } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+import { AlertTriangle, Clock } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 
-import { PageSearchShell } from '../page-search-shell'
-import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import { OverlayView } from '../overlays/overlay-view'
+
+import { CronJobActionsMenu, CronJobActionsTrigger } from './cron-job-actions-menu'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -86,21 +88,14 @@ const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   }
 ]
 
-const STATE_TONE: Record<string, 'good' | 'muted' | 'warn' | 'bad'> = {
-  enabled: 'good',
-  scheduled: 'good',
-  running: 'good',
+const STATE_VARIANT: Record<string, BadgeProps['variant']> = {
+  enabled: 'default',
+  scheduled: 'default',
+  running: 'default',
   paused: 'warn',
   disabled: 'muted',
-  error: 'bad',
+  error: 'destructive',
   completed: 'muted'
-}
-
-const PILL_TONE: Record<'good' | 'muted' | 'warn' | 'bad', string> = {
-  good: 'bg-primary/10 text-primary',
-  muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
 }
 
 const asText = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -305,14 +300,13 @@ function matchesQuery(job: CronJob, q: string): boolean {
   )
 }
 
-interface CronViewProps extends React.ComponentProps<'section'> {
-  setStatusbarItemGroup?: SetStatusbarItemGroup
+interface CronViewProps {
+  onClose: () => void
 }
 
-export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
+export function CronView({ onClose }: CronViewProps) {
   const [jobs, setJobs] = useState<CronJob[] | null>(null)
   const [query, setQuery] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
   const [busyJobId, setBusyJobId] = useState<null | string>(null)
 
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
@@ -320,17 +314,15 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
   const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const result = await getCronJobs()
       setJobs(result)
     } catch (err) {
       notifyError(err, 'Failed to load cron jobs')
-    } finally {
-      setRefreshing(false)
     }
   }, [])
+
+  useRefreshHotkey(refresh)
 
   useEffect(() => {
     void refresh()
@@ -426,73 +418,66 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
   }
 
   return (
-    <PageSearchShell
-      {...props}
-      onSearchChange={setQuery}
-      searchPlaceholder="Search cron jobs..."
-      searchTrailingAction={
-        <Button
-          aria-label={refreshing ? 'Refreshing cron jobs' : 'Refresh cron jobs'}
-          className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refresh()}
-          size="icon-xs"
-          title={refreshing ? 'Refreshing cron jobs' : 'Refresh cron jobs'}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
-      }
-      searchValue={query}
-    >
-      {!jobs ? (
-        <PageLoader label="Loading cron jobs..." />
-      ) : visibleJobs.length === 0 ? (
-        // Empty state owns the primary "create" CTA — we used to also have
-        // one in the filters bar but it was redundant. Only show the button
-        // when there are zero jobs total; the search-empty case ("No
-        // matches") just asks the user to broaden their query.
-        <EmptyState
-          actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
-          description={
-            totalCount === 0
-              ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
-              : 'Try a broader search query.'
-          }
-          onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
-          title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
-        />
-      ) : (
-        <div className="h-full overflow-y-auto px-4 py-3">
-          {/* Inline header replaces the old top-bar "New cron" button. We
-              still need a single, always-visible affordance to add a job
-              when the list is non-empty (rows themselves only expose
-              edit/pause/trigger/delete). */}
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
-              {enabledCount}/{totalCount} active
-            </span>
-            <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
-              <Codicon name="add" />
-              New cron
-            </Button>
+    <OverlayView closeLabel="Close cron" onClose={onClose}>
+      <div className="flex min-h-0 flex-1 flex-col pt-[calc(var(--titlebar-height)+0.5rem)]">
+        {totalCount > 0 && (
+          <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 pb-2">
+            <SearchField
+              containerClassName="max-w-[60vw]"
+              onChange={setQuery}
+              placeholder="Search cron jobs…"
+              value={query}
+            />
           </div>
-          <div className="divide-y divide-border/40 rounded-lg border border-border/40 bg-background/70">
-            {visibleJobs.map(job => (
-              <CronJobRow
-                busy={busyJobId === job.id}
-                job={job}
-                key={job.id}
-                onDelete={() => setPendingDelete(job)}
-                onEdit={() => setEditor({ mode: 'edit', job })}
-                onPauseResume={() => void handlePauseResume(job)}
-                onTrigger={() => void handleTrigger(job)}
-              />
-            ))}
+        )}
+        {!jobs ? (
+          <PageLoader label="Loading cron jobs..." />
+        ) : visibleJobs.length === 0 ? (
+          // Empty state owns the primary "create" CTA — we used to also have
+          // one in the filters bar but it was redundant. Only show the button
+          // when there are zero jobs total; the search-empty case ("No
+          // matches") just asks the user to broaden their query.
+          <EmptyState
+            actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
+            description={
+              totalCount === 0
+                ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
+                : 'Try a broader search query.'
+            }
+            onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
+            title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
+          />
+        ) : (
+          <div className="mx-auto w-full max-w-4xl min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            {/* Inline header replaces the old top-bar "New cron" button. We
+                still need a single, always-visible affordance to add a job
+                when the list is non-empty (rows themselves only expose
+                edit/pause/trigger/delete). */}
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
+                {enabledCount}/{totalCount} active
+              </span>
+              <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                <Codicon name="add" />
+                New cron
+              </Button>
+            </div>
+            <div>
+              {visibleJobs.map(job => (
+                <CronJobRow
+                  busy={busyJobId === job.id}
+                  job={job}
+                  key={job.id}
+                  onDelete={() => setPendingDelete(job)}
+                  onEdit={() => setEditor({ mode: 'edit', job })}
+                  onPauseResume={() => void handlePauseResume(job)}
+                  onTrigger={() => void handleTrigger(job)}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
       <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
 
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
@@ -519,7 +504,7 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </PageSearchShell>
+    </OverlayView>
   )
 }
 
@@ -547,14 +532,20 @@ function CronJobRow({
   return (
     <div className="grid gap-3 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <button
-        className="min-w-0 cursor-pointer rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="min-w-0 rounded-md text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
         onClick={onEdit}
         type="button"
       >
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium">{jobTitle(job)}</span>
-          <StatePill tone={STATE_TONE[state] ?? 'muted'}>{state}</StatePill>
-          {deliver && deliver !== DEFAULT_DELIVER && <StatePill tone="muted">{deliver}</StatePill>}
+          <Badge className="capitalize" variant={STATE_VARIANT[state] ?? 'muted'}>
+            {state}
+          </Badge>
+          {deliver && deliver !== DEFAULT_DELIVER && (
+            <Badge className="capitalize" variant="muted">
+              {deliver}
+            </Badge>
+          )}
         </div>
         {hasName && prompt && <p className="mt-1 truncate text-xs text-muted-foreground">{truncate(prompt, 120)}</p>}
         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.68rem] text-muted-foreground">
@@ -573,54 +564,24 @@ function CronJobRow({
         )}
       </button>
 
-      <div className="flex shrink-0 items-center gap-0.5">
-        <IconAction
-          aria-label={isPaused ? 'Resume cron' : 'Pause cron'}
-          disabled={busy}
-          onClick={onPauseResume}
-          title={isPaused ? 'Resume' : 'Pause'}
+      <div className="flex shrink-0 items-center">
+        <CronJobActionsMenu
+          busy={busy}
+          isPaused={isPaused}
+          onDelete={onDelete}
+          onEdit={onEdit}
+          onPauseResume={onPauseResume}
+          onTrigger={onTrigger}
+          title={jobTitle(job)}
         >
-          {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
-        </IconAction>
-        <IconAction aria-label="Trigger now" disabled={busy} onClick={onTrigger} title="Trigger now">
-          <Zap className="size-3.5" />
-        </IconAction>
-        <IconAction aria-label="Edit cron" onClick={onEdit} title="Edit">
-          <Pencil className="size-3.5" />
-        </IconAction>
-        <IconAction
-          aria-label="Delete cron"
-          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-          onClick={onDelete}
-          title="Delete"
-        >
-          <Trash2 className="size-3.5" />
-        </IconAction>
+          <CronJobActionsTrigger
+            className="text-muted-foreground hover:text-foreground"
+            onClick={event => event.stopPropagation()}
+            title={jobTitle(job)}
+          />
+        </CronJobActionsMenu>
       </div>
     </div>
-  )
-}
-
-function IconAction({ children, className, ...props }: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
-  return (
-    <Button
-      className={cn('size-7 text-muted-foreground hover:text-foreground', className)}
-      size="icon"
-      variant="ghost"
-      {...props}
-    >
-      {children}
-    </Button>
-  )
-}
-
-function StatePill({ children, tone }: { children: string; tone: keyof typeof PILL_TONE }) {
-  return (
-    <span
-      className={cn('inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.64rem] capitalize', PILL_TONE[tone])}
-    >
-      {children}
-    </span>
   )
 }
 
@@ -768,7 +729,7 @@ function CronEditorDialog({
           <div className="grid items-start gap-4 sm:grid-cols-2">
             <Field htmlFor="cron-frequency" label="Frequency">
               <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-frequency">
+                <SelectTrigger id="cron-frequency">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -783,7 +744,7 @@ function CronEditorDialog({
 
             <Field htmlFor="cron-deliver" label="Deliver to">
               <Select onValueChange={setDeliver} value={deliver}>
-                <SelectTrigger className="h-9 rounded-md" id="cron-deliver">
+                <SelectTrigger id="cron-deliver">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

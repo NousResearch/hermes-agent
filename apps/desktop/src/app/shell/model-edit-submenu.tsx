@@ -11,7 +11,6 @@ import {
   DropdownMenuSubContent
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
-import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
@@ -56,9 +55,7 @@ export function resolveFastControl(
 
     // Only a toggle if there's a base to switch back to; otherwise it's a
     // standalone fast model with no "off" state.
-    return providerModels.includes(baseId)
-      ? { kind: 'variant', baseId, fastId: model, on: true }
-      : { kind: 'none' }
+    return providerModels.includes(baseId) ? { kind: 'variant', baseId, fastId: model, on: true } : { kind: 'none' }
   }
 
   const fastId = `${model}-fast`
@@ -183,25 +180,22 @@ export function ModelEditSubmenu({
         <>
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>Options</DropdownMenuLabel>
           {reasoning ? (
-            <DropdownMenuItem
-              className={cn(dropdownMenuRow, 'cursor-pointer')}
-              onSelect={event => event.preventDefault()}
-            >
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
               Thinking
               <Switch
                 checked={thinkingOn}
-                className="ml-auto cursor-pointer"
-                onCheckedChange={checked => void patchReasoning(checked ? effort || 'medium' : 'none', currentReasoningEffort)}
+                className="ml-auto"
+                onCheckedChange={checked =>
+                  void patchReasoning(checked ? effort || 'medium' : 'none', currentReasoningEffort)
+                }
+                size="xs"
               />
             </DropdownMenuItem>
           ) : null}
           {hasFast ? (
-            <DropdownMenuItem
-              className={cn(dropdownMenuRow, 'cursor-pointer')}
-              onSelect={event => event.preventDefault()}
-            >
+            <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
               Fast
-              <Switch checked={fastOn} className="ml-auto cursor-pointer" onCheckedChange={toggleFast} />
+              <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
             </DropdownMenuItem>
           ) : null}
           {reasoning ? (
@@ -214,7 +208,7 @@ export function ModelEditSubmenu({
               >
                 {EFFORT_OPTIONS.map(option => (
                   <DropdownMenuRadioItem
-                    className={cn(dropdownMenuRow, 'cursor-pointer')}
+                    className={dropdownMenuRow}
                     key={option.value}
                     onSelect={event => event.preventDefault()}
                     value={option.value}

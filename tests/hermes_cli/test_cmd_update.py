@@ -1,5 +1,6 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
+import hashlib
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -68,6 +69,92 @@ def _patch_managed_uv(request):
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
          patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
         yield
+
+
+class TestCmdUpdateNpmLockfileCache:
+    @staticmethod
+    def _cache_file(hermes_root, project_root):
+        cache_key = hashlib.sha256(str(project_root).encode()).hexdigest()[:12]
+        return hermes_root / f".npm_lock_hash_{cache_key}"
+
+    def test_npm_lockfile_changed_no_cache(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "node_modules").mkdir()
+
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_npm_lockfile_changed_matching(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        content = b'{"lockfileVersion": 3}'
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_bytes(content)
+        (tmp_path / "node_modules").mkdir()
+        digest = hashlib.sha256(content).hexdigest()
+        self._cache_file(tmp_path, tmp_path).write_text(digest)
+
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
+    def test_npm_lockfile_changed_mismatch(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "node_modules").mkdir()
+        self._cache_file(tmp_path, tmp_path).write_text("old-digest")
+
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_npm_lockfile_changed_missing_node_modules(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        content = b'{"lockfileVersion": 3}'
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_bytes(content)
+        digest = hashlib.sha256(content).hexdigest()
+        self._cache_file(tmp_path, tmp_path).write_text(digest)
+        # node_modules missing: should report changed even though hash matches
+
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_record_npm_lockfile_hash(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        content = b'{"lockfileVersion": 3}'
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_bytes(content)
+
+        hm._record_npm_lockfile_hash(tmp_path)
+
+        expected = hashlib.sha256(content).hexdigest()
+        assert self._cache_file(tmp_path, tmp_path).read_text() == expected
+
+    def test_npm_lockfile_changed_cache_read_error(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "node_modules").mkdir()
+        # Make cache file a directory to cause OSError on read
+        self._cache_file(tmp_path, tmp_path).mkdir(parents=True)
+
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_update_skips_npm_when_lockfile_unchanged(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package.json").write_text("{}")
+
+        with patch("shutil.which", return_value="/usr/bin/npm"), \
+             patch.object(hm, "_npm_lockfile_changed", return_value=False), \
+             patch("subprocess.run") as mock_run:
+            hm._update_node_dependencies()
+
+        mock_run.assert_not_called()
 
 
 class TestCmdUpdatePip:
@@ -246,7 +333,10 @@ class TestCmdUpdateBranchFallback:
         ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
             cmd_update(mock_args)
 
-        sync_mock.assert_called_once_with(["git"], PROJECT_ROOT)
+        expected_git_cmd = (
+            ["git", "-c", "windows.appendAtomically=false"] if hm._is_windows() else ["git"]
+        )
+        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 

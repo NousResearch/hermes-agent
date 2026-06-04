@@ -362,6 +362,34 @@ class TestGatewayPidProfile:
         # _read_pid_record() returns None — treat as "nothing to refuse".
         assert status.pidfile_records_different_profile(None, "alpha") is False
 
+    def test_pidfile_records_different_profile_treats_blank_as_unset(self):
+        # A stray ``HERMES_PROFILE=`` (or whitespace-only) must NOT be treated as
+        # a distinct profile: empty/whitespace and unset both mean "no profile",
+        # so neither read nor write path should spuriously refuse a --replace.
+        existing_none = {"pid": 1000, "hermes_profile": None}
+        for blank in ("", "   ", "\t", "\n"):
+            assert status.pidfile_records_different_profile(existing_none, blank) is False
+
+        existing_blank = {"pid": 1000, "hermes_profile": "  "}
+        assert status.pidfile_records_different_profile(existing_blank, None) is False
+        assert status.pidfile_records_different_profile(existing_blank, "") is False
+
+        # Whitespace padding around a real profile name still compares equal.
+        existing_alpha = {"pid": 1000, "hermes_profile": "alpha"}
+        assert status.pidfile_records_different_profile(existing_alpha, "  alpha  ") is False
+        # ...and a genuinely different profile still flags.
+        assert status.pidfile_records_different_profile(existing_alpha, " beta ") is True
+
+    def test_build_pid_record_normalizes_blank_profile_to_none(self, tmp_path, monkeypatch):
+        # A blank HERMES_PROFILE written into the pid record must canonicalize to
+        # None so the read path agrees with an unset launch.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "   ")
+
+        record = status._build_pid_record()
+
+        assert record["hermes_profile"] is None
+
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):

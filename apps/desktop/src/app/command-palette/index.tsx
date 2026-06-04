@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
@@ -11,7 +12,7 @@ import {
   CommandItem,
   CommandList
 } from '@/components/ui/command'
-import { getEnvVars, getHermesConfigRecord, listSessions } from '@/hermes'
+import { getHermesConfigRecord, listSessions } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   Activity,
@@ -49,6 +50,7 @@ import {
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
+  sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE
 } from '../routes'
@@ -81,6 +83,20 @@ interface PalettePage {
   title: string
 }
 
+interface SessionEntry {
+  id: string
+  preview?: string
+  title: string
+}
+
+type SessionRow = Awaited<ReturnType<typeof listSessions>>['sessions'][number]
+
+const toSessionEntry = (session: SessionRow): SessionEntry => ({
+  id: session.id,
+  preview: session.preview ?? undefined,
+  title: sessionTitle(session)
+})
+
 const NON_CONFIG_SETTINGS: ReadonlyArray<{ icon: IconComponent; keywords?: string[]; label: string; tab: string }> = [
   { icon: Globe, keywords: ['connection', 'messaging'], label: 'Gateway', tab: 'gateway' },
   { icon: KeyRound, keywords: ['api', 'secrets', 'tokens', 'credentials'], label: 'API Keys', tab: 'keys' },
@@ -105,60 +121,43 @@ export function CommandPalette() {
   const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
-  const [envKeys, setEnvKeys] = useState<Array<{ description?: string; key: string }>>([])
-  const [mcpServers, setMcpServers] = useState<string[]>([])
-  const [archivedSessions, setArchivedSessions] = useState<Array<{ id: string; preview?: string; title: string }>>([])
 
+  // Server-backed sources for the type-to-search groups, fetched lazily while
+  // the palette is open. react-query handles caching/dedup/staleness.
+  const configQuery = useQuery({ queryKey: ['command-palette', 'config'], queryFn: getHermesConfigRecord, enabled: open })
+
+  const sessionsQuery = useQuery({
+    queryKey: ['command-palette', 'sessions'],
+    queryFn: () => listSessions(200, 1, 'exclude'),
+    enabled: open
+  })
+
+  const archivedQuery = useQuery({
+    queryKey: ['command-palette', 'archived'],
+    queryFn: () => listSessions(200, 0, 'only'),
+    enabled: open
+  })
+
+  const mcpServers = useMemo(() => {
+    const raw = configQuery.data?.mcp_servers
+
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? Object.keys(raw as Record<string, unknown>).sort() : []
+  }, [configQuery.data])
+
+  const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
+  const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
+
+  // Reset the query/sub-page on close so it reopens clean.
   useEffect(() => {
     if (!open) {
       setSearch('')
       setPage(null)
-
-      return
     }
-
-    let cancelled = false
-
-    void (async () => {
-      try {
-        const [vars, config, sessions] = await Promise.all([
-          getEnvVars(),
-          getHermesConfigRecord(),
-          listSessions(200, 0, 'only')
-        ])
-
-        if (cancelled) {
-          return
-        }
-
-        setEnvKeys(Object.entries(vars).map(([key, info]) => ({ description: info.description, key })))
-
-        const rawServers = config?.mcp_servers
-
-        const servers =
-          rawServers && typeof rawServers === 'object' && !Array.isArray(rawServers)
-            ? Object.keys(rawServers as Record<string, unknown>).sort()
-            : []
-
-        setMcpServers(servers)
-
-        setArchivedSessions(
-          sessions.sessions.map(session => ({
-            id: session.id,
-            preview: session.preview ?? undefined,
-            title: sessionTitle(session)
-          }))
-        )
-      } catch {
-        // Best-effort: deep-link sources just stay empty if a load fails.
-      }
-    })()
-
-    return () => void (cancelled = true)
   }, [open])
 
+  const go = useCallback((path: string) => () => navigate(path), [navigate])
+
   const baseGroups = useMemo<PaletteGroup[]>(() => {
-    const go = (path: string) => () => navigate(path)
     const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
 
     return [
@@ -246,7 +245,7 @@ export function CommandPalette() {
         ]
       }
     ]
-  }, [navigate])
+  }, [go])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
@@ -256,8 +255,20 @@ export function CommandPalette() {
       return []
     }
 
-    const go = (path: string) => () => navigate(path)
     const result: PaletteGroup[] = []
+
+    if (sessions.length > 0) {
+      result.push({
+        heading: 'Sessions',
+        items: sessions.map(session => ({
+          icon: MessageCircle,
+          id: `session-${session.id}`,
+          keywords: ['chat', 'session', ...(session.preview ? [session.preview] : [])],
+          label: session.title,
+          run: go(sessionRoute(session.id))
+        }))
+      })
+    }
 
     const fieldItems = SECTIONS.flatMap(section =>
       section.keys.map(key => ({
@@ -270,19 +281,6 @@ export function CommandPalette() {
     )
 
     result.push({ heading: 'Settings fields', items: fieldItems })
-
-    if (envKeys.length > 0) {
-      result.push({
-        heading: 'API keys',
-        items: envKeys.map(entry => ({
-          icon: KeyRound,
-          id: `key-${entry.key}`,
-          keywords: ['api', 'secret', 'token', ...(entry.description ? [entry.description] : [])],
-          label: entry.key,
-          run: go(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(entry.key)}`)
-        }))
-      })
-    }
 
     if (mcpServers.length > 0) {
       result.push({
@@ -311,7 +309,7 @@ export function CommandPalette() {
     }
 
     return result
-  }, [archivedSessions, envKeys, mcpServers, navigate, search])
+  }, [archivedSessions, go, mcpServers, search, sessions])
 
   const groups = useMemo(() => [...baseGroups, ...searchGroups], [baseGroups, searchGroups])
 

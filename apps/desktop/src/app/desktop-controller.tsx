@@ -201,25 +201,21 @@ export function DesktopController() {
     }
   }, [])
 
-  // Global command palette: Cmd/Ctrl+K from anywhere. Plain Cmd+K is reserved
-  // for the palette; the composer's "drain next queued" moved to Cmd+Shift+K.
+  // Global chrome shortcuts (plain Cmd/Ctrl, no alt/shift): Cmd+K → command
+  // palette (the composer's "drain next queued" moved to Cmd+Shift+K), Cmd+. →
+  // command center (sessions / system / usage).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+
+      if (key === 'k') {
         event.preventDefault()
         toggleCommandPalette()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
-  // Cmd/Ctrl+. toggles the command center (sessions / system / usage).
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === '.') {
+      } else if (key === '.') {
         event.preventDefault()
         toggleCommandCenter()
       }

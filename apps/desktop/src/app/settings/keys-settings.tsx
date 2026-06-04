@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,6 +12,7 @@ import { CONTROL_TEXT } from './constants'
 import { asText, prettyName, providerGroup, providerPriority, redactedValue, withoutKey } from './helpers'
 import { LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
 import type { EnvPatch, EnvRowProps, ProviderGroup } from './types'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 interface EnvActionsProps {
   varKey: string
@@ -224,10 +224,13 @@ export function KeysSettings() {
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
 
-  // Deep-link target from the command palette (?key=<ENV_VAR>): force-expand
-  // the matching provider group, scroll the row in, and flash it.
-  const [searchParams, setSearchParams] = useSearchParams()
-  const highlightKey = searchParams.get('key')
+  // Deep-link from the command palette (?key=<ENV_VAR>): force-expand the
+  // matching provider group, scroll the row in, and flash it.
+  const highlightKey = useDeepLinkHighlight({
+    elementId: key => `env-var-${key}`,
+    param: 'key',
+    ready: key => Boolean(vars?.[key])
+  })
 
   // We used to hide ~80% of rows behind a global "Show advanced" toggle, but
   // everything in this view is configuration-level — "advanced" was a poor
@@ -258,38 +261,6 @@ export function KeysSettings() {
 
     return () => void (cancelled = true)
   }, [])
-
-  useEffect(() => {
-    if (!highlightKey || !vars || !vars[highlightKey]) {
-      return
-    }
-
-    // Group expansion is async (state), so defer the scroll a frame to let the
-    // target row mount before we look it up.
-    const scrollTimeout = window.setTimeout(() => {
-      const element = document.getElementById(`env-var-${highlightKey}`)
-
-      if (!element) {
-        return
-      }
-
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      element.classList.add('setting-field-highlight')
-      window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
-    }, 80)
-
-    setSearchParams(
-      previous => {
-        const next = new URLSearchParams(previous)
-        next.delete('key')
-
-        return next
-      },
-      { replace: true }
-    )
-
-    return () => window.clearTimeout(scrollTimeout)
-  }, [highlightKey, setSearchParams, vars])
 
   const providerGroups = useMemo<ProviderGroup[]>(() => {
     if (!vars) {

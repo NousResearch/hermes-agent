@@ -3,7 +3,8 @@
 - grok-xai-oauth: complete guide + recipes + Best-of-N + Grok Build handoff + helper script.
 - grok-build-patterns: explicit port of Grok Build disciplines (best-of-n tournaments, plan/review/check-work gates, CLI↔Hermes handoff) for when brain is Grok OAuth.
 - grok-x-research: persistent/citable X research optimized for Grok native server-side search + citations + Hermes memory/cron/subagents. Includes run-x-research.sh helper. Real community examples (Hermes+Grok for topic research like World Cup predictions).
-- Concierge bridge updated (lib/hermes.ts detection + UI status cards now surface recommendedGrokSkills when OAuth active; new scripts/load-grok-hermes-skills.sh).
+- grok-heartbreak-to-mars: epic cosmic heartbreak content in Olivia Rodrigo style – the 'Astronaut' inspired pain that turns into Mars colonization ambition. Includes original lyrics, visuals, stories, and generation prompts. 'Heartbreak is the goal' skill.
+- Concierge bridge updated (lib/hermes.ts detection + UI status cards now surface recommendedGrokSkills when OAuth active; new scripts/load-grok-hermes-skills.sh; heartbreak_to_mars.md content).
 - All built inside xAI Grok Build CLI while using the skills system, subagents, review patterns, etc.
 - Live in user's Hermes; validated against Hermes frontmatter/structure/size/peer rules.
 - Also improves hermes-agent-skill-authoring cross-link.

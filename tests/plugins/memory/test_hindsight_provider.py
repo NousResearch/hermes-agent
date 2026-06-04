@@ -25,6 +25,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _sanitize_hindsight_input,
 )
 
 
@@ -151,6 +152,27 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
 def test_normalize_retain_tags_accepts_json_array_string():
     value = json.dumps(["agent:fakeassistantname", "source_system:hermes-agent"])
     assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
+
+
+def test_sanitize_hindsight_input_strips_runtime_identifiers():
+    dirty = """Conversation info (untrusted metadata):
+```json
+{"message_id": "om_x100000000000", "open_id": "ou_cb100000000000"}
+```
+[message_id: om_x200000000000]
+sender: ou_cb200000000000
+ou_cb300000000000: check retain semantics
+<hindsight_memories>old temporary recall</hindsight_memories>
+<summary>old session summary</summary>
+[context]sender_id: ou_cb400000000000[/context]
+"""
+
+    clean = _sanitize_hindsight_input(dirty)
+
+    assert clean == "check retain semantics"
+    assert "message_id" not in clean
+    assert "om_x" not in clean
+    assert "ou_cb" not in clean
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +495,21 @@ class TestToolHandlers:
         assert call_kwargs["bank_id"] == "test-bank"
         assert call_kwargs["content"] == "user likes dark mode"
 
+    def test_retain_tool_strips_runtime_identifiers(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {
+                "content": (
+                    "[message_id: om_x100000000000]\n"
+                    "sender: ou_cb100000000000\n"
+                    "user likes compact UI"
+                )
+            },
+        ))
+        assert result["result"] == "Memory stored successfully."
+        call_kwargs = provider._client.aretain.call_args.kwargs
+        assert call_kwargs["content"] == "user likes compact UI"
+
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
@@ -505,6 +542,23 @@ class TestToolHandlers:
         ))
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
+
+    def test_recall_tool_strips_runtime_identifiers(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": (
+                    "Conversation info (untrusted metadata):\n"
+                    "```json\n"
+                    '{"message_id": "om_x100000000000", "open_id": "ou_cb100000000000"}\n'
+                    "```\n"
+                    "ou_cb200000000000: check retain semantics"
+                )
+            },
+        ))
+        assert "Memory 1" in result["result"]
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["query"] == "check retain semantics"
 
     def test_recall_passes_max_tokens(self, provider_with_config):
         p = provider_with_config(recall_max_tokens=2048)
@@ -543,6 +597,15 @@ class TestToolHandlers:
             "hindsight_reflect", {"query": "summarize"}
         ))
         assert result["result"] == "Synthesized answer"
+
+    def test_reflect_tool_strips_runtime_identifiers(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect",
+            {"query": "[open_id: ou_cb100000000000]\nsummarize project status"},
+        ))
+        assert result["result"] == "Synthesized answer"
+        call_kwargs = provider._client.areflect.call_args.kwargs
+        assert call_kwargs["query"] == "summarize project status"
 
     def test_reflect_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -647,6 +710,23 @@ class TestPrefetch:
         # The query passed to arecall should be truncated
         if original_query is not None:
             assert len(original_query) <= 10
+
+    def test_queue_prefetch_strips_runtime_identifiers_from_query(self, provider):
+        provider.queue_prefetch(
+            "[message_id: om_x100000000000]\n"
+            "ou_cb100000000000: check retain semantics"
+        )
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["query"] == "check retain semantics"
+
+    def test_queue_prefetch_skips_empty_query_after_sanitization(self, provider):
+        provider.queue_prefetch("[message_id: om_x100000000000]")
+
+        assert provider._prefetch_thread is None
+        provider._client.arecall.assert_not_called()
 
     def test_queue_prefetch_passes_recall_params(self, provider_with_config):
         p = provider_with_config(
@@ -779,6 +859,32 @@ class TestSyncTurn:
         assert content[-1][1]["content"] == "Assistant: turn3-asst"
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
+
+    def test_sync_turn_strips_runtime_identifiers_from_retain_content(self, provider):
+        dirty_user = """Conversation info (untrusted metadata):
+```json
+{"message_id": "om_x100000000000", "open_id": "ou_cb100000000000"}
+```
+[message_id: om_x200000000000]
+ou_cb300000000000: check retain semantics
+[context]sender_id: ou_cb400000000000[/context]
+<hindsight_memories>old temporary recall</hindsight_memories>
+<summary>old session summary</summary>
+"""
+
+        provider.sync_turn(dirty_user, "normal reply")
+        provider._retain_queue.join()
+
+        content = provider._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        assert "check retain semantics" in content
+        assert "normal reply" in content
+        assert "message_id" not in content
+        assert "om_x" not in content
+        assert "ou_cb" not in content
+        assert "[context]" not in content
+        assert "sender_id" not in content
+        assert "hindsight_memories" not in content
+        assert "old session summary" not in content
 
     def test_sync_turn_accumulates_full_session(self, provider_with_config):
         """Each retain sends the ENTIRE session, not just the latest batch."""

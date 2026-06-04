@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
@@ -379,6 +380,76 @@ def _normalize_retain_tags(value: Any) -> List[str]:
 def _utc_timestamp() -> str:
     """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+_HINDSIGHT_STRIP_BLOCK_PATTERNS = [
+    re.compile(r"(?is)<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>.*?<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"),
+    re.compile(r"(?is)<hindsight_memories\b[^>]*>.*?</hindsight_memories>"),
+    re.compile(r"(?is)<summary\b[^>]*>.*?</summary>"),
+    re.compile(r"(?is)^\s*Conversation info \(untrusted metadata\):\s*```json\s*\{.*?\}\s*```\s*", re.MULTILINE),
+    re.compile(r"(?is)^\s*Sender \(untrusted metadata\):\s*```json\s*\{.*?\}\s*```\s*", re.MULTILINE),
+    re.compile(r"(?is)\[context\].*?\[/context\]"),
+]
+_HINDSIGHT_OPERATIONAL_KEYS = (
+    "message_id",
+    "open_id",
+    "union_id",
+    "user_id",
+    "sender",
+    "sender_id",
+    "chat_id",
+    "thread_id",
+    "conversation_id",
+    "tenant_key",
+)
+_HINDSIGHT_BRACKET_METADATA_LINE_RE = re.compile(
+    rf"(?im)^\s*\[(?:{'|'.join(_HINDSIGHT_OPERATIONAL_KEYS)}):\s*[^\]]+\]\s*\n?"
+)
+_HINDSIGHT_METADATA_LINE_RE = re.compile(
+    rf"(?im)^\s*(?:{'|'.join(_HINDSIGHT_OPERATIONAL_KEYS)})\s*[:=]\s*.+\n?"
+)
+_HINDSIGHT_RUNTIME_JSON_PAIR_RE = re.compile(
+    r'(?i)"(?:message_id|open_id|union_id|user_id|sender_id|chat_id|thread_id|conversation_id|tenant_key|id)"\s*:\s*"'
+    r'(?:user:)?(?:ou|oc|om|on|open)_[A-Za-z0-9_:-]{8,}"\s*,?'
+)
+_HINDSIGHT_RUNTIME_ID_RE = re.compile(r"\b(?:ou|oc|om|on|open)_[A-Za-z0-9_:-]{8,}\b")
+_HINDSIGHT_LEADING_SENDER_RE = re.compile(
+    r"(?s)^\s*(?:user:)?(?:ou|oc|om|on|open)_[A-Za-z0-9_:-]{8,}\s*:\s*"
+)
+
+
+def _coerce_hindsight_text(value: Any) -> str:
+    """Coerce memory input values to text before redaction."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _sanitize_hindsight_input(value: Any) -> str:
+    """Remove transport/runtime metadata before retain or recall hits Hindsight."""
+    text = _coerce_hindsight_text(value)
+    if not text:
+        return ""
+
+    for pattern in _HINDSIGHT_STRIP_BLOCK_PATTERNS:
+        text = pattern.sub("\n", text)
+
+    text = _HINDSIGHT_RUNTIME_JSON_PAIR_RE.sub("", text)
+    text = _HINDSIGHT_BRACKET_METADATA_LINE_RE.sub("", text)
+    text = _HINDSIGHT_METADATA_LINE_RE.sub("", text)
+    text = _HINDSIGHT_LEADING_SENDER_RE.sub("", text)
+    text = _HINDSIGHT_RUNTIME_ID_RE.sub("", text)
+
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    text = "\n".join(line for line in lines if line)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
@@ -1316,6 +1387,12 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         return f"{header}\n\n{result}"
 
+    def _sanitize_recall_query(self, query: Any) -> str:
+        text = _sanitize_hindsight_input(query)
+        if self._recall_max_input_chars and len(text) > self._recall_max_input_chars:
+            return text[:self._recall_max_input_chars].rstrip()
+        return text
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":
             logger.debug("Prefetch: skipped (tools-only mode)")
@@ -1326,9 +1403,10 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._shutting_down.is_set():
             logger.debug("Prefetch: skipped (shutting down)")
             return
-        # Truncate query to max chars
-        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
-            query = query[:self._recall_max_input_chars]
+        query = self._sanitize_recall_query(query)
+        if not query:
+            logger.debug("Prefetch: skipped (empty query after sanitization)")
+            return
 
         def _run():
             try:
@@ -1363,15 +1441,17 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
         now = datetime.now(timezone.utc).isoformat()
+        user_text = _sanitize_hindsight_input(user_content)
+        assistant_text = _sanitize_hindsight_input(assistant_content)
         return [
             {
                 "role": "user",
-                "content": f"{self._retain_user_prefix}: {user_content}",
+                "content": f"{self._retain_user_prefix}: {user_text}",
                 "timestamp": now,
             },
             {
                 "role": "assistant",
-                "content": f"{self._retain_assistant_prefix}: {assistant_content}",
+                "content": f"{self._retain_assistant_prefix}: {assistant_text}",
                 "timestamp": now,
             },
         ]
@@ -1517,7 +1597,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
-            content = args.get("content", "")
+            content = _sanitize_hindsight_input(args.get("content", ""))
             if not content:
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
@@ -1537,7 +1617,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error(f"Failed to store memory: {e}")
 
         elif tool_name == "hindsight_recall":
-            query = args.get("query", "")
+            query = self._sanitize_recall_query(args.get("query", ""))
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
@@ -1564,7 +1644,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error(f"Failed to search memory: {e}")
 
         elif tool_name == "hindsight_reflect":
-            query = args.get("query", "")
+            query = self._sanitize_recall_query(args.get("query", ""))
             if not query:
                 return tool_error("Missing required parameter: query")
             try:

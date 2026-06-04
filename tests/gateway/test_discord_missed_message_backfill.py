@@ -60,8 +60,9 @@ class FakeReaction:
 
 
 class FakeChannel:
-    def __init__(self, channel_id=123, history_messages=None):
+    def __init__(self, channel_id=123, history_messages=None, parent_id=None):
         self.id = channel_id
+        self.parent_id = parent_id
         self.name = "wiki-inbox"
         self.guild = SimpleNamespace(name="emo")
         self.topic = None
@@ -120,6 +121,36 @@ async def test_should_not_backfill_message_with_non_down_bot_response(adapter):
     )
     channel = FakeChannel(history_messages=[bot_reply])
     message = make_message(message_id=1, channel=channel)
+
+    assert await adapter._should_backfill_discord_message(message) is False
+
+
+@pytest.mark.asyncio
+async def test_parent_channel_unreferenced_bot_message_does_not_suppress_backfill(adapter):
+    unrelated_bot_post = SimpleNamespace(
+        id=2,
+        content="Done — captured a different item.",
+        author=SimpleNamespace(id=999, bot=True),
+        reference=None,
+        created_at=datetime.now(timezone.utc),
+    )
+    channel = FakeChannel(history_messages=[unrelated_bot_post])
+    message = make_message(message_id=1, channel=channel)
+
+    assert await adapter._should_backfill_discord_message(message) is True
+
+
+@pytest.mark.asyncio
+async def test_thread_unreferenced_bot_message_suppresses_backfill(adapter):
+    bot_post = SimpleNamespace(
+        id=2,
+        content="Done — captured it.",
+        author=SimpleNamespace(id=999, bot=True),
+        reference=None,
+        created_at=datetime.now(timezone.utc),
+    )
+    thread = FakeChannel(channel_id=456, parent_id=123, history_messages=[bot_post])
+    message = make_message(message_id=1, channel=thread)
 
     assert await adapter._should_backfill_discord_message(message) is False
 

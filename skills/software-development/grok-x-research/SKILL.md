@@ -74,6 +74,12 @@ hermes model  # ensure xAI Grok OAuth
 hermes chat -q "Using the grok-x-research skill, search X for recent discussion of Hermes Agent with Grok. Summarize the main use cases people are excited about, with 3-5 cited posts."
 ```
 
+**Using the helper script (from within Hermes on Grok):**
+```
+bash ${HERMES_SKILL_DIR}/scripts/run-x-research.sh "Hermes Agent Grok integration" 7
+```
+The script provides a ready template the agent can adapt for terminal invocation or cron setup.
+
 **Cron monitoring setup:**
 Use `hermes cron` to schedule recurring research tasks. The skill will guide the agent on good search phrasing, synthesis format, and how to store results persistently.
 

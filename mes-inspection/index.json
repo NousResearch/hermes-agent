@@ -1,0 +1,12 @@
+{
+  "cases": [
+    {
+      "id": 1,
+      "timestamp": "2026-06-04T11:43:16.960224",
+      "component": "nginx",
+      "status_code": 2,
+      "file": "2026-06\\001_nginx_20260604_114316.json"
+    }
+  ],
+  "next_id": 2
+}

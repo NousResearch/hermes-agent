@@ -333,7 +333,17 @@ class WeComAdapter(BasePlatformAdapter):
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""
         await self._cleanup_ws()
-        self._session = aiohttp.ClientSession(trust_env=True)
+        # Use certifi's CA bundle so aiohttp trusts the same roots as
+        # urllib/requests — avoids SSL_CERTIFICATE_VERIFY_FAILED on macOS
+        # where the OpenSSL default path may be empty or stale.
+        import ssl as _ssl
+        try:
+            import certifi
+            _ssl_ctx = _ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            _ssl_ctx = _ssl.create_default_context()
+        _connector = aiohttp.TCPConnector(ssl=_ssl_ctx)
+        self._session = aiohttp.ClientSession(trust_env=True, connector=_connector)
         self._ws = await self._session.ws_connect(
             self._ws_url,
             heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,

@@ -82,14 +82,14 @@ Beads under `.beads/` are the authoritative execution units. Each bead contains:
 
 ## Phase 6 (Trustworthy Handoff and Security-Review Readiness) — ✅ COMPLETE LOCALLY / CHECKPOINTED AT 86313ec46
 
-Phase 6 complete: P6-000 through P6-009 executed and Hermes-verified locally on branch `feat/ua-phase6-trustworthy-handoff-security-review` (latest full tests `python -m pytest tests/code_scan -q` 1042 passed; branch ahead of jc-fork by 3 commits at checkpoint commit `86313ec46 feat(ua): add phase 6 serial security review closeout`).
+Phase 6 complete: P6-000 through P6-009 executed and Hermes-verified locally on branch `feat/ua-phase6-trustworthy-handoff-security-review` (latest full tests `python -m pytest tests/code_scan -q` 1042 passed; latest local docs/state checkpoint `569006464 docs(ua): sync phase 6 completion state`; branch prepared for JC-approved stack-branch-only push/merge).
 
 - Wave 1 (P6-002/003/004), Wave 2 (P6-005/006), and serial closeout (P6-007 security-review mode/evidence gaps + P6-008 PRL-like golden E2E regression + P6-009 docs/skills/ledger closeout) completed.
 - All beads: ✅ Complete (via isolated worktrees, integration, focused+full verification, reviewer PASS where applicable).
 - Hermes verification: full code_scan 1042 passed (latest); py_compile, diff hygiene, secret scan, scope/guardrail all PASS per bead logs.
 - Reviewer: PASS for relevant beads (P6-002-008; P6-009 direct docs).
 
-No implementation changes, push, merge, deploy, production mutation, or remote updates are performed or approved by this docs/state sync. This checkpoint may be committed locally under JC's narrow docs/state approval; push/merge/deploy remain unapproved.
+JC approved pushing `feat/ua-phase6-trustworthy-handoff-security-review` to `jc-fork` and merging it into `jc-fork/feat/ua-phase5-development-hardening` only. Merge to `jc-fork/main`, merge to `origin/main`, deploy, production mutation, and any other remote target remain unapproved.
 
 UA validation boundary (preserved): UA validation does not prove security, deployment readiness, RLS correctness, runtime correctness, CI success, or production behavior. Runtime readiness lists tool availability and suggested/external gate status without executing project gates. Reviewer/researcher outputs are targeted critic evidence; Hermes owns final synthesis and final assessment. Future `executed_external_gate` claims require separately approved external gate execution evidence.
 

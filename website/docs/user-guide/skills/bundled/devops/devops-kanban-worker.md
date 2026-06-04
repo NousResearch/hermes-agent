@@ -67,13 +67,22 @@ kanban_complete(
         "tests_run": 14,
         "tests_passed": 14,
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+        # Required for deterministic features / behavior changes / migrations /
+        # safety gates / guards / automation / code-affecting functionality.
+        # If the implementation repo has GitHub Issues disabled, use the
+        # project repo issue and link it from PRs/tasks.
+        "three_layer_tracking": {
+            "matrix": "Matrix update mentions task t_example and issue/PR #123",
+            "kanban": "task t_example plus this review-ready handoff",
+            "github": "issue/PR https://github.com/org/repo/issues/123",
+        },
     },
 )
 ```
 
 **Coding task that needs human review (review-required):**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. For deterministic features, behavior changes, migrations, safety gates, guards, automation, or other code-affecting functionality work, that metadata must also include `three_layer_tracking.matrix`, `three_layer_tracking.kanban`, and `three_layer_tracking.github`; Kanban-only tracking is insufficient. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
 
 ```python
 import json
@@ -85,6 +94,11 @@ kanban_comment(
         "tests_passed": 14,
         "diff_path": "/path/to/worktree",  # or PR url if pushed
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+        "three_layer_tracking": {
+            "matrix": "Matrix update mentions task t_example and issue/PR #123",
+            "kanban": "task t_example plus this review-required handoff",
+            "github": "issue/PR https://github.com/org/repo/issues/123",
+        },
     }, indent=2),
 )
 kanban_block(

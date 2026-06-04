@@ -265,6 +265,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    icon TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -1439,6 +1440,23 @@ class SessionDB:
             cursor = conn.execute(
                 "UPDATE sessions SET archived = ? WHERE id = ?",
                 (1 if archived else 0, session_id),
+            )
+            return cursor.rowcount
+        rowcount = self._execute_write(_do)
+        return rowcount > 0
+
+    def set_session_icon(self, session_id: str, icon: Optional[str]) -> bool:
+        """Set or clear a session's user-chosen icon glyph.
+
+        ``icon`` is a short display string (an emoji or a couple of chars);
+        passing None/"" clears it. Returns True when a row was updated.
+        """
+        cleaned = (icon or "").strip()[:16] or None
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET icon = ? WHERE id = ?",
+                (cleaned, session_id),
             )
             return cursor.rowcount
         rowcount = self._execute_write(_do)
@@ -3053,26 +3071,46 @@ class SessionDB:
         min_message_count: int = 0,
         include_archived: bool = False,
         archived_only: bool = False,
+        exclude_children: bool = False,
     ) -> int:
-        """Count sessions, optionally filtered by source."""
+        """Count sessions, optionally filtered by source.
+
+        Pass ``exclude_children=True`` to count only the conversations that
+        ``list_sessions_rich`` surfaces (root + branch sessions), hiding
+        sub-agent runs and compression continuations. Use it whenever the count
+        is paired with a ``list_sessions_rich`` page (e.g. sidebar "load more"
+        totals) so the total matches the number of listable rows — otherwise the
+        raw row count is inflated by children and "load more" never settles.
+        """
         where_clauses = []
         params = []
 
+        if exclude_children:
+            # Mirror list_sessions_rich's child-exclusion clause exactly so the
+            # count lines up with the rows: roots (no parent) plus branch
+            # children (parent ended with end_reason='branched').
+            where_clauses.append(
+                "(s.parent_session_id IS NULL"
+                " OR EXISTS (SELECT 1 FROM sessions p"
+                "            WHERE p.id = s.parent_session_id"
+                "            AND p.end_reason = 'branched'"
+                "            AND s.started_at >= p.ended_at))"
+            )
         if source:
-            where_clauses.append("source = ?")
+            where_clauses.append("s.source = ?")
             params.append(source)
         if min_message_count > 0:
-            where_clauses.append("message_count >= ?")
+            where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
         if archived_only:
-            where_clauses.append("archived = 1")
+            where_clauses.append("s.archived = 1")
         elif not include_archived:
-            where_clauses.append("archived = 0")
+            where_clauses.append("s.archived = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
         with self._lock:
-            cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions{where_sql}", params)
+            cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:

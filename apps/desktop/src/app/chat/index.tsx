@@ -12,7 +12,6 @@ import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
-import { NotificationStack } from '@/components/notifications'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -325,7 +324,6 @@ export function ChatView({
         selectedSessionId={selectedSessionId}
       />
 
-      <NotificationStack />
       <PromptOverlays />
 
       <div

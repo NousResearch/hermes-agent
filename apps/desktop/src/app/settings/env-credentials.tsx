@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
+import { Tip } from '@/components/ui/tooltip'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { Check, Eye, EyeOff, type IconComponent, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -45,35 +46,28 @@ function EnvActions({
   return (
     <div className="flex shrink-0 items-center gap-1.5">
       {info.url && (
-        <Button asChild size="xs" title="Open provider docs" variant="ghost">
+        <Button asChild size="xs" variant="ghost">
           <a href={info.url} rel="noreferrer" target="_blank">
             Docs
           </a>
         </Button>
       )}
       {info.is_set && showReveal && (
-        <Button
-          onClick={() => onReveal(varKey)}
-          size="icon-xs"
-          title={isRevealed ? 'Hide value' : 'Reveal value'}
-          variant="ghost"
-        >
-          {isRevealed ? <EyeOff /> : <Eye />}
-        </Button>
+        <Tip label={isRevealed ? 'Hide value' : 'Reveal value'}>
+          <Button onClick={() => onReveal(varKey)} size="icon-xs" variant="ghost">
+            {isRevealed ? <EyeOff /> : <Eye />}
+          </Button>
+        </Tip>
       )}
       <Button onClick={onEdit} size="xs" variant="outline">
         {info.is_set ? 'Replace' : 'Set'}
       </Button>
       {info.is_set && (
-        <Button
-          disabled={saving === varKey}
-          onClick={() => onClear(varKey)}
-          size="icon-xs"
-          title="Clear value"
-          variant="ghost"
-        >
-          <Trash2 />
-        </Button>
+        <Tip label="Clear value">
+          <Button disabled={saving === varKey} onClick={() => onClear(varKey)} size="icon-xs" variant="ghost">
+            <Trash2 />
+          </Button>
+        </Tip>
       )}
     </div>
   )

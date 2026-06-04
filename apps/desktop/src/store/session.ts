@@ -76,6 +76,11 @@ export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
+// Listable conversation count per profile (children excluded), keyed by profile
+// name. Lets the sidebar scope its "Load more" footer to the active profile so a
+// huge default profile doesn't keep "Load more" visible while browsing a small
+// one. Empty for single-profile users (fall back to $sessionsTotal).
+export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
@@ -114,6 +119,8 @@ export const setConnection = (next: Updater<HermesConnection | null>) => updateA
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
+export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
+  updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)

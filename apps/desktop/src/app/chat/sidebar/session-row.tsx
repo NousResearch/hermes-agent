@@ -70,10 +70,12 @@ export function SidebarSessionRow({
 
   return (
     <SessionContextMenu
+      icon={session.icon}
       onArchive={onArchive}
       onDelete={onDelete}
       onPin={onPin}
       pinned={isPinned}
+      profile={session.profile}
       sessionId={session.id}
       title={title}
     >
@@ -123,8 +125,10 @@ export function SidebarSessionRow({
               className={cn(
                 // Scope the dot↔grabber swap to a local group so the grabber
                 // only reveals when hovering/focusing the handle itself, not
-                // anywhere on the row.
-                'group/handle relative -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
+                // anywhere on the row. Width MUST match the non-reorderable dot
+                // column (w-3.5) so rows don't shift horizontally when reorder is
+                // toggled (e.g. scoped → ALL-profiles view).
+                'group/handle relative -my-0.5 grid w-3.5 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
                 // The quest-glow box-shadow extends past the dot; let it bleed
                 // out instead of being clipped by this handle's overflow-hidden.
                 needsInput && 'overflow-visible'
@@ -152,10 +156,15 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
+            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+          </span>
           )}
-          <span className="truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          {session.icon ? (
+            <span aria-hidden="true" className="shrink-0 text-xs leading-none">
+              {session.icon}
+            </span>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
         </button>
@@ -166,10 +175,12 @@ export function SidebarSessionRow({
             </span>
           )}
           <SessionActionsMenu
+            icon={session.icon}
             onArchive={onArchive}
             onDelete={onDelete}
             onPin={onPin}
             pinned={isPinned}
+            profile={session.profile}
             sessionId={session.id}
             title={title}
           >

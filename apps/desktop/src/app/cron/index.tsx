@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { SearchField } from '@/components/ui/search-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { Tip } from '@/components/ui/tooltip'
 import {
   createCronJob,
   type CronJob,
@@ -591,16 +592,23 @@ function CronJobRow({
   )
 }
 
-function IconAction({ children, className, ...props }: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
+function IconAction({
+  children,
+  className,
+  title,
+  ...props
+}: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
   return (
-    <Button
-      className={cn('text-muted-foreground hover:text-foreground', className)}
-      size="icon-sm"
-      variant="ghost"
-      {...props}
-    >
-      {children}
-    </Button>
+    <Tip label={title}>
+      <Button
+        className={cn('text-muted-foreground hover:text-foreground', className)}
+        size="icon-sm"
+        variant="ghost"
+        {...props}
+      >
+        {children}
+      </Button>
+    </Tip>
   )
 }
 

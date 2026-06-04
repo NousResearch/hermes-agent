@@ -1,7 +1,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { transcribeAudio } from '@/hermes'
+import { getProfiles, transcribeAudio } from '@/hermes'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
@@ -30,6 +30,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
   $messages,
@@ -436,6 +437,51 @@ export function usePromptActions({
 
         if (normalizedName === 'skin' && !sessionHint && !activeSessionIdRef.current) {
           notify({ kind: 'success', message: handleSkinCommand(arg) })
+
+          return
+        }
+
+        // /profile selects which profile new chats open in — no app relaunch.
+        // A profile is per-session now, so an existing thread can't change its
+        // profile mid-stream; `/profile <name>` instead points the next new chat
+        // (and the current empty draft) at that profile's backend.
+        if (normalizedName === 'profile') {
+          const target = arg.trim()
+          const current = normalizeProfileKey($activeGatewayProfile.get())
+
+          if (!target) {
+            notify({
+              kind: 'success',
+              message: `Profile: ${current}. Use /profile <name> or the "New session" picker to start a chat in another profile.`
+            })
+
+            return
+          }
+
+          try {
+            const { profiles } = await getProfiles()
+            const match = profiles.find(profile => profile.name === target)
+
+            if (!match) {
+              notify({
+                kind: 'error',
+                title: 'Unknown profile',
+                message: `No profile named "${target}". Available: ${profiles.map(profile => profile.name).join(', ')}`
+              })
+
+              return
+            }
+
+            const key = normalizeProfileKey(match.name)
+
+            $newChatProfile.set(key)
+            // Swap the live gateway now so an empty draft sends into this
+            // profile immediately; an existing thread keeps its own profile.
+            await ensureGatewayProfile(key)
+            notify({ kind: 'success', message: `New chats will use profile ${match.name}.` })
+          } catch (err) {
+            notifyError(err, 'Failed to set profile')
+          }
 
           return
         }

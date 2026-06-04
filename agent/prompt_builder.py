@@ -1252,7 +1252,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1296,6 +1296,15 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
         return None
+    stored_dir_mtime = snapshot.get("dir_mtime_ns")
+    if stored_dir_mtime is not None:
+        try:
+            current_dir_mtime = skills_dir.stat().st_mtime_ns
+        except OSError:
+            current_dir_mtime = None
+        if current_dir_mtime == stored_dir_mtime:
+            return snapshot
+        # Dir mtime changed -- fall through to full per-file validation.
     if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
         return None
     return snapshot
@@ -1308,8 +1317,13 @@ def _write_skills_snapshot(
     category_descriptions: dict[str, str],
 ) -> None:
     """Persist skill metadata to disk for fast cold-start reuse."""
+    try:
+        dir_mtime_ns = skills_dir.stat().st_mtime_ns
+    except OSError:
+        dir_mtime_ns = None
     payload = {
         "version": _SKILLS_SNAPSHOT_VERSION,
+        "dir_mtime_ns": dir_mtime_ns,
         "manifest": manifest,
         "skills": skill_entries,
         "category_descriptions": category_descriptions,

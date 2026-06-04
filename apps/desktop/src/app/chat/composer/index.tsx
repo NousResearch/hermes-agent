@@ -1121,16 +1121,16 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onCompositionEnd={() => {
+          composingRef.current = false
+        }}
+        onCompositionStart={() => {
+          composingRef.current = true
+        }}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
         onFocus={() => markActiveComposer('main')}
         onInput={handleEditorInput}
-        onCompositionStart={() => {
-          composingRef.current = true
-        }}
-        onCompositionEnd={() => {
-          composingRef.current = false
-        }}
         onKeyDown={handleEditorKeyDown}
         onKeyUp={handleEditorKeyUp}
         onMouseUp={refreshTrigger}

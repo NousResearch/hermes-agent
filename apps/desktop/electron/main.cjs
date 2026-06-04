@@ -2444,6 +2444,7 @@ async function resourceBufferFromUrl(rawUrl) {
         return
       }
       const chunks = []
+      res.on('error', reject)
       res.on('data', chunk => chunks.push(chunk))
       res.on('end', () => {
         resolve({

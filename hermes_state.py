@@ -4024,6 +4024,145 @@ class SessionDB:
 
         return result
 
+    def archive_old_sessions(
+        self,
+        *,
+        keep_recent: int = 100,
+        older_than_days: int = 14,
+        min_message_count: int = 1,
+        preserve_ids: Optional[List[str]] = None,
+        active_grace_seconds: int = 86400,
+    ) -> int:
+        """Soft-archive old surfaced sessions while keeping recent work visible.
+
+        This is intentionally a soft hide (``sessions.archived = 1``), not a
+        delete.  It is designed for desktop/sidebar maintenance where a heavy
+        user can have thousands of old chats, but still needs Settings ->
+        Archived Chats to restore them.
+
+        A session is eligible when it is surfaced by ``list_sessions_rich``
+        (root conversations and branch sessions, not hidden subagent children),
+        has at least ``min_message_count`` messages, is not preserved by id, and
+        is either older than ``older_than_days`` or outside the most-recent
+        ``keep_recent`` surfaced conversations.  Recent live sessions
+        (``ended_at IS NULL`` and activity within ``active_grace_seconds``) are
+        kept even when they would otherwise fall outside the cap.
+        """
+        keep_recent = max(0, int(keep_recent or 0))
+        older_than_days = max(0, int(older_than_days or 0))
+        min_message_count = max(0, int(min_message_count or 0))
+        active_grace_seconds = max(0, int(active_grace_seconds or 0))
+        if keep_recent <= 0 and older_than_days <= 0:
+            return 0
+
+        preserved = {
+            str(sid).strip()
+            for sid in (preserve_ids or [])
+            if str(sid).strip()
+        }
+        now = time.time()
+        cutoff = now - older_than_days * 86400 if older_than_days > 0 else None
+        archive_ids: List[str] = []
+        seen_targets = set()
+
+        sessions = self.list_sessions_rich(
+            limit=100000,
+            offset=0,
+            min_message_count=min_message_count,
+            include_archived=False,
+            archived_only=False,
+            order_by_last_active=True,
+        )
+        for index, session in enumerate(sessions):
+            sid = str(session.get("id") or "").strip()
+            if not sid:
+                continue
+            root_id = str(session.get("_lineage_root_id") or sid).strip()
+            target_id = root_id or sid
+            if target_id in seen_targets:
+                continue
+            seen_targets.add(target_id)
+            if sid in preserved or target_id in preserved:
+                continue
+
+            started_at = float(session.get("started_at") or 0)
+            last_active = float(session.get("last_active") or started_at)
+            ended_at = session.get("ended_at")
+            recently_active = (
+                ended_at is None
+                and active_grace_seconds > 0
+                and now - last_active < active_grace_seconds
+            )
+            if recently_active:
+                continue
+
+            beyond_recent_cap = keep_recent > 0 and index >= keep_recent
+            past_age_cutoff = cutoff is not None and last_active < cutoff
+            if beyond_recent_cap or past_age_cutoff:
+                archive_ids.append(target_id)
+
+        if not archive_ids:
+            return 0
+
+        def _do(conn):
+            placeholders = ",".join("?" for _ in archive_ids)
+            cursor = conn.execute(
+                f"UPDATE sessions SET archived = 1 "
+                f"WHERE archived = 0 AND id IN ({placeholders})",
+                archive_ids,
+            )
+            return cursor.rowcount
+
+        return self._execute_write(_do)
+
+    def maybe_auto_archive_old_sessions(
+        self,
+        *,
+        keep_recent: int = 100,
+        older_than_days: int = 14,
+        min_interval_hours: float = 6,
+        min_message_count: int = 1,
+        preserve_ids: Optional[List[str]] = None,
+        active_grace_seconds: int = 86400,
+    ) -> Dict[str, Any]:
+        """Idempotent auto-maintenance wrapper around old-session archiving."""
+        result: Dict[str, Any] = {"skipped": False, "archived": 0}
+        try:
+            last_raw = self.get_meta("last_auto_archive")
+            now = time.time()
+            interval_seconds = max(0.0, float(min_interval_hours or 0)) * 3600
+            if last_raw and interval_seconds > 0:
+                try:
+                    last_ts = float(last_raw)
+                    if now - last_ts < interval_seconds:
+                        result["skipped"] = True
+                        return result
+                except (TypeError, ValueError):
+                    pass
+
+            archived = self.archive_old_sessions(
+                keep_recent=keep_recent,
+                older_than_days=older_than_days,
+                min_message_count=min_message_count,
+                preserve_ids=preserve_ids,
+                active_grace_seconds=active_grace_seconds,
+            )
+            result["archived"] = archived
+            self.set_meta("last_auto_archive", str(now))
+            if archived > 0:
+                logger.info(
+                    "state.db auto-maintenance: archived %d old session(s) "
+                    "(keep_recent=%d, older_than_days=%d)",
+                    archived,
+                    keep_recent,
+                    older_than_days,
+                )
+        except Exception as exc:
+            logger.warning("state.db auto-archive failed: %s", exc)
+            result["error"] = str(exc)
+
+        return result
+
     # ── Handoff (cross-platform session transfer) ──────────────────────────
     #
     # State machine:

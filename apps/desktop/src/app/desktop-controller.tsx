@@ -11,7 +11,7 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, listSessions } from '../hermes'
+import { autoArchiveOldSessions, getSessionMessages, listSessions } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { toggleCommandPalette } from '../store/command-palette'
 import {
@@ -233,6 +233,29 @@ export function DesktopController() {
 
     try {
       const limit = $sessionsLimit.get()
+
+      const preserveIds = new Set<string>([
+        ...$workingSessionIds.get(),
+        ...$pinnedSessionIds.get()
+      ])
+
+      const selectedSessionId = $selectedStoredSessionId.get()
+      const activeSessionId = $activeSessionId.get()
+
+      if (selectedSessionId) {
+        preserveIds.add(selectedSessionId)
+      }
+
+      if (activeSessionId) {
+        preserveIds.add(activeSessionId)
+      }
+
+      try {
+        await autoArchiveOldSessions([...preserveIds])
+      } catch (error) {
+        console.warn('Hermes session auto-archive skipped', error)
+      }
+
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.

@@ -172,6 +172,40 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
+
+ELEVENLABS_VOICE_SETTING_KEYS = frozenset({
+    "stability",
+    "similarity_boost",
+    "style",
+    "use_speaker_boost",
+    "speed",
+})
+
+ELEVENLABS_CONTROLLED_CONVERT_KEYS = frozenset({
+    "text",
+    "voice_id",
+    "model_id",
+    "output_format",
+    "language_code",
+    "voice_settings",
+})
+
+# Keyword-only parameters exposed by elevenlabs.client.ElevenLabs.text_to_speech.convert
+# as of elevenlabs==1.59.0, excluding values Hermes manages directly above.
+ELEVENLABS_KNOWN_CONVERT_OPTION_KEYS = frozenset({
+    "enable_logging",
+    "optimize_streaming_latency",
+    "pronunciation_dictionary_locators",
+    "seed",
+    "previous_text",
+    "next_text",
+    "previous_request_ids",
+    "next_request_ids",
+    "use_pvc_as_ivc",
+    "apply_text_normalization",
+    "apply_language_text_normalization",
+    "request_options",
+})
 DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
@@ -392,6 +426,157 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
 })
+
+
+def _elevenlabs_allowed_voice_setting_keys(
+    voice_settings_cls: Any = None,
+) -> frozenset[str]:
+    allowed = set(ELEVENLABS_VOICE_SETTING_KEYS)
+    if voice_settings_cls is None:
+        try:
+            from elevenlabs import VoiceSettings as voice_settings_cls
+        except Exception:
+            voice_settings_cls = None
+
+    if voice_settings_cls is not None:
+        fields = getattr(voice_settings_cls, "model_fields", None)
+        if isinstance(fields, dict):
+            allowed.update(fields)
+        # Pydantic v1 exposed __fields__; read it from __dict__ so Pydantic v2
+        # does not emit a deprecation warning through its descriptor.
+        legacy_fields = vars(voice_settings_cls).get("__fields__")
+        if isinstance(legacy_fields, dict):
+            allowed.update(legacy_fields)
+        annotations = getattr(voice_settings_cls, "__annotations__", None)
+        if isinstance(annotations, dict):
+            allowed.update(annotations)
+        try:
+            import inspect
+
+            signature = inspect.signature(voice_settings_cls)
+            for name, param in signature.parameters.items():
+                if param.kind in {
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                }:
+                    allowed.add(name)
+        except Exception:
+            pass
+    allowed.discard("extra_data")
+    return frozenset(allowed)
+
+
+def _make_elevenlabs_voice_settings(
+    el_config: Dict[str, Any],
+    tts_config: Dict[str, Any] | None = None,
+) -> Any:
+    """Return an ElevenLabs VoiceSettings object/dict from config, if present.
+
+    Preferred shape:
+
+        tts.elevenlabs.voice_settings: {stability: 0.5, speed: 1.05}
+
+    For compatibility with existing user configs and PR #32571, the same keys
+    are also accepted directly under ``tts.elevenlabs`` when the nested block is
+    absent. If neither shape sets ``speed``, the global ``tts.speed`` value is
+    used as the ElevenLabs speed fallback, matching other TTS providers.
+    """
+    raw_settings = el_config.get("voice_settings")
+    if raw_settings is None:
+        raw_settings = {
+            key: el_config[key]
+            for key in ELEVENLABS_VOICE_SETTING_KEYS
+            if key in el_config
+        }
+
+    if (
+        isinstance(raw_settings, dict)
+        and "speed" not in raw_settings
+        and isinstance(tts_config, dict)
+    ):
+        global_speed = tts_config.get("speed")
+        if global_speed not in (None, ""):
+            raw_settings = {**raw_settings, "speed": global_speed}
+
+    if raw_settings in (None, {}):
+        return None
+    if not isinstance(raw_settings, dict):
+        raise ValueError("tts.elevenlabs.voice_settings must be a mapping")
+
+    try:
+        from elevenlabs import VoiceSettings
+    except Exception:
+        VoiceSettings = None
+
+    unknown = sorted(
+        set(raw_settings) - _elevenlabs_allowed_voice_setting_keys(VoiceSettings)
+    )
+    if unknown:
+        raise ValueError(
+            "Unknown ElevenLabs voice_settings option(s): " + ", ".join(unknown)
+        )
+
+    if VoiceSettings is None:
+        # Older SDKs may not expose VoiceSettings. The generated client has
+        # historically accepted plain mapping payloads too, so keep working
+        # rather than dropping the user's explicit settings.
+        return dict(raw_settings)
+    return VoiceSettings(**raw_settings)
+
+
+def _elevenlabs_allowed_convert_options(convert_method: Any = None) -> frozenset[str]:
+    allowed = set(ELEVENLABS_KNOWN_CONVERT_OPTION_KEYS)
+    if convert_method is not None:
+        try:
+            import inspect
+
+            signature = inspect.signature(convert_method)
+            for name, param in signature.parameters.items():
+                if param.kind in {
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                }:
+                    allowed.add(name)
+        except Exception:
+            pass
+    allowed.difference_update(ELEVENLABS_CONTROLLED_CONVERT_KEYS)
+    return frozenset(allowed)
+
+
+def _elevenlabs_convert_options(
+    el_config: Dict[str, Any],
+    convert_method: Any = None,
+) -> Dict[str, Any]:
+    """Return validated extra kwargs for ElevenLabs ``convert``.
+
+    Users may set ``tts.elevenlabs.convert_options`` (``options`` is accepted as
+    a short alias) for less-common SDK parameters such as ``seed``, context
+    text, text normalization, or pronunciation dictionaries. Hermes-managed
+    fields stay top-level so output routing and voice/model selection remain
+    predictable.
+    """
+    raw_options = el_config.get("convert_options", el_config.get("options", {}))
+    if raw_options in (None, {}):
+        return {}
+    if not isinstance(raw_options, dict):
+        raise ValueError("tts.elevenlabs.convert_options must be a mapping")
+
+    controlled = sorted(set(raw_options) & ELEVENLABS_CONTROLLED_CONVERT_KEYS)
+    if controlled:
+        raise ValueError(
+            "ElevenLabs convert_options cannot override Hermes-managed option(s): "
+            + ", ".join(controlled)
+        )
+
+    allowed = _elevenlabs_allowed_convert_options(convert_method)
+    unknown = sorted(set(raw_options) - allowed)
+    if unknown:
+        raise ValueError(
+            "Unknown ElevenLabs convert_options option(s): " + ", ".join(unknown)
+        )
+
+    return dict(raw_options)
+
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
@@ -987,12 +1172,26 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
 
     ElevenLabs = _import_elevenlabs()
     client = ElevenLabs(api_key=api_key)
-    audio_generator = client.text_to_speech.convert(
-        text=text,
-        voice_id=voice_id,
-        model_id=model_id,
-        output_format=output_format,
+
+    convert_kwargs = {
+        "text": text,
+        "voice_id": voice_id,
+        "model_id": model_id,
+        "output_format": output_format,
+    }
+
+    language_code = el_config.get("language_code")
+    if isinstance(language_code, str) and language_code.strip():
+        convert_kwargs["language_code"] = language_code.strip()
+
+    voice_settings = _make_elevenlabs_voice_settings(el_config, tts_config)
+    if voice_settings is not None:
+        convert_kwargs["voice_settings"] = voice_settings
+
+    convert_kwargs.update(
+        _elevenlabs_convert_options(el_config, client.text_to_speech.convert)
     )
+    audio_generator = client.text_to_speech.convert(**convert_kwargs)
 
     # audio_generator yields chunks -- write them all
     with open(output_path, "wb") as f:

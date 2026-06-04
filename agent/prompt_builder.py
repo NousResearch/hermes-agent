@@ -22,6 +22,7 @@ from agent.skill_utils import (
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
+    skill_matches_environment,
     skill_matches_platform,
 )
 from utils import atomic_json_write
@@ -1003,6 +1004,13 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         frontmatter, _ = parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
+            return False, frontmatter, ""
+
+        # Environment relevance gate (offer-time only): hide skills tagged for
+        # a runtime environment that isn't active (e.g. kanban-only skills for
+        # non-kanban users, s6-only skills outside the container). Explicit
+        # loads (skill_view / --skills) bypass this — see skill_matches_environment.
+        if not skill_matches_environment(frontmatter):
             return False, frontmatter, ""
 
         return True, frontmatter, extract_skill_description(frontmatter)

@@ -322,3 +322,72 @@ class TestHermesConstantsFallback:
         import hermes_constants
         assert module.get_hermes_home is hermes_constants.get_hermes_home
         assert module.display_hermes_home is hermes_constants.display_hermes_home
+        assert module.get_default_hermes_root is hermes_constants.get_default_hermes_root
+
+
+class TestClientSecretDefaultRoot:
+    """Regression tests for anchoring the shared OAuth client secret.
+
+    Sibling of commit ``fff056144`` (google_chat): the host-wide
+    ``google_client_secret.json`` must be visible to a gateway running under a
+    named profile (``HERMES_HOME=<root>/profiles/<name>``), so it resolves to
+    the default Hermes root unless a profile-local copy is present.
+    """
+
+    SCRIPT_PATH = (
+        Path(__file__).resolve().parents[2]
+        / "skills/productivity/google-workspace/scripts/setup.py"
+    )
+
+    def _load_setup(self, monkeypatch):
+        """Load setup.py with hermes_constants blocked so the stdlib
+        ``get_default_hermes_root`` fallback (the path this fix adds) runs."""
+        monkeypatch.setitem(sys.modules, "hermes_constants", None)
+        # setup.py imports google_auth_oauthlib lazily inside _ensure_deps, so
+        # module import itself only needs _hermes_home on sys.path (added by
+        # the script's own bootstrap).
+        spec = importlib.util.spec_from_file_location(
+            "google_workspace_setup_secret_test", self.SCRIPT_PATH
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def test_client_secret_shared_across_profiles(self, monkeypatch, tmp_path):
+        """A profile gateway resolves the client secret at the default root."""
+        root = tmp_path / ".hermes"
+        (root / "profiles" / "bot1").mkdir(parents=True)
+        (root / "google_client_secret.json").write_text("{}")
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "bot1"))
+
+        module = self._load_setup(monkeypatch)
+        assert module._client_secret_path() == root / "google_client_secret.json"
+
+    def test_profile_local_client_secret_takes_precedence(self, monkeypatch, tmp_path):
+        """A profile-local copy wins over the default-root secret when present."""
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "bot1"
+        profile.mkdir(parents=True)
+        (root / "google_client_secret.json").write_text("{}")
+        (profile / "google_client_secret.json").write_text("{}")
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        module = self._load_setup(monkeypatch)
+        assert module._client_secret_path() == profile / "google_client_secret.json"
+
+    def test_default_root_used_when_no_profile_local(self, monkeypatch, tmp_path):
+        """With no profile-local copy, the resolver returns the default-root path."""
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "bot1"
+        profile.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        module = self._load_setup(monkeypatch)
+        assert module._client_secret_path() == root / "google_client_secret.json"

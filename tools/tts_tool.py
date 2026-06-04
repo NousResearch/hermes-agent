@@ -115,6 +115,55 @@ def _import_elevenlabs():
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
+
+def _build_elevenlabs_client(api_key: str, el_config: Dict[str, Any]):
+    """Instantiate the ElevenLabs SDK client, honoring a configurable base URL.
+
+    Resolution order for the API root:
+      1. ``tts.elevenlabs.base_url`` in config.yaml
+      2. ``ELEVENLABS_BASE_URL`` env var
+      3. ``DEFAULT_ELEVENLABS_BASE_URL`` (https://api.elevenlabs.io)
+
+    The ElevenLabs SDK appends the ``/v1/...`` path itself, so the configured
+    value is normalized to a bare origin: any trailing slashes and a trailing
+    ``/v1`` segment are stripped. This makes the knob forgiving of users who
+    paste either ``https://host`` or ``https://host/v1`` (the latter matching
+    the shape STT's ``ELEVENLABS_STT_BASE_URL`` expects).
+
+    When the resolved root equals the default, the client is created without an
+    explicit ``environment`` so behavior is byte-for-byte identical to before.
+    """
+    base_url = str(
+        (el_config or {}).get("base_url")
+        or get_env_value("ELEVENLABS_BASE_URL")
+        or DEFAULT_ELEVENLABS_BASE_URL
+    ).strip()
+
+    # Normalize: drop trailing slashes, then a trailing "/v1" if present.
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[: -len("/v1")]
+    normalized = normalized.rstrip("/")
+
+    ElevenLabs = _import_elevenlabs()
+
+    if not normalized or normalized == DEFAULT_ELEVENLABS_BASE_URL:
+        return ElevenLabs(api_key=api_key)
+
+    # Point the SDK at a custom origin. Derive a best-effort wss endpoint from
+    # the same host (https -> wss, http -> ws) for any websocket-based calls.
+    from elevenlabs.environment import ElevenLabsEnvironment
+
+    if normalized.startswith("https://"):
+        wss = "wss://" + normalized[len("https://"):]
+    elif normalized.startswith("http://"):
+        wss = "ws://" + normalized[len("http://"):]
+    else:
+        wss = normalized
+
+    environment = ElevenLabsEnvironment(base=normalized, wss=wss)
+    return ElevenLabs(api_key=api_key, environment=environment)
+
 def _import_openai_client():
     """Lazy import OpenAI client. Returns the class or raises ImportError."""
     from openai import OpenAI as OpenAIClient
@@ -170,6 +219,11 @@ DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
+# API root for the ElevenLabs SDK (no ``/v1`` suffix -- the SDK appends it).
+# Override via ``tts.elevenlabs.base_url`` in config.yaml or the
+# ``ELEVENLABS_BASE_URL`` env var to point at a proxy / self-hosted gateway /
+# residency endpoint (e.g. https://api.eu.residency.elevenlabs.io).
+DEFAULT_ELEVENLABS_BASE_URL = "https://api.elevenlabs.io"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
@@ -957,8 +1011,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     else:
         output_format = "mp3_44100_128"
 
-    ElevenLabs = _import_elevenlabs()
-    client = ElevenLabs(api_key=api_key)
+    client = _build_elevenlabs_client(api_key, el_config)
     audio_generator = client.text_to_speech.convert(
         text=text,
         voice_id=voice_id,
@@ -2318,8 +2371,7 @@ def stream_tts_to_speaker(
             logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
         else:
             try:
-                ElevenLabs = _import_elevenlabs()
-                client = ElevenLabs(api_key=api_key)
+                client = _build_elevenlabs_client(api_key, el_config)
             except ImportError:
                 logger.warning("elevenlabs package not installed; streaming TTS disabled")
 

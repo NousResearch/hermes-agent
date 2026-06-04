@@ -51,6 +51,7 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
+    base_url: "https://api.elevenlabs.io"  # Optional: proxy / residency endpoint (or set ELEVENLABS_BASE_URL). A trailing "/v1" is stripped automatically.
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer

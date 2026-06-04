@@ -45,7 +45,16 @@ class TestDotenvFallbackPerProvider:
     def test_elevenlabs_reads_dotenv_key(self, tmp_path):
         from tools import tts_tool
 
-        with patch.object(tts_tool, "get_env_value", return_value="el-dotenv-key"), \
+        # Selective mock: only the API key is dotenv-backed here. Returning the
+        # key for *every* lookup would also satisfy ELEVENLABS_BASE_URL and send
+        # the client down the custom-environment branch, which this test isn't
+        # about. base_url resolution is covered in test_tts_elevenlabs_base_url.
+        def fake_get_env_value(name, default=None):
+            if name == "ELEVENLABS_API_KEY":
+                return "el-dotenv-key"
+            return default
+
+        with patch.object(tts_tool, "get_env_value", side_effect=fake_get_env_value), \
              patch.object(tts_tool, "_import_elevenlabs") as mock_import:
             mock_client = MagicMock()
             mock_client.text_to_speech.convert.return_value = iter([b"audio"])

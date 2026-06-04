@@ -5889,13 +5889,19 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    # DISABLED BY DEFAULT: in this deployment every PR is human-reviewed and
+    # human-merged, so a re-spawn cannot silently land a duplicate/merged PR.
+    # The guard only created friction (tasks stuck `ready` after producing a PR,
+    # with no `--force` flag in this Hermes version). Re-enable by setting
+    # HERMES_KANBAN_RESPAWN_GUARD_ACTIVE_PR=1.
+    if os.environ.get("HERMES_KANBAN_RESPAWN_GUARD_ACTIVE_PR", "").strip() in ("1", "true", "True"):
+        pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

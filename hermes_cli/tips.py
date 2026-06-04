@@ -479,9 +479,19 @@ TIPS = [
 def get_random_tip(exclude_recent: int = 0) -> str:
     """Return a random tip string.
 
+    Prefers i18n-translated tips from hermes_cli.strings when available.
+    Falls back to the hardcoded TIPS list when i18n is unavailable.
+
     Args:
         exclude_recent: not used currently; reserved for future
             deduplication across sessions.
     """
+    try:
+        from hermes_cli.strings import get_tips
+        i18n_tips = get_tips()
+        if i18n_tips:
+            return random.choice(i18n_tips)
+    except Exception:
+        pass
     return random.choice(TIPS)
 

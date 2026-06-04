@@ -10,7 +10,6 @@ of the backgrounded service (indefinitely for a uvicorn server).
 The fix switches ``_drain()`` to select()-based non-blocking reads and
 stops draining shortly after bash exits even if the pipe hasn't EOF'd.
 """
-import json
 import subprocess
 import time
 

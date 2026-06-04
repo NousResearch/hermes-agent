@@ -192,6 +192,14 @@ class SignalAdapter(BasePlatformAdapter):
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
+        # Mention filter — only respond in groups when the bot account is @mentioned.
+        # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
+        _rm_cfg = extra.get("require_mention")
+        if _rm_cfg is not None:
+            self.require_mention = bool(_rm_cfg)
+        else:
+            self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
         # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
         # Stored here so the reaction hooks can skip unauthorized senders
         # (reactions fire before run.py's auth gate, so without this check
@@ -517,6 +525,23 @@ class SignalAdapter(BasePlatformAdapter):
         mentions = data_message.get("mentions", [])
         if text and mentions:
             text = _render_mentions(text, mentions)
+
+        # Mention filter: in groups, only process messages that @mention the bot account
+        if is_group and self.require_mention:
+            account_norm = self._account_normalized
+            # Check rendered mention tags OR raw mention metadata
+            mentioned_in_text = account_norm and (
+                f"@{account_norm}" in (text or "")
+            )
+            mentioned_in_metadata = any(
+                m.get("number") == account_norm or m.get("uuid") == account_norm
+                for m in (data_message.get("mentions") or [])
+            )
+            if not mentioned_in_text and not mentioned_in_metadata:
+                logger.debug(
+                    "Signal: ignoring group message (require_mention=true, bot not mentioned)"
+                )
+                return
 
         # Extract quote (reply-to) context from Signal dataMessage
         quote_data = data_message.get("quote") or {}

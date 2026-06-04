@@ -518,6 +518,9 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "was_auto_reset": self.was_auto_reset,
+            "auto_reset_reason": self.auto_reset_reason,
+            "reset_had_activity": self.reset_had_activity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -567,6 +570,9 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            was_auto_reset=data.get("was_auto_reset", False),
+            auto_reset_reason=data.get("auto_reset_reason"),
+            reset_had_activity=data.get("reset_had_activity", False),
         )
 
 
@@ -1242,20 +1248,15 @@ class SessionStore:
 
         return entries
     
-    def get_transcript_path(self, session_id: str) -> Path:
-        """Get the path to a session's legacy transcript file."""
-        return self.sessions_dir / f"{session_id}.jsonl"
-    
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
-        """Append a message to a session's transcript (SQLite + legacy JSONL).
+        """Append a message to a session's transcript (SQLite).
 
         Args:
-            skip_db: When True, only write to JSONL and skip the SQLite write.
-                     Used when the agent already persisted messages to SQLite
-                     via its own _flush_messages_to_session_db(), preventing
-                     the duplicate-write bug (#860).
+            skip_db: When True, skip the SQLite write. Used when the agent
+                     already persisted messages to SQLite via its own
+                     _flush_messages_to_session_db(), preventing the
+                     duplicate-write bug (#860).
         """
-        # Write to SQLite (unless the agent already handled it)
         if self._db and not skip_db:
             try:
                 self._db.append_message(
@@ -1270,88 +1271,95 @@ class SessionStore:
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                     codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
+                    # Platform-side message id (yuanbao msg_id, telegram update_id, …).
+                    # Accept either explicit ``platform_message_id`` or the legacy
+                    # ``message_id`` key the JSONL transcript used.
+                    platform_message_id=(
+                        message.get("platform_message_id") or message.get("message_id")
+                    ),
+                    observed=bool(message.get("observed")),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
-        
-        # Also write legacy JSONL (keeps existing tooling working during transition)
-        transcript_path = self.get_transcript_path(session_id)
-        try:
-            with self._lock:
-                with open(transcript_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(message, ensure_ascii=False) + "\n")
-        except OSError as e:
-            # Disk full / read-only fs / permission errors must not crash the
-            # message handler — the SQLite write above is the primary store.
-            logger.debug("Failed to write JSONL transcript for %s: %s", session_id, e)
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
-        
-        Used by /retry, /undo, and /compress to persist modified conversation history.
-        Rewrites both SQLite and legacy JSONL storage.
+
+        Used by /retry, /undo, and /compress to persist modified conversation
+        history. state.db is the canonical store.
         """
-        # SQLite: replace atomically so a mid-rewrite failure doesn't leave
-        # the session half-empty in the DB while JSONL still has history.
         if self._db:
             try:
                 self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
-        
-        # JSONL: overwrite the file
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
-        """Load all messages from a session's transcript."""
-        db_messages = []
-        # Try SQLite first
-        if self._db:
-            try:
-                db_messages = self._db.get_messages_as_conversation(session_id)
-            except Exception as e:
-                logger.debug("Could not load messages from DB: %s", e)
+        """Load all messages from a session's transcript.
 
-        # Load legacy JSONL transcript (may contain more history than SQLite
-        # for sessions created before the DB layer was introduced).
-        transcript_path = self.get_transcript_path(session_id)
-        jsonl_messages = []
-        if transcript_path.exists():
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            jsonl_messages.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "Skipping corrupt line in transcript %s: %s",
-                                session_id, line[:120],
-                            )
+        state.db is the canonical store. The legacy JSONL fallback was removed
+        in spec 002 — pre-DB sessions on existing disks have already been
+        migrated (their DB row holds the full message history).
+        """
+        if not self._db:
+            return []
+        try:
+            return self._db.get_messages_as_conversation(session_id)
+        except Exception as e:
+            logger.debug("Could not load messages from DB: %s", e)
+            return []
 
-        # Prefer whichever source has more messages.
-        #
-        # Background: when a session pre-dates SQLite storage (or when the DB
-        # layer was added while a long-lived session was already active), the
-        # first post-migration turn writes only the *new* messages to SQLite
-        # (because _flush_messages_to_session_db skips messages already in
-        # conversation_history, assuming they're persisted).  On the *next*
-        # turn load_transcript returns those few SQLite rows and ignores the
-        # full JSONL history — the model sees a context of 1-4 messages instead
-        # of hundreds.  Using the longer source prevents this silent truncation.
-        if len(jsonl_messages) > len(db_messages):
-            if db_messages:
-                logger.debug(
-                    "Session %s: JSONL has %d messages vs SQLite %d — "
-                    "using JSONL (legacy session not yet fully migrated)",
-                    session_id, len(jsonl_messages), len(db_messages),
-                )
-            return jsonl_messages
+    def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
+        """Back up ``n`` user turns via soft-delete, keeping rows for audit.
 
-        return db_messages
+        Unlike :meth:`rewrite_transcript` (a hard replace used by /retry),
+        this flips the truncated rows to ``active=0`` in state.db so they
+        survive for audit and stay hidden from re-prompts and search. Mirrors
+        the CLI/TUI ``/undo [N]`` behavior via ``SessionDB.rewind_to_message``.
+
+        Returns a dict ``{"rewound_count", "turns_undone", "target_text"}`` on
+        success, or ``None`` if there's no DB or no user message to back up to.
+        ``n`` clamps to the oldest user turn when it exceeds the turn count.
+        """
+        if not self._db:
+            return None
+        if n < 1:
+            n = 1
+        try:
+            recents = self._db.list_recent_user_messages(session_id, limit=max(n, 10))
+        except Exception as e:
+            logger.debug("rewind_session: failed to list user messages: %s", e)
+            return None
+        if not recents:
+            return None
+        target_idx = min(n - 1, len(recents) - 1)
+        target_id = recents[target_idx]["id"]
+        try:
+            result = self._db.rewind_to_message(session_id, target_id)
+        except ValueError as e:
+            logger.debug("rewind_session: %s", e)
+            return None
+        except Exception as e:
+            logger.debug("rewind_session: rewind_to_message failed: %s", e)
+            return None
+        target_msg = result.get("target_message") or {}
+        content = target_msg.get("content") or ""
+        if isinstance(content, list):
+            parts = [
+                p.get("text", "")
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            target_text = "\n".join(t for t in parts if t)
+        elif isinstance(content, str):
+            target_text = content
+        else:
+            target_text = ""
+        return {
+            "rewound_count": result.get("rewound_count", 0),
+            "turns_undone": target_idx + 1,
+            "target_text": target_text,
+        }
 
 
 def build_session_context(

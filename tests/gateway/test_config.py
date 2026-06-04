@@ -164,6 +164,13 @@ class TestSessionResetPolicy:
 
 
 class TestStreamingConfig:
+    def test_defaults_to_auto_transport(self):
+        # "auto" prefers native draft streaming where the platform supports
+        # it (Telegram DMs) and falls back to edit-based everywhere else, so
+        # it is safe as the global out-of-the-box default.
+        restored = StreamingConfig.from_dict({"enabled": "true"})
+        assert restored.transport == "auto"
+
     def test_from_dict_coerces_quoted_false_enabled(self):
         restored = StreamingConfig.from_dict({"enabled": "false"})
         assert restored.enabled is False
@@ -339,6 +346,56 @@ class TestLoadGatewayConfig:
         # Env value preserved, not clobbered by yaml.
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
 
+    def test_bridges_discord_allow_from_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.allow_from should populate DISCORD_ALLOWED_USERS for auth."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  allow_from:\n"
+            "    - \"123456789012345678\"\n"
+            "    - \"999888777666555444\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_ALLOWED_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["allow_from"] == [
+            "123456789012345678",
+            "999888777666555444",
+        ]
+        assert os.environ.get("DISCORD_ALLOWED_USERS") == (
+            "123456789012345678,999888777666555444"
+        )
+
+    def test_bridges_discord_platform_extra_allow_from_to_env(self, tmp_path, monkeypatch):
+        """platforms.discord.extra.allow_from should reach DISCORD_ALLOWED_USERS too."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  discord:\n"
+            "    extra:\n"
+            "      allow_from:\n"
+            "        - \"123456789012345678\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_ALLOWED_USERS", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["allow_from"] == [
+            "123456789012345678",
+        ]
+        assert os.environ.get("DISCORD_ALLOWED_USERS") == "123456789012345678"
+
     def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -356,6 +413,69 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.API_SERVER].enabled is False
         assert Platform.API_SERVER not in config.get_connected_platforms()
+
+    def test_bridges_nested_gateway_platforms_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      token: nested-token\n"
+            "      home_channel:\n"
+            "        platform: telegram\n"
+            "        chat_id: \"123\"\n"
+            "        name: Nested Home\n"
+            "      extra:\n"
+            "        reply_prefix: nested\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.enabled is True
+        assert telegram.token == "nested-token"
+        assert telegram.home_channel == HomeChannel(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            name="Nested Home",
+        )
+        assert telegram.extra["reply_prefix"] == "nested"
+
+    def test_top_level_platforms_override_nested_gateway_platforms(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: false\n"
+            "      token: nested-token\n"
+            "      extra:\n"
+            "        reply_prefix: nested\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    enabled: true\n"
+            "    token: top-token\n"
+            "    extra:\n"
+            "      reply_prefix: top\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.enabled is True
+        assert telegram.token == "top-token"
+        assert telegram.extra["reply_prefix"] == "top"
 
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -408,6 +528,26 @@ class TestLoadGatewayConfig:
             "123": "Research mode",
             "456": "Therapist mode",
         }
+
+    def test_bridges_discord_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  history_backfill: true\n"
+            "  history_backfill_limit: 17\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_HISTORY_BACKFILL", raising=False)
+        monkeypatch.delenv("DISCORD_HISTORY_BACKFILL_LIMIT", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("DISCORD_HISTORY_BACKFILL") == "true"
+        assert os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT") == "17"
 
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -526,6 +666,26 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.TELEGRAM].extra["disable_link_previews"] is True
+
+    def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  extra:\n"
+            "    base_url: https://custom-proxy.example.com/bot\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.TELEGRAM].extra["base_url"]
+            == "https://custom-proxy.example.com/bot"
+        )
 
     def test_bridges_notice_delivery_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

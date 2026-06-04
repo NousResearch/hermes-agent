@@ -263,7 +263,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes to ByteRover."""
-        if action not in ("add", "replace") or not content:
+        if action not in {"add", "replace"} or not content:
             return
 
         def _write():
@@ -289,7 +289,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         for msg in messages[-10:]:  # last 10 messages
             role = msg.get("role", "")
             content = msg.get("content", "")
-            if isinstance(content, str) and content.strip() and role in ("user", "assistant"):
+            if isinstance(content, str) and content.strip() and role in {"user", "assistant"}:
                 parts.append(f"{role}: {content[:500]}")
 
         if not parts:

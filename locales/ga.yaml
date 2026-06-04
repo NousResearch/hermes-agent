@@ -94,6 +94,7 @@ gateway:
     nothing_to_do:         "Níl aon rud le dlúthú fós (tá an traschríbhinn fós uile mar chomhthéacs cosanta)."
     focus_line:            "Fócas: \"{topic}\""
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
+    aborted:               "⚠️ Cuireadh deireadh leis an dlúthú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
     aux_failed:            "ℹ️ Theip ar an tsamhail dlúthúcháin chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
     failed:                "Theip ar dhlúthú: {error}"
 
@@ -225,9 +226,12 @@ gateway:
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nÚsáid: `/resume <session name>`"
+    list_footer_numbered:  "\nÚsáid: `/resume <ainm seisiúin>` nó `/resume <uimhir>` (m.sh. `/resume 1` don cheann is déanaí)"
     list_failed:           "Níorbh fhéidir seisiúin a liostáil: {error}"
+    out_of_range:          "Tá an t-innéacs atosaithe {index} as raon.\nÚsáid `/resume` gan argóintí chun na seisiúin atá ar fáil a fheiceáil."
     not_found:             "Níor aimsíodh aon seisiún ag teacht le '**{name}**'.\nÚsáid `/resume` gan argóintí chun seisiúin atá ar fáil a fheiceáil."
     already_on:            "📌 Cheana ar an seisiún **{name}**."
     switch_failed:         "Theip ar athrú seisiúin."
@@ -290,7 +294,8 @@ gateway:
 
   undo:
     nothing:               "Níl aon rud le cealú."
-    removed:               "↩️ Cealaíodh {count} teachtaireacht.\nBaineadh: \"{preview}\""
+    removed:               "↩️ Cealaíodh {turns} seal ({count} teachtaireacht).\nCúltacaíodh chuig: \"{preview}\"\nCóipeáil/cuir an téacs thuas in eagar agus seol é chun athleideadh ón áit seo."
+    invalid_count:         "Líon neamhbhailí \"{arg}\" — úsáid /undo nó /undo N."
 
   update:
     platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."

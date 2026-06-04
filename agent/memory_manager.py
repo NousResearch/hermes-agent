@@ -91,10 +91,12 @@ class StreamingContextScrubber:
     def __init__(self) -> None:
         self._in_span: bool = False
         self._buf: str = ""
+        self._at_block_boundary: bool = True
 
     def reset(self) -> None:
         self._in_span = False
         self._buf = ""
+        self._at_block_boundary = True
 
     def feed(self, text: str) -> str:
         """Return the visible portion of ``text`` after scrubbing.
@@ -121,19 +123,22 @@ class StreamingContextScrubber:
                 buf = buf[idx + len(self._CLOSE_TAG):]
                 self._in_span = False
             else:
-                idx = buf.lower().find(self._OPEN_TAG)
+                idx = self._find_boundary_open_tag(buf)
                 if idx == -1:
                     # No open tag — hold back a potential partial open tag
-                    held = self._max_partial_suffix(buf, self._OPEN_TAG)
+                    held = (
+                        self._max_pending_open_suffix(buf)
+                        or self._max_partial_suffix(buf, self._OPEN_TAG)
+                    )
                     if held:
-                        out.append(buf[:-held])
+                        self._append_visible(out, buf[:-held])
                         self._buf = buf[-held:]
                     else:
-                        out.append(buf)
+                        self._append_visible(out, buf)
                     return "".join(out)
                 # Emit text before the tag, enter span
                 if idx > 0:
-                    out.append(buf[:idx])
+                    self._append_visible(out, buf[:idx])
                 buf = buf[idx + len(self._OPEN_TAG):]
                 self._in_span = True
 
@@ -168,6 +173,55 @@ class StreamingContextScrubber:
             if tag_lower.startswith(buf_lower[-i:]):
                 return i
         return 0
+
+    def _find_boundary_open_tag(self, buf: str) -> int:
+        """Find an opening fence only when it starts a block-like span."""
+        buf_lower = buf.lower()
+        search_start = 0
+        while True:
+            idx = buf_lower.find(self._OPEN_TAG, search_start)
+            if idx == -1:
+                return -1
+            if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
+                return idx
+            search_start = idx + 1
+
+    def _max_pending_open_suffix(self, buf: str) -> int:
+        """Hold a complete boundary tag until the following char confirms it."""
+        if not buf.lower().endswith(self._OPEN_TAG):
+            return 0
+        idx = len(buf) - len(self._OPEN_TAG)
+        if not self._is_block_boundary(buf, idx):
+            return 0
+        return len(self._OPEN_TAG)
+
+    def _has_block_opener_suffix(self, buf: str, idx: int) -> bool:
+        after_idx = idx + len(self._OPEN_TAG)
+        if after_idx >= len(buf):
+            return False
+        return buf[after_idx] in "\r\n"
+
+    def _is_block_boundary(self, buf: str, idx: int) -> bool:
+        if idx == 0:
+            return self._at_block_boundary
+        preceding = buf[:idx]
+        last_newline = preceding.rfind("\n")
+        if last_newline == -1:
+            return self._at_block_boundary and preceding.strip() == ""
+        return preceding[last_newline + 1:].strip() == ""
+
+    def _append_visible(self, out: list[str], text: str) -> None:
+        if not text:
+            return
+        out.append(text)
+        self._update_block_boundary(text)
+
+    def _update_block_boundary(self, text: str) -> None:
+        last_newline = text.rfind("\n")
+        if last_newline != -1:
+            self._at_block_boundary = text[last_newline + 1:].strip() == ""
+        else:
+            self._at_block_boundary = self._at_block_boundary and text.strip() == ""
 
 
 def build_memory_context_block(raw_context: str) -> str:
@@ -314,11 +368,42 @@ class MemoryManager:
 
     # -- Sync ----------------------------------------------------------------
 
-    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    @staticmethod
+    def _provider_sync_accepts_messages(provider: MemoryProvider) -> bool:
+        """Return whether sync_turn accepts a messages keyword."""
+        try:
+            signature = inspect.signature(provider.sync_turn)
+        except (TypeError, ValueError):
+            return True
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return True
+        return "messages" in signature.parameters
+
+    def sync_all(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         """Sync a completed turn to all providers."""
         for provider in self._providers:
             try:
-                provider.sync_turn(user_content, assistant_content, session_id=session_id)
+                if messages is not None and self._provider_sync_accepts_messages(provider):
+                    provider.sync_turn(
+                        user_content,
+                        assistant_content,
+                        session_id=session_id,
+                        messages=messages,
+                    )
+                else:
+                    provider.sync_turn(
+                        user_content,
+                        assistant_content,
+                        session_id=session_id,
+                    )
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' sync_turn failed: %s",
@@ -406,6 +491,7 @@ class MemoryManager:
         *,
         parent_session_id: str = "",
         reset: bool = False,
+        rewound: bool = False,
         **kwargs,
     ) -> None:
         """Notify all providers that the agent's session_id has rotated.
@@ -418,9 +504,21 @@ class MemoryManager:
         per-session state so subsequent writes land in the correct
         session's record. See ``MemoryProvider.on_session_switch`` for
         the full contract.
+
+        ``rewound=True`` signals that session_id is unchanged but the
+        transcript was truncated; providers caching per-turn document
+        state should invalidate.
         """
         if not new_session_id:
             return
+        # Only forward ``rewound`` when it's actually set. Passing it
+        # unconditionally would inject ``rewound=False`` into every
+        # provider's **kwargs for the common /resume, /branch, /new, and
+        # compression paths, polluting providers that capture extra kwargs
+        # (and breaking exact-dict assertions). The /undo path sets
+        # rewound=True explicitly; everyone else stays clean.
+        if rewound:
+            kwargs["rewound"] = True
         for provider in self._providers:
             try:
                 provider.on_session_switch(

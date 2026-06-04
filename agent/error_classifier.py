@@ -44,12 +44,15 @@ class FailoverReason(enum.Enum):
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
-    # Model
+    # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
+    content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -95,13 +98,20 @@ _BILLING_PATTERNS = [
     "insufficient_quota",
     "insufficient balance",
     "credit balance",
+    "credits exhausted",
     "credits have been exhausted",
+    "no usable credits",
     "top up your credits",
     "payment required",
     "billing hard limit",
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "out of funds",
+    "run out of funds",
+    "balance_depleted",
+    "model_not_supported_on_free_tier",
+    "not available on the free tier",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)
@@ -165,6 +175,32 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     # the likely culprit; we still try the shrink path before giving up.
 ]
 
+# Providers that follow the OpenAI spec strictly require tool message
+# ``content`` to be a string.  Some (Anthropic native, Codex Responses,
+# Gemini native, first-party OpenAI) extend this to accept a content-parts
+# list (text + image_url) so screenshots from computer_use survive.  Others
+# (Xiaomi MiMo, some Alibaba endpoints, a long tail of OpenAI-compatible
+# providers) reject the list with a 400 — the patterns below are the most
+# common error shapes we see.  Recovery: strip image parts from tool
+# messages in-place, record the (provider, model) for the rest of the
+# session so we don't waste another call learning the same lesson, retry.
+#
+# See: https://github.com/NousResearch/hermes-agent/issues/27344
+_MULTIMODAL_TOOL_CONTENT_PATTERNS = [
+    # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
+    "text is not set",
+    # Generic "tool message must be string" shapes
+    "tool message content must be a string",
+    "tool content must be a string",
+    "tool message must be a string",
+    # OpenAI-compat servers that reject list-type tool content with a
+    # schema-validation message
+    "expected string, got list",
+    "expected string, got array",
+    # Alibaba/DashScope variant
+    "tool_call.content must be string",
+]
+
 # Context overflow patterns
 _CONTEXT_OVERFLOW_PATTERNS = [
     "context length",
@@ -213,6 +249,24 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "unsupported model",
 ]
 
+# Request-validation patterns — the request is malformed and will fail
+# identically on every retry. Some OpenAI-compatible gateways (notably
+# codex.nekos.me) return these as 5xx instead of the standard 4xx, which
+# makes the generic "5xx → retryable server_error" rule misfire: the retry
+# loop hammers the same deterministic rejection 3+ times, then the
+# transport-recovery path resets the counter and does it again, producing
+# a request flood. When a 5xx body carries one of these unambiguous
+# request-validation signals, classify as a non-retryable format_error so
+# the loop fails fast and falls back instead of looping.
+_REQUEST_VALIDATION_PATTERNS = [
+    "unknown parameter",
+    "unsupported parameter",
+    "unrecognized request argument",
+    "invalid_request_error",
+    "unknown_parameter",
+    "unsupported_parameter",
+]
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -234,6 +288,45 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
     "no endpoints available matching your guardrail",
     "no endpoints available matching your data policy",
     "no endpoints found matching your data policy",
+]
+
+# Provider content-policy / safety-filter blocks. Distinct from
+# ``provider_policy_blocked`` above (which is an OpenRouter *account*-level
+# data/privacy guardrail) — these are *per-prompt* safety decisions made by
+# the upstream model provider. They are deterministic for the unchanged
+# request, so retrying the same prompt three times just reproduces the same
+# block and burns paid attempts on a refusal. The recovery is to switch to a
+# configured fallback model/provider immediately, or surface the block to
+# the user with actionable guidance if no fallback exists.
+#
+# Patterns are intentionally narrow — each phrase is a verbatim string from
+# a specific provider's safety pipeline, not a generic word like "policy" or
+# "violation" that could collide with billing/auth/format errors:
+#   • OpenAI Codex cybersecurity refusal (gpt-5.5, the case from #18028)
+#   • OpenAI moderation refusal ("violates our usage policies", with
+#     "usage policies" disambiguating from billing's "exceeded ... policy")
+#   • Anthropic safety refusal ("prompt was flagged by ... safety system")
+#   • OpenAI Responses content filter
+_CONTENT_POLICY_BLOCKED_PATTERNS = [
+    # OpenAI Codex (#18028) — message may arrive without an HTTP status
+    "flagged for possible cybersecurity risk",
+    "trusted access for cyber",
+    # OpenAI moderation — chat completions / responses
+    "violates our usage policies",
+    "violates openai's usage policies",
+    "your request was flagged by",
+    # Anthropic safety system
+    "prompt was flagged by our safety",
+    "responses cannot be generated due to safety",
+    # Generic content-filter wording seen on Azure / OpenAI Responses.
+    # ``content_filter`` (underscore) is the OpenAI-standard error/finish
+    # token surfaced verbatim by their SDKs when a request is blocked.
+    # ``responsibleaipolicyviolation`` is Azure OpenAI's error code.
+    # Deliberately NOT matching the space variant ("content filter") — it
+    # appears in benign config descriptions and tooltip text that providers
+    # echo back; the underscore form is provider-specific enough.
+    "content_filter",
+    "responsibleaipolicyviolation",
 ]
 
 # Auth patterns (non-status-code signals)
@@ -439,6 +532,20 @@ def classify_api_error(
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
+    # Provider content-policy / safety-filter block. The provider has made a
+    # deterministic refusal decision about THIS prompt — retrying unchanged
+    # just reproduces the same refusal and burns paid attempts. Must run
+    # before status-based classification so a 400 safety block isn't
+    # downgraded to a generic ``format_error`` and a status-less block
+    # (OpenAI Codex SDK can raise without one) isn't left in the retryable
+    # ``unknown`` bucket. See issue #18028.
+    if any(p in error_msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
+        return _result(
+            FailoverReason.content_policy_blocked,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
     # provider may be "openrouter" even though the error is Anthropic-specific.
@@ -508,6 +615,35 @@ def classify_api_error(
             FailoverReason.llama_cpp_grammar_pattern,
             retryable=True,
             should_compress=False,
+        )
+
+    # xAI Grok subscription entitlement errors.
+    #
+    # xAI returns "You have either run out of available resources or do not
+    # have an active Grok subscription" through two distinct code paths:
+    #
+    #   • HTTP 403 — status_code is set; _classify_by_status (step 2) routes
+    #     it to FailoverReason.auth correctly, and _is_entitlement_failure
+    #     then prevents the credential-refresh loop.
+    #
+    #   • SSE ``type=error`` frame — surfaced as _StreamErrorEvent with
+    #     status_code=None.  _classify_by_status is skipped entirely, and
+    #     "grok subscription" / "out of available resources" appear in none
+    #     of the message-pattern lists below.  Without this guard the error
+    #     falls through to FailoverReason.unknown (retryable=True), burning
+    #     max_retries before the agent stops — and _is_entitlement_failure
+    #     is never called because it only runs under FailoverReason.auth.
+    #
+    # Both X Premium+ and SuperGrok subscribers hit this path when their
+    # subscription tier does not cover the requested model or feature.
+    if (
+        "do not have an active grok subscription" in error_msg
+        or ("out of available resources" in error_msg and "grok" in error_msg)
+    ):
+        return _result(
+            FailoverReason.auth,
+            retryable=False,
+            should_fallback=True,
         )
 
     # ── 2. HTTP status code classification ──────────────────────────
@@ -615,8 +751,13 @@ def _classify_by_status(
         )
 
     if status_code == 403:
-        # OpenRouter 403 "key limit exceeded" is actually billing
-        if "key limit exceeded" in error_msg or "spending limit" in error_msg:
+        # OpenRouter 403 "key limit exceeded" is actually billing. Other
+        # providers also use 403 for account-plan or credit exhaustion.
+        if (
+            "key limit exceeded" in error_msg
+            or "spending limit" in error_msg
+            or any(p in error_msg for p in _BILLING_PATTERNS)
+        ):
             return result_fn(
                 FailoverReason.billing,
                 retryable=False,
@@ -633,6 +774,17 @@ def _classify_by_status(
         return _classify_402(error_msg, result_fn)
 
     if status_code == 404:
+        # Nous API currently surfaces HA/NAS credit depletion as a paid model
+        # becoming unavailable on the Free Tier, returned as 404 rather than
+        # 402. Treat that as entitlement/billing exhaustion, not a missing
+        # model, so the retry loop can show credit/top-up guidance.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         # OpenRouter policy-block 404 — distinct from "model not found".
         # The model exists; the user's account privacy setting excludes the
         # only endpoint serving it. Falling back to another provider won't
@@ -689,6 +841,23 @@ def _classify_by_status(
         )
 
     if status_code in {500, 502}:
+        # Some OpenAI-compatible gateways return request-validation errors
+        # with a 5xx status (codex.nekos.me returns 502 for unknown/
+        # unsupported parameters). These are deterministic — every retry
+        # gets the identical rejection — so the generic "5xx → retryable
+        # server_error" rule turns one bad request into a retry flood.
+        # Detect the unambiguous request-validation signals (in either the
+        # message text or the structured error code) and fail fast.
+        if (
+            any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS)
+            or error_code.lower() in {"invalid_request_error", "unknown_parameter",
+                                      "unsupported_parameter"}
+        ):
+            return result_fn(
+                FailoverReason.format_error,
+                retryable=False,
+                should_fallback=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
@@ -752,6 +921,19 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    # Multimodal tool content rejected from 400.  Must be checked BEFORE
+    # image_too_large because the recovery is different (strip image parts
+    # from tool messages, mark the model as no-list-tool-content for the
+    # rest of the session) and BEFORE context_overflow because some of the
+    # patterns ("text is not set") are ambiguous in isolation but become
+    # specific when combined with a 400 on a request known to contain
+    # multimodal tool content.
+    if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+        return result_fn(
+            FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -759,6 +941,26 @@ def _classify_400(
         return result_fn(
             FailoverReason.image_too_large,
             retryable=True,
+        )
+
+    # Invalid encrypted reasoning replay blob (OpenAI Responses API).  Must be
+    # checked BEFORE context_overflow because some surfaces emit messages that
+    # contain context-like phrasing ("encrypted content … could not be
+    # verified") which could otherwise trip the context_overflow heuristics.
+    # ``error_msg`` is lowercased upstream — match accordingly.
+    error_code_lower = (error_code or "").lower()
+    if (
+        error_code_lower == "invalid_encrypted_content"
+        or "invalid_encrypted_content" in error_msg
+        or (
+            "encrypted content for item" in error_msg
+            and "could not be verified" in error_msg
+        )
+    ):
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
         )
 
     # Context overflow from 400
@@ -848,7 +1050,15 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
-    if code_lower in {"insufficient_quota", "billing_not_active", "payment_required"}:
+    if code_lower in {
+        "insufficient_quota",
+        "billing_not_active",
+        "payment_required",
+        "insufficient_credits",
+        "no_usable_credits",
+        "balance_depleted",
+        "model_not_supported_on_free_tier",
+    }:
         return result_fn(
             FailoverReason.billing,
             retryable=False,
@@ -868,6 +1078,13 @@ def _classify_by_error_code(
             FailoverReason.context_overflow,
             retryable=True,
             should_compress=True,
+        )
+
+    if code_lower == "invalid_encrypted_content":
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
         )
 
     return None
@@ -891,6 +1108,13 @@ def _classify_by_message(
             FailoverReason.payload_too_large,
             retryable=True,
             should_compress=True,
+        )
+
+    # Multimodal tool content patterns (from message text when no status_code)
+    if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+        return result_fn(
+            FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
         )
 
     # Image-too-large patterns (from message text when no status_code)
@@ -1030,15 +1254,49 @@ def _extract_error_code(body: dict) -> str:
     """Extract an error code string from the response body."""
     if not body:
         return ""
+
+    def _code_from_payload(payload) -> str:
+        """Extract a code/type from a nested error payload dict (defensive)."""
+        if not isinstance(payload, dict):
+            return ""
+        payload_error = payload.get("error", {})
+        if isinstance(payload_error, dict):
+            nested = payload_error.get("code") or payload_error.get("type") or ""
+            if isinstance(nested, str) and nested.strip() and nested.strip() != "400":
+                return nested.strip()
+        code = payload.get("code") or payload.get("error_code") or ""
+        if isinstance(code, (str, int)):
+            text = str(code).strip()
+            if text and text != "400":
+                return text
+        return ""
+
     error_obj = body.get("error", {})
     if isinstance(error_obj, dict):
         code = error_obj.get("code") or error_obj.get("type") or ""
-        if isinstance(code, str) and code.strip():
+        if isinstance(code, str) and code.strip() and code.strip() != "400":
             return code.strip()
+
+        # Some providers wrap the real JSON error body as a string inside
+        # error.message — peek into it for a nested code (e.g. Responses API
+        # surfaces ``invalid_encrypted_content`` this way).
+        message = error_obj.get("message")
+        if isinstance(message, str) and message.strip().startswith("{"):
+            import json
+            try:
+                inner = json.loads(message)
+            except (json.JSONDecodeError, TypeError):
+                inner = None
+            nested_code = _code_from_payload(inner)
+            if nested_code:
+                return nested_code
+
     # Top-level code
     code = body.get("code") or body.get("error_code") or ""
     if isinstance(code, (str, int)):
-        return str(code).strip()
+        text = str(code).strip()
+        if text and text != "400":
+            return text
     return ""
 
 

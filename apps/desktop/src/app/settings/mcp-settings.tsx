@@ -1,20 +1,20 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
-import { OverlayActionButton, OverlayCard } from '@/app/overlays/overlay-chrome'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getHermesConfigRecord, type HermesGateway, saveHermesConfig } from '@/hermes'
 import { Wrench } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId } from '@/store/session'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { includesQuery } from './helpers'
 import { EmptyState, LoadingState, Pill, SettingsContent } from './primitives'
-import type { SearchProps } from './types'
 
-interface McpSettingsProps extends SearchProps {
+interface McpSettingsProps {
   gateway?: HermesGateway | null
   onConfigSaved?: () => void
 }
@@ -42,18 +42,11 @@ const transportLabel = (server: Record<string, unknown>) =>
         ? 'stdio'
         : 'custom'
 
-function serverMatches(name: string, server: Record<string, unknown>, query: string) {
-  if (!query) {
-    return true
-  }
-
-  return includesQuery(name, query) || includesQuery(JSON.stringify(server), query)
-}
-
-export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps) {
+export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   const activeSessionId = useStore($activeSessionId)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [name, setName] = useState('')
   const [body, setBody] = useState('')
   const [saving, setSaving] = useState(false)
@@ -80,10 +73,36 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
   const servers = useMemo(() => getServers(config), [config])
   const names = useMemo(() => Object.keys(servers).sort(), [servers])
 
-  const filtered = useMemo(
-    () => names.filter(serverName => serverMatches(serverName, servers[serverName], query.trim().toLowerCase())),
-    [names, query, servers]
-  )
+  // Deep-link target from the command palette (?server=<name>): select it and
+  // scroll the list entry into view.
+  const targetServer = searchParams.get('server')
+
+  useEffect(() => {
+    if (!targetServer || !config || !(targetServer in servers)) {
+      return
+    }
+
+    setSelected(targetServer)
+
+    const scrollTimeout = window.setTimeout(() => {
+      const element = document.getElementById(`mcp-server-${targetServer}`)
+      element?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      element?.classList.add('setting-field-highlight')
+      window.setTimeout(() => element?.classList.remove('setting-field-highlight'), 1600)
+    }, 80)
+
+    setSearchParams(
+      previous => {
+        const next = new URLSearchParams(previous)
+        next.delete('server')
+
+        return next
+      },
+      { replace: true }
+    )
+
+    return () => window.clearTimeout(scrollTimeout)
+  }, [config, servers, setSearchParams, targetServer])
 
   useEffect(() => {
     const server = selected ? servers[selected] : null
@@ -188,30 +207,32 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
 
   return (
     <SettingsContent>
-      <div className="mb-4 flex items-center justify-end gap-3">
-        <div className="flex items-center gap-2">
-          <OverlayActionButton onClick={() => setSelected(null)}>New server</OverlayActionButton>
-          <OverlayActionButton disabled={reloading} onClick={() => void reloadMcp()}>
-            {reloading ? 'Reloading...' : 'Reload MCP'}
-          </OverlayActionButton>
-        </div>
+      <div className="mb-4 flex items-center justify-end gap-4">
+        <Button onClick={() => setSelected(null)} size="xs" variant="text">
+          New server
+        </Button>
+        <Button disabled={reloading} onClick={() => void reloadMcp()} size="xs" variant="text">
+          {reloading ? 'Reloading...' : 'Reload MCP'}
+        </Button>
       </div>
 
-      <div className="grid min-h-0 gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
-        <OverlayCard className="min-h-64 overflow-hidden p-2">
-          {filtered.length === 0 ? (
+      <div className="grid min-h-0 gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <div className="min-h-64">
+          {names.length === 0 ? (
             <EmptyState description="Add a stdio or HTTP server to expose MCP tools." title="No MCP servers" />
           ) : (
-            <div className="grid gap-1">
-              {filtered.map(serverName => {
+            <div className="grid gap-0.5">
+              {names.map(serverName => {
                 const server = servers[serverName]
                 const active = selected === serverName
 
                 return (
                   <button
-                    className={`rounded-md px-2 py-2 text-left transition-colors hover:bg-(--chrome-action-hover) ${
-                      active ? 'bg-accent/45 text-foreground' : 'text-muted-foreground'
-                    }`}
+                    className={cn(
+                      'scroll-mt-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-(--chrome-action-hover)',
+                      active ? 'bg-(--ui-bg-tertiary) text-foreground' : 'text-muted-foreground'
+                    )}
+                    id={`mcp-server-${serverName}`}
                     key={serverName}
                     onClick={() => setSelected(serverName)}
                     type="button"
@@ -226,9 +247,9 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
               })}
             </div>
           )}
-        </OverlayCard>
+        </div>
 
-        <OverlayCard className="grid gap-3 p-4">
+        <div className="grid content-start gap-3">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Wrench className="size-4 text-muted-foreground" />
             {selected ? 'Edit server' : 'New server'}
@@ -248,17 +269,23 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
           </label>
           <div className="flex items-center justify-between">
             {selected ? (
-              <OverlayActionButton disabled={saving} onClick={() => void removeServer(selected)} tone="danger">
+              <Button
+                className="text-destructive hover:text-destructive"
+                disabled={saving}
+                onClick={() => void removeServer(selected)}
+                size="xs"
+                variant="text"
+              >
                 Remove
-              </OverlayActionButton>
+              </Button>
             ) : (
               <span />
             )}
-            <OverlayActionButton disabled={saving} onClick={() => void saveServer()}>
+            <Button disabled={saving} onClick={() => void saveServer()} size="sm">
               {saving ? 'Saving...' : 'Save server'}
-            </OverlayActionButton>
+            </Button>
           </div>
-        </OverlayCard>
+        </div>
       </div>
     </SettingsContent>
   )

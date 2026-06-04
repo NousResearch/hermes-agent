@@ -146,11 +146,6 @@ function IdleView({
   if (!status.supported) {
     return (
       <CenteredStatus
-        action={
-          <Button onClick={onLater} size="sm" variant="outline">
-            Close
-          </Button>
-        }
         body={status.message ?? 'This version of Hermes can’t update itself from inside the app.'}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
         title="Update not available"
@@ -176,11 +171,6 @@ function IdleView({
   if (behind === 0) {
     return (
       <CenteredStatus
-        action={
-          <Button onClick={onLater} size="sm" variant="outline">
-            Close
-          </Button>
-        }
         body="You’re running the latest version."
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
         title="You’re all set"
@@ -208,11 +198,13 @@ function IdleView({
       <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
         {groups.map(group => (
           <div key={group.id}>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
-            <ul className="mt-1.5 grid gap-1.5 text-sm text-foreground">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">
+              {group.label}
+            </p>
+            <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>
-                  <span aria-hidden className="mt-2 inline-block size-1.5 shrink-0 rounded-full bg-primary" />
+                  <span aria-hidden className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-primary" />
                   <span className="leading-snug">{item}</span>
                 </li>
               ))}

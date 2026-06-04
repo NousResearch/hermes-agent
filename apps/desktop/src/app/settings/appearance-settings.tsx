@@ -1,8 +1,9 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, type IconComponent } from '@/lib/icons'
+import { Check } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
@@ -61,42 +62,6 @@ function SectionHead({ title, description, control }: { title: string; descripti
         </div>
       </div>
       {control && <div className="shrink-0">{control}</div>}
-    </div>
-  )
-}
-
-function SegmentedControl<T extends string>({
-  options,
-  value,
-  onChange
-}: {
-  options: readonly { id: T; label: string; icon?: IconComponent }[]
-  value: T
-  onChange: (id: T) => void
-}) {
-  return (
-    <div className="inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5">
-      {options.map(({ id, label, icon: Icon }) => {
-        const active = value === id
-
-        return (
-          <button
-            aria-pressed={active}
-            className={cn(
-              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors',
-              active
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-            key={id}
-            onClick={() => onChange(id)}
-            type="button"
-          >
-            {Icon && <Icon className="size-3" />}
-            {label}
-          </button>
-        )
-      })}
     </div>
   )
 }

@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -50,6 +51,7 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
+_DISCORD_RECOVERY_DB_FILENAME = "discord_message_recovery.db"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
@@ -913,6 +915,8 @@ class DiscordAdapter(BasePlatformAdapter):
         # bot task's done callback uses this to distinguish an operator/service
         # shutdown from a runtime websocket crash.
         self._disconnecting = False
+        self._missed_message_backfill_task: Optional[asyncio.Task] = None
+        self._discord_recovery_db_lock = threading.Lock()
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -1160,6 +1164,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
                 )
+                if adapter_self._missed_message_backfill_enabled():
+                    if (
+                        adapter_self._missed_message_backfill_task
+                        and not adapter_self._missed_message_backfill_task.done()
+                    ):
+                        adapter_self._missed_message_backfill_task.cancel()
+                    adapter_self._missed_message_backfill_task = asyncio.create_task(
+                        adapter_self._run_missed_message_backfill()
+                    )
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1636,12 +1649,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._post_connect_task
             except asyncio.CancelledError:
                 pass
+        if self._missed_message_backfill_task and not self._missed_message_backfill_task.done():
+            self._missed_message_backfill_task.cancel()
+            try:
+                await self._missed_message_backfill_task
+            except asyncio.CancelledError:
+                pass
 
         self._running = False
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
         self._liveness_task = None
+        self._missed_message_backfill_task = None
 
         self._release_platform_lock()
 
@@ -1909,6 +1929,474 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
+    def _missed_message_backfill_enabled(self) -> bool:
+        """Whether to reconcile Discord messages missed while the gateway was down."""
+        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
+        return str(raw).strip().lower() in ("true", "1", "yes", "on")
+
+    def _missed_message_backfill_channels(self) -> set[str]:
+        """Channels to scan for missed messages after Discord reconnects.
+
+        Defaults to free-response channels because those are the places where
+        mention-free posts are expected to start work. Operators can set
+        DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS="*" to scan every reachable
+        text channel, but the safe default is scoped.
+        """
+        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "")
+        if not raw.strip():
+            return self._discord_free_response_channels()
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
+    def _missed_message_backfill_window_seconds(self) -> float:
+        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS", "21600")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 21600.0
+        return max(60.0, value)
+
+    def _missed_message_backfill_limit(self) -> int:
+        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT", "100")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 100
+        return max(1, min(value, 500))
+
+    def _missed_message_backfill_max_dispatches(self) -> int:
+        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES", "10")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = 10
+        return max(1, min(value, 100))
+
+    async def _run_missed_message_backfill(self) -> None:
+        """Find and enqueue recent Discord messages missed while the bot was down.
+
+        Discord gateway events are not replayed for messages sent while the bot
+        is offline. Normal startup resume only handles sessions already marked
+        resume_pending; this pass scans recent channel/thread history, records
+        what it saw durably, and reuses the normal message handler for messages
+        that lack a substantive non-outage Hermes response. Emoji-only acks are
+        deliberately not sufficient completion evidence.
+        """
+        if not self._client:
+            return
+        channels = self._missed_message_backfill_channels()
+        scan_id = self._record_recovery_scan_start(channels)
+        if not channels:
+            logger.info("[%s] Missed-message backfill enabled but no channels configured", self.name)
+            self._record_recovery_scan_complete(scan_id, status="skipped", scanned=0, missed=0, dispatched=0)
+            return
+
+        max_dispatches = self._missed_message_backfill_max_dispatches()
+        dispatched = 0
+        scanned = 0
+        missed = 0
+        try:
+            async for message in self._iter_missed_message_backfill_candidates(channels):
+                scanned += 1
+                message_id = str(getattr(message, "id", ""))
+                self._record_discord_message_seen(message, status="discovered")
+                if self._dedup.is_duplicate(message_id):
+                    continue
+                if not await self._should_backfill_discord_message(message):
+                    continue
+                missed += 1
+                logger.info(
+                    "[%s] Backfilling missed Discord message %s in channel %s",
+                    self.name,
+                    getattr(message, "id", "unknown"),
+                    getattr(getattr(message, "channel", None), "id", "unknown"),
+                )
+                self._record_recovery_attempt(message, status="queued")
+                try:
+                    await self._handle_message(message)
+                    dispatched += 1
+                except Exception as exc:
+                    self._record_recovery_attempt(message, status="failed", error=str(exc))
+                    raise
+                if dispatched >= max_dispatches:
+                    break
+            self._record_recovery_scan_complete(scan_id, status="success", scanned=scanned, missed=missed, dispatched=dispatched)
+            logger.info(
+                "[%s] Missed-message backfill complete: scanned=%d missed=%d dispatched=%d",
+                self.name,
+                scanned,
+                missed,
+                dispatched,
+            )
+        except asyncio.CancelledError:
+            self._record_recovery_scan_complete(scan_id, status="cancelled", scanned=scanned, missed=missed, dispatched=dispatched)
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._record_recovery_scan_complete(scan_id, status="failed", scanned=scanned, missed=missed, dispatched=dispatched, error=str(exc))
+            logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
+
+    async def _iter_missed_message_backfill_candidates(self, channel_ids: set[str]):
+        if not self._client:
+            return
+        import datetime as _dt
+
+        after = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+            seconds=self._missed_message_backfill_window_seconds()
+        )
+        limit = self._missed_message_backfill_limit()
+        seen: set[str] = set()
+
+        candidate_channels = []
+        if "*" in channel_ids:
+            for guild in getattr(self._client, "guilds", []) or []:
+                candidate_channels.extend(getattr(guild, "text_channels", []) or [])
+        else:
+            for channel_id in sorted(channel_ids):
+                channel = None
+                try:
+                    channel = self._client.get_channel(int(channel_id))
+                except Exception:
+                    channel = None
+                if channel is None:
+                    try:
+                        channel = await self._client.fetch_channel(int(channel_id))
+                    except Exception as exc:
+                        logger.debug("[%s] Cannot fetch backfill channel %s: %s", self.name, channel_id, exc)
+                        continue
+                candidate_channels.append(channel)
+
+        for channel in candidate_channels:
+            async for item in self._iter_channel_and_thread_messages(channel, limit=limit, after=after, seen_channels=seen):
+                yield item
+
+    async def _iter_channel_and_thread_messages(self, channel: Any, *, limit: int, after: Any, seen_channels: set[str]):
+        """Yield history from a channel plus active/recent archived child threads."""
+        channel_key = str(getattr(channel, "id", ""))
+        if not channel_key or channel_key in seen_channels:
+            return
+        seen_channels.add(channel_key)
+
+        history = getattr(channel, "history", None)
+        if callable(history):
+            try:
+                messages = []
+                async for message in history(limit=limit, after=after, oldest_first=True):
+                    messages.append(message)
+                for message in messages:
+                    yield message
+            except Exception as exc:
+                logger.debug("[%s] Cannot read history for %s: %s", self.name, channel_key, exc)
+
+        child_threads = list(getattr(channel, "threads", []) or [])
+        archived_threads = getattr(channel, "archived_threads", None)
+        if callable(archived_threads):
+            try:
+                async for thread in archived_threads(limit=limit):
+                    child_threads.append(thread)
+            except Exception as exc:
+                logger.debug("[%s] Cannot list archived threads for %s: %s", self.name, channel_key, exc)
+
+        for thread in child_threads:
+            thread_key = str(getattr(thread, "id", ""))
+            if not thread_key or thread_key in seen_channels:
+                continue
+            async for message in self._iter_channel_and_thread_messages(thread, limit=limit, after=after, seen_channels=seen_channels):
+                yield message
+
+    async def _should_backfill_discord_message(self, message: Any) -> bool:
+        """Return True when a recent Discord message still needs Hermes work."""
+        if not self._client or not getattr(self._client, "user", None):
+            return False
+        if getattr(getattr(message, "author", None), "id", None) == getattr(self._client.user, "id", None):
+            return False
+        if getattr(getattr(message, "author", None), "bot", False):
+            return False
+        if self._discord_message_is_persistently_complete(str(getattr(message, "id", ""))):
+            return False
+        # A success reaction alone is only an acknowledgement.  It is not
+        # enough evidence that the substantive response/action completed.
+        if await self._message_has_non_down_bot_response(message):
+            return False
+        return True
+
+    async def _message_has_own_reaction(self, message: Any, emojis: set[str]) -> bool:
+        bot_user = getattr(self._client, "user", None) if self._client else None
+        bot_id = getattr(bot_user, "id", None)
+        for reaction in getattr(message, "reactions", []) or []:
+            if str(getattr(reaction, "emoji", "")) not in emojis:
+                continue
+            if getattr(reaction, "me", False):
+                return True
+            users = getattr(reaction, "users", None)
+            if not callable(users) or bot_id is None:
+                continue
+            try:
+                async for user in users():
+                    if getattr(user, "id", None) == bot_id:
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _is_down_notice_content(self, content: str) -> bool:
+        text = (content or "").lower()
+        down_markers = (
+            "agent is down",
+            "agent was down",
+            "gateway is down",
+            "gateway was down",
+            "bmo is down",
+            "currently down",
+            "offline",
+            "unavailable",
+            "not running",
+        )
+        return any(marker in text for marker in down_markers)
+
+    async def _message_has_non_down_bot_response(self, message: Any) -> bool:
+        """Detect an already-addressed message without trusting down notices."""
+        bot_user = getattr(self._client, "user", None) if self._client else None
+        bot_id = getattr(bot_user, "id", None)
+        if bot_id is None:
+            return False
+
+        async def _scan_history(channel: Any) -> bool:
+            history = getattr(channel, "history", None)
+            if not callable(history):
+                return False
+            try:
+                async for candidate in history(limit=25, after=getattr(message, "created_at", None), oldest_first=True):
+                    author = getattr(candidate, "author", None)
+                    if getattr(author, "id", None) != bot_id:
+                        continue
+                    if self._is_down_notice_content(getattr(candidate, "content", "")):
+                        continue
+                    reference = getattr(candidate, "reference", None)
+                    ref_id = str(getattr(reference, "message_id", "") or "")
+                    if not ref_id or ref_id == str(getattr(message, "id", "")):
+                        return True
+            except Exception:
+                return False
+            return False
+
+        if await _scan_history(getattr(message, "channel", None)):
+            return True
+
+        thread = getattr(message, "thread", None)
+        if thread is not None and await _scan_history(thread):
+            return True
+        return False
+
+    def _discord_recovery_db_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        directory = get_hermes_home() / "gateway"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / _DISCORD_RECOVERY_DB_FILENAME
+
+    def _with_discord_recovery_db(self, fn, default=None):
+        try:
+            with self._discord_recovery_db_lock:
+                conn = sqlite3.connect(self._discord_recovery_db_path())
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS discord_messages (
+                            message_id TEXT PRIMARY KEY,
+                            channel_id TEXT,
+                            thread_id TEXT,
+                            parent_channel_id TEXT,
+                            author_id TEXT,
+                            created_at TEXT,
+                            status TEXT NOT NULL,
+                            replied INTEGER NOT NULL DEFAULT 0,
+                            emoji_ack INTEGER NOT NULL DEFAULT 0,
+                            outage_response INTEGER NOT NULL DEFAULT 0,
+                            response_message_id TEXT,
+                            action_id TEXT,
+                            attempts INTEGER NOT NULL DEFAULT 0,
+                            last_attempt_at TEXT,
+                            last_error TEXT,
+                            updated_at TEXT NOT NULL
+                        )
+                    """)
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS discord_recovery_scans (
+                            scan_id TEXT PRIMARY KEY,
+                            started_at TEXT NOT NULL,
+                            completed_at TEXT,
+                            status TEXT NOT NULL,
+                            channels TEXT NOT NULL,
+                            window_seconds REAL NOT NULL,
+                            limit_count INTEGER NOT NULL,
+                            scanned INTEGER NOT NULL DEFAULT 0,
+                            missed INTEGER NOT NULL DEFAULT 0,
+                            dispatched INTEGER NOT NULL DEFAULT 0,
+                            error TEXT
+                        )
+                    """)
+                    result = fn(conn)
+                    conn.commit()
+                    return result
+                finally:
+                    conn.close()
+        except Exception as exc:
+            logger.debug("[%s] Discord recovery DB operation failed: %s", self.name, exc, exc_info=True)
+            return default
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        import datetime as _dt
+        return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    def _message_channel_ids(self, message: Any) -> tuple[str, Optional[str], Optional[str]]:
+        channel = getattr(message, "channel", None)
+        channel_id = str(getattr(channel, "id", "") or "")
+        parent_id = str(getattr(channel, "parent_id", "") or "") or None
+        thread_id = channel_id if parent_id else None
+        return channel_id, thread_id, parent_id
+
+    def _record_discord_message_seen(self, message: Any, *, status: str) -> None:
+        message_id = str(getattr(message, "id", "") or "")
+        if not message_id:
+            return
+        channel_id, thread_id, parent_id = self._message_channel_ids(message)
+        author_id = str(getattr(getattr(message, "author", None), "id", "") or "")
+        created_at = getattr(message, "created_at", None)
+        created_text = created_at.isoformat() if hasattr(created_at, "isoformat") else None
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            existing = conn.execute("SELECT status FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
+            final_status = existing[0] if existing and existing[0] == "responded" else status
+            conn.execute(
+                """
+                INSERT INTO discord_messages (message_id, channel_id, thread_id, parent_channel_id, author_id, created_at, status, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    channel_id=excluded.channel_id,
+                    thread_id=excluded.thread_id,
+                    parent_channel_id=excluded.parent_channel_id,
+                    author_id=excluded.author_id,
+                    created_at=COALESCE(discord_messages.created_at, excluded.created_at),
+                    status=?,
+                    updated_at=excluded.updated_at
+                """,
+                (message_id, channel_id, thread_id, parent_id, author_id, created_text, final_status, now, final_status),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_recovery_attempt(self, message: Any, *, status: str, error: Optional[str] = None) -> None:
+        self._record_discord_message_seen(message, status=status)
+        message_id = str(getattr(message, "id", "") or "")
+        if not message_id:
+            return
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                """
+                UPDATE discord_messages
+                   SET status=?, attempts=attempts+1, last_attempt_at=?, last_error=?, updated_at=?
+                 WHERE message_id=?
+                """,
+                (status, now, error, now, message_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_discord_processing_start(self, event: MessageEvent, *, emoji_ack: bool) -> None:
+        message = event.raw_message
+        self._record_discord_message_seen(message, status="processing")
+        message_id = str(getattr(message, "id", "") or getattr(event, "message_id", "") or "")
+        if not message_id:
+            return
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages SET status='processing', emoji_ack=?, updated_at=? WHERE message_id=?",
+                (1 if emoji_ack else 0, now, message_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_discord_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        message_id = str(getattr(getattr(event, "raw_message", None), "id", "") or getattr(event, "message_id", "") or "")
+        if not message_id:
+            return
+        status = "responded" if outcome == ProcessingOutcome.SUCCESS else ("cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed")
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_messages SET status=?, replied=CASE WHEN ? THEN 1 ELSE replied END, updated_at=? WHERE message_id=?",
+                (status, 1 if outcome == ProcessingOutcome.SUCCESS else 0, now, message_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _record_discord_response(self, *, reply_to: Optional[str], result: SendResult, content: str) -> None:
+        if not reply_to:
+            return
+        now = self._utc_now_iso()
+        outage = self._is_down_notice_content(content)
+        status = "missed" if outage else ("responded" if result.success else "failed")
+
+        def _op(conn):
+            conn.execute(
+                """
+                INSERT INTO discord_messages (message_id, status, replied, outage_response, response_message_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    status=?,
+                    replied=CASE WHEN ? THEN 1 ELSE replied END,
+                    outage_response=CASE WHEN ? THEN 1 ELSE outage_response END,
+                    response_message_id=COALESCE(?, response_message_id),
+                    updated_at=?
+                """,
+                (reply_to, status, 1 if result.success and not outage else 0, 1 if outage else 0, result.message_id, now, status, 1 if result.success and not outage else 0, 1 if outage else 0, result.message_id, now),
+            )
+
+        self._with_discord_recovery_db(_op)
+
+    def _discord_message_is_persistently_complete(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+
+        def _op(conn):
+            row = conn.execute("SELECT status, replied, outage_response FROM discord_messages WHERE message_id=?", (message_id,)).fetchone()
+            if not row:
+                return False
+            status, replied, outage = row
+            return status == "responded" and bool(replied) and not bool(outage)
+
+        return bool(self._with_discord_recovery_db(_op, default=False))
+
+    def _record_recovery_scan_start(self, channels: set[str]) -> str:
+        scan_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "INSERT OR REPLACE INTO discord_recovery_scans (scan_id, started_at, status, channels, window_seconds, limit_count) VALUES (?, ?, ?, ?, ?, ?)",
+                (scan_id, now, "running", json.dumps(sorted(channels)), self._missed_message_backfill_window_seconds(), self._missed_message_backfill_limit()),
+            )
+
+        self._with_discord_recovery_db(_op)
+        return scan_id
+
+    def _record_recovery_scan_complete(self, scan_id: str, *, status: str, scanned: int, missed: int, dispatched: int, error: Optional[str] = None) -> None:
+        now = self._utc_now_iso()
+
+        def _op(conn):
+            conn.execute(
+                "UPDATE discord_recovery_scans SET completed_at=?, status=?, scanned=?, missed=?, dispatched=?, error=? WHERE scan_id=?",
+                (now, status, scanned, missed, dispatched, error, scan_id),
+            )
+
+        self._with_discord_recovery_db(_op)
+
     def _get_discord_command_sync_policy(self) -> str:
         raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
         if raw in _DISCORD_COMMAND_SYNC_POLICIES:
@@ -2131,15 +2619,16 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction for normal Discord message events."""
-        if not self._reactions_enabled():
-            return
+        """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            await self._add_reaction(message, "👀")
+        acked = False
+        if self._reactions_enabled() and hasattr(message, "add_reaction"):
+            acked = await self._add_reaction(message, "👀")
+        self._record_discord_processing_start(event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Swap the in-progress reaction for final reaction and durable state."""
+        self._record_discord_processing_complete(event, outcome)
         if not self._reactions_enabled():
             return
         message = event.raw_message
@@ -2256,15 +2745,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
 
-            return SendResult(
+            result = SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
+            self._record_discord_response(reply_to=reply_to, result=result, content=content)
+            return result
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            result = SendResult(success=False, error=str(e))
+            self._record_discord_response(reply_to=reply_to, result=result, content=content)
+            return result
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -8633,6 +9126,22 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    backfill_cfg = discord_cfg.get("missed_message_backfill")
+    if isinstance(backfill_cfg, dict):
+        _backfill_env = {
+            "enabled": "DISCORD_MISSED_MESSAGE_BACKFILL",
+            "channels": "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
+            "window_seconds": "DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS",
+            "limit": "DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT",
+            "max_dispatches": "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES",
+        }
+        for _key, _env in _backfill_env.items():
+            if _key not in backfill_cfg or os.getenv(_env):
+                continue
+            _value = backfill_cfg[_key]
+            if isinstance(_value, list):
+                _value = ",".join(str(v) for v in _value)
+            os.environ[_env] = str(_value).lower() if isinstance(_value, bool) else str(_value)
     # ignored_channels: channels where bot never responds (even when mentioned)
     ic = discord_cfg.get("ignored_channels")
     if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

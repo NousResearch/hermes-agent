@@ -31,6 +31,7 @@ from tools.send_message_tool import (
     _parse_target_ref,
     _send_matrix_via_adapter,
     _send_signal,
+    _send_slack,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -300,6 +301,135 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
+
+    def test_send_to_platform_slack_passes_thread_id(self):
+        slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
+
+        with patch(
+            "tools.send_message_tool._send_slack",
+            new=AsyncMock(return_value={"success": True}),
+        ) as send_mock:
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    slack_cfg,
+                    "C123",
+                    "hello",
+                    thread_id="1234567890.123456",
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            "xoxb-test",
+            "C123",
+            "hello",
+            thread_id="1234567890.123456",
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_slack_thread_payload_includes_thread_ts_without_broadcast_true(self, monkeypatch):
+        captured = []
+
+        class _FakeResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return {"ok": True, "ts": "9876543210.987654"}
+
+        class _FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, *, headers=None, json=None, **kwargs):
+                captured.append(json)
+                return _FakeResponse()
+
+        fake_aiohttp = SimpleNamespace(
+            ClientSession=_FakeSession,
+            ClientTimeout=lambda total: SimpleNamespace(total=total),
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr("gateway.platforms.base.resolve_proxy_url", lambda: None)
+        monkeypatch.setattr("gateway.platforms.base.proxy_kwargs_for_aiohttp", lambda _proxy: ({}, {}))
+
+        result = await _send_slack(
+            "xoxb-test",
+            "C123",
+            "hello",
+            thread_id="1234567890.123456",
+        )
+
+        assert result["success"] is True
+        assert captured == [
+            {
+                "channel": "C123",
+                "text": "hello",
+                "mrkdwn": True,
+                "reply_broadcast": False,
+                "thread_ts": "1234567890.123456",
+            }
+        ]
+        assert captured[0].get("reply_broadcast") is not True
+
+    @pytest.mark.asyncio
+    async def test_send_slack_channel_payload_omits_thread_ts(self, monkeypatch):
+        captured = []
+
+        class _FakeResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return {"ok": True, "ts": "9876543210.987654"}
+
+        class _FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, *, headers=None, json=None, **kwargs):
+                captured.append(json)
+                return _FakeResponse()
+
+        fake_aiohttp = SimpleNamespace(
+            ClientSession=_FakeSession,
+            ClientTimeout=lambda total: SimpleNamespace(total=total),
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setattr("gateway.platforms.base.resolve_proxy_url", lambda: None)
+        monkeypatch.setattr("gateway.platforms.base.proxy_kwargs_for_aiohttp", lambda _proxy: ({}, {}))
+
+        result = await _send_slack("xoxb-test", "C123", "hello")
+
+        assert result["success"] is True
+        assert captured == [
+            {
+                "channel": "C123",
+                "text": "hello",
+                "mrkdwn": True,
+                "reply_broadcast": False,
+            }
+        ]
+        assert "thread_ts" not in captured[0]
 
     def test_resolved_matrix_thread_name_preserves_thread_id(self):
         matrix_cfg = SimpleNamespace(

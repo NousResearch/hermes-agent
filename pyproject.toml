@@ -66,6 +66,15 @@ dependencies = [
   "psutil==7.2.2",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
+  # Image resize / dimension enforcement (bug #37677).
+  # Vision guards (vision_tools._resize_image_for_vision,
+  # conversation_compression.try_shrink_image_parts_in_messages) use Pillow
+  # to cap images at Anthropic's 8000px-per-side and 5 MB limits before they
+  # bake into conversation history.  Pillow was previously a soft dep; images
+  # that exceeded the pixel-dimension cap (but not the byte-size cap) slipped
+  # through every guard and permanently wedged the session.  Safety-critical
+  # resizing must always be available, so Pillow is promoted to required.
+  "Pillow==11.2.1",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",

@@ -654,11 +654,38 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     # actually brought under the target.
     unshrinkable_oversized = 0
 
+    # Pixel-dimension ceiling (Anthropic: 8000px per side, we target 7900px).
+    # Import constant from vision_tools to stay in sync with the embed-time cap.
+    try:
+        from tools.vision_tools import _MAX_IMAGE_DIMENSION_PX as _DIM_CAP
+    except Exception:
+        _DIM_CAP = 7900  # fallback if vision_tools is unavailable
+
+    def _exceeds_dimension_cap(url: str) -> bool:
+        """Return True if the data URL image exceeds the pixel-dimension cap."""
+        if not isinstance(url, str) or not url.startswith("data:"):
+            return False
+        try:
+            from PIL import Image as _PIL
+            import base64 as _b64
+            import io as _io
+            _header, _, _data = url.partition(",")
+            _raw = _b64.b64decode(_data)
+            with _PIL.open(_io.BytesIO(_raw)) as _img:
+                return max(_img.width, _img.height) > _DIM_CAP
+        except ImportError:
+            return False  # Pillow not available; skip dimension check
+        except Exception:
+            return False  # Corrupt/unsupported — let byte-size path handle it
+
     def _shrink_data_url(url: str) -> Optional[str]:
         """Return a smaller data URL, or None if shrink can't help."""
         if not isinstance(url, str) or not url.startswith("data:"):
             return None
-        if len(url) <= target_bytes:
+        # Shrink if EITHER the byte size is over the target OR the pixel
+        # dimensions exceed the provider cap.  A tall-but-small screenshot
+        # slips through the byte-size guard and wedges the session.
+        if len(url) <= target_bytes and not _exceeds_dimension_cap(url):
             # This specific image wasn't the oversized one.
             return None
         try:
@@ -720,7 +747,7 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                     image_value["url"] = resized
                     changed_count += 1
                 elif isinstance(url, str) and url.startswith("data:") \
-                        and len(url) > target_bytes:
+                        and (len(url) > target_bytes or _exceeds_dimension_cap(url)):
                     unshrinkable_oversized += 1
             elif isinstance(image_value, str):
                 resized = _shrink_data_url(image_value)
@@ -728,7 +755,8 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                     part["image_url"] = resized
                     changed_count += 1
                 elif image_value.startswith("data:") \
-                        and len(image_value) > target_bytes:
+                        and (len(image_value) > target_bytes
+                             or _exceeds_dimension_cap(image_value)):
                     unshrinkable_oversized += 1
 
     if changed_count:

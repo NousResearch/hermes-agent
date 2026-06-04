@@ -330,6 +330,14 @@ _EMBED_TARGET_BYTES = 4 * 1024 * 1024
 # rejects an image, we downscale to this target and retry once.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
 
+# Anthropic's hard pixel-dimension cap is 8000px on the longest side.
+# We target 7900px to leave a 100px safety margin.  Any image whose
+# longest side exceeds this value is proportionally downscaled BEFORE
+# the byte-size shrink loop — a 8500×1080 screenshot under 5 MB would
+# otherwise slip through the byte-size guard unchanged and permanently
+# wedge the session once it's in history.
+_MAX_IMAGE_DIMENSION_PX = 7900
+
 
 def _is_image_size_error(error: Exception) -> bool:
     """Detect if an API error is related to image or payload size."""
@@ -392,6 +400,41 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     # Convert RGBA to RGB for JPEG output
     if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
+
+    # ── Pixel-dimension ceiling check (MUST run before byte-size loop) ──
+    # Anthropic enforces a hard 8000px-per-side cap.  An image that is
+    # tall/wide but small in bytes (e.g. a 8500×1080 screenshot under 5 MB)
+    # passes all byte-size guards unchanged and permanently wedges the
+    # session once it bakes into history.  Scale it down to _MAX_IMAGE_DIMENSION_PX
+    # on the longest side before entering the byte-size shrink loop.
+    longest_side = max(img.width, img.height)
+    if longest_side > _MAX_IMAGE_DIMENSION_PX:
+        scale = _MAX_IMAGE_DIMENSION_PX / longest_side
+        new_w = max(int(img.width * scale), 1)
+        new_h = max(int(img.height * scale), 1)
+        logger.info(
+            "Image dimension %dx%d exceeds %dpx cap — "
+            "proportionally scaling to %dx%d before byte-size check",
+            img.width, img.height, _MAX_IMAGE_DIMENSION_PX, new_w, new_h,
+        )
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        # After dimension scaling, re-evaluate whether byte-size fits now.
+        # If so, return immediately without the slower iterative loop below.
+        import io as _io_early
+        buf_early = _io_early.BytesIO()
+        _save_kwargs_early: dict = {"format": pil_format}
+        if pil_format == "JPEG":
+            _save_kwargs_early["quality"] = 85
+        img.save(buf_early, **_save_kwargs_early)
+        _encoded_early = base64.b64encode(buf_early.getvalue()).decode("ascii")
+        _candidate_early = f"data:{out_mime};base64,{_encoded_early}"
+        if len(_candidate_early) <= max_base64_bytes:
+            logger.info(
+                "After dimension scale to %dx%d, image fits: %.1f MB",
+                img.width, img.height, len(_candidate_early) / (1024 * 1024),
+            )
+            return _candidate_early
+        # Still too large in bytes — fall through to the iterative shrink loop.
 
     # Strategy: halve dimensions until base64 fits, up to 4 rounds.
     # For JPEG, also try reducing quality at each size step.
@@ -674,7 +717,33 @@ async def _vision_analyze_native(
         # retries can't clear bytes that are already in the request.  Resize
         # DOWN to the embed target (4 MB, headroom under 5 MB) whenever the
         # payload exceeds it, not just at the 20 MB hard ceiling.
-        if len(image_data_url) > _EMBED_TARGET_BYTES:
+        #
+        # Also proactively enforce the pixel-dimension cap (8000px hard limit,
+        # 7900px target) at embed time.  A tall screenshot that is small in bytes
+        # but wide/tall beyond the cap is NOT caught by the byte-size guard below
+        # and would permanently wedge the session once baked into history.
+        _needs_resize = len(image_data_url) > _EMBED_TARGET_BYTES
+        if not _needs_resize:
+            # Check pixel dimensions even when bytes are fine.
+            try:
+                from PIL import Image as _PILImage
+                with _PILImage.open(temp_image_path) as _pil_probe:
+                    _img_w = _pil_probe.width
+                    _img_h = _pil_probe.height
+                _longest = max(_img_w, _img_h)
+                if _longest > _MAX_IMAGE_DIMENSION_PX:
+                    logger.info(
+                        "Image %dx%d exceeds %dpx dimension cap — "
+                        "resizing proactively before embed",
+                        _img_w, _img_h, _MAX_IMAGE_DIMENSION_PX,
+                    )
+                    _needs_resize = True
+            except ImportError:
+                pass  # Pillow not available; dimension check skipped
+            except Exception as _dim_exc:
+                logger.debug("Dimension pre-check failed (non-fatal): %s", _dim_exc)
+
+        if _needs_resize:
             image_data_url = _resize_image_for_vision(
                 temp_image_path, mime_type=detected_mime_type,
                 max_base64_bytes=_EMBED_TARGET_BYTES,

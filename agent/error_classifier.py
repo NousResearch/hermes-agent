@@ -166,11 +166,24 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
 # whole request hits the 413 size limit.  Anthropic's wording is the most
 # important here (hard 5 MB per image, returned as
 # "messages.N.content.K.image.source.base64: image exceeds 5 MB maximum").
+# Anthropic also enforces a hard 8000-pixel-per-side dimension cap; oversized
+# images get a 400 with wording like "image dimensions exceed maximum" or
+# "image width ... exceeds maximum allowed dimension of 8000".  These must
+# route here (image_too_large → shrink + retry) rather than to context_overflow
+# or format_error (both non-recoverable paths).
 _IMAGE_TOO_LARGE_PATTERNS = [
-    "image exceeds",        # Anthropic: "image exceeds 5 MB maximum"
-    "image too large",      # generic
-    "image_too_large",      # error_code variant
-    "image size exceeds",   # variant
+    "image exceeds",              # Anthropic: "image exceeds 5 MB maximum"
+    "image too large",            # generic
+    "image_too_large",            # error_code variant
+    "image size exceeds",         # variant
+    # Pixel-dimension ceiling (Anthropic hard cap: 8000px per side).
+    # Wording observed: "image dimensions exceed", "image width … exceeds
+    # maximum allowed dimension", "image height … exceeds maximum".
+    "image dimensions exceed",    # Anthropic dimension cap (width/height)
+    "exceeds maximum allowed dimension",  # Anthropic: "exceeds maximum allowed dimension of 8000"
+    "image width",                # "image width N exceeds maximum allowed dimension"
+    "image height",               # "image height N exceeds maximum allowed dimension"
+    "maximum dimension",          # generic dimension-limit wording
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
 ]

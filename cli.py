@@ -4407,6 +4407,40 @@ class HermesCLI:
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
+    def _print_assistant_message(self, text: str) -> None:
+        """Render a final assistant turn in the same boxed style as the agent.
+
+        Why: The deterministic intent fast-path (weather/time) answers in the REPL
+        WITHOUT running the agent, so it must print the reply itself — and it has
+        to look identical to a normal Hermes turn, or users can't tell it apart.
+        This reuses the exact Panel rendering ``chat()`` uses for a streamed
+        response so the surfaces stay visually consistent.
+        What: Wraps ``text`` in the branded response Panel (skin label/colors,
+        markdown render) and prints it via ``ChatConsole``.
+        Test: Call with "*Weather — Woodstock, IL*\\nNow: 70°F" and assert the
+        boxed panel text appears in captured TUI scrollback.
+        """
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin = get_active_skin()
+            label = _skin.get_branding("response_label", "⚕ Hermes")
+            _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+            _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+        except Exception:
+            label = "⚕ Hermes"
+            _resp_color = _maybe_remap_for_light_mode("#CD7F32")
+            _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+        ChatConsole().print(Panel(
+            _render_final_assistant_content(text, mode=self.final_response_markdown),
+            title=f"[{_resp_color} bold]{label}[/]",
+            title_align="left",
+            border_style=_resp_color,
+            style=_resp_text,
+            box=rich_box.HORIZONTALS,
+            padding=(1, 4),
+            width=self._scrollback_box_width(),
+        ))
+
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
 
@@ -15201,6 +15235,29 @@ class HermesCLI:
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
+                    # ── Pre-LLM deterministic intent fast-path (REPL parity) ──
+                    # The single-query (-q) and oneshot (-z) paths answer a small
+                    # set of deterministic intents (weather, time/date) directly
+                    # from a cheap HTTP API, bypassing the agent.  The interactive
+                    # REPL historically did NOT, so a typed "what is the weather?"
+                    # reached the LLM and drifted/hallucinated.  Mirror the gate
+                    # exactly: skip on empty/slash/image/kanban/goal/disabled, and
+                    # on ANY doubt fall through to the agent unchanged.
+                    try:
+                        from intent_fast_path import try_fast_path_reply as _fp_repl
+                        _fp_out = _fp_repl(
+                            user_input, has_images=bool(submit_images)
+                        )
+                    except Exception:
+                        _fp_out = None
+                    if _fp_out:
+                        self._print_assistant_message(_fp_out)
+                        logging.info(
+                            "intent fast-path served REPL turn without an agent run "
+                            "(0 api_calls, 0 tool_turns)"
+                        )
+                        continue
+
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
@@ -15919,27 +15976,16 @@ def main(
         # Skipped for slash commands, kanban workers, and goal-loop runs so
         # it never short-circuits structured tasks.
         try:
-            _fp_q = (query or "").strip() if isinstance(query, str) else ""
-            _fp_eligible = (
-                bool(_fp_q)
-                and not single_query_images
-                and not _fp_q.startswith("/")
-                and not os.environ.get("HERMES_KANBAN_TASK", "").strip()
-                and os.environ.get("HERMES_KANBAN_GOAL_MODE") != "1"
-                and os.environ.get("HERMES_DISABLE_INTENT_FASTPATH") != "1"
-            )
-            if _fp_eligible:
-                import asyncio as _fp_asyncio
-                from intent_fast_path import _intent_fast_path as _fp_dispatch
-                _fp_result = _fp_asyncio.run(_fp_dispatch(_fp_q))
-                if _fp_result:
-                    print(_fp_result)
-                    sys.stdout.flush()
-                    logger.info(
-                        "intent fast-path served CLI query without an agent run "
-                        "(0 api_calls, 0 tool_turns)"
-                    )
-                    sys.exit(0)
+            from intent_fast_path import try_fast_path_reply as _fp_dispatch
+            _fp_result = _fp_dispatch(query, has_images=bool(single_query_images))
+            if _fp_result:
+                print(_fp_result)
+                sys.stdout.flush()
+                logger.info(
+                    "intent fast-path served CLI query without an agent run "
+                    "(0 api_calls, 0 tool_turns)"
+                )
+                sys.exit(0)
         except SystemExit:
             raise
         except Exception as _fp_exc:

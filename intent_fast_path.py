@@ -82,6 +82,65 @@ async def _intent_fast_path(text: str) -> Optional[str]:
     return None
 
 
+def _fast_path_eligible(text: object, *, has_images: bool) -> bool:
+    """Gate whether a CLI/REPL turn may be served by the deterministic fast-path.
+
+    Why: Every CLI surface (single-query ``-q``, oneshot ``-z``, the interactive
+    REPL) must apply the SAME eligibility rules, or the same prompt behaves
+    differently per surface — which is exactly the REPL-vs-``-z`` divergence this
+    centralizes.  Keeping the rule in one place is the only way to guarantee
+    parity.
+    What: Returns True only for a non-empty plain-text turn with no image
+    attachments, not a slash command, and not inside a kanban worker / goal-loop /
+    explicitly-disabled context.  Mirrors the original single-query gate.
+    Test: True for ("weather", has_images=False); False for "" / "/help" /
+    has_images=True / when ``HERMES_DISABLE_INTENT_FASTPATH=1`` /
+    ``HERMES_KANBAN_TASK`` set / ``HERMES_KANBAN_GOAL_MODE=1``.
+    """
+    import os
+
+    q = text.strip() if isinstance(text, str) else ""
+    return (
+        bool(q)
+        and not has_images
+        and not q.startswith("/")
+        and not os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        and os.environ.get("HERMES_KANBAN_GOAL_MODE") != "1"
+        and os.environ.get("HERMES_DISABLE_INTENT_FASTPATH") != "1"
+    )
+
+
+def try_fast_path_reply(text: object, *, has_images: bool = False) -> Optional[str]:
+    """Synchronously return a deterministic fast-path reply, or None to defer.
+
+    Why: The single-query, oneshot, and interactive-REPL CLI paths all need to
+    "answer weather/time deterministically before building the agent" with
+    IDENTICAL gating and failure semantics.  Duplicating the eligibility check +
+    ``asyncio.run`` wrapper at three call sites is what let the REPL silently skip
+    the fast-path.  One synchronous entry point removes that divergence.
+    What: Applies :func:`_fast_path_eligible`; if eligible, runs
+    :func:`_intent_fast_path` to completion and returns its non-empty string, else
+    None.  ANY exception (including a running event loop) is swallowed and yields
+    None so the caller falls through to the agent unchanged.
+    Test: ``try_fast_path_reply("weather")`` returns the deterministic block;
+    ``try_fast_path_reply("/help")`` and ``try_fast_path_reply("tell me a joke")``
+    return None; ``try_fast_path_reply("weather", has_images=True)`` returns None.
+    """
+    import asyncio
+
+    try:
+        if not _fast_path_eligible(text, has_images=has_images):
+            return None
+        # Past the eligibility gate, ``_fast_path_eligible`` has already proven
+        # ``isinstance(text, str)`` (it returns "" -> False otherwise), so narrow
+        # the declared ``object`` type for the type-checker before ``.strip()``.
+        assert isinstance(text, str)
+        result = asyncio.run(_intent_fast_path(text.strip()))
+        return result or None
+    except Exception:  # noqa: BLE001 — never break the caller; defer to the agent
+        return None
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Weather intent
 # ──────────────────────────────────────────────────────────────────────────

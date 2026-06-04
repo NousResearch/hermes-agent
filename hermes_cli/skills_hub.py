@@ -12,6 +12,7 @@ handler are thin wrappers that parse args and delegate.
 
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1511,6 +1512,63 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print(f"[bold red]Unknown target:[/] {target}. Use 'github' or 'clawhub'.\n")
 
 
+def do_optimize(
+    skill_path: str,
+    candidate_path: str,
+    baseline_score: float,
+    candidate_score: float,
+    *,
+    validator: str = "",
+    allow_equal: bool = False,
+    dry_run: bool = False,
+    console: Optional[Console] = None,
+    invalidate_cache: bool = False,
+) -> None:
+    """Run the SkillOpt-style validation gate for a candidate SKILL.md."""
+    from tools.skillopt import promote_skill_candidate
+
+    c = console or _console
+    result = promote_skill_candidate(
+        skill_path,
+        candidate_path,
+        baseline_score=baseline_score,
+        candidate_score=candidate_score,
+        validator=validator or None,
+        allow_equal=allow_equal,
+        dry_run=dry_run,
+        metadata={"entrypoint": "hermes skills optimize"},
+    )
+
+    style = "green" if result.accepted else "yellow"
+    title = "SkillOpt gate accepted" if result.accepted else "SkillOpt gate rejected"
+    lines = [
+        f"[bold]Skill:[/] {result.skill_path}",
+        f"[bold]Candidate:[/] {result.candidate_path}",
+        f"[bold]Score:[/] {result.baseline_score:g} → {result.candidate_score:g} ({result.delta:+g})",
+        f"[bold]Reason:[/] {result.reason}",
+    ]
+    if result.backup_path:
+        lines.append(f"[bold]Backup:[/] {result.backup_path}")
+    if result.history_path:
+        lines.append(f"[bold]History:[/] {result.history_path}")
+    if result.rejected_path:
+        lines.append(f"[bold]Rejected buffer:[/] {result.rejected_path}")
+    if dry_run:
+        lines.append("[dim]Dry run: no skill file was changed.[/]")
+    c.print(Panel("\n".join(lines), title=f"[{style}]{title}[/]", border_style=style))
+
+    if result.accepted and not dry_run:
+        if invalidate_cache:
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+        else:
+            c.print("[dim]Optimized skill will be available in your next session.[/]")
+            c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
+
+
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                     auth) -> tuple:
     """Create a PR to a GitHub repo with the skill. Returns (success, message)."""
@@ -1749,6 +1807,17 @@ def skills_command(args) -> None:
             target=getattr(args, "to", "github"),
             repo=getattr(args, "repo", ""),
         )
+    elif action == "optimize":
+        do_optimize(
+            args.skill_path,
+            getattr(args, "candidate"),
+            getattr(args, "baseline_score"),
+            getattr(args, "candidate_score"),
+            validator=getattr(args, "validator", ""),
+            allow_equal=getattr(args, "allow_equal", False),
+            dry_run=getattr(args, "dry_run", False),
+            invalidate_cache=getattr(args, "now", False),
+        )
     elif action == "snapshot":
         snap_action = getattr(args, "snapshot_action", None)
         if snap_action == "export":
@@ -1765,7 +1834,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|repair-official|publish|optimize|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1797,7 +1866,11 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills tap remove owner/repo
     """
     c = console or _console
-    parts = cmd.strip().split()
+    try:
+        parts = shlex.split(cmd.strip())
+    except ValueError as exc:
+        c.print(f"[bold red]Could not parse /skills command:[/] {exc}\n")
+        return
 
     # Strip the leading "/skills" if present
     if parts and parts[0].lower() == "/skills":
@@ -1960,6 +2033,49 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 repo = args[i + 1]
         do_publish(skill_path, target=target, repo=repo, console=c)
 
+    elif action == "optimize":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills optimize <skill-path> --candidate <SKILL.md> --baseline-score N --candidate-score N [--validator 'cmd'] [--dry-run] [--now]\n")
+            return
+        skill_path = args[0]
+        candidate = ""
+        baseline_score = None
+        candidate_score = None
+        validator = ""
+        allow_equal = "--allow-equal" in args
+        dry_run = "--dry-run" in args
+        invalidate_cache = "--now" in args
+        i = 1
+        while i < len(args):
+            a = args[i]
+            if a == "--candidate" and i + 1 < len(args):
+                candidate = args[i + 1]
+                i += 2
+            elif a == "--baseline-score" and i + 1 < len(args):
+                try:
+                    baseline_score = float(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif a == "--candidate-score" and i + 1 < len(args):
+                try:
+                    candidate_score = float(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif a == "--validator" and i + 1 < len(args):
+                validator = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        if not candidate or baseline_score is None or candidate_score is None:
+            c.print("[bold red]Usage:[/] /skills optimize <skill-path> --candidate <SKILL.md> --baseline-score N --candidate-score N [--validator 'cmd'] [--dry-run] [--now]\n")
+            return
+        do_optimize(skill_path, candidate, baseline_score, candidate_score,
+                    validator=validator, allow_equal=allow_equal,
+                    dry_run=dry_run, invalidate_cache=invalidate_cache,
+                    console=c)
+
     elif action == "snapshot":
         if not args:
             c.print("[bold red]Usage:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
@@ -2007,6 +2123,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
+        "  [cyan]optimize[/] <path> --candidate <SKILL.md> --baseline-score N --candidate-score N\n"
+        "       Promote candidate only if it passes the SkillOpt-style validation gate; add --now to refresh this session\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
         "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
         title="/skills",

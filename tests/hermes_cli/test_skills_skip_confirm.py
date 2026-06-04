@@ -11,6 +11,7 @@ Updated for PR #3586 (cache-aware install/uninstall).
 """
 
 from unittest.mock import patch
+from types import SimpleNamespace
 
 
 
@@ -117,6 +118,75 @@ class TestHandleSkillsSlashUninstallFlags:
             handle_skills_slash("/skills uninstall test-skill --now")
             mock_uninstall.assert_called_once()
             _, kwargs = mock_uninstall.call_args
+            assert kwargs.get("invalidate_cache") is True
+
+
+class TestHandleSkillsSlashOptimizeFlags:
+    """Test cache-invalidation flag parsing in handle_skills_slash for optimize."""
+
+    def test_default_defers_cache_invalidation(self):
+        from hermes_cli.skills_hub import handle_skills_slash
+        with patch("hermes_cli.skills_hub.do_optimize") as mock_optimize:
+            handle_skills_slash(
+                "/skills optimize demo --candidate /tmp/candidate.md "
+                "--baseline-score 0.2 --candidate-score 0.9"
+            )
+            mock_optimize.assert_called_once()
+            args, kwargs = mock_optimize.call_args
+            assert args[:4] == ("demo", "/tmp/candidate.md", 0.2, 0.9)
+            assert kwargs.get("invalidate_cache") is False
+
+    def test_now_flag_invalidates_cache(self):
+        from hermes_cli.skills_hub import handle_skills_slash
+        with patch("hermes_cli.skills_hub.do_optimize") as mock_optimize:
+            handle_skills_slash(
+                "/skills optimize demo --candidate /tmp/candidate.md "
+                "--baseline-score 0.2 --candidate-score 0.9 --now"
+            )
+            mock_optimize.assert_called_once()
+            _, kwargs = mock_optimize.call_args
+            assert kwargs.get("invalidate_cache") is True
+
+
+class TestCmdSkillsOptimizeFlags:
+    """Test cache-invalidation flag propagation in `hermes skills optimize`."""
+
+    def test_default_defers_cache_invalidation(self):
+        from hermes_cli.main import cmd_skills
+        args = SimpleNamespace(
+            skills_action="optimize",
+            skill_path="demo",
+            candidate="/tmp/candidate.md",
+            baseline_score=0.2,
+            candidate_score=0.9,
+            validator="",
+            allow_equal=False,
+            dry_run=False,
+            now=False,
+        )
+        with patch("hermes_cli.skills_hub.do_optimize") as mock_optimize:
+            cmd_skills(args)
+            mock_optimize.assert_called_once()
+            _, kwargs = mock_optimize.call_args
+            assert kwargs.get("invalidate_cache") is False
+
+    def test_now_flag_invalidates_cache(self):
+        from hermes_cli.main import cmd_skills
+        args = SimpleNamespace(
+            skills_action="optimize",
+            skill_path="demo",
+            candidate="/tmp/candidate.md",
+            baseline_score=0.2,
+            candidate_score=0.9,
+            validator="",
+            allow_equal=False,
+            dry_run=False,
+            now=True,
+        )
+        with patch("hermes_cli.skills_hub.do_optimize") as mock_optimize:
+            cmd_skills(args)
+            mock_optimize.assert_called_once()
+            _, kwargs = mock_optimize.call_args
             assert kwargs.get("invalidate_cache") is True
 
 

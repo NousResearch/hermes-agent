@@ -9,6 +9,57 @@ class FakeWorkflowAgentRunner:
     def run(self, *, project, prompt, session_id, node=None, run=None, system_prompt=None, max_iterations=18, **kwargs):
         from hermes_cli import workflow_api as wf
 
+        if "Create the next clarification batch" in prompt or "Repair the previous workflow intake response" in prompt:
+            if "Latest structured answers JSON:\n[]" in prompt or "Latest structured answers JSON:" not in prompt:
+                return wf.WorkflowAgentResult(
+                    session_id=session_id,
+                    text=json.dumps(
+                        {
+                            "reply": "Choose the key workflow planning preferences.",
+                            "ready": False,
+                            "summary": "Initial workflow draft context.",
+                            "questions": [
+                                {
+                                    "id": "delivery",
+                                    "question": "What should the final delivery optimize for?",
+                                    "detail": "This affects node ordering and review gates.",
+                                    "options": [
+                                        {
+                                            "id": "validated-report",
+                                            "label": "Validated report",
+                                            "description": "Prioritize evidence and acceptance checks.",
+                                            "priority": 1,
+                                        },
+                                        {
+                                            "id": "working-code",
+                                            "label": "Working code",
+                                            "description": "Prioritize implementation and runnable artifacts.",
+                                            "priority": 2,
+                                        },
+                                        {
+                                            "id": "research-plan",
+                                            "label": "Research plan",
+                                            "description": "Prioritize exploration and risk discovery.",
+                                            "priority": 3,
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ),
+                )
+            return wf.WorkflowAgentResult(
+                session_id=session_id,
+                text=json.dumps(
+                    {
+                        "reply": "The workflow plan is ready.",
+                        "ready": True,
+                        "summary": "Final summary from structured clarification answers.",
+                        "questions": [],
+                    }
+                ),
+            )
+
         if "Return JSON matching this shape exactly" in prompt:
             result = wf.WorkflowAgentResult(
                 session_id=session_id,
@@ -126,6 +177,86 @@ def test_workflow_project_generate_and_run_reaches_review_gate(tmp_path, monkeyp
     assert updated_run.status == "waiting_user_confirm"
     assert any(event.type == "approval" and event.nodeId == "strategy" for event in events)
     assert any(event.type == "ai_reply" and event.nodeId == "intake" for event in events)
+
+
+def test_workflow_intake_creates_draft_answers_and_confirms_generation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import workflow_api as wf
+
+    def fake_git(_root, *args):
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "b" * 40
+        if args and args[0] == "log":
+            return f"{'b' * 40}\x1f1700000000\x1fworkflow: Project initialized"
+        return ""
+
+    monkeypatch.setattr(wf, "_git_init", lambda _root: None)
+    monkeypatch.setattr(wf, "_git", fake_git)
+    monkeypatch.setattr(wf, "_agent_runner", FakeWorkflowAgentRunner())
+
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    started = client.post(
+        "/api/workflows/intake/start",
+        json={
+            "name": "Intake Workflow",
+            "goal": "Build a workflow from structured clarification.",
+            "root": str(tmp_path / "intake"),
+            "references": [],
+        },
+    )
+    assert started.status_code == 200
+    start_data = started.json()
+    assert start_data["projectId"]
+    assert start_data["ready"] is False
+    assert start_data["currentBatch"]["questions"]
+    assert len(start_data["currentBatch"]["questions"][0]["options"]) == 3
+    project = wf._load_project(start_data["projectId"])
+    assert project.status == "clarifying"
+    assert (tmp_path / "intake" / ".agent-workflow" / "intake.state.json").exists()
+
+    question = start_data["currentBatch"]["questions"][0]
+    answered = client.post(
+        f"/api/workflows/intake/{start_data['intakeId']}/answers",
+        json={
+            "answers": [
+                {
+                    "questionId": question["id"],
+                    "optionId": question["options"][0]["id"],
+                    "answer": question["options"][0]["label"],
+                    "custom": False,
+                }
+            ]
+        },
+    )
+    assert answered.status_code == 200
+    answered_data = answered.json()
+    assert answered_data["ready"] is True
+    assert answered_data["summary"] == "Final summary from structured clarification answers."
+    assert answered_data["answeredCount"] == 1
+
+    confirmed = client.post(
+        f"/api/workflows/intake/{start_data['intakeId']}/confirm",
+        json={
+            "name": "Intake Workflow",
+            "goal": "Build a workflow from structured clarification.",
+            "root": str(tmp_path / "intake"),
+            "references": [],
+            "projectId": start_data["projectId"],
+            "summary": answered_data["summary"],
+        },
+    )
+    assert confirmed.status_code == 200
+    bundle = confirmed.json()
+    assert bundle["project"]["id"] == start_data["projectId"]
+    assert bundle["project"]["status"] == "generated"
+    assert bundle["workflow"]["nodes"]
 
 
 def test_workflow_chat_uses_agent_patch(tmp_path, monkeypatch):

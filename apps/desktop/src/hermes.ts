@@ -50,6 +50,7 @@ import type {
   WorkflowComposerCompletionItem,
   WorkflowEventsResponse,
   WorkflowFilesResponse,
+  WorkflowIntakeAnswer,
   WorkflowIntakePayload,
   WorkflowIntakeResponse,
   WorkflowProject,
@@ -58,6 +59,7 @@ import type {
 } from '@/types/workflow'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+const WORKFLOW_LLM_REQUEST_TIMEOUT_MS = 180_000
 const WORKFLOW_SESSION_PREFIXES = ['workflow-project-', 'workflow-node-'] as const
 
 function isWorkflowSessionId(id: null | string | undefined): boolean {
@@ -323,7 +325,8 @@ export function createWorkflowProject(payload: {
   return window.hermesDesktop.api<ProjectBundle>({
     path: '/api/workflows/projects',
     method: 'POST',
-    body: payload
+    body: payload,
+    timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -331,7 +334,8 @@ export function startWorkflowIntake(payload: WorkflowIntakePayload): Promise<Wor
   return window.hermesDesktop.api<WorkflowIntakeResponse>({
     path: '/api/workflows/intake/start',
     method: 'POST',
-    body: payload
+    body: payload,
+    timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -339,15 +343,29 @@ export function sendWorkflowIntakeMessage(intakeId: string, message: string): Pr
   return window.hermesDesktop.api<WorkflowIntakeResponse>({
     path: `/api/workflows/intake/${encodeURIComponent(intakeId)}/message`,
     method: 'POST',
-    body: { message }
+    body: { message },
+    timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
   })
 }
 
-export function confirmWorkflowIntake(intakeId: string, payload: WorkflowIntakePayload & { summary?: string }): Promise<ProjectBundle> {
+export function submitWorkflowIntakeAnswers(intakeId: string, answers: WorkflowIntakeAnswer[]): Promise<WorkflowIntakeResponse> {
+  return window.hermesDesktop.api<WorkflowIntakeResponse>({
+    path: `/api/workflows/intake/${encodeURIComponent(intakeId)}/answers`,
+    method: 'POST',
+    body: { answers },
+    timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function confirmWorkflowIntake(
+  intakeId: string,
+  payload: WorkflowIntakePayload & { projectId?: string | null; summary?: string }
+): Promise<ProjectBundle> {
   return window.hermesDesktop.api<ProjectBundle>({
     path: `/api/workflows/intake/${encodeURIComponent(intakeId)}/confirm`,
     method: 'POST',
-    body: { ...payload, intakeId }
+    body: { ...payload, intakeId },
+    timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -432,7 +450,8 @@ export function exportWorkflowProject(project: WorkflowProject): Promise<{ cance
 export function generateWorkflow(projectId: string): Promise<ProjectBundle> {
   return window.hermesDesktop.api<ProjectBundle>({
     path: `/api/workflows/projects/${encodeURIComponent(projectId)}/generate`,
-    method: 'POST'
+    method: 'POST',
+    timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
   })
 }
 

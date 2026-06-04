@@ -192,10 +192,10 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  border: 1px solid var(--ui-stroke-tertiary);
+  border: 1px solid var(--workflow-panel-border);
   border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--ui-chat-bubble-background) 96%, transparent);
-  box-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--ui-base) 9%, transparent);
+  background: var(--workflow-panel-bg);
+  box-shadow: var(--workflow-panel-shadow);
   padding: 0.25rem;
   pointer-events: auto;
   transform: translateX(-50%);
@@ -213,7 +213,7 @@
 
 .workflow-floating-toolbar button:hover,
 .workflow-floating-toolbar button.is-active {
-  border-color: var(--ui-stroke-tertiary);
+  border-color: var(--workflow-panel-border);
   background: var(--ui-control-active-background);
   color: var(--ui-text-primary);
 }
@@ -229,10 +229,10 @@
   align-items: center;
   gap: 0.5rem;
   overflow: hidden;
-  border: 1px solid var(--ui-stroke-tertiary);
+  border: 1px solid var(--workflow-panel-border);
   border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--ui-chat-bubble-background) 96%, transparent);
-  box-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--ui-base) 8%, transparent);
+  background: var(--workflow-panel-bg);
+  box-shadow: var(--workflow-panel-shadow);
   padding: 0 0.625rem;
   color: var(--ui-text-secondary);
   font-size: 0.75rem;
@@ -321,6 +321,47 @@
 }
 
 .workflow-center {
+  --workflow-canvas-bg: var(--ui-chat-surface-background);
+  --workflow-canvas-dot: color-mix(in srgb, var(--ui-text-quaternary) 34%, transparent);
+  --workflow-edge: color-mix(in srgb, var(--ui-text-tertiary) 58%, transparent);
+  --workflow-edge-selected: var(--ui-blue);
+  --workflow-edge-feedback: color-mix(in srgb, var(--ui-red) 62%, var(--ui-yellow));
+  --workflow-edge-label-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 94%, var(--ui-chat-surface-background));
+  --workflow-edge-label-border: var(--ui-stroke-tertiary);
+  --workflow-edge-label-text: var(--ui-text-secondary);
+  --workflow-panel-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 94%, var(--ui-chat-surface-background));
+  --workflow-panel-border: var(--ui-stroke-tertiary);
+  --workflow-panel-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--ui-base) 9%, transparent);
+  --workflow-node-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 92%, var(--ui-chat-surface-background));
+  --workflow-node-bg-selected: color-mix(in srgb, var(--ui-blue) 7%, var(--workflow-node-bg));
+  --workflow-node-border: color-mix(in srgb, var(--ui-stroke-secondary) 84%, var(--ui-text-tertiary));
+  --workflow-node-border-selected: var(--ui-blue);
+  --workflow-node-title: var(--ui-text-primary);
+  --workflow-node-description: var(--ui-text-secondary);
+  --workflow-node-muted: var(--ui-text-tertiary);
+  --workflow-node-shadow:
+    0 0.125rem 0.75rem color-mix(in srgb, var(--ui-base) 12%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 62%, transparent) inset;
+  --workflow-node-selected-shadow:
+    0 0 0 0.125rem color-mix(in srgb, var(--ui-blue) 24%, transparent),
+    0 0.5rem 1.25rem color-mix(in srgb, var(--ui-base) 18%, transparent);
+  --workflow-handle-border: var(--workflow-node-bg);
+  --workflow-minimap-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 88%, var(--ui-chat-surface-background));
+  --workflow-minimap-mask: color-mix(in srgb, var(--ui-chat-surface-background) 62%, transparent);
+  --workflow-controls-bg: var(--workflow-panel-bg);
+  --workflow-pill-success-bg: color-mix(in srgb, var(--ui-green) 13%, var(--ui-bg-card));
+  --workflow-pill-success-fg: var(--ui-green);
+  --workflow-pill-warning-bg: color-mix(in srgb, var(--ui-yellow) 14%, var(--ui-bg-card));
+  --workflow-pill-warning-fg: color-mix(in srgb, var(--ui-yellow) 72%, var(--ui-text-primary));
+  --workflow-pill-danger-bg: color-mix(in srgb, var(--ui-red) 12%, var(--ui-bg-card));
+  --workflow-pill-danger-fg: var(--ui-red);
+  --workflow-pill-running-bg: color-mix(in srgb, var(--ui-purple) 16%, var(--ui-bg-card));
+  --workflow-pill-running-fg: var(--ui-purple);
+  --workflow-pill-info-bg: color-mix(in srgb, var(--ui-blue) 10%, var(--ui-bg-card));
+  --workflow-pill-info-fg: var(--ui-blue);
+  --workflow-pill-neutral-bg: color-mix(in srgb, var(--ui-base) 7%, var(--ui-bg-card));
+  --workflow-pill-neutral-fg: var(--ui-text-secondary);
+
   position: relative;
   display: flex;
   min-width: 0;
@@ -331,21 +372,77 @@
   background: var(--ui-chat-surface-background);
 }
 
+:root[data-hermes-mode='dark'] .workflow-center,
+.dark .workflow-center {
+  --workflow-canvas-bg: color-mix(in srgb, var(--ui-chat-surface-background) 92%, var(--ui-bg-editor));
+  --workflow-canvas-dot: color-mix(in srgb, var(--ui-text-quaternary) 52%, transparent);
+  --workflow-edge: color-mix(in srgb, var(--ui-text-secondary) 50%, transparent);
+  --workflow-edge-label-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 88%, var(--ui-chat-surface-background));
+  --workflow-edge-label-border: color-mix(in srgb, var(--ui-text-tertiary) 26%, var(--ui-stroke-secondary));
+  --workflow-edge-label-text: color-mix(in srgb, var(--ui-text-primary) 78%, transparent);
+  --workflow-panel-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 90%, var(--ui-chat-surface-background));
+  --workflow-panel-border: color-mix(in srgb, var(--ui-text-tertiary) 22%, var(--ui-stroke-secondary));
+  --workflow-panel-shadow: 0 0.5rem 1.125rem color-mix(in srgb, var(--ui-chat-surface-background) 76%, transparent);
+  --workflow-node-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 84%, var(--ui-text-primary) 5%);
+  --workflow-node-bg-selected: color-mix(in srgb, var(--ui-blue) 13%, var(--workflow-node-bg));
+  --workflow-node-border: color-mix(in srgb, var(--ui-text-tertiary) 28%, var(--ui-stroke-secondary));
+  --workflow-node-title: var(--ui-text-primary);
+  --workflow-node-description: color-mix(in srgb, var(--ui-text-primary) 82%, transparent);
+  --workflow-node-muted: color-mix(in srgb, var(--ui-text-primary) 62%, transparent);
+  --workflow-node-shadow:
+    0 0.25rem 0.875rem color-mix(in srgb, var(--ui-chat-surface-background) 82%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--ui-text-primary) 7%, transparent) inset;
+  --workflow-node-selected-shadow:
+    0 0 0 0.125rem color-mix(in srgb, var(--ui-blue) 36%, transparent),
+    0 0.625rem 1.5rem color-mix(in srgb, var(--ui-chat-surface-background) 88%, transparent);
+  --workflow-minimap-bg: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 88%, var(--ui-chat-surface-background));
+  --workflow-minimap-mask: color-mix(in srgb, var(--workflow-canvas-bg) 54%, transparent);
+  --workflow-pill-success-bg: color-mix(in srgb, var(--ui-green) 20%, var(--workflow-node-bg));
+  --workflow-pill-success-fg: color-mix(in srgb, var(--ui-green) 72%, var(--ui-text-primary));
+  --workflow-pill-warning-bg: color-mix(in srgb, var(--ui-yellow) 24%, var(--workflow-node-bg));
+  --workflow-pill-warning-fg: color-mix(in srgb, var(--ui-yellow) 68%, var(--ui-text-primary));
+  --workflow-pill-danger-bg: color-mix(in srgb, var(--ui-red) 20%, var(--workflow-node-bg));
+  --workflow-pill-danger-fg: color-mix(in srgb, var(--ui-red) 70%, var(--ui-text-primary));
+  --workflow-pill-running-bg: color-mix(in srgb, var(--ui-purple) 24%, var(--workflow-node-bg));
+  --workflow-pill-running-fg: color-mix(in srgb, var(--ui-purple) 72%, var(--ui-text-primary));
+  --workflow-pill-info-bg: color-mix(in srgb, var(--ui-blue) 22%, var(--workflow-node-bg));
+  --workflow-pill-info-fg: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-text-primary));
+  --workflow-pill-neutral-bg: color-mix(in srgb, var(--ui-text-primary) 8%, var(--workflow-node-bg));
+  --workflow-pill-neutral-fg: color-mix(in srgb, var(--ui-text-primary) 76%, transparent);
+}
+
 .workflow-flow {
   position: relative;
   z-index: 0;
   min-height: 0;
   flex: 1;
-  background: radial-gradient(circle at 12px 12px, color-mix(in srgb, var(--ui-base) 6%, transparent) 1px, transparent 0);
+  background-color: var(--workflow-canvas-bg);
+  background-image: radial-gradient(circle at 12px 12px, var(--workflow-canvas-dot) 1px, transparent 0);
   background-size: 24px 24px;
 }
 
+.workflow-flow .react-flow__renderer,
+.workflow-flow .react-flow__pane {
+  background: transparent;
+}
+
+.workflow-flow .react-flow__edge-path,
+.workflow-flow .react-flow__connection-path {
+  stroke: var(--workflow-edge);
+}
+
+.workflow-flow .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--workflow-edge-selected);
+}
+
 .workflow-flow .react-flow__edge-textbg {
-  fill: color-mix(in srgb, var(--ui-bg-card) 88%, transparent);
+  fill: var(--workflow-edge-label-bg);
+  stroke: var(--workflow-edge-label-border);
+  stroke-width: 1px;
 }
 
 .workflow-flow .react-flow__edge-text {
-  fill: var(--ui-text-tertiary);
+  fill: var(--workflow-edge-label-text);
   font-size: 0.6875rem;
   font-weight: 600;
 }
@@ -353,22 +450,19 @@
 .workflow-node-card {
   width: 16.25rem;
   min-height: 7rem;
-  border: 1px solid var(--ui-stroke-tertiary);
+  border: 1px solid var(--workflow-node-border);
   border-left-width: 0.25rem;
   border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--ui-bg-card) 94%, transparent);
-  box-shadow:
-    0 0.125rem 0.5rem color-mix(in srgb, var(--ui-base) 8%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--ui-chat-surface-background) 70%, transparent) inset;
+  background: var(--workflow-node-bg);
+  box-shadow: var(--workflow-node-shadow);
   padding: 0.625rem 0.75rem;
-  color: var(--ui-text-primary);
+  color: var(--workflow-node-title);
 }
 
 .workflow-node-card.is-selected {
-  border-color: var(--ui-blue);
-  box-shadow:
-    0 0 0 0.125rem color-mix(in srgb, var(--ui-blue) 18%, transparent),
-    0 0.5rem 1.25rem rgba(20, 31, 52, 0.12);
+  background: var(--workflow-node-bg-selected);
+  border-color: var(--workflow-node-border-selected);
+  box-shadow: var(--workflow-node-selected-shadow);
 }
 
 .workflow-node-card.tone-running {
@@ -402,7 +496,7 @@
 }
 
 .workflow-node-card__type {
-  color: var(--ui-text-tertiary);
+  color: var(--workflow-node-muted);
   font-size: 0.6875rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -411,7 +505,7 @@
 .workflow-node-card__title {
   margin-top: 0.375rem;
   overflow: hidden;
-  color: var(--ui-text-primary);
+  color: var(--workflow-node-title);
   font-size: 0.875rem;
   font-weight: 700;
   line-height: 1.25;
@@ -424,7 +518,7 @@
   min-height: 2.05rem;
   margin-top: 0.25rem;
   overflow: hidden;
-  color: var(--ui-text-secondary);
+  color: var(--workflow-node-description);
   font-size: 0.75rem;
   line-height: 1.35;
   -webkit-box-orient: vertical;
@@ -433,7 +527,7 @@
 
 .workflow-node-card__meta {
   margin-top: 0.5rem;
-  color: var(--ui-text-tertiary);
+  color: var(--workflow-node-muted);
   font-size: 0.6875rem;
 }
 
@@ -446,8 +540,9 @@
 .workflow-handle {
   width: 0.55rem;
   height: 0.55rem;
-  border: 2px solid var(--ui-bg-card);
+  border: 2px solid var(--workflow-handle-border);
   background: var(--ui-blue);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-blue) 32%, transparent);
 }
 
 .workflow-status-pill {
@@ -463,46 +558,73 @@
 }
 
 .workflow-status-pill.tone-success {
-  background: color-mix(in srgb, var(--ui-green) 13%, var(--ui-bg-card));
-  color: var(--ui-green);
+  background: var(--workflow-pill-success-bg);
+  color: var(--workflow-pill-success-fg);
 }
 
 .workflow-status-pill.tone-warning {
-  background: color-mix(in srgb, var(--ui-yellow) 14%, var(--ui-bg-card));
-  color: color-mix(in srgb, var(--ui-yellow) 72%, var(--ui-text-primary));
+  background: var(--workflow-pill-warning-bg);
+  color: var(--workflow-pill-warning-fg);
 }
 
 .workflow-status-pill.tone-danger {
-  background: color-mix(in srgb, var(--ui-red) 12%, var(--ui-bg-card));
-  color: var(--ui-red);
+  background: var(--workflow-pill-danger-bg);
+  color: var(--workflow-pill-danger-fg);
 }
 
 .workflow-status-pill.tone-running {
-  background: color-mix(in srgb, var(--ui-purple) 16%, var(--ui-bg-card));
-  color: #6258a7;
+  background: var(--workflow-pill-running-bg);
+  color: var(--workflow-pill-running-fg);
 }
 
 .workflow-status-pill.tone-ready,
 .workflow-status-pill.tone-info {
-  background: color-mix(in srgb, var(--ui-blue) 10%, var(--ui-bg-card));
-  color: var(--ui-blue);
+  background: var(--workflow-pill-info-bg);
+  color: var(--workflow-pill-info-fg);
 }
 
 .workflow-status-pill.tone-neutral {
-  background: color-mix(in srgb, var(--ui-base) 7%, var(--ui-bg-card));
-  color: var(--ui-text-secondary);
+  background: var(--workflow-pill-neutral-bg);
+  color: var(--workflow-pill-neutral-fg);
 }
 
 .workflow-minimap {
-  border: 1px solid var(--ui-stroke-quaternary);
+  background: var(--workflow-minimap-bg);
+  border: 1px solid var(--workflow-panel-border);
   border-radius: 0.5rem;
   overflow: hidden;
+  box-shadow: var(--workflow-panel-shadow);
+}
+
+.workflow-minimap :where(svg) {
+  background: var(--workflow-minimap-bg);
+}
+
+.workflow-minimap .react-flow__minimap-mask {
+  fill: var(--workflow-minimap-mask);
 }
 
 .workflow-controls {
   overflow: hidden;
-  border: 1px solid var(--ui-stroke-tertiary);
+  border: 1px solid var(--workflow-panel-border);
   border-radius: 0.5rem;
+  background: var(--workflow-controls-bg);
+  box-shadow: var(--workflow-panel-shadow);
+}
+
+.workflow-controls .react-flow__controls-button {
+  border-bottom-color: var(--workflow-panel-border);
+  background: transparent;
+  color: var(--ui-text-secondary);
+}
+
+.workflow-controls .react-flow__controls-button:hover {
+  background: var(--ui-control-hover-background);
+  color: var(--ui-text-primary);
+}
+
+.workflow-controls .react-flow__controls-button svg {
+  fill: currentColor;
 }
 
 .workflow-stream-panel {
@@ -1276,7 +1398,7 @@
   font-weight: 650;
 }
 
-.workflow-intake-message p {
+.workflow-intake-message-markdown {
   margin: 0;
   border: 1px solid var(--ui-stroke-quaternary);
   border-radius: 0.5rem;
@@ -1288,10 +1410,132 @@
   white-space: pre-wrap;
 }
 
-.workflow-intake-message.is-user p {
+.workflow-intake-message.is-user .workflow-intake-message-markdown {
   border-color: color-mix(in srgb, var(--ui-blue) 18%, var(--ui-stroke-quaternary));
   background: color-mix(in srgb, var(--ui-blue) 7%, var(--ui-bg-card));
   color: var(--ui-text-primary);
+}
+
+.workflow-clarification-card {
+  display: grid;
+  flex-shrink: 0;
+  gap: 0.75rem;
+  border-top: 1px solid var(--ui-stroke-quaternary);
+  border-bottom: 1px solid var(--ui-stroke-quaternary);
+  background: color-mix(in srgb, var(--ui-bg-card) 86%, transparent);
+  padding: 0.875rem 1rem;
+}
+
+.workflow-clarification-card__header,
+.workflow-clarification-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.workflow-clarification-card__header > div:first-child {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.workflow-clarification-card__header span,
+.workflow-clarification-footer span {
+  color: var(--ui-text-tertiary);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.workflow-clarification-card__header strong {
+  color: var(--ui-text-secondary);
+  font-size: 0.72rem;
+}
+
+.workflow-clarification-card__nav {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 0.25rem;
+}
+
+.workflow-clarification-question {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.workflow-clarification-question h3 {
+  margin: 0;
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.workflow-clarification-question p {
+  margin: 0;
+  color: var(--ui-text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.workflow-clarification-options {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.workflow-clarification-option {
+  display: grid;
+  gap: 0.2rem;
+  width: 100%;
+  border: 1px solid var(--ui-stroke-quaternary);
+  border-radius: 0.5rem;
+  background: var(--ui-chat-surface-background);
+  padding: 0.625rem 0.75rem;
+  color: var(--ui-text-secondary);
+  text-align: left;
+}
+
+.workflow-clarification-option:hover:not(:disabled),
+.workflow-clarification-option.is-selected {
+  border-color: color-mix(in srgb, var(--ui-blue) 40%, var(--ui-stroke-quaternary));
+  background: color-mix(in srgb, var(--ui-blue) 6%, var(--ui-chat-surface-background));
+}
+
+.workflow-clarification-option:disabled {
+  opacity: 0.68;
+}
+
+.workflow-clarification-option span {
+  color: var(--ui-text-tertiary);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.workflow-clarification-option strong {
+  color: var(--ui-text-primary);
+  font-size: 0.8rem;
+}
+
+.workflow-clarification-option small {
+  color: var(--ui-text-tertiary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.workflow-clarification-custom {
+  display: grid;
+  gap: 0.375rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.workflow-clarification-custom textarea {
+  min-height: 3.5rem;
+  resize: vertical;
 }
 
 .workflow-intake-reply {
@@ -1323,6 +1567,15 @@
   font-size: 0.75rem;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.workflow-intake-stats {
+  display: grid;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--ui-stroke-quaternary);
+  padding: 0 0.75rem 0.75rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.7rem;
 }
 
 .workflow-intake-summary > .workflow-error,

@@ -54,6 +54,7 @@ import {
   skipWorkflowNode,
   startWorkflowIntake,
   startWorkflowRun,
+  submitWorkflowIntakeAnswers,
   stopWorkflowRun,
   updateWorkflowReferences,
   updateWorkflowSkills
@@ -64,6 +65,7 @@ import type { ModelOptionsResponse, SkillInfo } from '@/types/hermes'
 import type {
   ExecutionMode,
   ProjectBundle,
+  ProjectListResponse,
   ReferenceItem,
   SkillBinding,
   StreamEvent,
@@ -72,14 +74,21 @@ import type {
   WorkflowComposerCompletionItem,
   WorkflowEdge,
   WorkflowFileNode,
+  WorkflowIntakeAnswer,
+  WorkflowIntakeBatch,
   WorkflowIntakeMessage,
   WorkflowIntakePayload,
+  WorkflowIntakeResponse,
   WorkflowNode,
   WorkflowNodeStatus
 } from '@/types/workflow'
 
 import { titlebarHeaderBaseClass } from '../shell/titlebar'
 import { type WorkflowCopy, workflowCopyFor } from './i18n'
+import {
+  applyWorkflowProjectChange,
+  dispatchWorkflowProjectsChanged
+} from './project-events'
 
 type DrawerMode = 'files' | 'references' | 'skills' | 'snapshots' | 'task'
 
@@ -354,6 +363,10 @@ function WorkflowWorkbench() {
 
   const handleIntakeComplete = useCallback(
     async (data: ProjectBundle) => {
+      queryClient.setQueryData<ProjectListResponse>(['workflow-projects'], current => ({
+        projects: applyWorkflowProjectChange(current?.projects ?? [], { action: 'created', project: data.project })
+      }))
+      dispatchWorkflowProjectsChanged({ action: 'created', project: data.project })
       setActiveProjectId(data.project.id)
       setSelectedNodeId(data.workflow.nodes[0]?.id ?? null)
       setDrawerMode('task')
@@ -362,12 +375,16 @@ function WorkflowWorkbench() {
       setSearchParams({ project: data.project.id })
       await invalidateProject(data.project.id)
     },
-    [invalidateProject, setSearchParams]
+    [invalidateProject, queryClient, setSearchParams]
   )
 
   const generateMutation = useMutation({
     mutationFn: () => generateWorkflow(activeProjectId!),
     onSuccess: async data => {
+      queryClient.setQueryData<ProjectListResponse>(['workflow-projects'], current => ({
+        projects: applyWorkflowProjectChange(current?.projects ?? [], { action: 'updated', project: data.project })
+      }))
+      dispatchWorkflowProjectsChanged({ action: 'updated', project: data.project })
       setSelectedNodeId(data.workflow.nodes[0]?.id ?? null)
       await invalidateProject(data.project.id)
     }
@@ -585,10 +602,10 @@ function WorkflowWorkbench() {
               onNodesChange={onNodesChange}
               proOptions={{ hideAttribution: true }}
             >
-              <Background color="rgba(36, 54, 83, 0.16)" gap={24} size={1} />
+              <Background color="var(--workflow-canvas-dot)" gap={24} size={1} />
               <MiniMap
                 className="workflow-minimap"
-                maskColor="rgba(245, 248, 252, 0.72)"
+                maskColor="var(--workflow-minimap-mask)"
                 nodeColor={node => statusColor((node.data as WorkflowNodeData).node.status)}
                 pannable
                 zoomable
@@ -1778,7 +1795,11 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
   const [root, setRoot] = useState('')
   const [references, setReferences] = useState<string[]>([])
   const [intakeId, setIntakeId] = useState<string | null>(null)
+  const [projectId, setProjectId] = useState<string | null>(null)
   const [messages, setMessages] = useState<WorkflowIntakeMessage[]>([])
+  const [currentBatch, setCurrentBatch] = useState<WorkflowIntakeBatch | null>(null)
+  const [answeredCount, setAnsweredCount] = useState(0)
+  const [intakeError, setIntakeError] = useState<string | null>(null)
   const [reply, setReply] = useState('')
   const [summary, setSummary] = useState('')
   const [ready, setReady] = useState(false)
@@ -1788,9 +1809,13 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
     [goal, name, references, root]
   )
 
-  const applyIntakeResponse = useCallback((response: { intakeId: string; messages: WorkflowIntakeMessage[]; ready: boolean; summary: string }) => {
+  const applyIntakeResponse = useCallback((response: WorkflowIntakeResponse) => {
     setIntakeId(response.intakeId)
+    setProjectId(response.projectId ?? null)
     setMessages(response.messages)
+    setCurrentBatch(response.currentBatch ?? null)
+    setAnsweredCount(response.answeredCount ?? 0)
+    setIntakeError(response.error ?? null)
     setReady(response.ready)
     setSummary(response.summary)
   }, [])
@@ -1808,13 +1833,18 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
     }
   })
 
+  const answersMutation = useMutation({
+    mutationFn: (answers: WorkflowIntakeAnswer[]) => submitWorkflowIntakeAnswers(intakeId!, answers),
+    onSuccess: applyIntakeResponse
+  })
+
   const confirmMutation = useMutation({
-    mutationFn: () => confirmWorkflowIntake(intakeId!, { ...payload, summary }),
+    mutationFn: () => confirmWorkflowIntake(intakeId!, { ...payload, projectId, summary }),
     onSuccess: data => void onComplete(data)
   })
 
-  const busy = startMutation.isPending || messageMutation.isPending || confirmMutation.isPending
-  const error = errorText(startMutation.error || messageMutation.error || confirmMutation.error)
+  const busy = startMutation.isPending || messageMutation.isPending || answersMutation.isPending || confirmMutation.isPending
+  const error = errorText(startMutation.error || messageMutation.error || answersMutation.error || confirmMutation.error) || intakeError
 
   return (
     <main className="workflow-intake-page">
@@ -1872,7 +1902,7 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
 
           <div>
             <div className="workflow-dialog-row">
-              <span>References</span>
+              <span>{copy.references}</span>
               <Button
                 disabled={busy && Boolean(intakeId)}
                 onClick={() => {
@@ -1905,13 +1935,22 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
               messages.map((message, index) => (
                 <div className={cn('workflow-intake-message', message.role === 'user' && 'is-user')} key={`${message.timestamp}-${index}`}>
                   <span>{message.role === 'user' ? copy.you : 'Hermes'}</span>
-                  <p>{message.content}</p>
+                  <CompactMarkdown className="workflow-intake-message-markdown" text={message.content || '...'} />
                 </div>
               ))
             ) : (
               <div className="workflow-muted">{copy.projectConfigHint}</div>
             )}
           </div>
+
+          {currentBatch && (
+            <WorkflowClarificationBatchCard
+              batch={currentBatch}
+              disabled={busy}
+              onSubmit={answers => answersMutation.mutate(answers)}
+              submitting={answersMutation.isPending}
+            />
+          )}
 
           <form
             className="workflow-intake-reply"
@@ -1946,19 +1985,159 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
           <div className="workflow-drawer-header">
             <div>
               <h2>{copy.summaryTitle}</h2>
-              <p>{ready ? copy.intakeReady : copy.intakeWaiting}</p>
+              <p>{ready ? copy.intakeReady : currentBatch ? copy.intakeClarifying : copy.intakeWaiting}</p>
             </div>
+          </div>
+          <div className="workflow-intake-stats">
+            <span>{projectId ? copy.draftProjectCreated : copy.draftProjectPending}</span>
+            <span>{copy.answeredQuestions}: {answeredCount}</span>
           </div>
           <pre>{summary || copy.summaryPlaceholder}</pre>
           {error && <div className="workflow-error">{error}</div>}
           {confirmMutation.isPending && <div className="workflow-status">{copy.startingProjectStatus}</div>}
-          <Button disabled={!intakeId || !ready || confirmMutation.isPending} onClick={() => confirmMutation.mutate()} type="button">
+          <Button disabled={!intakeId || !ready || Boolean(currentBatch) || confirmMutation.isPending} onClick={() => confirmMutation.mutate()} type="button">
             <Codicon name={confirmMutation.isPending ? 'loading' : 'sparkle'} size="0.875rem" spinning={confirmMutation.isPending} />
             {copy.confirmAndGenerate}
           </Button>
         </aside>
       </section>
     </main>
+  )
+}
+
+function WorkflowClarificationBatchCard({
+  batch,
+  disabled = false,
+  onSubmit,
+  submitting = false
+}: {
+  batch: WorkflowIntakeBatch
+  disabled?: boolean
+  onSubmit: (answers: WorkflowIntakeAnswer[]) => void
+  submitting?: boolean
+}) {
+  const copy = useWorkflowCopy()
+  const [index, setIndex] = useState(0)
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>({})
+  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({})
+  const [answers, setAnswers] = useState<Record<string, WorkflowIntakeAnswer>>({})
+  const questions = batch.questions
+  const question = questions[index]
+
+  useEffect(() => {
+    setIndex(0)
+    setSelectedOptions({})
+    setCustomAnswers({})
+    setAnswers({})
+  }, [batch.id])
+
+  if (!question) {
+    return null
+  }
+
+  const confirmed = Boolean(answers[question.id])
+  const selectedOptionId = selectedOptions[question.id] ?? null
+  const customAnswer = customAnswers[question.id]?.trim() ?? ''
+  const selectedOption = question.options.find(option => option.id === selectedOptionId) ?? null
+  const canConfirm = Boolean(customAnswer || selectedOption)
+  const confirmedCount = questions.filter(item => answers[item.id]).length
+
+  const confirmCurrent = () => {
+    if (!canConfirm || disabled || submitting) {
+      return
+    }
+
+    const answer: WorkflowIntakeAnswer = {
+      questionId: question.id,
+      optionId: customAnswer ? selectedOptionId : selectedOption?.id ?? null,
+      answer: customAnswer || selectedOption?.label || '',
+      custom: Boolean(customAnswer)
+    }
+    const nextAnswers = { ...answers, [question.id]: answer }
+    setAnswers(nextAnswers)
+    const nextQuestionIndex = questions.findIndex(item => !nextAnswers[item.id])
+    if (nextQuestionIndex === -1) {
+      onSubmit(questions.map(item => nextAnswers[item.id]!))
+      return
+    }
+    setIndex(nextQuestionIndex)
+  }
+
+  return (
+    <section className="workflow-clarification-card" aria-label={copy.clarificationQuestions}>
+      <div className="workflow-clarification-card__header">
+        <div>
+          <span>{copy.clarificationQuestions}</span>
+          <strong>{index + 1}/{questions.length}</strong>
+        </div>
+        <div className="workflow-clarification-card__nav">
+          <Button
+            aria-label={copy.previousQuestion}
+            disabled={disabled || submitting || index === 0}
+            onClick={() => setIndex(value => Math.max(0, value - 1))}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="chevron-left" size="0.875rem" />
+          </Button>
+          <Button
+            aria-label={copy.nextQuestion}
+            disabled={disabled || submitting || index >= questions.length - 1}
+            onClick={() => setIndex(value => Math.min(questions.length - 1, value + 1))}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="chevron-right" size="0.875rem" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="workflow-clarification-question">
+        <h3>{question.question}</h3>
+        {question.detail && <p>{question.detail}</p>}
+      </div>
+
+      <div className="workflow-clarification-options">
+        {question.options.map(option => (
+          <button
+            className={cn('workflow-clarification-option', selectedOptionId === option.id && 'is-selected')}
+            disabled={disabled || submitting}
+            key={option.id}
+            onClick={() => setSelectedOptions(current => ({ ...current, [question.id]: option.id }))}
+            type="button"
+          >
+            <span>
+              {copy.priorityOption} {option.priority}
+            </span>
+            <strong>{option.label}</strong>
+            {option.description && <small>{option.description}</small>}
+          </button>
+        ))}
+      </div>
+
+      <label className="workflow-clarification-custom">
+        {copy.customAnswer}
+        <Textarea
+          disabled={disabled || submitting}
+          onChange={event => setCustomAnswers(current => ({ ...current, [question.id]: event.target.value }))}
+          placeholder={copy.typeCustomAnswer}
+          value={customAnswers[question.id] ?? ''}
+        />
+      </label>
+
+      <div className="workflow-clarification-footer">
+        <span>
+          {copy.answeredQuestions}: {confirmedCount}/{questions.length}
+          {confirmed && ` · ${copy.answerConfirmed}`}
+        </span>
+        <Button disabled={!canConfirm || disabled || submitting} onClick={confirmCurrent} type="button">
+          <Codicon name={submitting ? 'loading' : confirmed ? 'check' : 'send'} size="0.875rem" spinning={submitting} />
+          {submitting ? copy.clarificationSubmitting : confirmed ? copy.answerConfirmed : copy.confirmAnswer}
+        </Button>
+      </div>
+    </section>
   )
 }
 
@@ -2040,8 +2219,8 @@ function toFlowEdges(workflow: Workflow): FlowEdge[] {
     markerEnd: edge.type === 'feedback' ? undefined : { type: MarkerType.ArrowClosed },
     style:
       edge.type === 'feedback'
-        ? { stroke: '#cf806d', strokeDasharray: '6 5', strokeWidth: 1.8 }
-        : { stroke: 'rgba(25, 39, 64, 0.42)', strokeWidth: 1.6 },
+        ? { stroke: 'var(--workflow-edge-feedback)', strokeDasharray: '6 5', strokeWidth: 1.8 }
+        : { stroke: 'var(--workflow-edge)', strokeWidth: 1.6 },
     data: { kind: edge.type }
   }))
 }
@@ -2165,13 +2344,13 @@ function statusColor(status: WorkflowNodeStatus): string {
   const tone = STATUS_TONE[status] ?? 'neutral'
 
   const colors: Record<string, string> = {
-    danger: '#cf2d56',
-    info: '#4c7f8c',
-    neutral: '#9aa3af',
-    ready: '#0053fd',
-    running: '#7c5cff',
-    success: '#1f8a65',
-    warning: '#c08532'
+    danger: 'var(--ui-red)',
+    info: 'var(--ui-blue)',
+    neutral: 'var(--ui-text-tertiary)',
+    ready: 'var(--ui-blue)',
+    running: 'var(--ui-purple)',
+    success: 'var(--ui-green)',
+    warning: 'var(--ui-yellow)'
   }
 
   return colors[tone] ?? colors.neutral

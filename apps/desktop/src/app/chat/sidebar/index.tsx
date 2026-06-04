@@ -17,7 +17,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -57,6 +57,10 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { workflowCopyFor } from '@/app/workflows/i18n'
+import {
+  applyWorkflowProjectChange,
+  subscribeWorkflowProjectsChanged
+} from '@/app/workflows/project-events'
 import {
   $pinnedWorkflowProjectIds,
   $pinnedSessionIds,
@@ -301,13 +305,13 @@ export function ChatSidebar({
     return new URLSearchParams(location.search).get('project')
   }, [currentView, location.search])
 
-  const navigateToHermesHome = () =>
+  const navigateToHermesHome = useCallback(() =>
     onNavigate({
       action: 'new-session',
       icon: props => <Codicon name="robot" {...props} />,
       id: 'new-session',
       label: 'New chat'
-    })
+    }), [onNavigate])
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -369,6 +373,20 @@ export function ChatSidebar({
       disposed = true
     }
   }, [sidebarOpen])
+
+  useEffect(() => subscribeWorkflowProjectsChanged(detail => {
+    const changedProjectId = detail.projectId ?? detail.project?.id ?? null
+
+    setWorkflowProjects(projects => applyWorkflowProjectChange(projects, detail))
+
+    if (
+      changedProjectId &&
+      currentWorkflowProjectId === changedProjectId &&
+      (detail.action === 'archived' || detail.action === 'removed' || detail.project?.archived)
+    ) {
+      navigateToHermesHome()
+    }
+  }), [currentWorkflowProjectId, navigateToHermesHome])
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
@@ -659,22 +677,16 @@ export function ChatSidebar({
               })
             }
             onProjectRemoved={projectId => {
-              setWorkflowProjects(projects => projects.filter(project => project.id !== projectId))
+              setWorkflowProjects(projects => applyWorkflowProjectChange(projects, { action: 'removed', projectId }))
               unpinWorkflowProject(projectId)
               if (currentWorkflowProjectId === projectId) {
                 navigateToHermesHome()
               }
             }}
             onProjectUpdated={project => {
-              setWorkflowProjects(projects => {
-                if (project.archived) {
-                  return projects.filter(item => item.id !== project.id)
-                }
-
-                return projects.some(item => item.id === project.id)
-                  ? projects.map(item => (item.id === project.id ? project : item))
-                  : [project, ...projects]
-              })
+              setWorkflowProjects(projects =>
+                applyWorkflowProjectChange(projects, { action: project.archived ? 'archived' : 'updated', project })
+              )
 
               if (project.archived && currentWorkflowProjectId === project.id) {
                 navigateToHermesHome()

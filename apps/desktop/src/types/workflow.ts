@@ -14,6 +14,7 @@ export type WorkflowNodeStatus =
 
 export type ExecutionMode = 'single_step' | 'semi_auto' | 'auto'
 export type ExecutionRunStatus = 'idle' | 'running' | 'paused' | 'waiting_user_confirm' | 'completed' | 'failed' | 'stopped'
+export type WorkflowProjectStatus = 'draft' | 'clarifying' | 'generated' | 'failed'
 
 export type StreamEventType =
   | 'process_summary'
@@ -91,6 +92,7 @@ export interface WorkflowProject {
   name: string
   root: string
   goal: string
+  status?: WorkflowProjectStatus
   createdAt: number
   updatedAt: number
   currentRunId: string | null
@@ -217,12 +219,43 @@ export interface WorkflowIntakeMessage {
   timestamp: number
 }
 
+export interface WorkflowIntakeOption {
+  id: string
+  label: string
+  description: string
+  priority: number
+}
+
+export interface WorkflowIntakeQuestion {
+  id: string
+  question: string
+  detail: string
+  options: WorkflowIntakeOption[]
+}
+
+export interface WorkflowIntakeBatch {
+  id: string
+  questions: WorkflowIntakeQuestion[]
+  createdAt: number
+}
+
+export interface WorkflowIntakeAnswer {
+  questionId: string
+  optionId?: string | null
+  answer: string
+  custom: boolean
+}
+
 export interface WorkflowIntakeResponse {
   ok: boolean
   intakeId: string
+  projectId?: string
   messages: WorkflowIntakeMessage[]
   ready: boolean
   summary: string
+  currentBatch?: WorkflowIntakeBatch | null
+  answeredCount?: number
+  error?: string | null
 }
 
 export interface WorkflowIntakePayload {

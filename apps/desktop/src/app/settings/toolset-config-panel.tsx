@@ -126,7 +126,13 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             {isSet ? 'Replace' : 'Set'}
           </Button>
           {isSet && (
-            <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" title="Clear value" variant="ghost">
+            <Button
+              disabled={busy}
+              onClick={() => void handleClear()}
+              size="icon-xs"
+              title="Clear value"
+              variant="ghost"
+            >
               <Trash2 />
             </Button>
           )}
@@ -134,7 +140,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       </div>
 
       {isSet && revealed !== null && (
-        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">{revealed || '---'}</div>
+        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
+          {revealed || '---'}
+        </div>
       )}
 
       {editing && (

@@ -222,8 +222,10 @@ async function fetchProviderDefaultModel(
   // free user gets a free model rather than a paid default like opus). Fall
   // back to the first curated model if the endpoint can't resolve one.
   let defaultModel = String(models[0])
+
   try {
     const recommended = await getRecommendedDefaultModel(String(matched.slug))
+
     if (recommended.model && models.map(String).includes(recommended.model)) {
       defaultModel = recommended.model
     } else if (recommended.model) {
@@ -292,6 +294,7 @@ async function completeWithModelConfirm(
       provider: defaults.providerSlug,
       model: defaults.defaultModel
     })
+
     notifyGatewayTools(res.gateway_tools)
   } catch {
     // Persistence failed — still show the confirm card so the user can
@@ -417,6 +420,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   // list is loaded and show the picker.
   if ($desktopOnboarding.get().manual) {
     await refreshProviders()
+
     return false
   }
 
@@ -706,14 +710,18 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   // the endpoint is up; an unreachable probe hard-blocks because we can't
   // resolve a model to route to.
   let model = ''
+
   try {
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url)
+
     if (!probe.ok && probe.reachable) {
       return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
     }
+
     if (!probe.reachable) {
       return { ok: false, message: probe.message || `Could not reach ${url}.` }
     }
+
     model = (probe.models?.[0] ?? '').trim()
   } catch {
     return { ok: false, message: `Could not reach ${url}.` }
@@ -731,8 +739,10 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
     const runtime = await checkRuntime(ctx)
+
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
+
       return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
     }
 

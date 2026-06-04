@@ -432,20 +432,20 @@ export function CronView({ onClose }: CronViewProps) {
         {!jobs ? (
           <PageLoader label="Loading cron jobs..." />
         ) : visibleJobs.length === 0 ? (
-        // Empty state owns the primary "create" CTA — we used to also have
-        // one in the filters bar but it was redundant. Only show the button
-        // when there are zero jobs total; the search-empty case ("No
-        // matches") just asks the user to broaden their query.
-        <EmptyState
-          actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
-          description={
-            totalCount === 0
-              ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
-              : 'Try a broader search query.'
-          }
-          onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
-          title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
-        />
+          // Empty state owns the primary "create" CTA — we used to also have
+          // one in the filters bar but it was redundant. Only show the button
+          // when there are zero jobs total; the search-empty case ("No
+          // matches") just asks the user to broaden their query.
+          <EmptyState
+            actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
+            description={
+              totalCount === 0
+                ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
+                : 'Try a broader search query.'
+            }
+            onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
+            title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
+          />
         ) : (
           <div className="mx-auto w-full max-w-4xl min-h-0 flex-1 overflow-y-auto px-4 py-3">
             {/* Inline header replaces the old top-bar "New cron" button. We

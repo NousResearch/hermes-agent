@@ -166,9 +166,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                 profile={profile}
               />
             ))}
-            {profiles.length === 0 && (
-              <p className="px-1.5 py-3 text-xs text-muted-foreground">No profiles yet.</p>
-            )}
+            {profiles.length === 0 && <p className="px-1.5 py-3 text-xs text-muted-foreground">No profiles yet.</p>}
           </OverlaySidebar>
 
           <OverlayMain className="px-0">

@@ -1588,7 +1588,7 @@ async def get_sessions(
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
             )
-            total = db.session_count(
+            total = db.surfaced_session_count(
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
@@ -4577,7 +4577,7 @@ async def auto_archive_sessions_endpoint(body: AutoArchiveSessions):
         else cfg.get("auto_archive_min_interval_hours", 6)
     )
     min_message_count = int(cfg.get("auto_archive_min_messages", 1))
-    active_grace_hours = float(cfg.get("auto_archive_active_grace_hours", 24))
+    active_grace_seconds = int(cfg.get("auto_archive_active_grace_seconds", 300))
 
     from hermes_state import SessionDB
 
@@ -4589,7 +4589,7 @@ async def auto_archive_sessions_endpoint(body: AutoArchiveSessions):
             min_interval_hours=max(0.0, float(min_interval_hours or 0)),
             min_message_count=max(0, min_message_count),
             preserve_ids=preserve_ids,
-            active_grace_seconds=max(0, int(active_grace_hours * 3600)),
+            active_grace_seconds=max(0, active_grace_seconds),
         )
         return {"ok": True, **result}
     finally:

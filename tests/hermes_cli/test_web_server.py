@@ -287,6 +287,10 @@ class TestWebServerEndpoints:
                 captured["count"] = min_message_count
                 return 0
 
+            def surfaced_session_count(self, min_message_count=0, **kwargs):
+                captured["count"] = min_message_count
+                return 0
+
             def close(self):
                 pass
 
@@ -479,6 +483,28 @@ class TestWebServerEndpoints:
         # ...carrying the durable lineage root so the desktop can match pins.
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
+
+    def test_get_sessions_total_counts_surfaced_conversations(self):
+        """Hidden child rows must not inflate the desktop session total."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="root-visible", source="cli")
+            db.append_message("root-visible", role="user", content="root")
+            db.create_session(
+                session_id="hidden-child",
+                source="cli",
+                parent_session_id="root-visible",
+            )
+            db.append_message("hidden-child", role="user", content="child")
+        finally:
+            db.close()
+
+        data = self.client.get("/api/sessions?limit=10&min_messages=1").json()
+        ids = [row["id"] for row in data["sessions"]]
+        assert ids == ["root-visible"]
+        assert data["total"] == 1
 
     def test_search_dedupes_compression_lineage_to_tip(self):
         """A conversation that auto-compresses leaves the matched term in both

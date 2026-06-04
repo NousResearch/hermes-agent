@@ -3268,6 +3268,55 @@ class TestAutoMaintenance:
         assert db.get_session("live-recent")["archived"] == 0
         assert db.get_session("old-archive")["archived"] == 1
 
+    def test_auto_archive_syncs_hidden_descendants_not_visible_branches(self, db):
+        now = time.time()
+        self._make_archivable_session(db, "archived-root", last_active=now - 500)
+        db.set_session_archived("archived-root", True)
+        db.create_session(
+            session_id="hidden-child",
+            source="cli",
+            parent_session_id="archived-root",
+        )
+        db.append_message("hidden-child", role="user", content="child")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 490, "hidden-child"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (now - 490, "hidden-child"),
+        )
+
+        db.create_session(session_id="branch-parent", source="cli")
+        db.append_message("branch-parent", role="user", content="parent")
+        db.end_session("branch-parent", end_reason="branched")
+        db.set_session_archived("branch-parent", True)
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+            (now - 400, now - 390, "branch-parent"),
+        )
+        db.create_session(
+            session_id="visible-branch",
+            source="cli",
+            parent_session_id="branch-parent",
+        )
+        db.append_message("visible-branch", role="user", content="branch")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (now - 380, "visible-branch"),
+        )
+        db._conn.execute(
+            "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+            (now - 380, "visible-branch"),
+        )
+        db._conn.commit()
+
+        archived = db.archive_old_sessions(keep_recent=100, older_than_days=14)
+
+        assert archived == 1
+        assert db.get_session("hidden-child")["archived"] == 1
+        assert db.get_session("visible-branch")["archived"] == 0
+
     def test_maybe_auto_archive_uses_interval_marker(self, db):
         now = time.time()
         self._make_archivable_session(db, "old1", last_active=now - 100)

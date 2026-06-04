@@ -2218,9 +2218,10 @@ DEFAULT_CONFIG = {
         # Match the desktop sidebar's normal min_messages=1 list so empty
         # abandoned drafts are left to the explicit empty-session cleanup.
         "auto_archive_min_messages": 1,
-        # Sessions with ended_at=NULL and recent activity are presumed live and
-        # never auto-archived during this grace window.
-        "auto_archive_active_grace_hours": 24,
+        # Sessions with ended_at=NULL and activity inside this window are
+        # presumed live and never auto-archived. Matches the web API's existing
+        # active-session heuristic.
+        "auto_archive_active_grace_seconds": 300,
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.

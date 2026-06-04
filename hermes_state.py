@@ -3075,6 +3075,44 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def surfaced_session_count(
+        self,
+        source: str = None,
+        min_message_count: int = 0,
+        include_archived: bool = False,
+        archived_only: bool = False,
+    ) -> int:
+        """Count the root/branch conversations surfaced by list_sessions_rich."""
+        where_clauses = [
+            "(s.parent_session_id IS NULL"
+            " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
+            " OR EXISTS (SELECT 1 FROM sessions p"
+            "            WHERE p.id = s.parent_session_id"
+            "            AND p.end_reason = 'branched'"
+            "            AND s.started_at >= p.ended_at))"
+        ]
+        params = []
+
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if min_message_count > 0:
+            where_clauses.append("s.message_count >= ?")
+            params.append(min_message_count)
+        if archived_only:
+            where_clauses.append("s.archived = 1")
+        elif not include_archived:
+            where_clauses.append("s.archived = 0")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}"
+
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT COUNT(*) FROM sessions s {where_sql}",
+                params,
+            )
+            return cursor.fetchone()[0]
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:
@@ -4031,7 +4069,7 @@ class SessionDB:
         older_than_days: int = 14,
         min_message_count: int = 1,
         preserve_ids: Optional[List[str]] = None,
-        active_grace_seconds: int = 86400,
+        active_grace_seconds: int = 300,
     ) -> int:
         """Soft-archive old surfaced sessions while keeping recent work visible.
 
@@ -4102,7 +4140,7 @@ class SessionDB:
                 archive_ids.append(target_id)
 
         if not archive_ids:
-            return 0
+            return self.archive_hidden_descendants_of_archived_sessions()
 
         def _do(conn):
             placeholders = ",".join("?" for _ in archive_ids)
@@ -4112,6 +4150,56 @@ class SessionDB:
                 archive_ids,
             )
             return cursor.rowcount
+
+        archived = self._execute_write(_do)
+        return archived + self.archive_hidden_descendants_of_archived_sessions()
+
+    def archive_hidden_descendants_of_archived_sessions(self) -> int:
+        """Archive hidden child rows that belong to archived conversations.
+
+        ``session_count()`` counts raw rows, while ``list_sessions_rich`` hides
+        subagent children and compression continuations. Without this sync, a
+        root conversation can be archived while hidden children still inflate
+        the desktop "Sessions X/Y" total. Branch sessions stay visible and are
+        not swept as descendants; they are archived only when they independently
+        match the normal old-session policy.
+        """
+
+        def _do(conn):
+            rows = conn.execute(
+                """
+                WITH RECURSIVE archive_tree(id) AS (
+                    SELECT id FROM sessions WHERE archived = 1
+                    UNION ALL
+                    SELECT child.id
+                    FROM sessions child
+                    JOIN archive_tree parent_tree ON child.parent_session_id = parent_tree.id
+                    LEFT JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE child.archived = 0
+                      AND json_extract(child.model_config, '$._branched_from') IS NULL
+                      AND NOT (
+                          COALESCE(parent.end_reason, '') = 'branched'
+                          AND child.started_at >= parent.ended_at
+                      )
+                )
+                SELECT s.id
+                FROM sessions s
+                JOIN archive_tree tree ON tree.id = s.id
+                WHERE s.archived = 0
+                """
+            ).fetchall()
+            ids = [row["id"] for row in rows]
+            updated = 0
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = conn.execute(
+                    f"UPDATE sessions SET archived = 1 "
+                    f"WHERE archived = 0 AND id IN ({placeholders})",
+                    chunk,
+                )
+                updated += cursor.rowcount
+            return updated
 
         return self._execute_write(_do)
 
@@ -4123,7 +4211,7 @@ class SessionDB:
         min_interval_hours: float = 6,
         min_message_count: int = 1,
         preserve_ids: Optional[List[str]] = None,
-        active_grace_seconds: int = 86400,
+        active_grace_seconds: int = 300,
     ) -> Dict[str, Any]:
         """Idempotent auto-maintenance wrapper around old-session archiving."""
         result: Dict[str, Any] = {"skipped": False, "archived": 0}

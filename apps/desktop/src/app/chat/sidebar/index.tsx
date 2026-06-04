@@ -56,6 +56,7 @@ import {
 } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { workflowCopyFor } from '@/app/workflows/i18n'
 import {
   $pinnedWorkflowProjectIds,
   $pinnedSessionIds,
@@ -82,6 +83,7 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
+import { $workflowLanguage } from '@/store/workflow-language'
 import type { WorkflowProject } from '@/types/workflow'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE, WORKFLOWS_ROUTE } from '../../routes'
@@ -108,7 +110,7 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   },
   {
     id: 'workflows',
-    label: 'Workflow 工作台',
+    label: 'Workflow Workbench',
     icon: props => <Codicon name="graph" {...props} />,
     route: `${WORKFLOWS_ROUTE}?new=1`
   },
@@ -273,6 +275,7 @@ export function ChatSidebar({
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinnedWorkflowProjectIds = useStore($pinnedWorkflowProjectIds)
+  const workflowCopy = workflowCopyFor(useStore($workflowLanguage))
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -569,14 +572,18 @@ export function ChatSidebar({
                         !isInteractive &&
                           'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                       )}
-                      onClick={() => onNavigate(item)}
-                      tooltip={item.label}
+                      onClick={() =>
+                        onNavigate(item.id === 'workflows' ? { ...item, label: workflowCopy.workflowSidebarLabel } : item)
+                      }
+                      tooltip={item.id === 'workflows' ? workflowCopy.workflowSidebarLabel : item.label}
                       type="button"
                     >
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
                       {sidebarOpen && (
                         <>
-                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{item.label}</span>
+                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">
+                            {item.id === 'workflows' ? workflowCopy.workflowSidebarLabel : item.label}
+                          </span>
                           {item.id === 'new-session' && (
                             <KbdGroup className="ml-auto max-[46.25rem]:hidden" keys={[...NEW_SESSION_KBD]} />
                           )}
@@ -646,7 +653,7 @@ export function ChatSidebar({
             onOpenProject={projectId =>
               onNavigate({
                 id: 'workflows',
-                label: 'Workflow 工作台',
+                label: workflowCopy.workflowSidebarLabel,
                 route: `${WORKFLOWS_ROUTE}?project=${encodeURIComponent(projectId)}`,
                 icon: props => <Codicon name="graph" {...props} />
               })
@@ -684,6 +691,7 @@ export function ChatSidebar({
             open={workflowProjectsOpen}
             pinnedProjectIds={pinnedWorkflowProjectIdSet}
             projects={sortedWorkflowProjects}
+            emptyLabel={workflowCopy.workflowProjectsEmpty}
           />
         )}
 
@@ -831,6 +839,7 @@ function SidebarPinnedEmptyState() {
 }
 
 function SidebarWorkflowProjectsSection({
+  emptyLabel,
   loading,
   onOpenProject,
   onProjectRemoved,
@@ -841,6 +850,7 @@ function SidebarWorkflowProjectsSection({
   pinnedProjectIds,
   projects
 }: {
+  emptyLabel: string
   loading: boolean
   onOpenProject: (projectId: string) => void
   onProjectRemoved: (projectId: string) => void
@@ -881,7 +891,7 @@ function SidebarWorkflowProjectsSection({
               </WorkflowProjectContextMenu>
             ))
           ) : (
-            <div className="rounded-md px-2 py-2 text-xs text-(--ui-text-tertiary)">No workflow projects yet.</div>
+            <div className="rounded-md px-2 py-2 text-xs text-(--ui-text-tertiary)">{emptyLabel}</div>
           )}
         </SidebarGroupContent>
       )}

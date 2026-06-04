@@ -1,4 +1,5 @@
 .workflow-workbench {
+  --workflow-font-cjk: 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
   display: flex;
   min-width: 0;
   height: 100%;
@@ -7,7 +8,20 @@
   overflow: hidden;
   background: var(--ui-chat-surface-background);
   color: var(--ui-text-primary);
+  font-family: var(--dt-font-sans);
+  line-height: 1.4;
   contain: layout paint;
+}
+
+.workflow-workbench--zh {
+  font-family: var(--dt-font-sans), var(--workflow-font-cjk);
+}
+
+.workflow-workbench button,
+.workflow-workbench input,
+.workflow-workbench textarea,
+.workflow-workbench select {
+  font: inherit;
 }
 
 .workflow-page-titlebar {
@@ -180,8 +194,8 @@
   gap: 0.25rem;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--ui-bg-card) 92%, transparent);
-  box-shadow: 0 0.5rem 1.5rem color-mix(in srgb, var(--ui-base) 13%, transparent);
+  background: color-mix(in srgb, var(--ui-chat-bubble-background) 96%, transparent);
+  box-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--ui-base) 9%, transparent);
   padding: 0.25rem;
   pointer-events: auto;
   transform: translateX(-50%);
@@ -217,8 +231,8 @@
   overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--ui-bg-card) 94%, transparent);
-  box-shadow: 0 0.5rem 1.5rem color-mix(in srgb, var(--ui-base) 11%, transparent);
+  background: color-mix(in srgb, var(--ui-chat-bubble-background) 96%, transparent);
+  box-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--ui-base) 8%, transparent);
   padding: 0 0.625rem;
   color: var(--ui-text-secondary);
   font-size: 0.75rem;
@@ -455,7 +469,7 @@
 
 .workflow-status-pill.tone-warning {
   background: color-mix(in srgb, var(--ui-yellow) 14%, var(--ui-bg-card));
-  color: #8a5a15;
+  color: color-mix(in srgb, var(--ui-yellow) 72%, var(--ui-text-primary));
 }
 
 .workflow-status-pill.tone-danger {
@@ -624,7 +638,7 @@
 }
 
 .workflow-stream-compact-event.status-warning {
-  color: #8a5a15;
+  color: color-mix(in srgb, var(--ui-yellow) 72%, var(--ui-text-primary));
 }
 
 .workflow-stream-compact-event.status-error {
@@ -696,8 +710,8 @@
   overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
   border-radius: 0.5rem;
-  background: var(--ui-bg-card);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
+  background: color-mix(in srgb, var(--ui-chat-bubble-background) 98%, transparent);
+  box-shadow: 0 0.5rem 1.25rem color-mix(in srgb, var(--ui-base) 10%, transparent);
 }
 
 .workflow-completion-popover button {

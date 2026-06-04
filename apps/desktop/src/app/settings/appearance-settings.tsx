@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
 
+import { WORKFLOW_LANGUAGE_OPTIONS } from '@/app/workflows/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check, Globe, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
+import { $workflowLanguage, setWorkflowLanguage } from '@/store/workflow-language'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
@@ -54,7 +56,9 @@ function ThemePreview({ name }: { name: string }) {
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const workflowLanguage = useStore($workflowLanguage)
   const activeTheme = availableThemes.find(t => t.name === themeName)
+  const activeWorkflowLanguage = WORKFLOW_LANGUAGE_OPTIONS.find(option => option.value === workflowLanguage)
 
   return (
     <SettingsContent>
@@ -107,6 +111,53 @@ export function AppearanceSettings() {
                   <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">{label}</div>
                   <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
                     {description}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-3 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Globe className="size-4 text-muted-foreground" />
+                <span>Workflow Language</span>
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Controls labels in the Workflow workbench only. Existing chat and settings pages stay unchanged.
+              </div>
+            </div>
+            {activeWorkflowLanguage && <Pill>{activeWorkflowLanguage.label}</Pill>}
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {WORKFLOW_LANGUAGE_OPTIONS.map(option => {
+              const active = workflowLanguage === option.value
+
+              return (
+                <button
+                  className={cn(
+                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
+                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
+                  )}
+                  key={option.value}
+                  onClick={() => {
+                    triggerHaptic('selection')
+                    setWorkflowLanguage(option.value)
+                  }}
+                  type="button"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">{option.label}</div>
+                    {active && (
+                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
+                        <Check className="size-3.5" />
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                    {option.description}
                   </div>
                 </button>
               )

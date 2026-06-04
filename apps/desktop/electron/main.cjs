@@ -891,6 +891,14 @@ function findPythonForRoot(root) {
     if (fileExists(candidate)) return candidate
   }
 
+  // Dev checkouts often do not have their own venv, while the canonical
+  // Hermes install does.  Reuse that interpreter but keep PYTHONPATH pointed at
+  // the requested checkout so Electron exercises the active source tree.
+  const activeVenvPython = getVenvPython(VENV_ROOT)
+  if (path.resolve(root) !== path.resolve(ACTIVE_HERMES_ROOT) && fileExists(activeVenvPython)) {
+    return activeVenvPython
+  }
+
   return findSystemPython()
 }
 

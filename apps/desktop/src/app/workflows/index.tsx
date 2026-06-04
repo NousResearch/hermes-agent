@@ -1,6 +1,7 @@
 import '@xyflow/react/dist/style.css'
 import './workflows.css'
 
+import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Background,
@@ -58,6 +59,7 @@ import {
   updateWorkflowSkills
 } from '@/hermes'
 import { cn } from '@/lib/utils'
+import { $workflowLanguage } from '@/store/workflow-language'
 import type { ModelOptionsResponse, SkillInfo } from '@/types/hermes'
 import type {
   ExecutionMode,
@@ -77,6 +79,7 @@ import type {
 } from '@/types/workflow'
 
 import { titlebarHeaderBaseClass } from '../shell/titlebar'
+import { type WorkflowCopy, workflowCopyFor } from './i18n'
 
 type DrawerMode = 'files' | 'references' | 'skills' | 'snapshots' | 'task'
 
@@ -87,25 +90,30 @@ interface WorkflowNodeData extends Record<string, unknown> {
 type FlowNode = Node<WorkflowNodeData, 'workflow'>
 type FlowEdge = Edge<{ kind: string }>
 
-const STATUS_META: Record<WorkflowNodeStatus, { label: string; tone: string }> = {
-  aborted: { label: '已中止', tone: 'danger' },
-  completed: { label: '已完成', tone: 'success' },
-  created: { label: '已创建', tone: 'neutral' },
-  failed: { label: '失败', tone: 'danger' },
-  queued: { label: '排队中', tone: 'info' },
-  ready: { label: '就绪', tone: 'ready' },
-  retrying: { label: '重试中', tone: 'warning' },
-  reviewing: { label: '审查中', tone: 'warning' },
-  revision_needed: { label: '需修订', tone: 'warning' },
-  running: { label: '运行中', tone: 'running' },
-  skipped: { label: '已跳过', tone: 'neutral' },
-  waiting_user_confirm: { label: '待确认', tone: 'warning' }
+const STATUS_TONE: Record<WorkflowNodeStatus, string> = {
+  aborted: 'danger',
+  completed: 'success',
+  created: 'neutral',
+  failed: 'danger',
+  queued: 'info',
+  ready: 'ready',
+  retrying: 'warning',
+  reviewing: 'warning',
+  revision_needed: 'warning',
+  running: 'running',
+  skipped: 'neutral',
+  waiting_user_confirm: 'warning'
 }
 
-const MODE_LABEL: Record<ExecutionMode, string> = {
-  auto: '自动',
-  semi_auto: '半自动',
-  single_step: '单步'
+function useWorkflowCopy(): WorkflowCopy {
+  return workflowCopyFor(useStore($workflowLanguage))
+}
+
+function statusMeta(copy: WorkflowCopy, status: WorkflowNodeStatus): { label: string; tone: string } {
+  return {
+    label: copy.status[status] ?? status,
+    tone: STATUS_TONE[status] ?? 'neutral'
+  }
 }
 
 const EVENT_ICON: Record<StreamEvent['type'], string> = {
@@ -133,14 +141,16 @@ const RIGHT_DRAWER_MAX_WIDTH = 640
 const RIGHT_DRAWER_DEFAULT_WIDTH = 352
 
 function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
-  const status = STATUS_META[data.node.status]
+  const copy = useWorkflowCopy()
+  const status = statusMeta(copy, data.node.status)
   const hasReview = data.node.reviewRules.required
+  const nodeType = copy.nodeType[data.node.type as keyof typeof copy.nodeType] ?? data.node.type.toUpperCase()
 
   return (
     <div className={cn('workflow-node-card', selected && 'is-selected', `tone-${status.tone}`)}>
       <Handle className="workflow-handle" position={Position.Left} type="target" />
       <div className="workflow-node-card__top">
-        <span className="workflow-node-card__type">{data.node.type}</span>
+        <span className="workflow-node-card__type">{nodeType}</span>
         <span className={cn('workflow-status-pill', `tone-${status.tone}`)}>{status.label}</span>
       </div>
       <div className="workflow-node-card__title">{data.node.title}</div>
@@ -165,6 +175,8 @@ export function WorkflowsView() {
 }
 
 function WorkflowWorkbench() {
+  const workflowLanguage = useStore($workflowLanguage)
+  const copy = workflowCopyFor(workflowLanguage)
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
@@ -472,7 +484,7 @@ function WorkflowWorkbench() {
         source: connection.source,
         target: connection.target,
         type: 'dependency',
-        label: '依赖',
+        label: copy.dependency,
         optional: false
       }
 
@@ -481,7 +493,7 @@ function WorkflowWorkbench() {
         snapshotLabel: 'Canvas edge created'
       })
     },
-    [saveWorkflowMutation, workflow]
+    [copy.dependency, saveWorkflowMutation, workflow]
   )
 
   const saveNodeConfig = useCallback(
@@ -523,7 +535,7 @@ function WorkflowWorkbench() {
   const showIntake = requestNewProject || (projectsQuery.isSuccess && !activeProjectId)
 
   return (
-    <div className="workflow-workbench">
+    <div className={cn('workflow-workbench', workflowLanguage === 'zh' && 'workflow-workbench--zh')}>
       {showIntake ? (
         <WorkflowIntakePage onComplete={handleIntakeComplete} />
       ) : (
@@ -686,6 +698,7 @@ function ExecutionToolbar({
   project: ProjectBundle['project'] | null
   selectedNode: WorkflowNode | null
 }) {
+  const copy = useWorkflowCopy()
   const running = activeRun?.status === 'running'
 
   return (
@@ -693,7 +706,7 @@ function ExecutionToolbar({
       <div className="workflow-execution-toolbar__identity">
         <div className="workflow-title">{project?.name ?? 'hermes-workflow'}</div>
         <div className="workflow-subtitle">
-          {selectedNode ? `当前节点：${selectedNode.title}` : project?.root ?? '创建项目后开始'}
+          {selectedNode ? `${copy.currentNodePrefix}${selectedNode.title}` : project?.root ?? copy.workflowStartHint}
         </div>
       </div>
 
@@ -703,23 +716,23 @@ function ExecutionToolbar({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="single_step">单步</SelectItem>
-            <SelectItem value="semi_auto">半自动</SelectItem>
-            <SelectItem value="auto">自动</SelectItem>
+            <SelectItem value="single_step">{copy.mode.single_step}</SelectItem>
+            <SelectItem value="semi_auto">{copy.mode.semi_auto}</SelectItem>
+            <SelectItem value="auto">{copy.mode.auto}</SelectItem>
           </SelectContent>
         </Select>
 
         <Button disabled={!project || busy || running} onClick={onRun} size="sm" type="button">
           <Codicon name="play" size="0.875rem" />
-          运行
+          {copy.run}
         </Button>
         <Button disabled={!running || busy} onClick={onPause} size="sm" type="button" variant="outline">
           <Codicon name="debug-pause" size="0.875rem" />
-          暂停
+          {copy.pause}
         </Button>
         <Button disabled={!activeRun || busy || activeRun.status === 'stopped'} onClick={onStop} size="sm" type="button" variant="outline">
           <Codicon name="debug-stop" size="0.875rem" />
-          停止
+          {copy.stop}
         </Button>
       </div>
     </section>
@@ -757,6 +770,7 @@ function WorkflowStatusOverlay({
   selectedNode: WorkflowNode | null
   workflow: Workflow | null
 }) {
+  const copy = useWorkflowCopy()
   const running = activeRun?.status === 'running'
   const waiting = activeRun?.status === 'waiting_user_confirm'
   const completed = workflow ? workflow.nodes.filter(node => node.status === 'completed').length : 0
@@ -765,10 +779,10 @@ function WorkflowStatusOverlay({
   return (
     <div className="workflow-status-overlay" aria-label="Workflow execution status">
       <span className={cn('workflow-run-dot', running && 'is-running', waiting && 'is-waiting')} />
-      <span>{activeRun ? runStatusLabel(activeRun.status) : '未运行'}</span>
+      <span>{activeRun ? runStatusLabel(copy, activeRun.status) : copy.notRun}</span>
       <span>{total ? `${completed}/${total}` : '0/0'}</span>
-      <span>{activeRun ? MODE_LABEL[activeRun.mode] : MODE_LABEL[executionMode]}</span>
-      <strong title={selectedNode?.title ?? undefined}>{selectedNode ? selectedNode.title : '未选择节点'}</strong>
+      <span>{activeRun ? copy.mode[activeRun.mode] : copy.mode[executionMode]}</span>
+      <strong title={selectedNode?.title ?? undefined}>{selectedNode ? selectedNode.title : copy.noNodeSelected}</strong>
     </div>
   )
 }
@@ -780,16 +794,17 @@ function WorkflowFloatingToolbar({
   active: DrawerMode
   onToggle: (mode: DrawerMode) => void
 }) {
+  const copy = useWorkflowCopy()
   const items: Array<{ icon: string; label: string; mode: DrawerMode }> = [
-    { icon: 'graph', label: '节点详情', mode: 'task' },
-    { icon: 'files', label: '文件树', mode: 'files' },
-    { icon: 'references', label: '资料', mode: 'references' },
-    { icon: 'symbol-misc', label: '技能', mode: 'skills' },
-    { icon: 'git-commit', label: '版本', mode: 'snapshots' }
+    { icon: 'graph', label: copy.nodeDetails, mode: 'task' },
+    { icon: 'files', label: copy.fileTree, mode: 'files' },
+    { icon: 'references', label: copy.references, mode: 'references' },
+    { icon: 'symbol-misc', label: copy.skills, mode: 'skills' },
+    { icon: 'git-commit', label: copy.snapshots, mode: 'snapshots' }
   ]
 
   return (
-    <div aria-label="Workflow tools" className="workflow-floating-toolbar" role="toolbar">
+    <div aria-label={copy.tools} className="workflow-floating-toolbar" role="toolbar">
       {items.map(item => (
         <button
           aria-label={item.label}
@@ -823,6 +838,7 @@ function FileTreeDrawer({
   root?: string
   selectedFilePath: string | null
 }) {
+  const copy = useWorkflowCopy()
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -853,16 +869,16 @@ function FileTreeDrawer({
     <div className="workflow-file-drawer">
       <div className="workflow-drawer-header">
         <div>
-          <h2>项目文件</h2>
-          <p>{root ?? '未选择项目'}</p>
+          <h2>{copy.projectFiles}</h2>
+          <p>{root ?? copy.noProjectSelected}</p>
         </div>
-        <Button disabled={!root} onClick={onOpenProjectRoot} size="icon-sm" title="在文件资源管理器中打开" type="button" variant="ghost">
+        <Button disabled={!root} onClick={onOpenProjectRoot} size="icon-sm" title={copy.openProjectInExplorer} type="button" variant="ghost">
           <Codicon name="folder-opened" size="0.875rem" />
         </Button>
       </div>
       <div className="workflow-file-tree">
         {loading ? (
-          <div className="workflow-muted">读取中...</div>
+          <div className="workflow-muted">Loading...</div>
         ) : files.length ? (
           files.map(item => (
             <FileTreeItem
@@ -872,11 +888,12 @@ function FileTreeDrawer({
               onOpenFile={onOpenFile}
               onSelectFile={onSelectFile}
               onToggleExpanded={toggleExpanded}
+              openLabel={copy.openFile}
               selectedFilePath={selectedFilePath}
             />
           ))
         ) : (
-          <div className="workflow-muted">暂无可显示文件</div>
+          <div className="workflow-muted">{copy.noFiles}</div>
         )}
       </div>
     </div>
@@ -890,6 +907,7 @@ function FileTreeItem({
   onOpenFile,
   onSelectFile,
   onToggleExpanded,
+  openLabel,
   selectedFilePath
 }: {
   expanded: Set<string>
@@ -898,6 +916,7 @@ function FileTreeItem({
   onOpenFile: (path: string) => void
   onSelectFile: (path: string) => void
   onToggleExpanded: (path: string) => void
+  openLabel: string
   selectedFilePath: string | null
 }) {
   const isFolder = item.kind === 'folder'
@@ -925,7 +944,7 @@ function FileTreeItem({
         </button>
         {!isFolder && (
           <Button
-            aria-label="打开文件"
+            aria-label={openLabel}
             className="workflow-file-open"
             onClick={() => onOpenFile(item.path)}
             size="icon-xs"
@@ -946,6 +965,7 @@ function FileTreeItem({
               onOpenFile={onOpenFile}
               onSelectFile={onSelectFile}
               onToggleExpanded={onToggleExpanded}
+              openLabel={openLabel}
               selectedFilePath={selectedFilePath}
             />
           ))
@@ -1087,6 +1107,7 @@ function TaskDetailDrawer({
   root?: string
   selectedFilePath: string | null
 }) {
+  const copy = useWorkflowCopy()
   const [draft, setDraft] = useState<WorkflowNode | null>(node)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [referencesOpen, setReferencesOpen] = useState(false)
@@ -1103,13 +1124,13 @@ function TaskDetailDrawer({
     return (
       <div className="workflow-drawer-empty">
         <Codicon name="graph" size="1.25rem" />
-        <span>选择一个节点查看详情</span>
+        <span>{copy.drawerEmptyNode}</span>
       </div>
     )
   }
 
   const editable = draft ?? node
-  const status = STATUS_META[node.status]
+  const status = statusMeta(copy, node.status)
   const runId = activeRun?.id ?? null
   const waiting = Boolean(runId && node.status === 'waiting_user_confirm')
   const nodeArtifacts = artifacts.filter(artifact => artifact.nodeId === node.id || node.artifacts.includes(artifact.path))
@@ -1150,7 +1171,7 @@ function TaskDetailDrawer({
       <div className="workflow-task-detail__body">
       <section>
         <div className="workflow-section-header">
-          <h3>执行规划 Prompt</h3>
+          <h3>{copy.editExecutionPrompt}</h3>
           <Button
             disabled={!draft}
             onClick={() => draft && onSaveNode({ ...draft, promptOverride: draft.promptOverride?.trim() || null })}
@@ -1158,28 +1179,28 @@ function TaskDetailDrawer({
             type="button"
           >
             <Codicon name="save" size="0.8125rem" />
-            保存
+            {copy.save}
           </Button>
         </div>
         <Textarea
           className="workflow-prompt-editor"
           onChange={event => updateDraft({ promptOverride: event.target.value })}
-          placeholder={node.description || '为该节点补充执行规划 prompt'}
+          placeholder={node.description || copy.taskPlaceholder}
           value={editable.promptOverride ?? ''}
         />
         <p className="workflow-muted">{node.description}</p>
       </section>
 
       <section>
-        <h3>上下文</h3>
+        <h3>{copy.context}</h3>
         <div className="workflow-key-values">
-          <span>类型</span>
-          <strong>{node.type}</strong>
-          <span>模型</span>
-          <strong>{editable.modelOverride ?? editable.model ?? '继承全局配置'}</strong>
-          <span>技能</span>
-          <strong>{editable.skillMode === 'manual' ? `${editable.skills.length} 个手动技能` : '自动调用'}</strong>
-          <span>重试</span>
+          <span>{copy.type}</span>
+          <strong>{copy.nodeType[node.type as keyof typeof copy.nodeType] ?? node.type}</strong>
+          <span>{copy.model}</span>
+          <strong>{editable.modelOverride ?? editable.model ?? copy.globalModel}</strong>
+          <span>{copy.skills}</span>
+          <strong>{editable.skillMode === 'manual' ? `${editable.skills.length} ${copy.manualSkillsSummary}` : 'auto'}</strong>
+          <span>{copy.retry}</span>
           <strong>
             {node.retryCount}/{node.maxRetries}
           </strong>
@@ -1187,7 +1208,7 @@ function TaskDetailDrawer({
       </section>
 
       <section>
-        <h3>执行模型</h3>
+        <h3>{copy.executionModel}</h3>
         <Select
           onValueChange={value => updateDraft({ modelOverride: value === '__inherit' ? null : value })}
           value={editable.modelOverride ?? '__inherit'}
@@ -1196,7 +1217,7 @@ function TaskDetailDrawer({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__inherit">继承 workflow/global model</SelectItem>
+            <SelectItem value="__inherit">{copy.globalModel}</SelectItem>
             {modelChoices.map(choice => (
               <SelectItem key={`${choice.provider}-${choice.model}`} value={choice.model}>
                 {choice.provider} / {choice.model}
@@ -1216,8 +1237,8 @@ function TaskDetailDrawer({
           <div className="workflow-config-list">
             <label className="workflow-toggle-row">
               <span>
-                <strong>自动调用 Hermes Skills</strong>
-                <small>由 Agent 根据节点目标和可用工具选择</small>
+                <strong>{copy.autoCallHermesSkills}</strong>
+                <small>{copy.autoSkillDescription}</small>
               </span>
               <Switch checked={editable.skillMode !== 'manual'} onCheckedChange={checked => updateDraft({ skillMode: checked ? 'auto' : 'manual' })} />
             </label>
@@ -1235,14 +1256,14 @@ function TaskDetailDrawer({
                   </span>
                 </label>
               ))}
-            {editable.skillMode === 'manual' && !availableSkills.length && <div className="workflow-muted">暂无可用 skills 列表。</div>}
+            {editable.skillMode === 'manual' && !availableSkills.length && <div className="workflow-muted">{copy.manualSkillsEmpty}</div>}
           </div>
         )}
       </section>
 
       <section>
         <button className="workflow-collapsible-heading" onClick={() => setReferencesOpen(value => !value)} type="button">
-          <h3>节点引用文件</h3>
+          <h3>{copy.nodeReferences}</h3>
           <span>{references.length}</span>
           <Codicon name={referencesOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
         </button>
@@ -1252,7 +1273,7 @@ function TaskDetailDrawer({
               <Button
                 onClick={() => {
                   void window.hermesDesktop
-                    .selectPaths({ multiple: true, title: '选择当前节点引用文件' })
+                    .selectPaths({ multiple: true, title: copy.chooseCurrentNodeReference })
                     .then(paths => paths.forEach(addReference))
                 }}
                 size="xs"
@@ -1260,11 +1281,11 @@ function TaskDetailDrawer({
                 variant="outline"
               >
                 <Codicon name="add" size="0.8125rem" />
-                添加文件
+                {copy.addFiles}
               </Button>
               <Button disabled={!selectedFileForReference} onClick={() => selectedFileForReference && addReference(selectedFileForReference)} size="xs" type="button" variant="outline">
                 <Codicon name="files" size="0.8125rem" />
-                添加选中文件
+                {copy.addSelectedFile}
               </Button>
             </div>
             {references.length ? (
@@ -1280,7 +1301,7 @@ function TaskDetailDrawer({
                 </div>
               ))
             ) : (
-              <div className="workflow-muted">暂无节点级引用文件。</div>
+              <div className="workflow-muted">{copy.noNodeReferences}</div>
             )}
           </div>
         )}
@@ -1297,7 +1318,7 @@ function TaskDetailDrawer({
               </li>
             ))
           ) : (
-            <li>无显式审查规则</li>
+            <li>{copy.noExplicitReviewRules}</li>
           )}
         </ul>
       </section>
@@ -1313,14 +1334,14 @@ function TaskDetailDrawer({
               </div>
             ))
           ) : (
-            <div className="workflow-muted">暂无产物</div>
+            <div className="workflow-muted">{copy.noArtifacts}</div>
           )}
         </div>
       </section>
 
       <section>
         <button className="workflow-collapsible-heading" onClick={() => setChangesOpen(value => !value)} type="button">
-          <h3>文件变更审查</h3>
+          <h3>{copy.fileChangeReview}</h3>
           <span>{fileChanges.length}</span>
           <Codicon name={changesOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
         </button>
@@ -1336,14 +1357,14 @@ function TaskDetailDrawer({
                     </span>
                     <Button onClick={() => onOpenFile(resolveProjectPath(root, change.path))} size="xs" type="button" variant="outline">
                       <Codicon name="go-to-file" size="0.8125rem" />
-                      打开
+                      {copy.open}
                     </Button>
                   </div>
-                  <pre>{change.diff || '无可显示 diff'}</pre>
+                  <pre>{change.diff || copy.noDiff}</pre>
                 </div>
               ))
             ) : (
-              <div className="workflow-muted">节点执行后会在这里显示新增、修改或删除的业务文件。</div>
+              <div className="workflow-muted">{copy.fileChangeReviewEmpty}</div>
             )}
           </div>
         )}
@@ -1353,15 +1374,15 @@ function TaskDetailDrawer({
       <div className="workflow-node-actions">
         <Button disabled={!waiting || !runId} onClick={() => runId && onNodeAction('confirm', node.id, runId)} size="sm" type="button">
           <Codicon name="pass" size="0.875rem" />
-          确认
+          {copy.confirm}
         </Button>
         <Button disabled={!runId} onClick={() => runId && onNodeAction('retry', node.id, runId)} size="sm" type="button" variant="outline">
           <Codicon name="refresh" size="0.875rem" />
-          重试
+          {copy.retry}
         </Button>
         <Button disabled={!runId} onClick={() => runId && onNodeAction('skip', node.id, runId)} size="sm" type="button" variant="outline">
           <Codicon name="debug-step-over" size="0.875rem" />
-          跳过
+          {copy.skip}
         </Button>
       </div>
     </div>
@@ -1377,17 +1398,19 @@ function ReferenceDrawer({
   onToggleReference: (reference: ReferenceItem, enabled: boolean) => void
   references: ReferenceItem[]
 }) {
+  const copy = useWorkflowCopy()
+
   return (
     <div className="workflow-reference-drawer">
       <div className="workflow-drawer-header">
         <div>
-          <h2>References</h2>
-          <p>只有启用项会进入节点上下文</p>
+          <h2>{copy.references}</h2>
+          <p>{copy.referenceContextHint}</p>
         </div>
         <Button
           onClick={() => {
             void window.hermesDesktop
-              .selectPaths({ multiple: true, title: '选择 reference 文件或文件夹' })
+              .selectPaths({ multiple: true, title: copy.chooseReference })
               .then(paths => paths.length && onAddReferences(paths))
           }}
           size="xs"
@@ -1395,7 +1418,7 @@ function ReferenceDrawer({
           variant="outline"
         >
           <Codicon name="add" size="0.8125rem" />
-          添加
+          {copy.add}
         </Button>
       </div>
       <div className="workflow-list">
@@ -1410,7 +1433,7 @@ function ReferenceDrawer({
             </label>
           ))
         ) : (
-          <div className="workflow-muted">暂无 reference，节点会仅使用项目目标和上游输出。</div>
+          <div className="workflow-muted">{copy.noReferenceProject}</div>
         )}
       </div>
     </div>
@@ -1424,12 +1447,14 @@ function SkillDrawer({
   onToggleSkill: (skill: SkillBinding, enabled: boolean) => void
   skills: SkillBinding[]
 }) {
+  const copy = useWorkflowCopy()
+
   return (
     <div>
       <div className="workflow-drawer-header">
         <div>
-          <h2>Skills</h2>
-          <p>项目级启用列表，节点可再绑定子集</p>
+          <h2>{copy.skills}</h2>
+          <p>{copy.skillProjectHint}</p>
         </div>
       </div>
       <div className="workflow-list">
@@ -1448,16 +1473,18 @@ function SkillDrawer({
 }
 
 function SnapshotDrawer({ onSnapshot, snapshots }: { onSnapshot: () => void; snapshots: VersionSnapshot[] }) {
+  const copy = useWorkflowCopy()
+
   return (
     <div>
       <div className="workflow-drawer-header">
         <div>
-          <h2>版本快照</h2>
-          <p>普通模式隐藏 Git 细节</p>
+          <h2>{copy.snapshots}</h2>
+          <p>{copy.snapshotsHint}</p>
         </div>
         <Button onClick={onSnapshot} size="xs" type="button" variant="outline">
           <Codicon name="git-commit" size="0.8125rem" />
-          快照
+          {copy.snapshot}
         </Button>
       </div>
       <div className="workflow-snapshot-list">
@@ -1472,7 +1499,7 @@ function SnapshotDrawer({ onSnapshot, snapshots }: { onSnapshot: () => void; sna
             </div>
           ))
         ) : (
-          <div className="workflow-muted">暂无快照</div>
+          <div className="workflow-muted">{copy.noSnapshots}</div>
         )}
       </div>
     </div>
@@ -1496,6 +1523,7 @@ function StreamOutputPanel({
   selectedNode: WorkflowNode | null
   wsHealthy: boolean
 }) {
+  const copy = useWorkflowCopy()
   const [height, setHeight] = useState(() => {
     const stored = Number(window.localStorage.getItem('hermes.workflow.streamHeight') || 260)
 
@@ -1541,14 +1569,14 @@ function StreamOutputPanel({
       <div className="workflow-stream-panel__header">
         <button onClick={onToggleExpanded} type="button">
           <Codicon name={expanded ? 'chevron-down' : 'chevron-up'} size="0.875rem" />
-          Stream Output
+          {copy.streamOutput}
         </button>
         <div className="workflow-stream-panel__tools">
           <span className={cn('workflow-ws-dot', wsHealthy && 'is-live')} />
           <span>{wsHealthy ? 'WS live' : 'polling'}</span>
           <label>
             <Switch checked={filterSelectedNode} disabled={!selectedNode} onCheckedChange={onFilterSelectedNode} />
-            当前节点
+            {copy.streamContextCurrentNode}
           </label>
         </div>
       </div>
@@ -1577,7 +1605,7 @@ function StreamOutputPanel({
               )
             )
           ) : (
-            <div className="workflow-muted">运行后会显示安全过程摘要、工具调用、阶段结果和 AI 回复。</div>
+            <div className="workflow-muted">{copy.runSummaryEmpty}</div>
           )}
         </div>
       )}
@@ -1602,6 +1630,7 @@ function WorkflowChatBox({
   projectRoot?: string
   selectedNode: WorkflowNode | null
 }) {
+  const copy = useWorkflowCopy()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
   const [completions, setCompletions] = useState<WorkflowComposerCompletionItem[]>([])
@@ -1674,7 +1703,7 @@ function WorkflowChatBox({
     >
       <div className="workflow-chat-box__context">
         <Codicon name="target" size="0.8125rem" />
-        {selectedNode ? `当前上下文：${selectedNode.title}` : '当前上下文：全局 Workflow'}
+        {selectedNode ? `${copy.currentNodePrefix}${selectedNode.title}` : copy.contextGlobal}
       </div>
       {attachments.length > 0 && (
         <div className="workflow-chat-box__attachments">
@@ -1700,7 +1729,7 @@ function WorkflowChatBox({
             event.currentTarget.form?.requestSubmit()
           }
         }}
-        placeholder="输入消息、/命令或 @file: 引用；输出会进入 Stream，而不是聊天气泡。"
+        placeholder={copy.workflowChatPlaceholder}
         value={text}
       />
       {completions.length > 0 && (
@@ -1718,7 +1747,7 @@ function WorkflowChatBox({
         disabled={disabled || !projectId}
         onClick={() => {
           void window.hermesDesktop
-            .selectPaths({ multiple: true, title: '选择 workflow 附件或 reference' })
+            .selectPaths({ multiple: true, title: copy.chooseWorkflowAttachment })
             .then(async paths => {
               if (!paths.length) {
                 return
@@ -1729,7 +1758,7 @@ function WorkflowChatBox({
             })
         }}
         size="icon-sm"
-        title="添加附件"
+        title={copy.addAttachments}
         type="button"
         variant="outline"
       >
@@ -1743,7 +1772,8 @@ function WorkflowChatBox({
 }
 
 function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle) => void | Promise<void> }) {
-  const [name, setName] = useState('Hermes Workflow Project')
+  const copy = useWorkflowCopy()
+  const [name, setName] = useState<string>(copy.workflowProjectDefaultName)
   const [goal, setGoal] = useState('')
   const [root, setRoot] = useState('')
   const [references, setReferences] = useState<string[]>([])
@@ -1790,52 +1820,52 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
     <main className="workflow-intake-page">
       <WorkflowPageTitlebar
         icon="graph"
-        subtitle="Hermes 会先澄清规划细节，再生成可执行节点图。"
-        title="新建 Workflow"
+        subtitle={copy.workflowIntakeSubtitle}
+        title={copy.workflowIntakeTitle}
       />
       <section aria-label="Workflow intake" className="workflow-intake-layout">
         <div className="workflow-intake-config">
           <div className="workflow-intake-section-heading">
-            <h2>项目配置</h2>
-            <p>填写项目背景后开始澄清。</p>
+            <h2>{copy.projectConfig}</h2>
+            <p>{copy.projectConfigHint}</p>
           </div>
 
           <label>
-            项目名称
+            {copy.projectName}
             <Input disabled={busy && Boolean(intakeId)} onChange={event => setName(event.target.value)} value={name} />
           </label>
 
           <label>
-            项目目录
+            {copy.projectDirectory}
             <div className="workflow-path-picker">
               <Input
                 disabled={busy && Boolean(intakeId)}
                 onChange={event => setRoot(event.target.value)}
-                placeholder="留空则使用 Hermes 默认 workflows 目录"
+                placeholder={copy.projectDirectoryPlaceholder}
                 value={root}
               />
               <Button
                 disabled={busy && Boolean(intakeId)}
                 onClick={() => {
                   void window.hermesDesktop
-                    .selectPaths({ directories: true, title: '选择 Workflow 项目目录' })
+                    .selectPaths({ directories: true, title: copy.chooseWorkflowProjectDirectory })
                     .then(paths => paths[0] && setRoot(paths[0]))
                 }}
                 type="button"
                 variant="outline"
               >
-                选择
+                {copy.open}
               </Button>
             </div>
           </label>
 
           <label>
-            任务背景
+            {copy.projectBackground}
             <Textarea
               className="min-h-32"
               disabled={busy && Boolean(intakeId)}
               onChange={event => setGoal(event.target.value)}
-              placeholder="描述目标、输入资料、验收标准和约束。"
+              placeholder={copy.taskPlaceholder}
               value={goal}
             />
           </label>
@@ -1847,7 +1877,7 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
                 disabled={busy && Boolean(intakeId)}
                 onClick={() => {
                   void window.hermesDesktop
-                    .selectPaths({ multiple: true, title: '选择 reference 文件或文件夹' })
+                    .selectPaths({ multiple: true, title: copy.chooseReference })
                     .then(paths => setReferences(current => [...new Set([...current, ...paths])]))
                 }}
                 size="xs"
@@ -1855,17 +1885,17 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
                 variant="outline"
               >
                 <Codicon name="add" size="0.8125rem" />
-                添加
+                {copy.add}
               </Button>
             </div>
             <div className="workflow-reference-preview">
-              {references.length ? references.map(path => <span key={path}>{path}</span>) : <span>暂无 reference</span>}
+              {references.length ? references.map(path => <span key={path}>{path}</span>) : <span>{copy.noReference}</span>}
             </div>
           </div>
 
           <Button disabled={busy || !name.trim() || Boolean(intakeId)} onClick={() => startMutation.mutate()} type="button">
             <Codicon name={startMutation.isPending ? 'loading' : 'comment-discussion'} size="0.875rem" spinning={startMutation.isPending} />
-            开始澄清
+            {copy.startClarification}
           </Button>
         </div>
 
@@ -1874,12 +1904,12 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
             {messages.length ? (
               messages.map((message, index) => (
                 <div className={cn('workflow-intake-message', message.role === 'user' && 'is-user')} key={`${message.timestamp}-${index}`}>
-                  <span>{message.role === 'user' ? '你' : 'Hermes'}</span>
+                  <span>{message.role === 'user' ? copy.you : 'Hermes'}</span>
                   <p>{message.content}</p>
                 </div>
               ))
             ) : (
-              <div className="workflow-muted">填写项目背景后开始澄清。</div>
+              <div className="workflow-muted">{copy.projectConfigHint}</div>
             )}
           </div>
 
@@ -1903,7 +1933,7 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
                   event.currentTarget.form?.requestSubmit()
                 }
               }}
-              placeholder="补充规划细节..."
+              placeholder={copy.planDetailsPlaceholder}
               value={reply}
             />
             <Button disabled={!intakeId || busy || !reply.trim()} size="icon-sm" type="submit">
@@ -1915,16 +1945,16 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
         <aside className="workflow-intake-summary">
           <div className="workflow-drawer-header">
             <div>
-              <h2>规划摘要</h2>
-              <p>{ready ? '可以生成 Workflow' : '等待澄清完成'}</p>
+              <h2>{copy.summaryTitle}</h2>
+              <p>{ready ? copy.intakeReady : copy.intakeWaiting}</p>
             </div>
           </div>
-          <pre>{summary || '摘要会随澄清对话更新。'}</pre>
+          <pre>{summary || copy.summaryPlaceholder}</pre>
           {error && <div className="workflow-error">{error}</div>}
-          {confirmMutation.isPending && <div className="workflow-status">正在创建项目、初始化 Git、生成 Workflow...</div>}
+          {confirmMutation.isPending && <div className="workflow-status">{copy.startingProjectStatus}</div>}
           <Button disabled={!intakeId || !ready || confirmMutation.isPending} onClick={() => confirmMutation.mutate()} type="button">
             <Codicon name={confirmMutation.isPending ? 'loading' : 'sparkle'} size="0.875rem" spinning={confirmMutation.isPending} />
-            确认并生成
+            {copy.confirmAndGenerate}
           </Button>
         </aside>
       </section>
@@ -1933,10 +1963,12 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
 }
 
 function WorkbenchLoading() {
+  const copy = useWorkflowCopy()
+
   return (
     <div className="workflow-empty">
       <Codicon name="loading" size="1.5rem" spinning />
-      <span>正在加载 Workflow 工作台...</span>
+      <span>{copy.loadingWorkbench}</span>
     </div>
   )
 }
@@ -1954,19 +1986,21 @@ function EmptyWorkbench({
   onCreate: () => void
   onGenerate?: () => void
 }) {
+  const copy = useWorkflowCopy()
+
   if (hasProject) {
     return (
       <div className="workflow-empty">
         <Codicon name={busy ? 'loading' : 'graph'} size="1.5rem" spinning={busy} />
-        <span>{busy ? '正在通过 Hermes Agent 生成 Workflow...' : '当前项目还没有可显示的 Workflow 节点'}</span>
+        <span>{busy ? copy.agentGeneratingWorkflow : copy.canvasEmpty}</span>
         <div className="workflow-empty__actions">
           <Button disabled={busy} onClick={onGenerate} type="button">
             <Codicon name={busy ? 'loading' : 'sparkle'} size="0.875rem" spinning={busy} />
-            生成 Workflow
+            {copy.workflowGenerationEmptyAction}
           </Button>
           <Button disabled={busy} onClick={onAddReference} type="button" variant="outline">
             <Codicon name="references" size="0.875rem" />
-            添加资料
+            {copy.workflowGenerationReferencesAction}
           </Button>
         </div>
       </div>
@@ -1976,9 +2010,9 @@ function EmptyWorkbench({
   return (
     <div className="workflow-empty">
       <Codicon name="graph" size="1.5rem" />
-      <span>创建项目后开始编排 AI Agent Workflow</span>
+      <span>{copy.workflowStartHint}</span>
       <Button onClick={onCreate} type="button">
-        新建 Workflow 项目
+        {copy.newWorkflowProject}
       </Button>
     </div>
   )
@@ -2128,7 +2162,7 @@ function fileName(path: string): string {
 }
 
 function statusColor(status: WorkflowNodeStatus): string {
-  const tone = STATUS_META[status].tone
+  const tone = STATUS_TONE[status] ?? 'neutral'
 
   const colors: Record<string, string> = {
     danger: '#cf2d56',
@@ -2143,18 +2177,8 @@ function statusColor(status: WorkflowNodeStatus): string {
   return colors[tone] ?? colors.neutral
 }
 
-function runStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    completed: '已完成',
-    failed: '失败',
-    idle: '空闲',
-    paused: '已暂停',
-    running: '运行中',
-    stopped: '已停止',
-    waiting_user_confirm: '等待确认'
-  }
-
-  return labels[status] ?? status
+function runStatusLabel(copy: WorkflowCopy, status: string): string {
+  return copy.runStatus[status as keyof typeof copy.runStatus] ?? status
 }
 
 function formatTime(timestamp: number): string {

@@ -46,6 +46,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
     "zhaolei.vc@bytedance.com": "zhaoleibd",
+    "jeffrobodie@gmail.com": "jeffrobodie-glitch",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
     "copii.list@gmail.com": "stremtec",
     "solaiagent@gmail.com": "solaitken",

@@ -969,7 +969,12 @@ def _run_cleanup():
     # session boundary — NOT per-turn inside run_conversation().
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+            reason="shutdown",
+        )
     except Exception:
         pass
     try:
@@ -985,6 +990,42 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
+    except Exception:
+        pass
+
+
+def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") -> None:
+    """Best-effort on_session_end hook for interrupted non-interactive runs."""
+    agent = getattr(cli, "agent", None)
+    if agent is None:
+        return
+
+    try:
+        agent.interrupt(reason.replace("_", " "))
+    except Exception:
+        pass
+
+    session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+    if session_id:
+        try:
+            cli.session_id = session_id
+        except Exception:
+            pass
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_end",
+            session_id=session_id,
+            task_id=getattr(agent, "_current_task_id", "") or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            completed=False,
+            interrupted=True,
+            model=getattr(agent, "model", None),
+            platform=getattr(agent, "platform", None) or "cli",
+            reason=reason,
+        )
     except Exception:
         pass
 
@@ -5067,6 +5108,7 @@ class HermesCLI:
                         f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
                         f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                     )
+                self._restore_session_cwd(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -5286,6 +5328,59 @@ class HermesCLI:
 
         self._console_print()
 
+    def _restore_session_cwd(self, session_meta: dict, *, quiet: bool = False) -> None:
+        """Relaunch a resumed session in the directory it was started from.
+
+        Idempotent and safe to call from every resume path. When the stored
+        ``cwd`` differs from the current process directory, we both
+        ``os.chdir()`` (so the process and any ``os.getcwd()`` fallback agree)
+        and retarget ``TERMINAL_CWD`` (so the terminal tool, code-exec tool,
+        and relative-path resolution all land in the same place — the local
+        terminal backend snapshots cwd on first use, which happens after this).
+
+        No-ops when: the session recorded no cwd (gateway/remote/older
+        sessions), the directory no longer exists, or we're already there.
+        A missing directory degrades to a single dim warning rather than a
+        crash — repos get moved and deleted.
+        """
+        recorded = (session_meta or {}).get("cwd")
+        if not recorded:
+            return
+        recorded = os.path.expanduser(str(recorded))
+        try:
+            current = os.getcwd()
+        except OSError:
+            current = None
+        if current and os.path.realpath(recorded) == os.path.realpath(current):
+            return  # Already where the session lived — nothing to announce.
+
+        if not os.path.isdir(recorded):
+            msg = f"⚠ Session's working directory is gone: {recorded} — staying in {current or '.'}"
+            if quiet:
+                print(msg, file=sys.stderr)
+            else:
+                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            return
+
+        try:
+            os.chdir(recorded)
+        except OSError as e:
+            msg = f"⚠ Could not enter session's working directory {recorded}: {e}"
+            if quiet:
+                print(msg, file=sys.stderr)
+            else:
+                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            return
+
+        # Retarget the terminal/code-exec tools to match the process cwd.
+        os.environ["TERMINAL_CWD"] = recorded
+
+        msg = f"↻ Working directory: {recorded}"
+        if quiet:
+            print(msg, file=sys.stderr)
+        else:
+            self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -5342,6 +5437,7 @@ class HermesCLI:
                 f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                 f"{len(restored)} total messages)[/]"
             )
+            self._restore_session_cwd(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(
@@ -6530,6 +6626,7 @@ class HermesCLI:
                 event_type,
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
+                reason="new_session" if event_type == "on_session_reset" else "session_boundary",
             )
         except Exception:
             pass
@@ -15284,6 +15381,7 @@ class HermesCLI:
                         interrupted=True,
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
+                        reason="shutdown",
                     )
                 except Exception:
                     pass
@@ -15643,6 +15741,7 @@ def main(
         raise KeyboardInterrupt()
     try:
         import signal as _signal
+        _signal.signal(_signal.SIGINT, _signal_handler_q)
         _signal.signal(_signal.SIGTERM, _signal_handler_q)
         if hasattr(_signal, "SIGHUP"):
             _signal.signal(_signal.SIGHUP, _signal_handler_q)
@@ -15764,10 +15863,15 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
+                    try:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                        )
+                    except KeyboardInterrupt:
+                        _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                        sys.exit(130)
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
                     # session_id to stderr for automation wrappers; without
@@ -15807,9 +15911,33 @@ def main(
 
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                    
-                    # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+
+                    # Ensure proper exit code for automation wrappers.
+                    #
+                    # Kanban workers get a special case: when the run failed
+                    # purely because the provider rate-limited / exhausted
+                    # quota (not because the task itself is broken), exit with
+                    # the EX_TEMPFAIL sentinel instead of the generic 1. The
+                    # dispatcher's reap classifier maps that code to a
+                    # ``rate_limited`` exit and releases the task back to
+                    # ``ready`` WITHOUT incrementing the failure counter, so a
+                    # 5-hour quota window can't trip the circuit breaker and
+                    # permanently block the card. Non-kanban runs keep the
+                    # plain 0/1 contract automation wrappers expect.
+                    _exit_code = 0
+                    if isinstance(result, dict) and result.get("failed"):
+                        _exit_code = 1
+                        if os.environ.get("HERMES_KANBAN_TASK") and result.get(
+                            "failure_reason"
+                        ) in ("rate_limit", "billing"):
+                            try:
+                                from hermes_cli.kanban_db import (
+                                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                )
+                                _exit_code = _RL_CODE
+                            except Exception:
+                                _exit_code = 1
+                    sys.exit(_exit_code)
             
             # Exit with error code if credentials or agent init fails
             sys.exit(1)

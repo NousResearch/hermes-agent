@@ -83,6 +83,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:backend-exit', listener)
     return () => ipcRenderer.removeListener('hermes:backend-exit', listener)
   },
+  onPowerResume: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:power-resume', listener)
+    return () => ipcRenderer.removeListener('hermes:power-resume', listener)
+  },
   onBootProgress: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:boot-progress', listener)

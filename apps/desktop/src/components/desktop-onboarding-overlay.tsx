@@ -56,8 +56,6 @@ interface ApiKeyOption {
   short?: string
 }
 
-const MIN_KEY_LENGTH = 8
-
 const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
     id: 'openrouter',
@@ -104,12 +102,14 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
-  anthropic: { order: 1, title: 'Anthropic Claude' },
-  'openai-codex': { order: 2, title: 'OpenAI Codex / ChatGPT' },
-  'minimax-oauth': { order: 3, title: 'MiniMax' },
+  'openai-codex': { order: 1, title: 'OpenAI OAuth (ChatGPT)' },
+  'minimax-oauth': { order: 2, title: 'MiniMax' },
+  'qwen-oauth': { order: 3, title: 'Qwen Code' },
   'xai-oauth': { order: 4, title: 'xAI Grok' },
-  'claude-code': { order: 5, title: 'Claude Code' },
-  'qwen-oauth': { order: 6, title: 'Qwen Code' }
+  // Both Anthropic entries sit at the bottom: the API-key path first, then
+  // the subscription OAuth path (only works with extra usage credits).
+  anthropic: { order: 5, title: 'Anthropic API Key' },
+  'claude-code': { order: 6, title: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription' }
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
@@ -418,7 +418,9 @@ function ApiKeyForm({ canGoBack, ctx }: { canGoBack: boolean; ctx: OnboardingCon
   const [error, setError] = useState<null | string>(null)
 
   const isLocal = option.envKey === 'OPENAI_BASE_URL'
-  const canSave = value.trim().length >= (isLocal ? 1 : MIN_KEY_LENGTH)
+  // Only require a non-empty value — no length/format validation, so a short
+  // or unusual key can't block the user from continuing.
+  const canSave = value.trim().length >= 1
 
   const submit = async () => {
     if (!canSave || saving) {

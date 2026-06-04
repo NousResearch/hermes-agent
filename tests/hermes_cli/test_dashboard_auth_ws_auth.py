@@ -29,7 +29,8 @@ from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
-    consume_ticket,
+    consume_internal_credential,
+    internal_ws_credential,
     mint_ticket,
 )
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
@@ -279,10 +280,33 @@ class TestWsAuthOkGated:
             content = log_file.read_text()
             assert "ws_ticket_rejected" in content
 
+    def test_internal_credential_accepted(self, gated_app):
+        """Server-spawned children present the process-lifetime internal
+        credential via ?internal= and are accepted in gated mode."""
+        cred = internal_ws_credential()
+        ws = _fake_ws(query={"internal": cred})
+        assert web_server._ws_auth_ok(ws) is True
 
-# ---------------------------------------------------------------------------
-# _build_sidecar_url — gated mode mints a server-internal ticket
-# ---------------------------------------------------------------------------
+    def test_internal_credential_is_multi_use(self, gated_app):
+        """Unlike single-use tickets, the internal credential survives
+        repeated use so the child can reconnect."""
+        cred = internal_ws_credential()
+        for _ in range(3):
+            ws = _fake_ws(query={"internal": cred})
+            assert web_server._ws_auth_ok(ws) is True
+
+    def test_wrong_internal_credential_rejected(self, gated_app):
+        # Mint the real one so the store is non-empty, then present a bogus value.
+        internal_ws_credential()
+        ws = _fake_ws(query={"internal": "not-the-internal-credential"})
+        assert web_server._ws_auth_ok(ws) is False
+
+    def test_internal_credential_not_accepted_in_loopback(self, loopback_app):
+        """Outside gated mode, ?internal= is meaningless — only ?token= works.
+        A naked internal credential must not authenticate."""
+        cred = internal_ws_credential()
+        ws = _fake_ws(query={"internal": cred})
+        assert web_server._ws_auth_ok(ws) is False
 
 
 class TestWsRequestIsAllowedGated:
@@ -477,22 +501,69 @@ class TestSidecarUrl:
         assert f"token={web_server._SESSION_TOKEN}" in url
         assert "ticket=" not in url
 
-    def test_gated_uses_ticket(self, gated_app):
+    def test_gated_uses_internal_credential(self, gated_app):
         url = web_server._build_sidecar_url("ch-1")
         assert url is not None
         assert "token=" not in url
-        assert "ticket=" in url
-        # And the ticket should be live.
-        ticket = url.split("ticket=")[1].split("&")[0]
-        info = consume_ticket(ticket)
-        # Sidecar tickets are bound to the pseudo-user so audit logs can
-        # distinguish them from real browser tickets.
-        assert info["user_id"] == "pty-sidecar"
+        assert "ticket=" not in url
+        assert "internal=" in url
+        # The value should be the live process-lifetime internal credential,
+        # multi-use so the child can reconnect /api/pub.
+        cred = url.split("internal=")[1].split("&")[0]
+        info = consume_internal_credential(cred)
+        assert info["user_id"] == "server-internal"
         assert info["provider"] == "server-internal"
+        # Multi-use: a second consume still succeeds (unlike a ticket).
+        assert consume_internal_credential(cred)["provider"] == "server-internal"
 
     def test_no_bound_host_returns_none(self, gated_app):
         web_server.app.state.bound_host = None
         try:
             assert web_server._build_sidecar_url("ch") is None
+        finally:
+            web_server.app.state.bound_host = "fly-app.fly.dev"
+
+
+# ---------------------------------------------------------------------------
+# _build_gateway_ws_url — the TUI child's primary JSON-RPC backend WS.
+# Loopback uses ?token=; gated mode uses the multi-use internal credential
+# (NOT a single-use ticket — the child reuses this URL across reconnects).
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayWsUrl:
+    def test_loopback_uses_session_token(self, loopback_app):
+        url = web_server._build_gateway_ws_url()
+        assert url is not None
+        assert "/api/ws?" in url
+        assert f"token={web_server._SESSION_TOKEN}" in url
+        assert "internal=" not in url
+
+    def test_gated_uses_internal_credential(self, gated_app):
+        url = web_server._build_gateway_ws_url()
+        assert url is not None
+        assert "/api/ws?" in url
+        assert "token=" not in url
+        assert "ticket=" not in url
+        assert "internal=" in url
+        cred = url.split("internal=")[1].split("&")[0]
+        # The credential authenticates against _ws_auth_ok in gated mode.
+        ws = _fake_ws(query={"internal": cred})
+        assert web_server._ws_auth_ok(ws) is True
+
+    def test_gated_credential_matches_sidecar(self, gated_app):
+        """Both server-internal builders share one process credential, so a
+        single value authenticates /api/ws and /api/pub alike."""
+        gw = web_server._build_gateway_ws_url()
+        sc = web_server._build_sidecar_url("ch-1")
+        assert gw is not None and sc is not None
+        gw_cred = gw.split("internal=")[1].split("&")[0]
+        sc_cred = sc.split("internal=")[1].split("&")[0]
+        assert gw_cred == sc_cred
+
+    def test_no_bound_host_returns_none(self, gated_app):
+        web_server.app.state.bound_host = None
+        try:
+            assert web_server._build_gateway_ws_url() is None
         finally:
             web_server.app.state.bound_host = "fly-app.fly.dev"

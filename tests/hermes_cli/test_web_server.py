@@ -428,6 +428,78 @@ class TestWebServerEndpoints:
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
 
+    def test_search_dedupes_compression_lineage_to_tip(self):
+        """A conversation that auto-compresses leaves the matched term in both
+        the root segment and the continuation. Search must collapse them to a
+        single result keyed by the lineage root and pointing at the live tip,
+        so the sidebar stops showing the same chat several times."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="search-root", source="cli")
+            db.append_message(session_id="search-root", role="user", content="distinctneedle in the root")
+            db.end_session("search-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "search-root"),
+            )
+            db.create_session(session_id="search-tip", source="cli", parent_session_id="search-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 90, "search-tip"))
+            db.append_message(session_id="search-tip", role="user", content="distinctneedle again in the tip")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=distinctneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        lineage_hits = [r for r in results if r.get("lineage_root") == "search-root"]
+        # One conversation -> exactly one result despite two FTS hits.
+        assert len(lineage_hits) == 1
+        hit = lineage_hits[0]
+        # Surfaced under the live tip so clicking resumes the current session.
+        assert hit["session_id"] == "search-tip"
+        assert hit["lineage_root"] == "search-root"
+
+    def test_search_keeps_branch_specific_hits_on_branch(self):
+        """Branch sessions share parent_session_id, but they are not compression
+        continuations. A query that only exists in the branch must open the
+        branch instead of being collapsed back to the parent/root."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = _time.time()
+            db.create_session(session_id="branch-parent", source="cli")
+            db.append_message(session_id="branch-parent", role="user", content="ancestor context")
+            db.end_session("branch-parent", "branched")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "branch-parent"),
+            )
+            db.create_session(session_id="branch-child", source="cli", parent_session_id="branch-parent")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 80, "branch-child"))
+            db.append_message(session_id="branch-child", role="user", content="branchspecificneedle only here")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=branchspecificneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        assert any(
+            r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
+            for r in results
+        )
+
     def test_get_sessions_archived_is_boolean(self):
         from hermes_state import SessionDB
 
@@ -706,6 +778,19 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_get_env_vars_marks_channel_managed_keys(self):
+        from hermes_cli.web_server import _channel_managed_env_keys
+
+        data = self.client.get("/api/env").json()
+        # Every entry carries the classification the Keys page relies on.
+        assert all("channel_managed" in info for info in data.values())
+
+        channel_keys = _channel_managed_env_keys()
+        # Messaging-platform credentials owned by the Channels page are flagged;
+        # everything else stays visible on the Keys page.
+        for key, info in data.items():
+            assert info["channel_managed"] is (key in channel_keys)
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value
@@ -961,6 +1046,119 @@ class TestWebServerEndpoints:
         data = resp.json()
         assert data["ok"] is True
         assert data.get("gateway_tools", []) == []
+
+    def test_apply_main_model_assignment_base_url_and_context_reconcile(self):
+        """The shared main-slot assignment helper must persist base_url only for
+        custom providers, clear stale base_url for hosted ones, and always drop
+        a hardcoded context_length override. Both POST /api/model/set and
+        profile-model writes route through this, so the contract is pinned here."""
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        # Custom + base_url → persisted; stale context_length dropped.
+        out = _apply_main_model_assignment(
+            {"context_length": 8192}, "custom", "llama-3.1-8b", "http://127.0.0.1:8000/v1"
+        )
+        assert out["provider"] == "custom"
+        assert out["default"] == "llama-3.1-8b"
+        assert out["base_url"] == "http://127.0.0.1:8000/v1"
+        assert "context_length" not in out
+
+        # Hosted provider → stale base_url cleared (no base_url supplied).
+        out = _apply_main_model_assignment(
+            {"base_url": "http://127.0.0.1:8000/v1"}, "openrouter", "anthropic/claude-opus-4.8"
+        )
+        assert out["provider"] == "openrouter"
+        assert out["base_url"] == ""
+
+        # Custom WITHOUT a base_url → don't invent one, clear any stale value.
+        out = _apply_main_model_assignment(
+            {"base_url": "http://stale:1/v1"}, "custom", "m"
+        )
+        assert out["base_url"] == ""
+
+        # Non-dict input is coerced to a fresh dict (never raises).
+        out = _apply_main_model_assignment("not-a-dict", "custom", "m", "http://x/v1")
+        assert out == {"provider": "custom", "default": "m", "base_url": "http://x/v1"}
+
+    def test_parse_model_ids_handles_openai_and_bare_shapes(self):
+        """Model discovery must tolerate the common /v1/models shapes and
+        never raise (so a slightly non-standard local endpoint still works)."""
+        from hermes_cli.web_server import _parse_model_ids
+
+        class FakeResp:
+            def __init__(self, payload, ok=True):
+                self._payload = payload
+                self.is_success = ok
+
+            def json(self):
+                if isinstance(self._payload, Exception):
+                    raise self._payload
+                return self._payload
+
+        # OpenAI / vLLM / llama.cpp shape.
+        assert _parse_model_ids(
+            FakeResp({"data": [{"id": "llama-3.1-8b"}, {"id": "qwen2.5-7b"}]})
+        ) == ["llama-3.1-8b", "qwen2.5-7b"]
+        # Bare list of ids.
+        assert _parse_model_ids(FakeResp({"data": ["m1", "m2"]})) == ["m1", "m2"]
+        # Top-level list.
+        assert _parse_model_ids(FakeResp([{"id": "x"}])) == ["x"]
+        # Non-success / malformed / exception → [] (never raises).
+        assert _parse_model_ids(FakeResp({"data": []}, ok=False)) == []
+        assert _parse_model_ids(FakeResp({"nope": 1})) == []
+        assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
+
+    def test_set_model_main_custom_persists_base_url(self):
+        """Custom/local providers must persist model.base_url so the runtime
+        resolver (which ignores OPENAI_BASE_URL) can route to a self-hosted
+        endpoint without an API key. Regression for the desktop onboarding bug
+        where 'Local / custom endpoint' could never be configured."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "llama-3.1-8b",
+                "base_url": "http://127.0.0.1:8000/v1",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "custom"
+        assert data["base_url"] == "http://127.0.0.1:8000/v1"
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert model_cfg["provider"] == "custom"
+        assert model_cfg["default"] == "llama-3.1-8b"
+        assert model_cfg["base_url"] == "http://127.0.0.1:8000/v1"
+
+    def test_set_model_main_non_custom_clears_stale_base_url(self):
+        """Switching to a hosted provider must clear a stale base_url so the
+        resolver picks that provider's own default endpoint."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "provider": "custom",
+            "default": "llama-3.1-8b",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["base_url"] == ""
+
+        model_cfg = load_config().get("model")
+        assert model_cfg["provider"] == "openrouter"
+        assert model_cfg.get("base_url", "") == ""
 
     def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
         """A Portal/gateway hiccup must never prevent saving the model."""
@@ -1497,6 +1695,132 @@ class TestNewEndpoints:
     def test_profile_soul_unknown_profile_404(self):
         resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
+
+    # --- New profiles endpoints: active / description / model / describe-auto ---
+
+    def test_profiles_active_defaults(self):
+        from hermes_constants import get_hermes_home
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] == "default"
+        assert data["current"] == "default"
+
+    def test_profiles_set_active_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "router"})
+
+        resp = self.client.post("/api/profiles/active", json={"name": "router"})
+        assert resp.status_code == 200
+        assert resp.json()["active"] == "router"
+        assert self.client.get("/api/profiles/active").json()["active"] == "router"
+
+    def test_profiles_set_active_unknown_404(self):
+        resp = self.client.post("/api/profiles/active", json={"name": "ghost"})
+        assert resp.status_code == 404
+
+    def test_profile_description_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "desc-prof"})
+
+        put = self.client.put(
+            "/api/profiles/desc-prof/description",
+            json={"description": "Handles code review"},
+        )
+        assert put.status_code == 200
+        body = put.json()
+        assert body["description"] == "Handles code review"
+        assert body["description_auto"] is False
+
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["desc-prof"]["description"] == "Handles code review"
+        assert profiles["desc-prof"]["description_auto"] is False
+
+    def test_profile_description_unknown_404(self):
+        resp = self.client.put(
+            "/api/profiles/nope/description", json={"description": "x"}
+        )
+        assert resp.status_code == 404
+
+    def test_profile_model_round_trip(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof"})
+
+        resp = self.client.put(
+            "/api/profiles/model-prof/model",
+            json={"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "openrouter"
+
+        import yaml
+        cfg_path = get_hermes_home() / "profiles" / "model-prof" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert cfg["model"]["provider"] == "openrouter"
+        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+
+    def test_profile_model_requires_provider_and_model(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof2"})
+        resp = self.client.put(
+            "/api/profiles/model-prof2/model",
+            json={"provider": "", "model": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_profile_describe_auto_success(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-prof"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, True, "described", description="Generated blurb"
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-prof/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["description"] == "Generated blurb"
+        assert body["description_auto"] is True
+
+    def test_profile_describe_auto_failure_is_not_auto(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-fail"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, False, "no aux client", description=None
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-fail/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["description_auto"] is False
 
     def test_skills_list(self):
         resp = self.client.get("/api/skills")
@@ -3396,66 +3720,62 @@ class TestPtyWebSocket:
         assert "channel=abc-123" in url
         assert "token=" in url
 
-    def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
-        """Frame written to /api/pub is rebroadcast verbatim to every
-        /api/events subscriber on the same channel."""
-        import time
-        from urllib.parse import urlencode
+    def test_pub_broadcasts_to_events_subscribers(self):
+        """A frame handed to _broadcast_event is sent verbatim to every
+        subscriber registered on that channel — and not to subscribers on
+        other channels.
+
+        This drives the broadcast unit directly under asyncio rather than
+        round-tripping through Starlette's TestClient WebSocket portal. The
+        portal version was flaky under heavy parallel CI load: the broadcast
+        had to traverse two nested threaded portals within a 10s wall-clock
+        budget, and a starved ASGI thread occasionally blew that budget even
+        though the server logic was correct. Testing _broadcast_event with
+        fake subscribers removes the scheduling surface entirely while
+        asserting the exact fan-out contract.
+        """
+        import asyncio
         from hermes_cli import web_server as ws_mod
 
-        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
-        pub_path = f"/api/pub?{qs}"
-        sub_path = f"/api/events?{qs}"
+        class _FakeSub:
+            def __init__(self):
+                self.sent: list[str] = []
 
-        with self.client.websocket_connect(sub_path) as sub:
-            # Wait for the subscriber to be registered on the server side.
-            # websocket_connect returns when ws.accept() completes, but the
-            # server adds us to ``_event_channels`` in a follow-up await,
-            # so a publish immediately after connect can race ahead of the
-            # subscriber registration and the message is dropped.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if ws_mod.app.state.event_channels.get("broadcast-test"):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError(
-                    "subscriber did not register on channel within 5s"
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        app = ws_mod.app
+
+        async def _run():
+            sub_a1 = _FakeSub()
+            sub_a2 = _FakeSub()
+            sub_other = _FakeSub()
+            frame = '{"type":"tool.start","payload":{"tool_id":"t1"}}'
+
+            event_channels, event_lock = ws_mod._get_event_state(app)
+            # Register two subscribers on the target channel and one on a
+            # different channel, exactly as the /api/events handler does.
+            async with event_lock:
+                event_channels.setdefault("broadcast-test", set()).update(
+                    {sub_a1, sub_a2}
                 )
+                event_channels.setdefault("other-channel", set()).add(sub_other)
+            try:
+                await ws_mod._broadcast_event(app, "broadcast-test", frame)
+            finally:
+                async with event_lock:
+                    event_channels.pop("broadcast-test", None)
+                    event_channels.pop("other-channel", None)
 
-            with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                # Yield control so the server-side broadcast handler can
-                # process the frame.  TestClient runs the ASGI app in a
-                # background thread; a small sleep gives that thread time
-                # to call _broadcast_event before we start blocking on
-                # receive_text().  Without this, under heavy CI load the
-                # receive can race the broadcast and hang until
-                # pytest-timeout kills us.
-                import queue, threading
-                recv_q: queue.Queue = queue.Queue()
+            return sub_a1, sub_a2, sub_other, frame
 
-                def _recv():
-                    try:
-                        recv_q.put(sub.receive_text())
-                    except Exception as exc:
-                        recv_q.put(exc)
+        sub_a1, sub_a2, sub_other, frame = asyncio.run(_run())
 
-                t = threading.Thread(target=_recv, daemon=True)
-                t.start()
-                try:
-                    received = recv_q.get(timeout=10.0)
-                except queue.Empty:
-                    raise AssertionError(
-                        "broadcast not received within 10s — server likely "
-                        "dropped the frame silently (see _broadcast_event "
-                        "except Exception: pass)"
-                    )
-                if isinstance(received, Exception):
-                    raise received
-
-        assert "tool.start" in received
-        assert '"tool_id":"t1"' in received
+        # Every subscriber on the channel got the frame verbatim, exactly once.
+        assert sub_a1.sent == [frame]
+        assert sub_a2.sent == [frame]
+        # A subscriber on a different channel got nothing.
+        assert sub_other.sent == []
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect

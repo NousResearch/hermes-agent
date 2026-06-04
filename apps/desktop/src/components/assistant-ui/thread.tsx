@@ -13,6 +13,7 @@ import { useStore } from '@nanostores/react'
 import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
   type ClipboardEvent,
+  type ComponentProps,
   type FC,
   type FocusEvent,
   type FormEvent,
@@ -48,14 +49,13 @@ import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/co
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
-import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import { UserMessageText } from '@/components/assistant-ui/user-message-text'
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
-import { MarkdownText } from '@/components/assistant-ui/markdown-text'
+import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
@@ -221,6 +221,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isPlaceholder = messageStatus === 'running' && content.length === 0
   const interruptedOnly = useMemo(() => isInterruptedOnlyMessage(messageText), [messageText])
+  const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
     return null
@@ -231,6 +232,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
+      data-streaming={messageStatus === 'running' ? 'true' : undefined}
+      ref={enterRef}
     >
       <div
         className={cn(
@@ -372,7 +375,9 @@ const ThinkingDisclosure: FC<{
     observer.observe(content)
 
     return () => observer.disconnect()
-  }, [isPreview])
+    // Re-run when the disclosure toggles so the observer attaches to the new
+    // DOM after expand/collapse (refs are conditionally rendered on `open`).
+  }, [isPreview, open])
 
   return (
     <div
@@ -446,17 +451,19 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 
 const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ text, status }) => {
   const displayText = text.trimStart()
+  const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const isRunning = status?.type === 'running' || messageRunning
 
   return (
-    <div
-      className={cn(
-        'whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/85',
-        status?.type === 'running' && 'shimmer text-muted-foreground/55'
+    <MarkdownTextContent
+      containerClassName={cn(
+        'text-xs leading-relaxed text-muted-foreground/85',
+        isRunning && 'shimmer text-muted-foreground/55'
       )}
-      data-slot="aui_reasoning-text"
-    >
-      {displayText}
-    </div>
+      containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
+      isRunning={isRunning}
+      text={displayText}
+    />
   )
 }
 
@@ -873,6 +880,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
+  // See index.tsx: set in keydown when the open popover consumes a nav/control
+  // key so the matching keyup skips refreshTrigger (timing-immune vs reading
+  // `trigger`, which keyup sees as already-null after Escape).
+  const triggerKeyConsumedRef = useRef(false)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -997,8 +1008,15 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     setTrigger(detected)
-    setTriggerActive(0)
-  }, [])
+
+    // Only reset the highlight when the trigger actually changed (opened, or
+    // the query/kind differs). Re-detecting the *same* trigger — e.g. on a
+    // caret move (mouseup) or a stray refresh — must preserve the user's
+    // current selection instead of snapping back to the first item.
+    if (detected?.kind !== trigger?.kind || detected?.query !== trigger?.query) {
+      setTriggerActive(0)
+    }
+  }, [trigger])
 
   const closeTrigger = useCallback(() => {
     setTrigger(null)
@@ -1231,6 +1249,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx + 1) % triggerItems.length)
 
         return
@@ -1238,6 +1257,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'ArrowUp') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         setTriggerActive(idx => (idx - 1 + triggerItems.length) % triggerItems.length)
 
         return
@@ -1245,6 +1265,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
 
         if (item) {
@@ -1256,6 +1277,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (event.key === 'Escape') {
         event.preventDefault()
+        triggerKeyConsumedRef.current = true
         closeTrigger()
 
         return
@@ -1273,6 +1295,22 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       event.preventDefault()
       submitEdit(event.currentTarget)
     }
+  }
+
+  const handleKeyUp = () => {
+    // If this keyup belongs to a key the open trigger popover already consumed
+    // in keydown (Arrow/Enter/Tab/Escape), skip the refresh. Those keys never
+    // edit text, and for Escape the keydown already closed the menu — a refresh
+    // here would re-detect the still-present `/` and instantly reopen it. We
+    // read a ref set during keydown rather than `trigger`, because by keyup
+    // time React has re-rendered and `trigger` may already be null.
+    if (triggerKeyConsumedRef.current) {
+      triggerKeyConsumedRef.current = false
+
+      return
+    }
+
+    window.setTimeout(refreshTrigger, 0)
   }
 
   return (
@@ -1325,7 +1363,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onFocus={() => markActiveComposer('edit')}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
-              onKeyUp={() => window.setTimeout(refreshTrigger, 0)}
+              onKeyUp={handleKeyUp}
               onMouseUp={refreshTrigger}
               onPaste={handlePaste}
               ref={editorRef}

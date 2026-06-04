@@ -1,7 +1,8 @@
 """
 Cron job storage and management.
 
-Jobs are stored in ~/.hermes/cron/jobs.json
+Job definitions are stored in ~/.hermes/cron/jobs.json
+High-churn execution state is stored in ~/.hermes/cron/state.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
@@ -50,6 +51,17 @@ ONESHOT_GRACE_SECONDS = 120
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+
+# High-churn execution metadata. Keep these out of jobs.json so durable cron
+# definitions stay reviewable/versionable while load_jobs() still exposes the
+# legacy merged shape expected by callers.
+_RUNTIME_JOB_FIELDS = frozenset({
+    "next_run_at",
+    "last_run_at",
+    "last_status",
+    "last_error",
+    "last_delivery_error",
+})
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -176,6 +188,111 @@ def ensure_dirs():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _secure_dir(CRON_DIR)
     _secure_dir(OUTPUT_DIR)
+
+
+def _state_file() -> Path:
+    """Return the runtime cron state path for the active jobs file.
+
+    Tests and profile runners monkeypatch JOBS_FILE/CRON_DIR after module
+    import. Deriving the path from JOBS_FILE keeps state colocated with the
+    active cron database without requiring every caller to patch a second
+    module-level constant.
+    """
+    return JOBS_FILE.parent / "state.json"
+
+
+def _atomic_write_json(path: Path, payload: Dict[str, Any]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix='.tmp', prefix=f'.{path.name}_')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, path)
+        _secure_file(path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _load_runtime_state() -> Dict[str, Dict[str, Any]]:
+    path = _state_file()
+    if not path.exists():
+        return {}
+    try:
+        with path.open('r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Ignoring unreadable cron runtime state %s: %s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    jobs = data.get("jobs", {})
+    return jobs if isinstance(jobs, dict) else {}
+
+
+def _merge_runtime_state(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    state_by_id = _load_runtime_state()
+    merged: List[Dict[str, Any]] = []
+    for raw_job in jobs:
+        job = copy.deepcopy(raw_job)
+        job_id = str(job.get("id") or "")
+        state = state_by_id.get(job_id, {}) if job_id else {}
+        if not isinstance(state, dict):
+            state = {}
+
+        for field in _RUNTIME_JOB_FIELDS:
+            if field in job:
+                continue
+            if field in state:
+                job[field] = state[field]
+            else:
+                job[field] = None
+
+        repeat = job.get("repeat")
+        if isinstance(repeat, dict):
+            repeat = dict(repeat)
+            if "completed" in repeat:
+                pass
+            elif "repeat_completed" in state:
+                repeat["completed"] = state.get("repeat_completed") or 0
+            else:
+                repeat.setdefault("completed", 0)
+            job["repeat"] = repeat
+
+        merged.append(job)
+    return merged
+
+
+def _split_runtime_state(jobs: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    durable_jobs: List[Dict[str, Any]] = []
+    runtime_state: Dict[str, Dict[str, Any]] = {}
+
+    for raw_job in jobs:
+        job = copy.deepcopy(raw_job)
+        job_id = str(job.get("id") or "")
+        state: Dict[str, Any] = {}
+
+        for field in _RUNTIME_JOB_FIELDS:
+            if field in job:
+                state[field] = job.pop(field)
+
+        repeat = job.get("repeat")
+        if isinstance(repeat, dict):
+            repeat = dict(repeat)
+            if "completed" in repeat:
+                state["repeat_completed"] = repeat.pop("completed")
+            job["repeat"] = repeat
+
+        if job_id and state:
+            runtime_state[job_id] = state
+        durable_jobs.append(job)
+
+    return durable_jobs, runtime_state
 
 
 # =============================================================================
@@ -454,14 +571,14 @@ def load_jobs() -> List[Dict[str, Any]]:
             # Hit control-character corruption — rewrite with proper escaping.
             save_jobs(jobs)
             logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-        return jobs
+        return _merge_runtime_state(jobs)
     if isinstance(data, list):
         # Bare array — likely saved/edited outside save_jobs(). Wrap it back
         # into the expected {"jobs": [...]} structure.
         if data:
             save_jobs(data)
             logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
-        return data
+        return _merge_runtime_state(data)
 
     raise RuntimeError(
         f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}"
@@ -471,20 +588,12 @@ def load_jobs() -> List[Dict[str, Any]]:
 def save_jobs(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage."""
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    durable_jobs, runtime_state = _split_runtime_state(jobs)
+    updated_at = _hermes_now().isoformat()
+    # Write runtime state first. If this fails, leave jobs.json untouched rather
+    # than stripping execution metadata without preserving it elsewhere.
+    _atomic_write_json(_state_file(), {"jobs": runtime_state, "updated_at": updated_at})
+    _atomic_write_json(JOBS_FILE, {"jobs": durable_jobs, "updated_at": updated_at})
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:

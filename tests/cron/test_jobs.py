@@ -2,6 +2,7 @@
 
 import threading
 import pytest
+import json
 from datetime import datetime, timedelta, timezone
 
 from cron.jobs import (
@@ -187,6 +188,68 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestJobCRUD:
+    def test_runtime_state_is_saved_outside_jobs_json(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="every 1h")
+
+        mark_job_run(job["id"], success=True)
+
+        jobs_path = tmp_cron_dir / "cron" / "jobs.json"
+        state_path = tmp_cron_dir / "cron" / "state.json"
+        durable = json.loads(jobs_path.read_text())
+        runtime = json.loads(state_path.read_text())
+        durable_job = durable["jobs"][0]
+        runtime_job = runtime["jobs"][job["id"]]
+
+        assert "next_run_at" not in durable_job
+        assert "last_run_at" not in durable_job
+        assert "last_status" not in durable_job
+        assert durable_job["repeat"] == {"times": None}
+        assert runtime_job["last_status"] == "ok"
+        assert runtime_job["last_run_at"] is not None
+        assert runtime_job["repeat_completed"] == 1
+
+        loaded = get_job(job["id"])
+        assert loaded["last_status"] == "ok"
+        assert loaded["last_run_at"] is not None
+        assert loaded["repeat"]["completed"] == 1
+
+    def test_inline_runtime_wins_during_state_migration(self, tmp_cron_dir):
+        job_id = "legacy-inline"
+        jobs_path = tmp_cron_dir / "cron" / "jobs.json"
+        state_path = tmp_cron_dir / "cron" / "state.json"
+        jobs_path.parent.mkdir(parents=True, exist_ok=True)
+        jobs_path.write_text(json.dumps({
+            "jobs": [{
+                "id": job_id,
+                "name": "legacy",
+                "prompt": "legacy",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "schedule_display": "every 60m",
+                "repeat": {"times": None, "completed": 7},
+                "enabled": True,
+                "next_run_at": "2026-06-05T02:00:00+00:00",
+                "last_run_at": "2026-06-05T01:00:00+00:00",
+                "last_status": "ok",
+            }],
+        }))
+        state_path.write_text(json.dumps({
+            "jobs": {
+                job_id: {
+                    "next_run_at": "2026-06-04T02:00:00+00:00",
+                    "last_run_at": "2026-06-04T01:00:00+00:00",
+                    "last_status": "error",
+                    "repeat_completed": 3,
+                }
+            },
+        }))
+
+        loaded = get_job(job_id)
+
+        assert loaded["last_status"] == "ok"
+        assert loaded["last_run_at"] == "2026-06-05T01:00:00+00:00"
+        assert loaded["next_run_at"] == "2026-06-05T02:00:00+00:00"
+        assert loaded["repeat"]["completed"] == 7
+
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
         assert job["id"]

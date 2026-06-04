@@ -615,6 +615,66 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    def test_dm_approval_allows_user_without_group_allowlist(self, _patch_callback_card_types):
+        """DM approval clicks should bypass group policy (allowlist) checks.
+
+        Regression test: when FEISHU_ALLOWED_USERS is unset and the default
+        group policy is 'allowlist', approval buttons in DMs were rejected as
+        'Unauthorized' because _allow_group_message was applied to DM chats.
+        """
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        # Empty allowlist — would block the user in a group context
+        adapter._allowed_group_users = set()
+        adapter._admins = set()
+        # Mark the chat as a DM in the cache
+        adapter._chat_info_cache["oc_dm_chat"] = {"type": "dm", "name": "DM"}
+        adapter._approval_state[10] = {
+            "session_key": "sess-dm",
+            "message_id": "msg-dm",
+            "chat_id": "oc_dm_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 10},
+            chat_id="oc_dm_chat",
+            open_id="ou_any_user",
+        )
+        adapter._sender_name_cache["ou_any_user"] = ("Alice", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        assert card["header"]["template"] == "green"
+        assert "Approved once" in card["header"]["title"]["content"]
+
+    def test_dm_approval_still_enforces_chat_mismatch(self, _patch_callback_card_types):
+        """Even in DMs, approval clicks from a different chat should be rejected."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._chat_info_cache["oc_dm_chat"] = {"type": "dm", "name": "DM"}
+        adapter._approval_state[11] = {
+            "session_key": "sess-dm2",
+            "message_id": "msg-dm2",
+            "chat_id": "oc_dm_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 11},
+            chat_id="oc_other_chat",
+            open_id="ou_any_user",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
     def test_rejects_approval_click_when_callback_chat_mismatches(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()

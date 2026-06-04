@@ -338,3 +338,69 @@ def test_hermes_delegation_version_in_supported_range():
         f"installed hermes-delegation {version} is outside the supported "
         "range [0.1.0, 0.2.0) declared by the `delegation` extra"
     )
+
+
+# ---------------------------------------------------------------------------
+# install hint: runtime auto-detect (M3.5 Task 2)
+# ---------------------------------------------------------------------------
+#
+# When ``hermes_delegation`` is missing, the wrapper must print an install hint
+# pointing at the *new* optional-extra install path (``pip install -e
+# ".[delegation]"`` from the hermes-agent root, or ``pip install
+# "hermes-agent[delegation]"`` for PyPI installs), NOT the old M1+M2-only path
+# under ``~/.hermes/delegation-visualizer/``.
+#
+# The hint is computed at call time via ``_install_hint()`` so it can adapt to
+# wherever hermes-agent actually lives (located with
+# ``importlib.util.find_spec("hermes_cli")``). We exercise the missing-package
+# branch by monkeypatching ``dv.HD_AVAILABLE`` to False.
+
+
+def test_install_hint_mentions_optional_extra(monkeypatch):
+    """The hint must mention the `pip install -e ".[delegation]"` extra path."""
+    monkeypatch.setattr(dv, "HD_AVAILABLE", False)
+    hint = dv._install_hint()
+    assert 'pip install -e ".[delegation]"' in hint, hint
+
+
+def test_install_hint_mentions_hermes_delegation_package():
+    """The hint must name the package so users know what to install."""
+    hint = dv._install_hint()
+    assert "hermes-delegation" in hint or "hermes_delegation" in hint, hint
+
+
+def test_install_hint_does_not_mention_old_install_path():
+    """The old M1+M2-only path must be gone — it no longer applies."""
+    hint = dv._install_hint()
+    assert "~/.hermes/delegation-visualizer/" not in hint, hint
+
+
+def test_install_hint_uses_runtime_detect(monkeypatch, tmp_path):
+    """The hint is constructed at call time so it adapts to the agent location.
+
+    We swap out the hermes_cli spec's origin (what find_spec returns) and the
+    hint must reflect the new location — proving it is not frozen at import
+    time as a module-level constant.
+    """
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+
+    fake_root = tmp_path / "some" / "other" / "hermes-agent"
+    fake_pkg = fake_root / "hermes_cli"
+    fake_pkg.mkdir(parents=True)
+    (fake_pkg / "__init__.py").write_text("", encoding="utf-8")
+
+    def fake_find_spec(name, *a, **k):
+        if name == "hermes_cli":
+            return importlib.util.spec_from_file_location(
+                "hermes_cli", str(fake_pkg / "__init__.py")
+            )
+        return real_find_spec(name, *a, **k)
+
+    monkeypatch.setattr(dv.importlib.util, "find_spec", fake_find_spec)
+
+    hint = dv._install_hint()
+    # The hint should reference the detected hermes-agent root (parent of the
+    # hermes_cli package), proving runtime detection drives the message.
+    assert str(fake_root) in hint, hint

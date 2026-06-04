@@ -25,6 +25,7 @@ every subcommand fails gracefully with an install hint rather than crashing.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -36,13 +37,53 @@ try:
 except ImportError:  # pragma: no cover - exercised via _require_hd in tests
     HD_AVAILABLE = False
 
-_INSTALL_HINT = (
-    "delegation: the `hermes_delegation` package is not installed or wrong "
-    "Python version. Install with `python3.11 -m pip install -e "
-    "'~/.hermes/delegation-visualizer/[dev]' --break-system-packages` "
-    "(or `uv pip install -e ~/.hermes/delegation-visualizer/`). "
-    "Requires Python 3.11+."
-)
+
+def _hermes_agent_root() -> Path | None:
+    """Best-effort locate the hermes-agent checkout root at call time.
+
+    The ``hermes_cli`` package lives directly under the hermes-agent root, so
+    the root is the parent of the ``hermes_cli`` package directory. Returns
+    ``None`` when the package has no on-disk origin (e.g. a namespace package,
+    a zipimport, or a PyPI wheel without an editable checkout) — in that case
+    the caller falls back to the PyPI install command.
+    """
+    try:
+        spec = importlib.util.find_spec("hermes_cli")
+    except (ImportError, ValueError):  # pragma: no cover - defensive
+        return None
+    if spec is None or not spec.origin:
+        return None
+    # spec.origin -> .../hermes-agent/hermes_cli/__init__.py
+    # parent       -> .../hermes-agent/hermes_cli
+    # parent.parent-> .../hermes-agent  (the checkout root)
+    return Path(spec.origin).resolve().parent.parent
+
+
+def _install_hint() -> str:
+    """Build the install hint for the missing ``hermes_delegation`` package.
+
+    Computed at call time (not frozen as a module-level constant) so it adapts
+    to wherever hermes-agent actually lives. When a hermes-agent checkout is
+    found on disk, point at the editable optional-extra install from that root;
+    otherwise (PyPI / wheel installs) point at the published distribution.
+    The package name and the Python 3.11+ requirement are always mentioned.
+    """
+    root = _hermes_agent_root()
+    if root is not None:
+        install_cmd = (
+            f"from the hermes-agent root ({root}) run "
+            '`pip install -e ".[delegation]"`'
+        )
+    else:  # pragma: no cover - PyPI/wheel path, no editable checkout
+        install_cmd = (
+            'install the optional extra with `pip install "hermes-agent[delegation]"` '
+            '(or, from a checkout, `pip install -e ".[delegation]"`)'
+        )
+    return (
+        "delegation: the `hermes_delegation` package is not installed or the "
+        "wrong Python version. To enable the delegation visualizer "
+        f"(hermes-delegation), {install_cmd}. Requires Python 3.11+."
+    )
 
 # Defaults mirror the M1+M2 package (see hermes_delegation.cli).
 _DEFAULT_BASE_DIR = Path.home() / ".hermes" / "delegation" / "ledgers"
@@ -52,7 +93,7 @@ _DEFAULT_SOCKET_PATH = Path.home() / ".hermes" / "delegation" / "verifier.sock"
 def _require_hd() -> bool:
     """Print the install hint and return False when the package is missing."""
     if not HD_AVAILABLE:
-        print(_INSTALL_HINT, file=sys.stderr)
+        print(_install_hint(), file=sys.stderr)
         return False
     return True
 
@@ -83,7 +124,7 @@ def _cmd_status(args) -> int:
         print(
             "delegation: the M1+M2 `hermes_delegation` API has changed "
             "(`hermes_delegation.cli._daemon_is_listening` is gone); please "
-            "re-install the delegation-visualizer package. " + _INSTALL_HINT,
+            "re-install the delegation-visualizer package. " + _install_hint(),
             file=sys.stderr,
         )
         return 1

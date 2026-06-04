@@ -3747,7 +3747,7 @@ async function startHermes() {
     await advanceBootProgress('backend.port', 'Finding an open local port', 16)
     const port = await pickPort()
     const token = crypto.randomBytes(32).toString('base64url')
-    const dashboardArgs = ['dashboard', '--no-open', '--tui', '--host', '127.0.0.1', '--port', String(port)]
+    const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
     const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
     const hermesCwd = resolveHermesCwd()
@@ -3771,7 +3771,6 @@ async function startHermes() {
         HERMES_HOME,
         ...backend.env,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
-        HERMES_DASHBOARD_TUI: '1',
         HERMES_WEB_DIST: webDist
       },
       shell: backend.shell,

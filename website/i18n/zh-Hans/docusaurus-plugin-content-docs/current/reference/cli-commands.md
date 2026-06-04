@@ -1144,14 +1144,13 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes dashboard [options]
 ```
 
-启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `pip install hermes-agent[web]`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页需要 `--tui` 加上 `pty` extra。完整文档请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
+启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `pip install hermes-agent[web]`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`pip install 'hermes-agent[web,pty]'`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
 
 | 选项 | 默认值 | 说明 |
 |--------|---------|-------------|
 | `--port` | `9119` | Web 服务器运行端口 |
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
-| `--tui` | 关闭 | 通过 PTY/WebSocket 桥接在后台运行 `hermes --tui`，启用浏览器内 Chat 标签页。需要 `pip install 'hermes-agent[web,pty]'` 以及 Linux、macOS 或 WSL2 等 POSIX PTY 环境。 |
 | `--insecure` | 关闭 | 允许绑定到非 localhost 主机。会在网络上暴露控制台凭据；仅在受信任的网络控制下使用。 |
 | `--stop` | — | 停止正在运行的 `hermes dashboard` 进程并退出。 |
 | `--status` | — | 列出正在运行的 `hermes dashboard` 进程并退出。 |
@@ -1162,9 +1161,6 @@ hermes dashboard
 
 # 自定义端口，不打开浏览器
 hermes dashboard --port 8080 --no-open
-
-# 启用浏览器 Chat 标签页
-hermes dashboard --tui
 ```
 
 ## `hermes profile`

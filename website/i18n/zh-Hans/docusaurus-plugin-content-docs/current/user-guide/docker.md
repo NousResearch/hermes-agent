@@ -79,7 +79,6 @@ docker run -d \
 | `HERMES_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以在主命令旁启动 dashboard | *（未设置——不启动 dashboard）* |
 | `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
-| `HERMES_DASHBOARD_TUI` | 设为 `1` 以启用浏览器内 Chat 标签页（通过 PTY/WebSocket 嵌入 `hermes --tui`） | *（未设置）* |
 | `HERMES_DASHBOARD_INSECURE` | 设为 `1`（或 `true` / `yes`）以在不启用 OAuth 鉴权门控的情况下绑定。仅在可信网络（且通过没有 OAuth 契约的反向代理时）使用——dashboard 会暴露 API 密钥与会话数据 | *（未设置——当注册了 `DashboardAuthProvider` 时启用门控）* |
 
 默认情况下，dashboard 保持在回环地址（`127.0.0.1`），以避免将

@@ -22,8 +22,10 @@ import { LocalFilePreview, PreviewEmptyState } from './preview-file'
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
   getURL?: () => string
+  insertCSS?: (css: string) => Promise<string>
   isDevToolsOpened?: () => boolean
   openDevTools?: () => void
+  removeInsertedCSS?: (key: string) => Promise<void>
   reload?: () => void
   reloadIgnoringCache?: () => void
 }
@@ -43,7 +45,61 @@ interface PreviewLoadErrorState {
 }
 
 const FILE_RELOAD_DEBOUNCE_MS = 200
+const PREVIEW_SCROLLBAR_FALLBACK_COLOR = '#0053fd'
 const SERVER_RESTART_TIMEOUT_MS = 45_000
+
+function rootCssValue(name: string, fallback: string): string {
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+
+  return window.getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
+}
+
+function previewScrollbarThemeCss(): string {
+  const thumbColor = rootCssValue('--theme-midground', rootCssValue('--dt-midground', PREVIEW_SCROLLBAR_FALLBACK_COLOR))
+
+  return `
+/* hermes-preview-scrollbar-theme */
+:root,
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, ${thumbColor} 18%, transparent) transparent;
+}
+
+:root::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 0.5rem;
+  height: 0.5rem;
+}
+
+:root::-webkit-scrollbar-track,
+:root::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+:root::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, ${thumbColor} 18%, transparent);
+  border-radius: 9999rem;
+  border: 0.125rem solid transparent;
+  background-clip: padding-box;
+}
+
+:root::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, ${thumbColor} 40%, transparent);
+  background-clip: padding-box;
+}
+
+:root::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button {
+  display: none;
+}
+`
+}
 
 function loadErrorTitle(error: PreviewLoadErrorState): string {
   const description = error.description.toLowerCase()
@@ -578,8 +634,96 @@ export function PreviewPane({
       setLoading(false)
     }
 
-    const onStart = () => setLoading(true)
-    const onStop = () => setLoading(false)
+    let active = true
+    let insertedScrollbarCssKey = ''
+    let lastRequestedScrollbarCss = ''
+    let previewLoaded = false
+    let scrollbarCssRequestId = 0
+
+    const removeScrollbarTheme = (key: string) => {
+      if (!key || !webview.removeInsertedCSS) {
+        return
+      }
+
+      void webview.removeInsertedCSS(key).catch(error => {
+        if (!active) {
+          return
+        }
+
+        appendConsoleEntry({
+          level: 2,
+          message: `Could not remove preview scrollbar theme: ${error instanceof Error ? error.message : String(error)}`
+        })
+      })
+    }
+
+    const applyScrollbarTheme = ({ force = false }: { force?: boolean } = {}) => {
+      if (!webview.insertCSS) {
+        return
+      }
+
+      const css = previewScrollbarThemeCss()
+
+      if (!force && css === lastRequestedScrollbarCss) {
+        return
+      }
+
+      lastRequestedScrollbarCss = css
+      const previousCssKey = insertedScrollbarCssKey
+      const requestId = ++scrollbarCssRequestId
+
+      void webview
+        .insertCSS(css)
+        .then(key => {
+          if (!active || requestId !== scrollbarCssRequestId) {
+            removeScrollbarTheme(key)
+
+            return
+          }
+
+          insertedScrollbarCssKey = key
+          removeScrollbarTheme(previousCssKey)
+        })
+        .catch(error => {
+          if (!active || requestId !== scrollbarCssRequestId) {
+            return
+          }
+
+          if (lastRequestedScrollbarCss === css) {
+            lastRequestedScrollbarCss = ''
+          }
+
+          appendConsoleEntry({
+            level: 2,
+            message: `Could not theme preview scrollbar: ${error instanceof Error ? error.message : String(error)}`
+          })
+        })
+    }
+
+    const onStart = () => {
+      scrollbarCssRequestId += 1
+      insertedScrollbarCssKey = ''
+      lastRequestedScrollbarCss = ''
+      previewLoaded = false
+      setLoading(true)
+    }
+
+    const onStop = () => {
+      previewLoaded = true
+      setLoading(false)
+      applyScrollbarTheme({ force: true })
+    }
+
+    const themeObserver = new MutationObserver(() => {
+      if (previewLoaded) {
+        applyScrollbarTheme()
+      }
+    })
+
+    themeObserver.observe(document.documentElement, {
+      attributeFilter: ['class', 'data-hermes-mode', 'data-hermes-theme', 'style'],
+      attributes: true
+    })
 
     webview.addEventListener('console-message', onConsole)
     webview.addEventListener('did-fail-load', onFail)
@@ -591,6 +735,9 @@ export function PreviewPane({
     webviewRef.current = webview
 
     return () => {
+      active = false
+      removeScrollbarTheme(insertedScrollbarCssKey)
+      themeObserver.disconnect()
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('did-fail-load', onFail)
       webview.removeEventListener('did-navigate', onNavigate)

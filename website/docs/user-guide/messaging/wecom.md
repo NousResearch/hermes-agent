@@ -8,6 +8,8 @@ description: "Connect Hermes Agent to WeCom via the AI Bot WebSocket gateway"
 
 Connect Hermes to [WeCom](https://work.weixin.qq.com/) (企业微信), Tencent's enterprise messaging platform. The adapter uses WeCom's AI Bot WebSocket gateway for real-time bidirectional communication — no public endpoint or webhook needed.
 
+See also: [WeCom Callback](./wecom-callback.md) for inbound webhook setup.
+
 ## Prerequisites
 
 - A WeCom organization account

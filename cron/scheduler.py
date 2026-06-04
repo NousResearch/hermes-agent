@@ -1111,14 +1111,40 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
-        return _scan_assembled_cron_prompt(prompt, job)
+        return _scan_assembled_cron_prompt(prompt, job, has_skills=False)
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
+    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
 
     parts = []
     skipped: list[str] = []
     for skill_name in skill_names:
+        # Cron jobs historically accepted only skill names here, but the CLI/gateway
+        # slash-command path lets bundles shadow skills with the same slug. Mirror
+        # that behavior so `skills: ["my-bundle"]` expands bundle members instead
+        # of being treated as a missing skill.
+        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
+        if bundle_key:
+            bundle_payload = build_bundle_invocation_message(
+                bundle_key,
+                user_instruction="",
+                task_id=str(job.get("id") or "") or None,
+            )
+            if bundle_payload:
+                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
+                if parts:
+                    parts.append("")
+                parts.append(bundle_message)
+                continue
+            logger.warning(
+                "Cron job '%s': bundle '%s' could not load any skills, skipping",
+                job.get("name", job.get("id")),
+                skill_name,
+            )
+            skipped.append(skill_name)
+            continue
+
         try:
             loaded = json.loads(skill_view(skill_name))
         except (json.JSONDecodeError, TypeError):
@@ -1159,23 +1185,45 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
-    return _scan_assembled_cron_prompt("\n".join(parts), job)
+    return _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
 
 
-def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
-    """Scan the fully-assembled cron prompt (including skill content) for
-    injection patterns. Raises ``CronPromptInjectionBlocked`` when a match
-    fires so ``run_job`` can surface a clear refusal to the operator.
+def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool = False) -> str:
+    """Scan the fully-assembled cron prompt for injection patterns. Raises
+    ``CronPromptInjectionBlocked`` when a match fires so ``run_job`` can
+    surface a clear refusal to the operator.
 
     Plugs the #3968 gap: ``_scan_cron_prompt`` runs on the user-supplied
     prompt at create/update, but skill content is loaded from disk at
     runtime and was never scanned. Since cron runs non-interactively
     (auto-approves tool calls), a malicious skill carrying an injection
     payload bypassed every gate.
-    """
-    from tools.cronjob_tools import _scan_cron_prompt
 
-    scan_error = _scan_cron_prompt(assembled)
+    Two pattern tiers:
+
+    - When ``has_skills=False`` (no skills attached) the assembled prompt
+      is essentially the user prompt + the cron hint, so the STRICT
+      ``_scan_cron_prompt`` patterns apply.
+    - When ``has_skills=True`` the assembled prompt includes loaded skill
+      markdown — often security docs / runbooks that *describe* attack
+      commands in prose. The LOOSER ``_scan_cron_skill_assembled``
+      pattern set is used: only unambiguous prompt-injection directives
+      block; command-shape patterns are dropped and invisible unicode is
+      sanitized (stripped + logged) rather than blocked, to avoid
+      false-positives that permanently kill a job. Skill bodies are
+      vetted at install time by ``skills_guard.py``.
+    """
+    from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
+
+    if has_skills:
+        # Skill content is install-time vetted by skills_guard.py. Invisible
+        # unicode is sanitized (not blocked) so a stray zero-width space in a
+        # skill code example can't permanently kill the job; the cleaned
+        # prompt is what actually runs.
+        cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+        assembled = cleaned
+    else:
+        scan_error = _scan_cron_prompt(assembled)
     if scan_error:
         job_label = job.get("name") or job.get("id") or "<unknown>"
         logger.warning(
@@ -1503,9 +1551,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
-        # Prefill messages from env or config.yaml
+        # Prefill messages from env or config.yaml. The top-level
+        # prefill_messages_file key is canonical; agent.prefill_messages_file is
+        # retained as a legacy fallback for older CLI/godmode configs.
         prefill_messages = None
-        prefill_file = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
+        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
+        prefill_file = (
+            os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+            or _cfg.get("prefill_messages_file", "")
+            or agent_cfg.get("prefill_messages_file", "")
+        )
         if prefill_file:
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():

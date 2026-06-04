@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
-import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -681,6 +681,31 @@ describe('createGatewayEventHandler', () => {
     expect(resumeById).not.toHaveBeenCalled()
   })
 
+  it('on gateway.ready after a crash, resumes the recovered session once and skips forge', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    // Mimic resumeById's synchronous status write so the test proves the
+    // "recovering session…" label is applied *after* (and survives) it.
+    ctx.session.resumeById = resumeById.mockImplementation(() => patchUiState({ status: 'resuming…' }))
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.session.recoverSidRef = ref<null | string>('sess-crashed')
+
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed'))
+    expect(newSession).not.toHaveBeenCalled()
+    // One-shot: the ref is consumed so a later ordinary restart forges/resumes
+    // per config instead of re-resuming the recovered session.
+    expect(ctx.session.recoverSidRef.current).toBeNull()
+    expect(getUiState().status).toBe('recovering session…')
+  })
+
   it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
@@ -895,6 +920,117 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
+  })
+
+  it('nudges toward /agents on the first spawn_requested of a turn', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.spawn_requested'
+    } as any)
+
+    const hints = getTurnState().activity.filter(a => a.text.includes('/agents'))
+    expect(hints).toHaveLength(1)
+    expect(hints[0]).toMatchObject({ tone: 'info' })
+  })
+
+  it('nudges toward /agents on subagent.start (spawn_requested dropped in CLI path)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // In the real CLI→gateway path the delegate callback drops
+    // spawn_requested, so `start` is the first event the TUI sees.
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+  })
+
+  it('nudges at most once per turn and resets on the next message.start', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Multiple spawns in one turn → a single hint.
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'child b', subagent_id: 'sa-b', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+
+    // New turn clears activity AND the once-per-turn guard → nudges again.
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { goal: 'child c', subagent_id: 'sa-c', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+  })
+
+  it('does not nudge when the /agents overlay is already open', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // User already has the dashboard open → nothing to advertise.
+    patchOverlayState({ agents: true })
+
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
+  })
+
+  it('nudges if the /agents overlay is closed mid-turn while delegation continues', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Overlay open on the first delegation event → suppressed, but the
+    // turn's nudge credit must NOT be burned (the user is watching).
+    patchOverlayState({ agents: true })
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
+
+    // User closes the dashboard mid-turn → the next delegation event nudges.
+    patchOverlayState({ agents: false })
+    onEvent({
+      payload: { goal: 'child b', subagent_id: 'sa-b', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(1)
+  })
+
+  it('does not nudge when display.tui_agents_nudge is false', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    // config.get → full returns the disable flag.
+    ctx.gateway.rpc = vi.fn(async (method: string) =>
+      method === 'config.get' ? { config: { display: { tui_agents_nudge: false } } } : null
+    )
+    const onEvent = createGatewayEventHandler(ctx)
+
+    // Eager config fetch fires at creation; let it resolve before any spawn
+    // (mirrors real usage — config lands well before the first delegation).
+    await Promise.resolve()
+    await Promise.resolve()
+
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
   })
 
   it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {

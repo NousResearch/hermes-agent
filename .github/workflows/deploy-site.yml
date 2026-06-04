@@ -22,7 +22,12 @@ concurrency:
 
 jobs:
   deploy-vercel:
-    if: github.event_name == 'release'
+    # Triggered automatically on release publish (production cuts) and
+    # manually via `gh workflow run deploy-site.yml` when an out-of-band
+    # main commit needs to ship live before the next release tag — e.g.
+    # a skills-index PR that doesn't touch website/** paths and so
+    # doesn't auto-deploy via the deploy-docs path.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Vercel Deploy
@@ -50,19 +55,22 @@ jobs:
       - name: Install PyYAML for skill extraction
         run: pip install pyyaml==6.0.2 httpx==0.28.1
 
+      - name: Build skills index (unified multi-source catalog)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Always rebuild — the file isn't committed (gitignored), so a
+          # fresh checkout starts without it and we want the freshest crawl
+          # in every deploy. Failure is non-fatal: extract-skills.py will
+          # fall back to the legacy snapshot cache and the Skills Hub page
+          # still renders, just without the latest community catalog.
+          python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
+
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
 
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
-
-      - name: Build skills index (if not already present)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ ! -f website/static/api/skills-index.json ]; then
-            python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
-          fi
 
       - name: Install dependencies
         run: npm ci

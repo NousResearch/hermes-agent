@@ -127,6 +127,30 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
     return None
 
 
+def _is_retryable_download_error(error: Exception) -> bool:
+    """Return True only for transient image-download failures worth retrying.
+
+    Non-retryable (fail-fast):
+      - httpx.HTTPStatusError with a 4xx status other than 429 (404/403/410/...):
+        the resource is missing or forbidden; retrying can't change that.
+      - PermissionError: blocked by website policy / SSRF guard.
+      - ValueError: image too large or blocked redirect — deterministic.
+
+    Retryable (transient):
+      - httpx 429 (rate limited) and 5xx (server-side) errors.
+      - Connection/timeout/transport errors (httpx.TransportError) and any
+        other unclassified exception, which may be a flaky network blip.
+    """
+    if isinstance(error, (PermissionError, ValueError)):
+        return False
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        if 400 <= status < 500 and status != 429:
+            return False
+        return True
+    return True
+
+
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
     """
     Download an image from a URL to a local destination (async) with retry logic.
@@ -210,24 +234,32 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             return destination
         except Exception as e:
             last_error = e
-            if attempt < max_retries - 1:
-                wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
-                logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
-                logger.warning("Retrying in %ss...", wait_time)
-                await asyncio.sleep(wait_time)
-            else:
+            # Error-class-aware retry: only retry transient failures. A 4xx
+            # client error (404/403/410, etc.) will never succeed on retry —
+            # the resource isn't there or we're not allowed — so burning 3
+            # attempts with 2s/4s/8s backoff just inflates latency. 429 (rate
+            # limit) and 5xx remain retryable. PermissionError (policy block)
+            # and ValueError (too-large / SSRF redirect) are also terminal.
+            if not _is_retryable_download_error(e) or attempt >= max_retries - 1:
                 logger.error(
-                    "Image download failed after %s attempts: %s",
-                    max_retries,
+                    "Image download failed after %s attempt(s): %s",
+                    attempt + 1,
                     str(e)[:100],
                     exc_info=True,
                 )
-    
-    if last_error is None:
-        raise RuntimeError(
-            f"_download_image exited retry loop without attempting (max_retries={max_retries})"
-        )
-    raise last_error
+                raise
+            wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+            logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
+            logger.warning("Retrying in %ss...", wait_time)
+            await asyncio.sleep(wait_time)
+
+    # The loop always returns on success or re-raises on the final/non-retryable
+    # attempt, so reaching here means max_retries was non-positive.
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(
+        f"_download_image exited retry loop without attempting (max_retries={max_retries})"
+    )
 
 
 def _determine_mime_type(image_path: Path) -> str:
@@ -279,9 +311,20 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     return data_url
 
 
-# Hard limit for vision API payloads (20 MB) — matches the most restrictive
-# major provider (Gemini inline data limit).  Images above this are rejected.
+# Absolute hard ceiling for vision API payloads (20 MB) — above this, no major
+# provider accepts the image and we reject outright.
 _MAX_BASE64_BYTES = 20 * 1024 * 1024
+
+# Proactive embed cap (4 MB).  This is the size we resize an image DOWN to
+# before embedding it into conversation history, regardless of the 20 MB hard
+# ceiling.  Anthropic's per-image base64 limit is 5 MB; once an oversized image
+# is baked into history (e.g. a vision tool-result), it is re-sent on every
+# subsequent turn and permanently wedges the session with a 400 that retries
+# can't clear (the bad bytes are immutable history).  Capping at embed time —
+# with headroom under 5 MB — is the only durable fix.  Matches the post-failure
+# shrink target in agent.conversation_compression so behaviour is consistent
+# whether we resize proactively or reactively.
+_EMBED_TARGET_BYTES = 4 * 1024 * 1024
 
 # Target size when auto-resizing on API failure (5 MB).  After a provider
 # rejects an image, we downscale to this target and retry once.
@@ -476,6 +519,36 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     return False
 
 
+def _should_use_native_vision_fast_path() -> bool:
+    """Whether vision tools should attach the image to the main model directly
+    instead of routing through the auxiliary vision LLM.
+
+    True when image routing resolves to ``native`` AND either the provider is
+    known to accept images inside tool results, or the user explicitly declared
+    the model vision-capable via the ``model.supports_vision`` config override.
+    The override is the escape hatch for custom/local providers that aren't in
+    the static allowlist. Best-effort: any resolution failure returns False so
+    the caller falls back to the legacy aux-LLM path.
+    """
+    try:
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from hermes_cli.config import load_config
+
+        provider = _read_main_provider()
+        model = _read_main_model()
+        cfg = load_config()
+        if decide_image_input_mode(provider, model, cfg) != "native":
+            return False
+        return (
+            _supports_media_in_tool_results(provider, model)
+            or _lookup_supports_vision(provider, model, cfg) is True
+        )
+    except Exception as exc:
+        logger.debug("Native vision fast-path check failed: %s", exc)
+        return False
+
+
 def _build_native_vision_tool_result(
     image_url: str,
     question: str,
@@ -594,11 +667,21 @@ async def _vision_analyze_native(
             temp_image_path, mime_type=detected_mime_type,
         )
 
-        # Honour the same hard cap as the legacy path. Resize if needed.
-        if len(image_data_url) > _MAX_BASE64_BYTES:
+        # Proactive embed cap: this image gets baked into conversation
+        # history and re-sent on every subsequent turn.  Anthropic rejects
+        # any single base64 image over 5 MB with a 400, and because history
+        # is immutable, an oversized embed permanently wedges the session —
+        # retries can't clear bytes that are already in the request.  Resize
+        # DOWN to the embed target (4 MB, headroom under 5 MB) whenever the
+        # payload exceeds it, not just at the 20 MB hard ceiling.
+        if len(image_data_url) > _EMBED_TARGET_BYTES:
             image_data_url = _resize_image_for_vision(
                 temp_image_path, mime_type=detected_mime_type,
+                max_base64_bytes=_EMBED_TARGET_BYTES,
             )
+            # If even resizing can't get under the absolute hard ceiling,
+            # there's nothing more we can do — reject rather than embed a
+            # session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(
                     f"Image too large for vision API: base64 payload is "
@@ -1030,28 +1113,15 @@ def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
 
-    # Fast path: when the active main model supports native vision AND the
-    # provider supports image content inside tool results, short-circuit
-    # the auxiliary LLM and return the image bytes as a multimodal
-    # tool-result envelope. The main model sees the pixels directly on its
-    # next turn — no aux call, no information loss, no extra latency.
-    try:
-        from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode
-        from hermes_cli.config import load_config
-
-        _provider = _read_main_provider()
-        _model = _read_main_model()
-        _cfg = load_config()
-        _mode = decide_image_input_mode(_provider, _model, _cfg)
-        if _mode == "native" and _supports_media_in_tool_results(_provider, _model):
-            logger.info(
-                "vision_analyze: native fast path (provider=%s, model=%s)",
-                _provider, _model,
-            )
-            return _vision_analyze_native(image_url, question)
-    except Exception as exc:
-        logger.debug("Native vision fast-path check failed; using aux LLM: %s", exc)
+    # Fast path: when native image routing is in effect for the active main
+    # model (provider accepts images in tool results, or the user set the
+    # model.supports_vision override), short-circuit the auxiliary LLM and
+    # return the image bytes as a multimodal tool-result envelope. The main
+    # model sees the pixels directly on its next turn — no aux call, no
+    # information loss, no extra latency.
+    if _should_use_native_vision_fast_path():
+        logger.info("vision_analyze: native fast path")
+        return _vision_analyze_native(image_url, question)
 
     # Legacy path: aux LLM describes the image and we return its text.
     full_prompt = (

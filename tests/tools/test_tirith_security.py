@@ -1,8 +1,10 @@
 """Tests for the tirith security scanning subprocess wrapper."""
 
+import io
 import json
 import os
 import subprocess
+import tarfile
 import time
 from unittest.mock import MagicMock, patch
 
@@ -716,6 +718,89 @@ class TestCosignVerification:
         assert mock_cosign.called  # cosign was invoked
 
 
+class TestInstallArchiveMemberValidation:
+    def _write_archive(self, tmp_path, member: tarfile.TarInfo, data: bytes | None = None):
+        archive = tmp_path / "tirith-aarch64-apple-darwin.tar.gz"
+        checksums = tmp_path / "checksums.txt"
+        with tarfile.open(archive, "w:gz") as tar:
+            if data is None:
+                tar.addfile(member)
+            else:
+                tar.addfile(member, io.BytesIO(data))
+        checksums.write_text(
+            "ignored  tirith-aarch64-apple-darwin.tar.gz\n",
+            encoding="utf-8",
+        )
+        return archive, checksums
+
+    def _download_side_effect(self, archive, checksums):
+        def _download(url, dest, timeout=10):
+            del timeout
+            if url.endswith(".tar.gz"):
+                with open(archive, "rb") as src, open(dest, "wb") as dst:
+                    dst.write(src.read())
+                return
+            if url.endswith("checksums.txt"):
+                with open(checksums, "rb") as src, open(dest, "wb") as dst:
+                    dst.write(src.read())
+                return
+            raise AssertionError(f"unexpected download URL: {url}")
+
+        return _download
+
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    def test_install_extracts_regular_tirith_member(self, mock_target, mock_which,
+                                                    mock_checksum, tmp_path, monkeypatch):
+        """A valid regular-file tirith member is installed as a plain file."""
+        del mock_target, mock_which, mock_checksum
+        from tools.tirith_security import _install_tirith
+
+        payload = b"#!/bin/sh\nexit 0\n"
+        member = tarfile.TarInfo("bin/tirith")
+        member.mode = 0o755
+        member.size = len(payload)
+        archive, checksums = self._write_archive(tmp_path, member, payload)
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("tools.tirith_security._download_file",
+                   side_effect=self._download_side_effect(archive, checksums)):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert reason == ""
+        assert path == str(hermes_home / "bin" / "tirith")
+        assert os.path.isfile(path)
+        assert not os.path.islink(path)
+        with open(path, "rb") as f:
+            assert f.read() == payload
+
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    def test_install_rejects_non_regular_tirith_member(self, mock_target, mock_which,
+                                                       mock_checksum, tmp_path, monkeypatch):
+        """Symlink or hardlink tar members must not be installed as tirith."""
+        del mock_target, mock_which, mock_checksum
+        from tools.tirith_security import _install_tirith
+
+        member = tarfile.TarInfo("bin/tirith")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "/bin/sh"
+        archive, checksums = self._write_archive(tmp_path, member)
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        with patch("tools.tirith_security._download_file",
+                   side_effect=self._download_side_effect(archive, checksums)):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert path is None
+        assert reason == "binary_not_regular_file"
+        assert not os.path.lexists(hermes_home / "bin" / "tirith")
+
+
 # ---------------------------------------------------------------------------
 # Background install / non-blocking startup (P2)
 # ---------------------------------------------------------------------------
@@ -963,7 +1048,7 @@ class TestDiskFailureMarker:
 
     def test_cosign_missing_disk_marker_allows_retry(self):
         """Disk marker with cosign_missing reason allows retry when cosign appears."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
+        from tools.tirith_security import _resolve_tirith_path
         _tirith_mod._resolved_path = None
 
         # _is_install_failed_on_disk sees "cosign_missing" + cosign on PATH → returns False

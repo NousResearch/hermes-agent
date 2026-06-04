@@ -103,7 +103,7 @@ _PLATFORM_MAP = {
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REMOTE_ENV_BACKENDS = frozenset(
-    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+    {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
 
@@ -305,7 +305,13 @@ def _capture_required_environment_variables(
         }
 
     missing_names = [entry["name"] for entry in missing_entries]
-    if _is_gateway_surface():
+    # Most gateway surfaces (messaging platforms) can't prompt for a secret, so
+    # they short-circuit to the "unsupported" hint. Interactive gateway surfaces
+    # — the desktop app / TUI — set HERMES_INTERACTIVE and register a
+    # secret-capture callback that routes to a secure secret.request overlay, so
+    # they fall through and actually prompt. (HERMES_INTERACTIVE is the same flag
+    # tools/approval.py uses to tell an interactive surface from a messaging one.)
+    if _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
         return {
             "missing_names": missing_names,
             "setup_skipped": False,
@@ -627,49 +633,6 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
-
-
-def _load_category_description(category_dir: Path) -> Optional[str]:
-    """
-    Load category description from DESCRIPTION.md if it exists.
-
-    Args:
-        category_dir: Path to the category directory
-
-    Returns:
-        Description string or None if not found
-    """
-    desc_file = category_dir / "DESCRIPTION.md"
-    if not desc_file.exists():
-        return None
-
-    try:
-        content = desc_file.read_text(encoding="utf-8")
-        # Parse frontmatter if present
-        frontmatter, body = _parse_frontmatter(content)
-
-        # Prefer frontmatter description, fall back to first non-header line
-        description = frontmatter.get("description", "")
-        if not description:
-            for line in body.strip().split("\n"):
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    description = line
-                    break
-
-        # Truncate to reasonable length
-        if len(description) > MAX_DESCRIPTION_LENGTH:
-            description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
-
-        return description if description else None
-    except (UnicodeDecodeError, PermissionError) as e:
-        logger.debug("Failed to read category description %s: %s", desc_file, e)
-        return None
-    except Exception as e:
-        logger.warning(
-            "Error parsing category description %s: %s", desc_file, e, exc_info=True
-        )
-        return None
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import threading
 from pathlib import Path
 from typing import Any, Dict
@@ -106,7 +105,7 @@ def test_nous_adapter_authenticated_with_agent_key(tmp_path, monkeypatch):
 
 
 def test_nous_adapter_authenticated_with_refresh_token_only(tmp_path, monkeypatch):
-    """If access_token+refresh_token exist but no agent_key yet, we can still mint."""
+    """If access_token+refresh_token exist but no agent_key yet, we can still refresh."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
@@ -126,7 +125,7 @@ def test_nous_adapter_get_credential_uses_runtime_resolver(tmp_path, monkeypatch
     })
 
     refreshed_state = {
-        "api_key": "minted-bearer",
+        "api_key": "jwt-bearer",
         "base_url": "https://inference-api.nousresearch.com/v1",
         "expires_at": "2099-01-01T00:00:00Z",
     }
@@ -139,13 +138,13 @@ def test_nous_adapter_get_credential_uses_runtime_resolver(tmp_path, monkeypatch
         cred = adapter.get_credential()
 
     mock_resolve.assert_called_once()
-    assert cred.bearer == "minted-bearer"
+    assert cred.bearer == "jwt-bearer"
     assert cred.base_url == "https://inference-api.nousresearch.com/v1"
     assert cred.expires_at == "2099-01-01T00:00:00Z"
     assert cred.token_type == "Bearer"
 
 
-def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch):
+def test_nous_adapter_retry_credential_force_refreshes_on_jwt_401(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "jwt-access",
@@ -155,9 +154,8 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
         "inference_base_url": "https://inference-api.nousresearch.com/v1",
         "agent_key": "jwt-access",
     })
-
     refreshed_state = {
-        "api_key": "legacy-bearer",
+        "api_key": "fresh-jwt-bearer",
         "base_url": "https://inference-api.nousresearch.com/v1",
         "expires_at": "2099-01-01T00:00:00Z",
     }
@@ -176,11 +174,11 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
         )
 
     assert cred is not None
-    assert cred.bearer == "legacy-bearer"
-    assert mock_resolve.call_args.kwargs["inference_auth_mode"] == "legacy"
+    assert cred.bearer == "fresh-jwt-bearer"
+    assert mock_resolve.call_args.kwargs["force_refresh"] is True
 
 
-def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch):
+def test_nous_adapter_retry_credential_skips_non_401(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "jwt-access",
@@ -197,7 +195,7 @@ def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch
                 bearer="opaque-bearer",
                 base_url="https://inference-api.nousresearch.com/v1",
             ),
-            status_code=401,
+            status_code=403,
         )
 
     assert cred is None
@@ -207,7 +205,7 @@ def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch
 def test_nous_adapter_get_credential_raises_when_not_logged_in(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     adapter = NousPortalAdapter()
-    with pytest.raises(RuntimeError, match="hermes login nous"):
+    with pytest.raises(RuntimeError, match="hermes auth add nous"):
         adapter.get_credential()
 
 
@@ -261,8 +259,8 @@ def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch
     assert stored.get("credential_pool", {}).get("nous") == []
 
 
-def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path, monkeypatch):
-    """If the refresh helper succeeds but produces no agent_key, we surface a clear error."""
+def test_nous_adapter_get_credential_raises_when_no_jwt_returned(tmp_path, monkeypatch):
+    """If the refresh helper succeeds but produces no JWT, we surface a clear error."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
@@ -274,7 +272,7 @@ def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path,
         return_value={"access_token": "a", "refresh_token": "r"},
     ):
         adapter = NousPortalAdapter()
-        with pytest.raises(RuntimeError, match="did not return a usable agent_key"):
+        with pytest.raises(RuntimeError, match="did not return a usable inference JWT"):
             adapter.get_credential()
 
 
@@ -448,6 +446,122 @@ def test_xai_adapter_retry_refreshes_current_pool_entry(tmp_path, monkeypatch):
 
     assert retry is not None
     assert retry.bearer == "new-access-token"
+
+
+def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
+    """429 from xAI must rotate to the next pool entry, not attempt refresh.
+
+    Pre-fix (#28932) ``get_retry_credential`` only fired on 401, so a 429
+    rate-limit response flowed back to the client unchanged AND the
+    rate-limited bearer stayed active for the next request — defeating
+    the whole point of pool rotation.
+
+    Post-fix: 429 lands on ``mark_exhausted_and_rotate`` (no refresh —
+    that's irrelevant for rate limits), stamps the 1-hour cooldown
+    via ``EXHAUSTED_TTL_429_SECONDS`` on the offending key, and
+    returns the next available credential.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Two pool entries so rotation has somewhere to go.
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [
+                {
+                    "id": "xai-first",
+                    "label": "xai-first",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:xai_pkce",
+                    "access_token": "first-access-token",
+                    "refresh_token": "first-refresh-token",
+                    "base_url": "https://api.x.ai/v1",
+                },
+                {
+                    "id": "xai-second",
+                    "label": "xai-second",
+                    "auth_type": "oauth",
+                    "priority": 1,
+                    "source": "manual:xai_pkce",
+                    "access_token": "second-access-token",
+                    "refresh_token": "second-refresh-token",
+                    "base_url": "https://api.x.ai/v1",
+                },
+            ]
+        },
+    }))
+
+    # Refresh must NOT be called on the 429 path — guard against
+    # the fix accidentally trying to refresh-on-rate-limit.
+    def _refresh_must_not_run(*args, **kwargs):
+        raise AssertionError("refresh_xai_oauth_pure must not run on 429")
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run)
+
+    adapter = XAIGrokAdapter()
+    failed = adapter.get_credential()
+    assert failed.bearer == "first-access-token", "starting bearer should be the first entry"
+
+    retry = adapter.get_retry_credential(
+        failed_credential=failed,
+        status_code=429,
+    )
+
+    assert retry is not None, "429 must rotate to next pool entry"
+    assert retry.bearer == "second-access-token", (
+        f"expected rotation to second entry, got {retry.bearer!r}"
+    )
+
+
+def test_xai_adapter_retry_returns_none_on_429_when_pool_exhausted(tmp_path, monkeypatch):
+    """Single-entry pool: 429 has nowhere to rotate to → return None
+    so the 429 flows back to the client unchanged (existing behavior
+    preserved)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path)  # single entry
+
+    def _refresh_must_not_run(*args, **kwargs):
+        raise AssertionError("refresh_xai_oauth_pure must not run on 429")
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run)
+
+    adapter = XAIGrokAdapter()
+    failed = adapter.get_credential()
+    retry = adapter.get_retry_credential(
+        failed_credential=failed,
+        status_code=429,
+    )
+
+    assert retry is None, (
+        "single-entry pool: 429 must return None so the response "
+        "flows back to the client unchanged"
+    )
+
+
+def test_xai_adapter_retry_returns_none_for_unrelated_status(tmp_path, monkeypatch):
+    """Non-{401, 429} statuses must NOT trigger any retry — pool
+    untouched, no refresh attempted, return None immediately."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_pool_entry(tmp_path)
+
+    def _refresh_must_not_run(*args, **kwargs):
+        raise AssertionError("refresh_xai_oauth_pure must not run on non-retry status")
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run)
+
+    adapter = XAIGrokAdapter()
+    failed = adapter.get_credential()
+    for status in (200, 400, 403, 500, 502, 503):
+        retry = adapter.get_retry_credential(
+            failed_credential=failed,
+            status_code=status,
+        )
+        assert retry is None, (
+            f"status {status} must not trigger retry, got {retry!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -784,4 +898,4 @@ def test_cmd_proxy_start_refuses_when_unauthenticated(capsys, tmp_path, monkeypa
     rc = cmd_proxy_start(args)
     assert rc == 2
     err = capsys.readouterr().err
-    assert "hermes login nous" in err
+    assert "hermes auth add nous" in err

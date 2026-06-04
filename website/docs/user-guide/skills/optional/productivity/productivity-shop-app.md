@@ -21,7 +21,7 @@ Shop.app: product search, order tracking, returns, reorder.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Shopping`, `E-commerce`, `Shop.app`, `Products`, `Orders`, `Returns` |
-| Related skills | [`shopify`](/user-guide/skills/optional/productivity/productivity-shopify), [`maps`](/user-guide/skills/bundled/productivity/productivity-maps) |
+| Related skills | [`shopify`](/docs/user-guide/skills/optional/productivity/productivity-shopify), [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) |
 
 ## Reference: full SKILL.md
 

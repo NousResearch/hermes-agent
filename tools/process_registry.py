@@ -633,7 +633,8 @@ class ProcessRegistry:
             try:
                 if not _IS_WINDOWS:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS check above
+                        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:
@@ -697,7 +698,11 @@ class ProcessRegistry:
         )
 
         try:
-            result = env.execute(bg_command, timeout=timeout)
+            result = env.execute(
+                bg_command,
+                timeout=timeout,
+                rewrite_compound_background=False,
+            )
             output = result.get("output", "").strip()
             # Try to extract the PID from the output
             for line in output.splitlines():
@@ -705,6 +710,15 @@ class ProcessRegistry:
                 if line.isdigit():
                     session.pid = int(line)
                     break
+            # If the wrapper couldn't produce a PID (for example, syntax
+            # error or broken redirect), treat it as a failed launch instead
+            # of exposing a fake running session.
+            if session.pid is None:
+                session.exited = True
+                session.exit_code = int(result.get("returncode", -1))
+                if session.exit_code == 0:
+                    session.exit_code = -1
+                session.output_buffer = result.get("output", "").strip()
         except Exception as e:
             session.exited = True
             session.exit_code = -1
@@ -723,9 +737,12 @@ class ProcessRegistry:
 
         with self._lock:
             self._prune_if_needed()
-            self._running[session.id] = session
+            if not session.exited:
+                self._running[session.id] = session
 
-        self._write_checkpoint()
+        if not session.exited:
+            self._write_checkpoint()
+
         return session
 
     # ----- Reader / Poller Threads -----
@@ -863,6 +880,7 @@ class ProcessRegistry:
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
+                "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,
@@ -1234,6 +1252,19 @@ class ProcessRegistry:
             return {"status": "ok", "message": "stdin closed"}
         except Exception as e:
             return {"status": "error", "error": str(e)}
+
+    def count_running(self) -> int:
+        """Return the count of currently-running background processes.
+
+        Cheap O(1) read of the running dict, suitable for status-bar polling
+        on every render tick. CPython dict ``len()`` is atomic; callers do not
+        need to hold ``self._lock``. Reflects ``_running`` only: sessions are
+        moved to ``_finished`` when their subprocess exits.
+        """
+        try:
+            return len(self._running)
+        except Exception:
+            return 0
 
     def list_sessions(self, task_id: str = None) -> list:
         """List all running and recently-finished processes."""

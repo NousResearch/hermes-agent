@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,7 +39,6 @@ from tools.send_message_tool import (
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
 from plugins.platforms.discord.adapter import (
-    _DISCORD_CHANNEL_TYPE_PROBE_CACHE,
     _derive_forum_thread_name,
     _probe_is_forum_cached,
     _remember_channel_is_forum,
@@ -377,7 +375,14 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
-    def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path):
+    def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
+        # This test exercises the strict-allowlist path; force strict mode on
+        # and disable recency trust so the freshly-written tmp_path file is
+        # not auto-accepted by the trust window. (Recency trust is covered
+        # in test_platform_base.py. The public default flipped to non-strict
+        # in 2026-05; this test pins strict on explicitly.)
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
         config, telegram_cfg = _make_config()
         secret = tmp_path / "secret.pdf"
         secret.write_bytes(b"%PDF secret")
@@ -1215,6 +1220,90 @@ class TestParseTargetRefSlack:
         assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
 
 
+class TestParseTargetRefEmail:
+    """_parse_target_ref recognizes email addresses as explicit for the email platform."""
+
+    def test_standard_email_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("email", "user@example.com")
+        assert chat_id == "user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_email_with_dots_in_local_part(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "first.last@example.co.uk")
+        assert chat_id == "first.last@example.co.uk"
+        assert is_explicit is True
+
+    def test_email_with_plus_tag(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "user+tag@gmail.com")
+        assert chat_id == "user+tag@gmail.com"
+        assert is_explicit is True
+
+    def test_email_strips_whitespace(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "  user@example.com  ")
+        assert chat_id == "user@example.com"
+        assert is_explicit is True
+
+    def test_invalid_email_not_explicit(self):
+        assert _parse_target_ref("email", "not-an-email")[2] is False
+        assert _parse_target_ref("email", "@example.com")[2] is False
+        assert _parse_target_ref("email", "user@")[2] is False
+        assert _parse_target_ref("email", "user@.com")[2] is False
+
+    def test_email_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("telegram", "user@example.com")[2] is False
+        assert _parse_target_ref("discord", "user@example.com")[2] is False
+        assert _parse_target_ref("slack", "user@example.com")[2] is False
+
+
+class TestEmailHomeChannelErrorHint:
+    """The no-home-channel error for email points at the real env var.
+
+    Email reads its home channel from EMAIL_HOME_ADDRESS (gateway/config.py),
+    not the generic EMAIL_HOME_CHANNEL. The error guidance must name the
+    variable that is actually consulted so users who follow it succeed.
+    """
+
+    def test_email_error_names_email_home_address(self):
+        email_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.EMAIL: email_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "email",
+                        "message": "hi",
+                    }
+                )
+            )
+        assert "EMAIL_HOME_ADDRESS" in result["error"]
+        assert "EMAIL_HOME_CHANNEL" not in result["error"]
+
+    def test_non_email_platform_keeps_generic_home_channel_hint(self):
+        telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "hi",
+                    }
+                )
+            )
+        assert "TELEGRAM_HOME_CHANNEL" in result["error"]
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 
@@ -1510,7 +1599,6 @@ class TestSendMatrixUrlEncoding:
 
     def test_room_id_is_percent_encoded_in_url(self):
         """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
-        import aiohttp
 
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -1887,10 +1975,6 @@ class TestForumProbeCache:
         discord_adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
 
     def test_cache_round_trip(self):
-        from plugins.platforms.discord.adapter import (
-            _probe_is_forum_cached,
-            _remember_channel_is_forum,
-        )
         assert _probe_is_forum_cached("xyz") is None
         _remember_channel_is_forum("xyz", True)
         assert _probe_is_forum_cached("xyz") is True

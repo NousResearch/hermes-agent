@@ -276,6 +276,98 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 
 
 # ---------------------------------------------------------------------------
+# _load_provider_state — internal global fallback (issue #18594 follow-up)
+#
+# Several runtime helpers (notably ``resolve_nous_runtime_credentials`` and
+# ``resolve_nous_access_token``) call ``_load_provider_state`` directly with
+# a profile-loaded auth store rather than going through
+# ``get_provider_auth_state``. Without the fallback wired into
+# ``_load_provider_state`` itself, those helpers raise ``"Hermes is not
+# logged into Nous Portal"`` even though the user has a valid global Nous
+# login. These tests pin the per-provider shadowing into the helper.
+# ---------------------------------------------------------------------------
+
+
+def test_load_provider_state_falls_back_to_global(profile_env):
+    """When the loaded profile store has no provider entry, fall back to global."""
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "global-nous-token", "refresh_token": "rt"},
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "global-nous-token"
+
+
+def test_load_provider_state_profile_wins_over_global(profile_env):
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "global-token"},
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "profile-token"},
+    }))
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "profile-token"
+
+
+def test_load_provider_state_returns_none_when_neither_has_it(profile_env):
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    auth_store = _load_auth_store()
+    assert _load_provider_state(auth_store, "nous") is None
+
+
+def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
+    """In classic mode there is no global to fall back to; behavior is unchanged."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    hermes_home = tmp_path / "classic"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _write(hermes_home / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "classic-token"},
+    }))
+
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "classic-token"
+    # Absent providers still return None.
+    assert _load_provider_state(auth_store, "anthropic") is None
+
+
+def test_load_provider_state_malformed_global_does_not_break_profile(profile_env):
+    """A corrupt global auth.json must not break profile reads."""
+    (profile_env["global"] / "auth.json").write_text("{not valid json")
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "nous": {"access_token": "profile-token"},
+    }))
+
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "nous")
+    assert state is not None
+    assert state["access_token"] == "profile-token"
+
+
+# ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------
 

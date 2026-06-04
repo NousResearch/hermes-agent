@@ -37,6 +37,8 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,6 +46,102 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_MODES = frozenset({"auto", "native", "text"})
+
+
+# Image extensions used by extract_image_refs(). Kept tight on purpose — we
+# only auto-attach things the model can actually see. Documents/archives are
+# excluded because the gateway's broader extract_local_files() also routes
+# them differently (send_document), and we don't want to attach a PDF as a
+# vision part.
+_IMAGE_EXTS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic",
+)
+_IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
+
+# Absolute / home-relative local image path. Matches the same shape gateway's
+# extract_local_files() uses: anchors to ``~/`` or ``/``, ignores matches inside
+# URLs (the ``(?<![/:\w.])`` lookbehind), and case-insensitive on the extension.
+_LOCAL_IMAGE_PATH_RE = re.compile(
+    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
+    re.IGNORECASE,
+)
+
+# http(s) URL ending in an image extension (optionally followed by a
+# query string). Case-insensitive on the extension. Strict ``http(s)://``
+# scheme so we don't accidentally grab ``file://`` URLs or other shapes.
+_IMAGE_URL_RE = re.compile(
+    r"https?://[^\s<>\"']+?\.(?:" + _IMAGE_EXT_PATTERN + r")(?:\?[^\s<>\"']*)?",
+    re.IGNORECASE,
+)
+
+
+def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
+    """Scan free-form text for image references the model should see.
+
+    Returns ``(local_paths, urls)``:
+
+      * ``local_paths`` — absolute (``/``) or home-relative (``~/``) paths
+        whose suffix is an image extension AND whose expanded form exists
+        on disk as a file. Order-preserving, deduplicated.
+      * ``urls`` — ``http(s)://…`` URLs whose path ends in an image
+        extension (a ``?query`` is allowed after the extension).
+        Order-preserving, deduplicated.
+
+    Matches inside fenced code blocks (``` ``` ```) and inline backticks
+    (`` `…` ``) are skipped so that snippets pasted into a task body for
+    reference aren't mistaken for live attachments. This mirrors the
+    behaviour of ``gateway.platforms.base.BaseAdapter.extract_local_files``.
+
+    Local paths are validated against the filesystem; URLs are not
+    (the provider fetches them at request time).
+    """
+    if not isinstance(text, str) or not text:
+        return [], []
+
+    # Build spans covered by fenced code blocks and inline code so we can
+    # ignore references the author embedded purely as example text.
+    code_spans: list[tuple[int, int]] = []
+    for m in re.finditer(r"```[^\n]*\n.*?```", text, re.DOTALL):
+        code_spans.append((m.start(), m.end()))
+    for m in re.finditer(r"`[^`\n]+`", text):
+        code_spans.append((m.start(), m.end()))
+
+    def _in_code(pos: int) -> bool:
+        return any(s <= pos < e for s, e in code_spans)
+
+    local_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for match in _LOCAL_IMAGE_PATH_RE.finditer(text):
+        if _in_code(match.start()):
+            continue
+        raw = match.group(0)
+        expanded = os.path.expanduser(raw)
+        try:
+            if not os.path.isfile(expanded):
+                continue
+        except OSError:
+            # ENAMETOOLONG / EINVAL on pathological inputs — skip rather than crash.
+            continue
+        if expanded in seen_paths:
+            continue
+        seen_paths.add(expanded)
+        local_paths.append(expanded)
+
+    urls: list[str] = []
+    seen_urls: set[str] = set()
+    for match in _IMAGE_URL_RE.finditer(text):
+        if _in_code(match.start()):
+            continue
+        url = match.group(0)
+        # Strip trailing punctuation that's almost certainly prose, not part
+        # of the URL (e.g. "see https://x.com/a.png." or "/a.png)").
+        url = url.rstrip(".,;:!?)]>")
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        urls.append(url)
+
+    return local_paths, urls
 
 
 # Strict YAML/JSON boolean coercion for capability overrides.
@@ -320,20 +418,29 @@ def _file_to_data_url(path: Path) -> Optional[str]:
 def build_native_content_parts(
     user_text: str,
     image_paths: List[str],
+    image_urls: Optional[List[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
     Shape:
       [{"type": "text", "text": "...\\n\\n[Image attached at: /local/path]"},
        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+       {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
        ...]
 
-    The local path of each successfully attached image is appended to the
-    text part as ``[Image attached at: <path>]``. The model still sees the
-    pixels via the ``image_url`` part (full native vision); the path note
-    just gives it a string handle so MCP/skill tools that take an image
-    path or URL argument can be invoked on the same image without an
-    extra round-trip. This parallels the text-mode hint produced by
+    Local paths are read from disk and embedded as base64 ``data:`` URLs.
+    Remote URLs (``http(s)://``) are passed through verbatim — the provider
+    fetches them server-side. The model still sees the pixels either way.
+
+    For each successfully attached image, a hint is appended to the text
+    part:
+
+      * local path → ``[Image attached at: <path>]``
+      * URL        → ``[Image attached: <url>]``
+
+    The hint gives the model a string handle so MCP/skill tools that take
+    an image path or URL argument can be invoked on the same image without
+    an extra round-trip. This parallels the text-mode hint produced by
     ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
     <path>``) so behaviour is consistent across both image input modes.
 
@@ -342,12 +449,14 @@ def build_native_content_parts(
     ceiling), the agent's retry loop transparently shrinks and retries
     once — see ``run_agent._try_shrink_image_parts_in_messages``.
 
-    Returns (content_parts, skipped_paths). Skipped paths are files that
-    couldn't be read from disk and are NOT advertised in the path hints.
+    Returns (content_parts, skipped). Skipped entries are local paths
+    that couldn't be read from disk; URLs are never skipped (they're
+    not validated here).
     """
     skipped: List[str] = []
     image_parts: List[Dict[str, Any]] = []
     attached_paths: List[str] = []
+    attached_urls: List[str] = []
 
     for raw_path in image_paths:
         p = Path(raw_path)
@@ -364,16 +473,26 @@ def build_native_content_parts(
         })
         attached_paths.append(str(raw_path))
 
+    for url in image_urls or []:
+        url = (url or "").strip()
+        if not url:
+            continue
+        image_parts.append({
+            "type": "image_url",
+            "image_url": {"url": url},
+        })
+        attached_urls.append(url)
+
     text = (user_text or "").strip()
 
     # If at least one image attached, build a single text part that combines
-    # the user's caption (or a neutral default) with one path hint per image.
-    if attached_paths:
+    # the user's caption (or a neutral default) with one hint per image.
+    if attached_paths or attached_urls:
         base_text = text or "What do you see in this image?"
-        path_hints = "\n".join(
-            f"[Image attached at: {p}]" for p in attached_paths
-        )
-        combined_text = f"{base_text}\n\n{path_hints}"
+        hint_lines: List[str] = []
+        hint_lines.extend(f"[Image attached at: {p}]" for p in attached_paths)
+        hint_lines.extend(f"[Image attached: {u}]" for u in attached_urls)
+        combined_text = f"{base_text}\n\n" + "\n".join(hint_lines)
         parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
         parts.extend(image_parts)
         return parts, skipped
@@ -388,4 +507,5 @@ def build_native_content_parts(
 __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
+    "extract_image_refs",
 ]

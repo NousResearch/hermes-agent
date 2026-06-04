@@ -1,8 +1,7 @@
 """Tests for GatewayRunner._format_session_info — session config surfacing."""
 
 import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+from unittest.mock import patch
 
 from gateway.run import GatewayRunner
 

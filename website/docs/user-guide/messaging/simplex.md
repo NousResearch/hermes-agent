@@ -2,6 +2,8 @@
 
 [SimpleX Chat](https://simplex.chat/) is a private, decentralised messaging platform where users own their contacts and groups. Unlike other platforms, SimpleX assigns no persistent user IDs — every contact is identified by an opaque internal ID generated at connection time, which makes it one of the most private messengers available.
 
+> Run `hermes gateway setup` and pick **SimpleX** for a guided walk-through.
+
 ## Prerequisites
 
 - The **simplex-chat** CLI installed and running as a daemon
@@ -13,7 +15,7 @@ Download the latest release from the [simplex-chat GitHub releases](https://gith
 
 ```bash
 # Linux / macOS binary
-curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86-64 -o simplex-chat
+curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86_64 -o simplex-chat
 chmod +x simplex-chat
 ```
 

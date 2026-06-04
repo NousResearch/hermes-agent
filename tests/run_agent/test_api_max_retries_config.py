@@ -4,7 +4,7 @@ Closes #11616 — make the hardcoded ``max_retries = 3`` in the agent's API
 retry loop user-configurable so fallback-provider setups can fail over
 faster on flaky primaries instead of burning ~3x180s on the same stall.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from run_agent import AIAgent
 

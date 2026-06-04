@@ -63,8 +63,10 @@ personality entry that biases toward artifact-style replies on
 messaging platforms.
 
 **Project-level:** add the bias to `AGENTS.md` / `CLAUDE.md` /
-`.cursorrules` in a project the agent works from, or to your global
-custom instructions in `~/.hermes/config.yaml` under `agent.custom_instructions`.
+`.cursorrules` in a project the agent works from, to your global
+persona in `~/.hermes/SOUL.md`, or as a named preset under
+`agent.personalities` in `~/.hermes/config.yaml` (switchable per session
+via `/personality`).
 
 The mechanic the agent has to use is simple: render the file to an
 absolute path (e.g. `/tmp/q3-revenue.png`) and mention that path as

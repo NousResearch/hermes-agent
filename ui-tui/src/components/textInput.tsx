@@ -36,6 +36,7 @@ const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
+type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
@@ -121,6 +122,30 @@ export function applyPrintableInsert(
 }
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
+
+export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+  if (env.WT_SESSION) {
+    return true
+  }
+
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {
+    return true
+  }
+
+  if (env.GHOSTTY_RESOURCES_DIR || env.GHOSTTY_BIN_DIR) {
+    return true
+  }
+
+  if ((env.TERM ?? '').toLowerCase() === 'xterm-ghostty') {
+    return true
+  }
+
+  if ((env.TERM_PROGRAM ?? '').toLowerCase() === 'ghostty') {
+    return true
+  }
+
+  return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
+}
 
 function prevPos(s: string, p: number) {
   const pos = snapPos(s, p)
@@ -943,7 +968,10 @@ export function TextInput({
       if (k.return) {
         flushKeyBurst()
 
-        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
+        const sequence = (event.keypress as { sequence?: string }).sequence
+        const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
+
+        if (k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)) {
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {
           cbSubmit.current?.(vRef.current)

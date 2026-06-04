@@ -7,14 +7,11 @@ Verifies that:
 4. The gateway doesn't double-write messages the agent already persisted
 """
 
-import json
 import os
-import sqlite3
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------

@@ -624,6 +624,13 @@ class _FakeTextChannel:
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
 
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
+
 
 class _FakeThreadChannel(_discord_mod.Thread):
     """isinstance(ch, discord.Thread) → True."""
@@ -635,6 +642,13 @@ class _FakeThreadChannel(_discord_mod.Thread):
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
         self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):

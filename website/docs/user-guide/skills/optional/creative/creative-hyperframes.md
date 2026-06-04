@@ -21,7 +21,7 @@ Create HTML-based video compositions, animated title cards, social overlays, cap
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `creative`, `video`, `animation`, `html`, `gsap`, `motion-graphics` |
-| Related skills | [`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video), [`meme-generation`](/user-guide/skills/optional/creative/creative-meme-generation) |
+| Related skills | [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), [`meme-generation`](/docs/user-guide/skills/optional/creative/creative-meme-generation) |
 
 ## Reference: full SKILL.md
 

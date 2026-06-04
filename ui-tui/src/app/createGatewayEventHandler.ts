@@ -17,7 +17,7 @@ import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
-import { patchOverlayState } from './overlayStore.js'
+import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -76,7 +76,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
-  const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
+  const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
@@ -122,6 +122,78 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // Refresh delegation caps at most every 5s so the status bar HUD can
   // render a /warning close to the configured cap without spamming the RPC.
   let lastDelegationFetchAt = 0
+
+  // ── Shared full-config read ──────────────────────────────────────────
+  //
+  // Several concerns need `display.*` flags at startup (the /agents nudge
+  // gate below, the auto-resume check in the `gateway.ready` handler).
+  // Memoize the `config.get full` RPC so we make exactly one round-trip
+  // instead of one per concern.  Resolves to null on RPC failure; callers
+  // treat null as "use defaults".
+  let fullConfigPromise: null | Promise<ConfigFullResponse | null> = null
+
+  const getFullConfigOnce = (): Promise<ConfigFullResponse | null> => {
+    fullConfigPromise ??= rpc<ConfigFullResponse>('config.get', { key: 'full' }).catch(() => null)
+
+    return fullConfigPromise
+  }
+
+  // ── Nudge toward /agents on delegation ───────────────────────────────
+  //
+  // When `display.tui_agents_nudge` is enabled (default true), the first
+  // time a turn starts delegating we drop a single transient activity hint
+  // ("subagents working · /agents to watch live") so the user discovers the
+  // spawn-tree dashboard instead of staring at a quiet transcript — without
+  // hijacking the screen by force-opening an overlay.  Guards:
+  //   • fires at most once per turn (`agentsNudgedThisTurn`)
+  //   • silent if the overlay is already open (nothing to advertise)
+  // Reset on `message.start`.  The config flag is fetched once, lazily;
+  // until it resolves we assume the default (on).
+  let agentsNudgeEnabled = true
+  let agentsNudgeConfigFetched = false
+  let agentsNudgedThisTurn = false
+
+  const ensureAgentsNudgeConfig = () => {
+    if (agentsNudgeConfigFetched) {
+      return
+    }
+
+    agentsNudgeConfigFetched = true
+    getFullConfigOnce().then(cfg => {
+      // Only an explicit `false` disables it; absent/unknown keeps default on.
+      if (cfg?.config?.display?.tui_agents_nudge === false) {
+        agentsNudgeEnabled = false
+      }
+    })
+  }
+
+  const maybeNudgeAgents = () => {
+    ensureAgentsNudgeConfig()
+
+    if (!agentsNudgeEnabled || agentsNudgedThisTurn) {
+      return
+    }
+
+    // Already watching → no point advertising the dashboard.  Don't burn the
+    // turn's nudge credit here: if the user closes the overlay later in the
+    // same turn while delegation is still ongoing, a subsequent event should
+    // still be allowed to nudge.  The flag is only set once we actually push.
+    if (getOverlayState().agents) {
+      return
+    }
+
+    agentsNudgedThisTurn = true
+    turnController.pushActivity('subagents working · /agents to watch live', 'info')
+  }
+
+  const resetAgentsNudgeTurnState = () => {
+    agentsNudgedThisTurn = false
+  }
+
+  // Kick off the config fetch eagerly at handler creation so the flag is
+  // resolved well before the first delegation of any real session (which
+  // only happens after gateway.ready + a user turn).
+  ensureAgentsNudgeConfig()
 
   const refreshDelegationStatus = (force = false) => {
     const now = Date.now()
@@ -231,6 +303,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
+    // Crash recovery: a respawn triggered by an unexpected gateway death
+    // resumes the session that was live, not a brand-new one. One-shot — the
+    // ref is cleared so an ordinary later restart still forges/resumes per
+    // config. No startup prompt here (this is mid-session, not a cold boot).
+    const recoverSid = recoverSidRef?.current
+
+    if (recoverSidRef && recoverSid) {
+      recoverSidRef.current = null
+      resumeById(recoverSid)
+      // After resumeById: it synchronously sets status to 'resuming…' on entry,
+      // so override it here to keep the distinct "recovering" label visible for
+      // the duration of the resume RPC (which later flips status to 'ready').
+      patchUiState({ status: 'recovering session…' })
+
+      return
+    }
+
     if (STARTUP_RESUME_ID) {
       patchUiState({ status: 'resuming…' })
       resumeById(STARTUP_RESUME_ID)
@@ -244,8 +333,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // forging a brand-new one.  Mirrors classic CLI's `hermes -c` /
     // `hermes --tui` muscle memory and addresses the audit's "session
     // unrecoverable after disconnection" gap.  Default off so existing
-    // users aren't surprised.
-    rpc<ConfigFullResponse>('config.get', { key: 'full' })
+    // users aren't surprised.  (Shares the memoized full-config read.)
+    getFullConfigOnce()
       .then(cfg => {
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
           patchUiState({ status: 'forging session…' })
@@ -332,6 +421,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.start':
+        resetAgentsNudgeTurnState()
         turnController.startMessage()
 
         return
@@ -618,6 +708,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Preserve completed state if a later event races in before this one.
         turnController.upsertSubagent(ev.payload, c => (isTerminalStatus(c.status) ? {} : { status: 'queued' }))
 
+        // First sign of delegation this turn → nudge toward /agents.
+        maybeNudgeAgents()
+
         // Prime the status-bar HUD: fetch caps (once every 5s) so we can
         // warn as depth/concurrency approaches the configured ceiling.
         if (getDelegationState().maxSpawnDepth === null) {
@@ -630,6 +723,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'subagent.start':
         turnController.upsertSubagent(ev.payload, c => (isTerminalStatus(c.status) ? {} : { status: 'running' }))
+
+        // `subagent.start` is the first delegation event the TUI reliably
+        // receives (the delegate callback drops `spawn_requested` in the
+        // CLI→gateway path), so nudge here too.  Once-per-turn guarded, so
+        // hooking both events is safe.
+        maybeNudgeAgents()
 
         return
       case 'subagent.thinking': {

@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.nous_account import NousPortalAccountInfo
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO_ROOT / "tools"
@@ -69,10 +71,17 @@ def _enable_managed_nous_tools(monkeypatch):
     The _install_fake_tools_package() helper resets and reimports tool modules,
     so a simple monkeypatch on tool_backend_helpers doesn't survive.  We patch
     the *source* modules that the reimported modules will import from — both
-    hermes_cli.auth and hermes_cli.models — so the function body returns True.
+    hermes_cli.nous_account — so the function body returns True.
     """
-    monkeypatch.setattr("hermes_cli.auth.get_nous_auth_status", lambda: {"logged_in": True})
-    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
+    )
 
 
 def _install_fake_tools_package():
@@ -223,6 +232,44 @@ def test_browserbase_does_not_use_gateway_only_configuration():
         provider = browserbase_module.BrowserbaseBrowserProvider()
 
     assert provider.is_available() is False
+
+
+def test_browser_use_availability_skips_refresh_for_expired_cached_gateway_token(tmp_path, monkeypatch):
+    _install_fake_tools_package()
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+    expired_at = "2000-01-01T00:00:00+00:00"
+    (tmp_path / "auth.json").write_text(
+        '{"providers":{"nous":{"access_token":"expired-token","refresh_token":"refresh-token","expires_at":"%s"}}}'
+        % expired_at,
+        encoding="utf-8",
+    )
+    refresh_calls = []
+
+    def _record_refresh(*, refresh_skew_seconds=120, **_kwargs):
+        refresh_calls.append(refresh_skew_seconds)
+        return "fresh-token"
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_access_token",
+        _record_refresh,
+    )
+
+    env = os.environ.copy()
+    env.pop("BROWSER_USE_API_KEY", None)
+    env.update({
+        "HERMES_HOME": str(tmp_path),
+        "BROWSER_USE_GATEWAY_URL": "http://127.0.0.1:3009",
+    })
+
+    with patch.dict(os.environ, env, clear=True):
+        browser_use_module = _load_plugin_module(
+            "plugins.browser.browser_use.provider",
+            "browser/browser_use/provider.py",
+        )
+        provider = browser_use_module.BrowserUseBrowserProvider()
+        assert provider.is_available() is True
+
+    assert refresh_calls == []
 
 
 def test_browser_use_managed_gateway_adds_idempotency_key_and_persists_external_call_id():

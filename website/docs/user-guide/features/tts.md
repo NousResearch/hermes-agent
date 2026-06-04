@@ -113,6 +113,7 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
+| Piper | 5000 |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
 

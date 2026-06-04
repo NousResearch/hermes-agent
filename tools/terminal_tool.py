@@ -3,18 +3,16 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, Daytona, and Vercel Sandbox environments. Supports local
-execution, containerized backends, and cloud sandboxes, including managed
-Modal mode.
+Singularity, and Daytona environments. Supports local execution,
+containerized backends, and cloud sandboxes, including managed Modal mode.
 
-Environment Selection (via TERMINAL_ENV environment variable):
+Supported environments:
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
-- "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (local, docker, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -73,6 +71,7 @@ from tools.tool_backend_helpers import (
     coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
     resolve_modal_backend_state,
 )
 
@@ -119,68 +118,6 @@ DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
     float,
     "number",
 )
-_VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
-_SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-
-
-def _is_supported_vercel_runtime(runtime: str) -> bool:
-    return not runtime or runtime in _SUPPORTED_VERCEL_RUNTIMES
-
-
-def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
-    """Validate Vercel Sandbox terminal backend requirements."""
-    runtime = (config.get("vercel_runtime") or "").strip()
-    if not _is_supported_vercel_runtime(runtime):
-        supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-        logger.error(
-            "Vercel Sandbox runtime %r is not supported. "
-            "Set TERMINAL_VERCEL_RUNTIME to one of: %s.",
-            runtime,
-            supported,
-        )
-        return False
-
-    disk = config.get("container_disk", 51200)
-    if disk not in {0, 51200}:
-        logger.error(
-            "Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK=%s. "
-            "Use the default shared setting (51200 MB).",
-            disk,
-        )
-        return False
-
-    if importlib.util.find_spec("vercel") is None:
-        logger.error(
-            "vercel is required for the Vercel Sandbox terminal backend: pip install vercel"
-        )
-        return False
-
-    has_oidc = bool(os.getenv("VERCEL_OIDC_TOKEN"))
-    has_token = bool(os.getenv("VERCEL_TOKEN"))
-    has_project = bool(os.getenv("VERCEL_PROJECT_ID"))
-    has_team = bool(os.getenv("VERCEL_TEAM_ID"))
-
-    if has_oidc:
-        return True
-
-    if has_token or has_project or has_team:
-        if has_token and has_project and has_team:
-            return True
-        logger.error(
-            "Vercel Sandbox backend selected with token auth, but "
-            "VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID must all "
-            "be set together. VERCEL_OIDC_TOKEN is supported for one-off "
-            "local development only."
-        )
-        return False
-
-    logger.error(
-        "Vercel Sandbox backend selected but no supported auth configuration "
-        "was found. Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID "
-        "for normal use. VERCEL_OIDC_TOKEN is supported for one-off local "
-        "development only."
-    )
-    return False
 
 
 def _check_disk_usage_warning():
@@ -233,7 +170,6 @@ _sudo_password_cache_lock = threading.Lock()
 # own callback exactly like before. Gateway mode resolves approvals via
 # the per-session queue in tools.approval, not through these callbacks,
 # so it's unaffected.
-import threading
 _callback_tls = threading.local()
 
 
@@ -837,10 +773,9 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     should prepend sudo_stdin to their stdin_data and pass the merged bytes to
     Popen's stdin pipe.
 
-    Callers that cannot pipe subprocess stdin (modal, daytona,
-    vercel_sandbox) must embed the password in the command string
-    themselves; see their execute() methods for how they handle the
-    non-None sudo_stdin case.
+    Callers that cannot pipe subprocess stdin (modal, daytona) must embed
+    the password in the command string themselves; see their execute()
+    methods for how they handle the non-None sudo_stdin case.
 
     If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
       Prompts user for password with 45s timeout, caches for session.
@@ -925,6 +860,78 @@ _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
 
+# Once-per-process guard for the docker orphan reaper (issue #20561).
+# Set when _maybe_reap_docker_orphans first runs; concurrent _create_environment
+# calls for parallel subagents won't re-trigger the sweep.
+_docker_orphan_reaper_ran = False
+_docker_orphan_reaper_lock = threading.Lock()
+
+
+def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
+    """Run the docker orphan reaper once per process, if enabled.
+
+    Sweeps long-Exited containers labeled ``hermes-agent=1`` for the current
+    profile that match the issue #20561 leak class — containers left behind
+    by Hermes processes that exited without firing ``atexit`` (SIGKILL,
+    OOM, terminal-window-close). The reaper is conservative by default:
+    only Exited containers older than ``2 × lifetime_seconds`` and scoped to
+    the current profile.
+
+    Gates:
+
+    * ``terminal.docker_orphan_reaper: false`` disables it entirely (the
+      operator opted out — usually because they're running multiple
+      Hermes processes in the same profile and don't trust the
+      conservative defaults).
+    * ``_docker_orphan_reaper_ran`` flag — sweep runs once per Python
+      interpreter, not on every subagent / RL-rollout / parallel
+      ``terminal()`` call.
+    """
+    global _docker_orphan_reaper_ran
+    if not container_config.get("docker_orphan_reaper", True):
+        return
+    # Cheap double-checked-locking: read without the lock, take the lock
+    # only on first run, recheck inside.
+    if _docker_orphan_reaper_ran:
+        return
+    with _docker_orphan_reaper_lock:
+        if _docker_orphan_reaper_ran:
+            return
+        _docker_orphan_reaper_ran = True
+
+    # 2 × lifetime_seconds gives sibling Hermes processes a generous grace
+    # window. Floor at 60s so an operator with TERMINAL_LIFETIME_SECONDS=0
+    # doesn't get an instant-reap that races their own setup.
+    # ``container_config`` only carries container_* keys, so read
+    # lifetime_seconds from the env var the rest of the module uses.
+    try:
+        lifetime = int(os.getenv("TERMINAL_LIFETIME_SECONDS", "300"))
+    except (TypeError, ValueError):
+        lifetime = 300
+    lifetime = max(60, lifetime)
+    max_age = lifetime * 2
+
+    try:
+        from tools.environments.docker import (
+            reap_orphan_containers, _get_active_profile_name,
+        )
+    except ImportError:
+        return
+    try:
+        profile = _get_active_profile_name()
+        removed = reap_orphan_containers(
+            max_age_seconds=max_age, profile_filter=profile,
+        )
+        if removed:
+            logger.info(
+                "Docker orphan reaper removed %d stale container(s) for profile %s",
+                removed, profile,
+            )
+    except Exception as e:
+        # Never fail the env-creation path because of a janitor problem.
+        logger.debug("Docker orphan reaper raised: %s", e)
+
+
 # Per-task environment overrides registry.
 # Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
 # image for a specific task_id BEFORE the agent loop starts. When the terminal or
@@ -953,6 +960,23 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         overrides: Dict of config keys to override
     """
     _task_env_overrides[task_id] = overrides
+
+    # If a live environment already exists for this task, a freshly registered
+    # ``cwd`` override (e.g. the ACP client switching the editor's project root
+    # mid-session via ``session/load`` / ``session/resume``) must take effect on
+    # the cached env too. ``terminal_tool`` resolves the per-command cwd as
+    # ``workdir > env.cwd > config/override cwd`` so that ordinary in-session
+    # ``cd`` state is preserved; without syncing here the override would sit
+    # below the (already-set) ``env.cwd`` and be silently ignored once any
+    # command has run. Pushing it onto the live env keeps ``cd`` tracking intact
+    # while letting an explicit ACP cwd change win, as the client expects.
+    new_cwd = overrides.get("cwd")
+    if isinstance(new_cwd, str) and new_cwd.strip():
+        container_id = _resolve_container_task_id(task_id)
+        with _env_lock:
+            env = _active_environments.get(container_id)
+        if env is not None and getattr(env, "cwd", None) is not None:
+            env.cwd = new_cwd
 
 
 def clear_task_env_overrides(task_id: str):
@@ -1015,14 +1039,12 @@ def _get_env_config() -> Dict[str, Any]:
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
 
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, Vercel uses its documented workspace root, and everything
-    # else starts in the backend's default root-like cwd.
+    # remote home, and everything else starts in the backend's default
+    # root-like cwd.
     if env_type == "local":
         default_cwd = os.getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
-    elif env_type == "vercel_sandbox":
-        default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
     else:
         default_cwd = "/root"
 
@@ -1044,7 +1066,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona", "vercel_sandbox"} and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1062,7 +1084,6 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1082,7 +1103,7 @@ def _get_env_config() -> Dict[str, Any]:
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
-        # daytona, and vercel_sandbox -- ignored for local/ssh)
+        # daytona -- ignored for local/ssh)
         "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
         "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
@@ -1091,6 +1112,22 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
         "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
+        # Cross-process container reuse (issue #20561).  The docs claim
+        # "ONE long-lived container shared across sessions" — this toggle
+        # makes that real by probing for a labeled container at startup and
+        # attaching to it instead of always starting a fresh one.  Set to
+        # ``false`` for hard per-process isolation (no reuse, container is
+        # removed on exit).
+        "docker_persist_across_processes": os.getenv(
+            "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
+        ).lower() in {"true", "1", "yes"},
+        # Startup orphan reaper for hermes-tagged containers left behind by
+        # crashed / SIGKILL'd previous processes that bypassed atexit.
+        # Conservative: only sweeps Exited containers older than 2× the
+        # idle-reap window AND scoped to the current profile. Issue #20561.
+        "docker_orphan_reaper": os.getenv(
+            "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
+        ).lower() in {"true", "1", "yes"},
     }
 
 
@@ -1113,8 +1150,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
-        image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
+            "daytona", "ssh"
+        image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")
@@ -1139,6 +1176,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
+        # One-shot orphan reaper: clean up labeled containers left behind by
+        # prior Hermes processes that hit SIGKILL / OOM / a closed terminal
+        # before the atexit cleanup hook could run.  Gated to once per
+        # process so concurrent _create_environment calls (parallel
+        # subagents, RL benchmarks) don't run the reaper N times.
+        # Disable via ``terminal.docker_orphan_reaper: false`` (issue #20561).
+        _maybe_reap_docker_orphans(cc)
         return _DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
@@ -1150,6 +1194,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             env=docker_env,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
             extra_args=docker_extra_args,
+            persist_across_processes=cc.get("docker_persist_across_processes", True),
         )
     
     elif env_type == "singularity":
@@ -1186,13 +1231,19 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             if modal_state["managed_mode_blocked"]:
                 raise ValueError(
                     "Modal backend is configured for managed mode, but "
-                    "a paid Nous subscription is required for the Tool Gateway and no direct "
-                    "Modal credentials/config were found. Log in with `hermes model` or "
-                    "choose TERMINAL_MODAL_MODE=direct/auto."
+                    "Nous Tool Gateway access is not currently available and no direct "
+                    "Modal credentials/config were found. "
+                    + nous_tool_gateway_unavailable_message(
+                        "managed Modal execution",
+                    )
+                    + " Choose TERMINAL_MODAL_MODE=direct/auto to use direct Modal credentials."
                 )
             if modal_state["mode"] == "managed":
                 raise ValueError(
-                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable."
+                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable. "
+                    + nous_tool_gateway_unavailable_message(
+                        "managed Modal execution",
+                    )
                 )
             if modal_state["mode"] == "direct":
                 raise ValueError(
@@ -1220,21 +1271,6 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
-    elif env_type == "vercel_sandbox":
-        from tools.environments.vercel_sandbox import (
-            VercelSandboxEnvironment as _VercelSandboxEnvironment,
-        )
-        return _VercelSandboxEnvironment(
-            runtime=cc.get("vercel_runtime") or None,
-            cwd=cwd,
-            timeout=timeout,
-            cpu=cpu,
-            memory=memory,
-            disk=disk,
-            persistent_filesystem=persistent,
-            task_id=task_id,
-        )
-
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1250,7 +1286,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', or 'ssh'"
         )
 
 
@@ -1406,8 +1442,27 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str):
-    """Manually clean up a specific environment by task_id."""
+def cleanup_vm(task_id: str, *, force_remove: bool = False):
+    """Manually clean up a specific environment by task_id.
+
+    *force_remove* (default False) is forwarded to backends that accept it
+    — currently only ``DockerEnvironment``. The default of False matches
+    session-lifecycle semantics: this function is called from
+    ``AIAgent.close()`` (TUI session close, gateway session teardown) and the
+    per-turn cleanup branch for non-persistent envs, both of which should
+    honor the user's persist-mode preference. Stopping the container here
+    would defeat the "ONE long-lived container shared across sessions"
+    contract — exactly the bug Ben reported when the container was killed
+    on every TUI session close.
+
+    Pass ``force_remove=True`` for actual user-initiated teardown
+    (e.g. ``/reset``-style flows that haven't been wired yet, or future
+    "destroy my sandbox" commands).
+
+    The idle reaper passes the env through ``env.cleanup()`` directly (not
+    via this function), so persist-mode idle envs are similarly no-op'd —
+    only the orphan reaper at next startup reclaims them.
+    """
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
@@ -1432,7 +1487,14 @@ def cleanup_vm(task_id: str):
 
     try:
         if hasattr(env, 'cleanup'):
-            env.cleanup()
+            # Pass force_remove only if the env's cleanup() accepts it
+            # (DockerEnvironment after issue #20561; other backends don't).
+            import inspect
+            sig = inspect.signature(env.cleanup)
+            if "force_remove" in sig.parameters:
+                env.cleanup(force_remove=force_remove)
+            else:
+                env.cleanup()
         elif hasattr(env, 'stop'):
             env.stop()
         elif hasattr(env, 'terminate'):
@@ -1454,7 +1516,23 @@ def _atexit_cleanup():
     if _active_environments:
         count = len(_active_environments)
         logger.info("Shutting down %d remaining sandbox(es)...", count)
+        # Snapshot the env objects BEFORE cleanup_all_environments empties
+        # the dict; we need them to wait on docker cleanup threads after the
+        # registry has been cleared.
+        envs_to_wait = list(_active_environments.values())
         cleanup_all_environments()
+        # Block briefly so docker stop/rm actually completes before the
+        # interpreter exits. Issue #20561 — without this join, the daemon
+        # cleanup threads were getting torn down mid-`docker stop`, leaving
+        # Exited containers piled up on the host.
+        for env in envs_to_wait:
+            wait_fn = getattr(env, "wait_for_cleanup", None)
+            if wait_fn is None:
+                continue
+            try:
+                wait_fn(timeout=15.0)
+            except Exception as e:  # never block shutdown on a bad backend
+                logger.debug("wait_for_cleanup raised on exit: %s", e)
 
 atexit.register(_atexit_cleanup)
 
@@ -1656,6 +1734,30 @@ def _resolve_notification_flag_conflict(
     return watch_patterns, ""
 
 
+def _resolve_command_cwd(
+    *,
+    workdir: Optional[str],
+    env: Any,
+    default_cwd: str,
+) -> str:
+    """Return the cwd for a command, preferring the live session cwd.
+
+    ``terminal_tool`` historically re-sent the init-time/config cwd on every
+    call. That broke session-local ``cd`` state: the environment tracked the
+    new directory in ``env.cwd``, but foreground/background calls kept forcing
+    the old cwd back through ``env.execute(..., cwd=...)``. Explicit
+    ``workdir=`` must still override everything.
+    """
+    if workdir:
+        return workdir
+
+    live_cwd = getattr(env, "cwd", None)
+    if isinstance(live_cwd, str) and live_cwd.strip():
+        return live_cwd
+
+    return default_cwd
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1809,20 +1911,21 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
-                                "vercel_runtime": config.get("vercel_runtime", ""),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
                                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                                 "docker_extra_args": config.get("docker_extra_args", []),
+                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
                             }
 
                         local_config = None
@@ -1927,7 +2030,11 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
-            effective_cwd = workdir or cwd
+            effective_cwd = _resolve_command_cwd(
+                workdir=workdir,
+                env=env,
+                default_cwd=cwd,
+            )
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -1984,6 +2091,85 @@ def terminal_tool(
                         "Only ignore this hint for genuine long-lived processes "
                         "that never exit (servers, watchers, daemons)."
                     )
+
+                # Nudge: homebrewed CI watcher built from `gh pr view`
+                # `--json statusCheckRollup` or `gh pr checks` piped through
+                # `jq` is the #1 cause of silent CI-watcher failures in
+                # hermes-agent dev work. May 2026 PRs that surfaced this
+                # exact failure mode: #31329, #31448, #31695, #31709, #31745,
+                # #32264, #33131. Failure modes seen:
+                #   * `gh pr view --json statusCheckRollup --jq ...` with
+                #     `from_entries` choking on null `conclusion` keys, loop
+                #     silently exits with empty status, never terminates.
+                #   * `for i in $(seq 1 60); do ... 2>&1` block-buffered stdout
+                #     never flushed to background-process capture; SIGTERM
+                #     cuts the buffer before flush; `process(action='log')`
+                #     returns total_lines=0 forever.
+                #   * conclusion vs. status field confusion: filtering for
+                #     `PENDING` in `.conclusion` while in-progress checks have
+                #     empty conclusion → poller declares all-green while 18/23
+                #     checks still IN_PROGRESS.
+                #   * grepping for TTY-only banners ("All checks were
+                #     successful") that never appear when stdout is piped.
+                # The canonical patterns in the green-ci-policy skill avoid
+                # every one of these — drive the loop off exit codes or on
+                # tab-separated `awk -F"\t" "$2==\"pending\""` (column 2).
+                # The detector here is deliberately narrow: it flags the
+                # statusCheckRollup JSON-API path and the `gh pr checks` +
+                # jq combination, but NOT the canonical column-2 awk
+                # poller (which uses awk on tabs, not as a generic
+                # stdout parser). When we detect the homebrew shape, point
+                # the agent at the canonical snippet rather than letting
+                # it ship another broken poller.
+                if background and command:
+                    _gh = ("gh pr view" in command or "gh pr checks" in command)
+                    _has_jq = (
+                        " jq " in command or "| jq" in command or "$(jq" in command
+                    )
+                    _bad_shape = (
+                        # The JSON-API anti-pattern. Even without jq, going
+                        # through `--json statusCheckRollup` + parsing puts
+                        # you in conclusion-vs-status field hell.
+                        "statusCheckRollup" in command
+                        # gh pr checks piped to jq is also wrong — `gh pr
+                        # checks` doesn't emit JSON, so any `| jq` here is
+                        # confused intent. The canonical column-2 poller
+                        # uses awk-on-tabs, not jq.
+                        or (_gh and _has_jq)
+                    )
+                    if _bad_shape:
+                        existing = result_data.get("hint", "")
+                        canonical_hint = (
+                            "This looks like a homebrewed CI poller built from "
+                            "`gh pr view --json statusCheckRollup` and/or "
+                            "`gh pr checks | jq`. That shape has burned us "
+                            "repeatedly in hermes-agent dev work (PRs #31329, "
+                            "#31448, #31695, #31709, #31745, #32264, #33131) — "
+                            "stdout buffering kills output capture, jq null-key "
+                            "edge cases silently exit the loop, conclusion-vs-"
+                            "status field confusion exits early with bogus "
+                            "all-green verdicts, TTY-only summary banners "
+                            "never appear when piped. Use the canonical "
+                            "snippets in the green-ci-policy skill instead: "
+                            "the exit-code-driven `gh pr checks $PR >/dev/null` "
+                            "(rc 0 = green, 8 = pending, else fail) for "
+                            "exit-on-first-fail behavior, or the column-2 "
+                            "awk-on-tabs poller "
+                            "(`awk -F\"\\t\" \"$2==\\\"pending\\\"\"`) for "
+                            "sharded matrices. Load skill_view("
+                            "name='github/hermes-agent-dev', "
+                            "file_path='references/green-ci-policy.md') for "
+                            "the verbatim snippets. If you must roll a custom "
+                            "loop with rich structured output, write each tick "
+                            "to a known file (`tee -a /tmp/ci.log`) and rely "
+                            "on `process(action='log')` to read THAT file — "
+                            "do not rely on background-process stdout capture "
+                            "for line-buffered shell loops."
+                        )
+                        result_data["hint"] = (
+                            existing + "\n\n" + canonical_hint if existing
+                            else canonical_hint
+                        )
 
                 # Populate routing metadata on the session so that
                 # watch-pattern and completion notifications can be
@@ -2065,7 +2251,11 @@ def terminal_tool(
                 try:
                     execute_kwargs = {
                         "timeout": effective_timeout,
-                        "cwd": workdir or cwd,
+                        "cwd": _resolve_command_cwd(
+                            workdir=workdir,
+                            env=env,
+                            default_cwd=cwd,
+                        ),
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -2219,16 +2409,21 @@ def check_terminal_requirements() -> bool:
                 if modal_state["managed_mode_blocked"]:
                     logger.error(
                         "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
-                        "a paid Nous subscription is required for the Tool Gateway and no direct "
-                        "Modal credentials/config were found. Log in with `hermes model` "
-                        "or choose TERMINAL_MODAL_MODE=direct/auto."
+                        "Nous Tool Gateway access is not currently available and no direct "
+                        "Modal credentials/config were found. %s Choose "
+                        "TERMINAL_MODAL_MODE=direct/auto to use direct Modal credentials.",
+                        nous_tool_gateway_unavailable_message(
+                            "managed Modal execution",
+                        ),
                     )
                     return False
                 if modal_state["mode"] == "managed":
                     logger.error(
                         "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
-                        "tool gateway is unavailable. Configure the managed gateway or choose "
-                        "TERMINAL_MODAL_MODE=direct/auto."
+                        "tool gateway is unavailable. %s",
+                        nous_tool_gateway_unavailable_message(
+                            "managed Modal execution",
+                        ),
                     )
                     return False
                 elif modal_state["mode"] == "direct":
@@ -2265,9 +2460,6 @@ def check_terminal_requirements() -> bool:
 
             return True
 
-        elif env_type == "vercel_sandbox":
-            return _check_vercel_sandbox_requirements(config)
-
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
@@ -2275,7 +2467,7 @@ def check_terminal_requirements() -> bool:
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, ssh.",
                 env_type,
             )
             return False
@@ -2318,7 +2510,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")

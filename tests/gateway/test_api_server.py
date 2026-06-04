@@ -22,14 +22,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
-    _CORS_HEADERS,
     _derive_chat_session_id,
     check_api_server_requirements,
     cors_middleware,
@@ -413,6 +412,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/v1/skills", adapter._handle_skills)
+    app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -657,6 +658,8 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
+            assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -672,6 +675,154 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# /v1/skills and /v1/toolsets endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsEndpoint:
+    @pytest.mark.asyncio
+    async def test_skills_returns_list_envelope(self, adapter):
+        fake_skills = [
+            {"name": "github", "description": "GitHub workflow skill", "category": "github"},
+            {"name": "ascii-art", "description": "ASCII art generation", "category": "creative"},
+        ]
+        with patch(
+            "tools.skills_tool._find_all_skills",
+            return_value=list(fake_skills),
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/skills")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "list"
+                names = sorted(s["name"] for s in data["data"])
+                assert names == ["ascii-art", "github"]
+                for entry in data["data"]:
+                    assert set(entry.keys()) >= {"name", "description", "category"}
+
+    @pytest.mark.asyncio
+    async def test_skills_handles_enumeration_failure(self, adapter):
+        with patch(
+            "tools.skills_tool._find_all_skills",
+            side_effect=RuntimeError("boom"),
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/skills")
+                assert resp.status == 500
+                data = await resp.json()
+                assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_skills_requires_auth_when_key_configured(self, auth_adapter):
+        with patch("tools.skills_tool._find_all_skills", return_value=[]):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/skills")
+                assert resp.status == 401
+
+                authed = await cli.get(
+                    "/v1/skills",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert authed.status == 200
+
+
+class TestToolsetsEndpoint:
+    @pytest.mark.asyncio
+    async def test_toolsets_returns_resolved_tools(self, adapter):
+        fake_toolsets = [
+            ("default", "Default Tools", "Core tools"),
+            ("web", "Web Tools", "Search and extract"),
+        ]
+        with patch(
+            "hermes_cli.tools_config._get_effective_configurable_toolsets",
+            return_value=fake_toolsets,
+        ), patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"default"},
+        ), patch(
+            "hermes_cli.tools_config._toolset_has_keys",
+            return_value=True,
+        ), patch(
+            "toolsets.resolve_toolset",
+            side_effect=lambda name: {
+                "default": ["terminal", "read_file"],
+                "web": ["web_search"],
+            }[name],
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/toolsets")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "list"
+                assert data["platform"] == "api_server"
+                by_name = {ts["name"]: ts for ts in data["data"]}
+                assert by_name["default"]["enabled"] is True
+                assert by_name["default"]["tools"] == ["read_file", "terminal"]
+                assert by_name["web"]["enabled"] is False
+                assert by_name["web"]["tools"] == ["web_search"]
+                assert by_name["default"]["configured"] is True
+
+    @pytest.mark.asyncio
+    async def test_toolsets_handles_resolution_failure_per_toolset(self, adapter):
+        """If one toolset fails to resolve, others still appear with empty tools."""
+        fake_toolsets = [
+            ("broken", "Broken", "fails"),
+            ("ok", "OK", "works"),
+        ]
+
+        def _resolve(name):
+            if name == "broken":
+                raise RuntimeError("nope")
+            return ["some_tool"]
+
+        with patch(
+            "hermes_cli.tools_config._get_effective_configurable_toolsets",
+            return_value=fake_toolsets,
+        ), patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value=set(),
+        ), patch(
+            "hermes_cli.tools_config._toolset_has_keys",
+            return_value=False,
+        ), patch(
+            "toolsets.resolve_toolset",
+            side_effect=_resolve,
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/toolsets")
+                assert resp.status == 200
+                data = await resp.json()
+                by_name = {ts["name"]: ts for ts in data["data"]}
+                assert by_name["broken"]["tools"] == []
+                assert by_name["ok"]["tools"] == ["some_tool"]
+
+    @pytest.mark.asyncio
+    async def test_toolsets_requires_auth_when_key_configured(self, auth_adapter):
+        with patch(
+            "hermes_cli.tools_config._get_effective_configurable_toolsets",
+            return_value=[],
+        ), patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value=set(),
+        ):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/toolsets")
+                assert resp.status == 401
+
+                authed = await cli.get(
+                    "/v1/toolsets",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert authed.status == 200
 
 
 # ---------------------------------------------------------------------------

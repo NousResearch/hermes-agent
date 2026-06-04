@@ -25,12 +25,12 @@
 
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card } from "@/components/ui/card";
+import { Card } from "@nous-research/ui/ui/components/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { HERMES_BASE_PATH } from "@/lib/api";
+import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -152,36 +152,44 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   // JSON-RPC sidecar so the sidebar matches its documented best-effort
   // UX and the user always has a reconnect affordance.
   useEffect(() => {
-    const token = window.__HERMES_SESSION_TOKEN__;
-
-    if (!token || !channel) {
+    if (!channel) {
       return;
     }
-
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const qs = new URLSearchParams({ token, channel });
-    const ws = new WebSocket(
-      `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
-    );
-
-    // `unmounting` suppresses the banner during cleanup — `ws.close()`
-    // from the effect's return fires a close event with code 1005 that
-    // would otherwise look like an unexpected drop.
-    const DISCONNECTED = "events feed disconnected — tool calls may not appear";
+    // In loopback mode the legacy ?token=<session> path is fine; in gated
+    // mode we have to mint a single-use ticket from the cookie. The IIFE
+    // keeps the outer effect synchronous so its ``return cleanup`` stays
+    // at the top level; the local ``ws`` is hoisted to a closed-over
+    // binding the cleanup reads via ``wsRef``.
     let unmounting = false;
-    const surface = (msg: string) => !unmounting && setError(msg);
-
-    ws.addEventListener("error", () => surface(DISCONNECTED));
-
-    ws.addEventListener("close", (ev) => {
-      if (ev.code === 4401 || ev.code === 4403) {
-        surface(`events feed rejected (${ev.code}) — reload the page`);
-      } else if (ev.code !== 1000) {
-        surface(DISCONNECTED);
+    let ws: WebSocket | null = null;
+    void (async () => {
+      const [authName, authValue] = await buildWsAuthParam();
+      if (!authValue || unmounting) {
+        return;
       }
-    });
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const qs = new URLSearchParams({ [authName]: authValue, channel });
+      ws = new WebSocket(
+        `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
+      );
 
-    ws.addEventListener("message", (ev) => {
+      // `unmounting` suppresses the banner during cleanup — `ws.close()`
+      // from the effect's return fires a close event with code 1005 that
+      // would otherwise look like an unexpected drop.
+      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
+      const surface = (msg: string) => !unmounting && setError(msg);
+
+      ws.addEventListener("error", () => surface(DISCONNECTED));
+
+      ws.addEventListener("close", (ev) => {
+        if (ev.code === 4401 || ev.code === 4403) {
+          surface(`events feed rejected (${ev.code}) — reload the page`);
+        } else if (ev.code !== 1000) {
+          surface(DISCONNECTED);
+        }
+      });
+
+      ws.addEventListener("message", (ev) => {
       let frame: RpcEnvelope;
 
       try {
@@ -265,11 +273,12 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           ),
         );
       }
-    });
+      });
+    })();
 
     return () => {
       unmounting = true;
-      ws.close();
+      ws?.close();
     };
   }, [channel, version]);
 

@@ -257,7 +257,6 @@ def _browser_cdp_via_supervisor(
         )
 
     # Dispatch onto the supervisor's loop.
-    import asyncio as _asyncio
     loop = supervisor._loop  # type: ignore[attr-defined]
     if loop is None or not loop.is_running():
         return tool_error(

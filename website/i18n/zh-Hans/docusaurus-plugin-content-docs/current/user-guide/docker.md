@@ -80,8 +80,28 @@ docker run -d \
 | `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
 | `HERMES_DASHBOARD_TUI` | 设为 `1` 以启用浏览器内 Chat 标签页（通过 PTY/WebSocket 嵌入 `hermes --tui`） | *（未设置）* |
+| `HERMES_DASHBOARD_INSECURE` | 设为 `1`（或 `true` / `yes`）以在不启用 OAuth 鉴权门控的情况下绑定。仅在可信网络（且通过没有 OAuth 契约的反向代理时）使用——dashboard 会暴露 API 密钥与会话数据 | *（未设置——当注册了 `DashboardAuthProvider` 时启用门控）* |
 
-默认情况下，dashboard 保持在回环地址，以避免将未经身份验证的 Web 界面暴露到网络。若要有意发布，请设置 `HERMES_DASHBOARD_HOST=0.0.0.0` 并配置你自己的可信网络边界/反向代理。在这种情况下，你必须通过命令路径中的 host/flags 显式添加 `--insecure` 行为（入口点不再自动启用不安全模式）。
+默认情况下，dashboard 保持在回环地址（`127.0.0.1`），以避免将
+Web 界面暴露到网络。若要有意发布，请设置
+`HERMES_DASHBOARD_HOST=0.0.0.0`。当以下两项同时满足时，
+dashboard 的 OAuth 鉴权门控会自动启用：
+
+1. 绑定地址为非回环地址，**且**
+2. 注册了一个 `DashboardAuthProvider` 插件。
+
+捆绑的 `dashboard_auth/nous` 提供者会在设置
+`HERMES_DASHBOARD_OAUTH_CLIENT_ID` 时自动激活（参见
+[Web Dashboard → 鉴权](features/web-dashboard.md)）。门控启用后，
+浏览器调用方会先被重定向到所配置门户的 OAuth 流，然后才能
+访问任何受保护路由。
+
+如果未注册提供者且绑定为非回环地址，dashboard **会在启动时
+失败关闭**，并给出指向缺失环境变量的具体错误信息。要显式
+退出门控——用于不使用 OAuth 契约、通过你自己的反向代理部署
+在可信局域网中的场景——请设置 `HERMES_DASHBOARD_INSECURE=1`。
+这会恢复旧的“无鉴权，但发出告警”模式，也是唯一可以禁用门控的
+路径；绑定地址不再隐式决定 `--insecure`。
 
 :::note
 dashboard 在容器内作为受监管的 s6 服务运行。如果

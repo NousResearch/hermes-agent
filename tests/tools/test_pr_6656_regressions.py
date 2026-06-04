@@ -99,7 +99,12 @@ class TestUninstallPathTraversal:
         ok, msg = uninstall_skill("evil")
 
         assert ok is False
-        assert "outside" in msg or "resolves" in msg or "skills directory" in msg
+        assert (
+            "outside" in msg
+            or "resolves" in msg
+            or "skills directory" in msg
+            or "Unsafe install path" in msg
+        )
         # The victim directory MUST still exist.
         assert victim.exists()
         assert (victim / "important.txt").exists()

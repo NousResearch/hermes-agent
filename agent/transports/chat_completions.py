@@ -10,7 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -99,6 +99,22 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _model_consumes_thought_signature(model: Any) -> bool:
+    """True when the outgoing model is a Gemini family model that requires
+    ``extra_content`` (thought_signature) to be replayed on tool calls.
+
+    Gemini 3 thinking models attach ``extra_content`` to each tool call and
+    reject subsequent requests with HTTP 400 if it is missing. Every other
+    strict OpenAI-compatible provider (Fireworks, Mistral, ...) rejects the
+    request with 400 if ``extra_content`` *is* present. So the field must be
+    kept only when the target model is itself Gemini-family, and stripped
+    otherwise — including when a non-Gemini model inherits stale Gemini
+    ``extra_content`` from earlier in a mixed-provider session.
+    """
+    m = str(model or "").lower()
+    return "gemini" in m or "gemma" in m
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -119,6 +135,14 @@ class ChatCompletionsTransport(ProviderTransport):
         - Codex Responses API fields: ``codex_reasoning_items`` /
           ``codex_message_items`` on the message, ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
+        - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
+          stripped unless the outgoing ``model`` is itself Gemini-family.
+          Gemini 3 thinking models attach it for replay, but strict providers
+          (Fireworks, Mistral) reject any payload containing it with
+          ``Extra inputs are not permitted, field: 'messages[N].tool_calls[M].extra_content'``.
+          It must be kept for Gemini targets (replay required) and dropped for
+          everyone else, including non-Gemini models that inherited stale
+          Gemini ``extra_content`` earlier in a mixed-provider session.
         - ``tool_name`` on tool-result messages — written by
           ``make_tool_result_message()`` for the SQLite FTS index, but not
           part of the Chat Completions schema. Strict providers (Fireworks,
@@ -137,6 +161,9 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
         """
+        strip_extra_content = not _model_consumes_thought_signature(
+            kwargs.get("model")
+        )
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -155,7 +182,9 @@ class ChatCompletionsTransport(ProviderTransport):
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
-                        "call_id" in tc or "response_item_id" in tc
+                        "call_id" in tc
+                        or "response_item_id" in tc
+                        or (strip_extra_content and "extra_content" in tc)
                     ):
                         needs_sanitize = True
                         break
@@ -183,6 +212,8 @@ class ChatCompletionsTransport(ProviderTransport):
                     if isinstance(tc, dict):
                         tc.pop("call_id", None)
                         tc.pop("response_item_id", None)
+                        if strip_extra_content:
+                            tc.pop("extra_content", None)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -240,8 +271,10 @@ class ChatCompletionsTransport(ProviderTransport):
             anthropic_max_output: int | None
             extra_body_additions: dict | None
         """
-        # Codex sanitization: drop reasoning_items / call_id / response_item_id
-        sanitized = self.convert_messages(messages)
+        # Codex sanitization: drop reasoning_items / call_id / response_item_id.
+        # Pass model so the Gemini thought_signature (extra_content) is kept for
+        # Gemini targets and stripped for strict non-Gemini providers.
+        sanitized = self.convert_messages(messages, model=model)
 
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")
@@ -476,13 +509,17 @@ class ChatCompletionsTransport(ProviderTransport):
         ephemeral = params.get("ephemeral_max_output_tokens")
         user_max = params.get("max_tokens")
         anthropic_max = params.get("anthropic_max_output")
+        # Per-model default cap — profiles override get_max_tokens() when
+        # they front several backends with different completion-token limits
+        # (e.g. opencode-go: mimo-v2.5-pro = 131072).
+        profile_max = profile.get_max_tokens(model)
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))
         elif user_max is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(user_max))
-        elif profile.default_max_tokens and max_tokens_fn:
-            api_kwargs.update(max_tokens_fn(profile.default_max_tokens))
+        elif profile_max and max_tokens_fn:
+            api_kwargs.update(max_tokens_fn(profile_max))
         elif anthropic_max is not None:
             api_kwargs["max_tokens"] = anthropic_max
 

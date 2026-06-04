@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,7 +16,6 @@ from gateway.pairing import (
     RATE_LIMIT_SECONDS,
     MAX_PENDING_PER_PLATFORM,
     MAX_FAILED_ATTEMPTS,
-    LOCKOUT_SECONDS,
     _secure_write,
 )
 

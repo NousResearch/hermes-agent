@@ -3,7 +3,6 @@
 import json
 from unittest.mock import ANY, call, patch
 
-import pytest
 
 from model_tools import (
     handle_function_call,
@@ -43,6 +42,7 @@ class TestHandleFunctionCall:
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
             result = handle_function_call(
@@ -62,6 +62,8 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
             ),
             call(
                 "post_tool_call",
@@ -71,7 +73,12 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
             ),
             call(
                 "transform_tool_result",
@@ -81,7 +88,12 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
             ),
         ]
 
@@ -93,6 +105,7 @@ class TestHandleFunctionCall:
         """
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
             handle_function_call("web_search", {"q": "test"}, task_id="t1")
@@ -111,6 +124,26 @@ class TestHandleFunctionCall:
         assert post_duration == transform_duration
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
+
+    def test_no_listener_skips_post_and_transform_emit(self):
+        """When no plugin is registered for post_tool_call /
+        transform_tool_result, the emit path must short-circuit on
+        ``has_hook`` and never build/dispatch a payload — so the
+        no-listener hot path stays cheap.  ``pre_tool_call`` is always
+        polled (block-check), so it may still fire; the observer/transform
+        emits must not.
+        """
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        assert result == '{"ok":true}'
+        fired = {c.args[0] for c in mock_invoke_hook.call_args_list}
+        assert "post_tool_call" not in fired
+        assert "transform_tool_result" not in fired
 
 
 # =========================================================================
@@ -137,7 +170,10 @@ class TestPreToolCallBlocking:
     """Verify that pre_tool_call hooks can block tool execution."""
 
     def test_blocked_tool_returns_error_and_skips_dispatch(self, monkeypatch):
+        hook_calls = []
+
         def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
             if hook_name == "pre_tool_call":
                 return [{"action": "block", "message": "Blocked by policy"}]
             return []
@@ -151,11 +187,17 @@ class TestPreToolCallBlocking:
             raise AssertionError("dispatch should not run when blocked")
 
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
 
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"error": "Blocked by policy"}
         assert not dispatch_called
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["status"] == "blocked"
+        assert post_call[1]["error_type"] == "plugin_block"
+        assert post_call[1]["error_message"] == "Blocked by policy"
+        assert post_call[1]["duration_ms"] == 0
 
     def test_blocked_tool_skips_read_loop_notification(self, monkeypatch):
         notifications = []
@@ -209,6 +251,7 @@ class TestPreToolCallBlocking:
             return []
 
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: json.dumps({"ok": True}))
 

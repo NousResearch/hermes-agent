@@ -9,10 +9,8 @@ Covers:
 """
 
 import asyncio
-import json
 import threading
-import time as _time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web

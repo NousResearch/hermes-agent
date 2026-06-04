@@ -10,7 +10,6 @@ Covers:
 - Cron module unavailability (501 when _CRON_AVAILABLE is False)
 """
 
-import json
 import logging
 from unittest.mock import MagicMock, patch
 

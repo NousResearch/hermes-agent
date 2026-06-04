@@ -11,6 +11,10 @@ The `x_search` tool lets the agent search X (Twitter) posts, profiles, and threa
 
 **Use this instead of `web_search`** when you specifically want current discussion, reactions, or claims **on X**. For general web pages, keep using `web_search` / `web_extract`.
 
+:::tip
+If you're paying Portal for an xAI model anyway, Live Search calls bill against the same xAI key configured for chat. See [Nous Portal](/integrations/nous-portal).
+:::
+
 ## Authentication
 
 `x_search` registers when **either** xAI credential path is available:

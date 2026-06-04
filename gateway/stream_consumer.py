@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -260,6 +261,12 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # #29346: a tool/segment boundary means what we delivered was an interim
+        # preamble, not the final answer — clear the flags so a premature setter
+        # can't fool the gateway. Safe: got_done returns before any reset, and
+        # run.py reads these only after the consumer task exits.
+        self._final_response_sent = False
+        self._final_content_delivered = False
         # Native draft streaming: bump the draft_id so the next text segment
         # animates as a fresh preview below the tool-progress bubbles, not
         # over the prior segment's already-finalized draft.  This is how
@@ -548,15 +555,13 @@ class GatewayStreamConsumer:
                     current_update_visible = await self._send_or_edit(
                         display_text,
                         finalize=(got_done or got_segment_break),
+                        # A segment-break finalize closes a preamble, not the
+                        # turn-final answer — only got_done marks delivered (#29346).
+                        is_turn_final=got_done,
                     )
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Record that the final content reached the user even
-                    # if the cosmetic final edit below fails.
-                    if current_update_visible and self._accumulated:
-                        self._final_content_delivered = True
-
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -573,6 +578,7 @@ class GatewayStreamConsumer:
                             # final edit — but only for adapters that don't
                             # need an explicit finalize signal.
                             self._final_response_sent = True
+                            self._final_content_delivered = True
                         elif self._message_id:
                             # Either the mid-stream edit didn't run (no
                             # visible update this tick) OR the adapter needs
@@ -580,8 +586,12 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                     return
 
                 if commentary_text is not None:
@@ -641,13 +651,17 @@ class GatewayStreamConsumer:
             # "Let me search…") had been delivered, not the real answer.
             if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
+                self._final_content_delivered = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
-    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
-    # Matches the simple cleanup regex used by the non-streaming path in
-    # gateway/platforms/base.py for post-processing.
-    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    # Strip MEDIA:<path> tags before display. Uses the shared anchored
+    # MEDIA_TAG_CLEANUP_RE from gateway/platforms/base.py — only tags whose
+    # path ends in a deliverable extension are removed, so an unknown-extension
+    # path stays visible instead of being silently dropped (issue #34517).
+    # Streaming and non-streaming paths share the same regex, so a tag is
+    # treated identically whichever path delivered the text.
+    _MEDIA_RE = MEDIA_TAG_CLEANUP_RE
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
@@ -778,6 +792,7 @@ class GatewayStreamConsumer:
                         pass
                 self._already_sent = True
                 self._final_response_sent = True
+                self._final_content_delivered = True
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
@@ -814,11 +829,13 @@ class GatewayStreamConsumer:
 
             if not result or not result.success:
                 if sent_any_chunk:
-                    # Some continuation text already reached the user. Suppress
-                    # the base gateway final-send path so we don't resend the
-                    # full response and create another duplicate.
+                    # Some continuation text already reached the user, but not
+                    # the full response. Do NOT set _final_response_sent — the
+                    # base gateway final-send path should still deliver the
+                    # complete response so the user gets the full answer.
+                    # Suppress only _already_sent to avoid a duplicate send
+                    # of the same partial content.
                     self._already_sent = True
-                    self._final_response_sent = True
                     self._message_id = last_message_id
                     self._last_sent_text = last_successful_chunk
                     self._fallback_prefix = ""
@@ -856,6 +873,7 @@ class GatewayStreamConsumer:
         self._message_id = last_message_id
         self._already_sent = True
         self._final_response_sent = True
+        self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
 
@@ -1049,11 +1067,16 @@ class GatewayStreamConsumer:
         age = time.monotonic() - self._message_created_ts
         return age >= threshold
 
-    async def _try_fresh_final(self, text: str) -> bool:
+    async def _try_fresh_final(self, text: str, *, is_turn_final: bool = True) -> bool:
         """Send ``text`` as a brand-new message (best-effort delete the old
         preview) so the platform's visible timestamp reflects completion
         time.  Returns True on successful delivery, False on any failure so
         the caller falls back to the normal edit path.
+
+        ``is_turn_final`` is False when finalizing an interim segment at a tool
+        boundary (a preamble) rather than the turn-final answer; the
+        final-delivery flag is then left unset so the gateway still delivers the
+        real answer from the next API call (#29346).
 
         Ported from openclaw/openclaw#72038.
         """
@@ -1099,10 +1122,13 @@ class GatewayStreamConsumer:
             self._message_created_ts = None
         self._already_sent = True
         self._last_sent_text = text
-        self._final_response_sent = True
+        if is_turn_final:
+            self._final_response_sent = True
         return True
 
-    async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
+    async def _send_or_edit(
+        self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+    ) -> bool:
         """Send or edit the streaming message.
 
         Returns True if the text was successfully delivered (sent or edited),
@@ -1196,7 +1222,9 @@ class GatewayStreamConsumer:
                     if (
                         finalize
                         and self._should_send_fresh_final()
-                        and await self._try_fresh_final(text)
+                        and await self._try_fresh_final(
+                            text, is_turn_final=is_turn_final,
+                        )
                     ):
                         return True
                     # Edit existing message

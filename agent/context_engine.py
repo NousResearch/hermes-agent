@@ -71,7 +71,12 @@ class ContextEngine(ABC):
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         """Update tracked token usage from an API response.
 
-        Called after every LLM call with the usage dict from the response.
+        Called after every LLM call with a normalized usage dict. The legacy
+        keys ``prompt_tokens``, ``completion_tokens``, and ``total_tokens``
+        are always present. Newer hosts also include canonical buckets:
+        ``input_tokens``, ``output_tokens``, ``cache_read_tokens``,
+        ``cache_write_tokens``, and ``reasoning_tokens``. Engines should
+        treat those fields as optional for compatibility with older hosts.
         """
 
     @abstractmethod
@@ -107,6 +112,15 @@ class ContextEngine(ABC):
 
         Default returns False (skip pre-flight). Override if your engine
         can do a cheap estimate.
+        """
+        return False
+
+    def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
+        """Return True when preflight should trust recent real usage instead.
+
+        Built-in compression uses this to avoid re-compacting from known-noisy
+        rough estimates after a compressed request has already fit. Third-party
+        engines can ignore it safely.
         """
         return False
 

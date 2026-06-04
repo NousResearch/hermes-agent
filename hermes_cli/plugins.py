@@ -34,7 +34,6 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import importlib.metadata
 import importlib.util
 import inspect
@@ -50,6 +49,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 from hermes_cli.config import cfg_get
+OBSERVER_SCHEMA_VERSION = "hermes.observer.v1"
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -138,10 +138,12 @@ VALID_HOOKS: Set[str] = {
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
+    "api_request_error",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
@@ -551,6 +553,46 @@ class PluginContext:
         logger.info(
             "Plugin '%s' registered image_gen provider: %s",
             self.manifest.name, provider.name,
+        )
+
+    # -- dashboard auth provider registration --------------------------------
+
+    def register_dashboard_auth_provider(self, provider) -> None:
+        """Register a dashboard authentication provider.
+
+        ``provider`` must be an instance of
+        :class:`hermes_cli.dashboard_auth.DashboardAuthProvider`. Used by
+        the dashboard OAuth auth gate, which engages when the dashboard
+        binds to a non-loopback host without ``--insecure``.
+
+        Misbehaving providers (wrong type, duplicate name) are logged at
+        WARNING and silently ignored — never raised — so a broken plugin
+        cannot crash the host. Same convention as
+        ``register_image_gen_provider``.
+        """
+        from hermes_cli.dashboard_auth import (
+            DashboardAuthProvider, register_provider,
+        )
+
+        if not isinstance(provider, DashboardAuthProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a dashboard-auth provider "
+                "that does not inherit from DashboardAuthProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        try:
+            register_provider(provider)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Plugin '%s' failed to register dashboard-auth provider "
+                "%r: %s",
+                self.manifest.name, getattr(provider, "name", "?"), e,
+            )
+            return
+        logger.info(
+            "Plugin '%s' registered dashboard-auth provider: %s (%s)",
+            self.manifest.name, provider.name, provider.display_name,
         )
 
     # -- video gen provider registration -------------------------------------
@@ -1512,6 +1554,7 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
+        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:
@@ -1527,6 +1570,10 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    def has_hook(self, hook_name: str) -> bool:
+        """Return True when at least one callback is registered for a hook."""
+        return bool(self._hooks.get(hook_name))
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -1608,6 +1655,10 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
+def has_hook(hook_name: str) -> bool:
+    """Return True when a hook has registered callbacks."""
+    return get_plugin_manager().has_hook(hook_name)
+
 
 _thread_tool_whitelist = threading.local()
 
@@ -1630,6 +1681,8 @@ def get_pre_tool_call_block_message(
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
 ) -> Optional[str]:
     """Check ``pre_tool_call`` hooks for a blocking directive.
 
@@ -1654,6 +1707,8 @@ def get_pre_tool_call_block_message(
         task_id=task_id,
         session_id=session_id,
         tool_call_id=tool_call_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
     )
 
     for result in hook_results:

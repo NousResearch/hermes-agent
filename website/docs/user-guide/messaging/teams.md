@@ -10,6 +10,8 @@ Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Te
 
 Need meeting summaries from Microsoft Graph events rather than normal bot conversations? Use the dedicated setup page: [Teams Meetings](/user-guide/messaging/teams-meetings).
 
+> Run `hermes gateway setup` and pick **Microsoft Teams** for a guided walk-through.
+
 ## How the Bot Responds
 
 | Context | Behavior |

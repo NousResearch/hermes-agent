@@ -391,12 +391,17 @@ _COLLECT_SCHEMA: Dict[str, Any] = {
 # Registry
 # ---------------------------------------------------------------------------
 
+async def _collect_handler_str(args: Dict[str, Any]) -> str:
+    return json.dumps(await _collect_handler(args), default=str)
+
+
 registry.register(
     name="apify_discover",
     toolset="apify",
     schema=_DISCOVER_SCHEMA,
-    handler=lambda args, **kw: _discover_handler(args),
+    handler=lambda args, **kw: json.dumps(_discover_handler(args), default=str),
     check_fn=_check_token,
+    requires_env=["APIFY_API_TOKEN"],
     emoji="🔍",
 )
 
@@ -404,8 +409,9 @@ registry.register(
     name="apify_start",
     toolset="apify",
     schema=_START_SCHEMA,
-    handler=lambda args, **kw: _start_handler(args),
+    handler=lambda args, **kw: json.dumps(_start_handler(args), default=str),
     check_fn=_check_token,
+    requires_env=["APIFY_API_TOKEN"],
     emoji="▶️",
 )
 
@@ -413,8 +419,9 @@ registry.register(
     name="apify_collect",
     toolset="apify",
     schema=_COLLECT_SCHEMA,
-    handler=lambda args, **kw: _collect_handler(args),
+    handler=lambda args, **kw: _collect_handler_str(args),
     check_fn=_check_token,
+    requires_env=["APIFY_API_TOKEN"],
     is_async=True,
     emoji="📦",
 )

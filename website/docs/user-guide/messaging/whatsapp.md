@@ -8,6 +8,8 @@ description: "Set up Hermes Agent as a WhatsApp bot via the built-in Baileys bri
 
 Hermes connects to WhatsApp through a built-in bridge based on **Baileys**. This works by emulating a WhatsApp Web session — **not** through the official WhatsApp Business API. No Meta developer account or Business verification is required.
 
+> Run `hermes gateway setup` and pick **WhatsApp** for a guided walk-through.
+
 :::warning Unofficial API — Ban Risk
 WhatsApp does **not** officially support third-party bots outside the Business API. Using a third-party bridge carries a small risk of account restrictions. To minimize risk:
 - **Use a dedicated phone number** for the bot (not your personal number)
@@ -198,6 +200,22 @@ Code blocks and inline code are preserved as-is since WhatsApp supports triple-b
 ### Tool Progress
 
 When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
+
+### Message Batching (Debounce)
+
+WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **5s**, extended to **10s** for very long fragments). Tune via `config.yaml`:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        text_batch_delay_seconds: 5.0         # quiet period before flushing a batch
+        text_batch_split_delay_seconds: 10.0  # extended delay near the split threshold
+```
+
+Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
 
 ---
 

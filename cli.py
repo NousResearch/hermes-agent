@@ -12727,8 +12727,53 @@ class HermesCLI:
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
     
+    def _clear_terminal_on_exit(self):
+        """Clear screen + scrollback so nothing is stranded above the exit summary.
+
+        Called from ``_print_exit_summary`` after ``app.run()`` has returned and
+        prompt_toolkit has torn down its renderer + restored terminal modes —
+        so a direct write to the real stdout fd is safe (the StdoutProxy /
+        patch_stdout layer is gone by now).
+
+        Sequence: ``ESC[3J`` (erase scrollback) + ``ESC[2J`` (erase visible
+        screen) + ``ESC[H`` (cursor home). Modern terminals on Linux, macOS and
+        Windows (Terminal / conhost with VT processing, which prompt_toolkit
+        already enables) all honor these. Best-effort: skip silently when
+        stdout isn't a real console, and fall back to the platform ``clear`` /
+        ``cls`` command if the escape write fails.
+        """
+        try:
+            stream = sys.stdout
+            if stream is None or not stream.isatty():
+                return
+        except Exception:
+            return
+        try:
+            stream.write("\033[3J\033[2J\033[H")
+            stream.flush()
+            return
+        except Exception:
+            pass
+        # Fallback: shell clear command (rarely needed — escapes work on every
+        # VT-capable terminal, but this covers exotic stdout wrappers).
+        try:
+            os.system("cls" if os.name == "nt" else "clear")
+        except Exception:
+            pass
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
+        # Clear the screen + scrollback before printing the summary so the
+        # live bottom chrome (status bar, input box, separator rules) and the
+        # rest of the session transcript don't get stranded above the exit
+        # summary (#38252). By this point app.run() has returned and
+        # prompt_toolkit has restored terminal modes, so writing raw escapes
+        # to stdout is safe. ESC[3J clears scrollback, ESC[2J clears the
+        # visible screen, ESC[H homes the cursor — so the summary prints at a
+        # clean top-left. Falls back to the platform clear command if stdout
+        # isn't a TTY-capable stream. Honors NO_COLOR/dumb terminals by
+        # skipping silently when there's no real console.
+        self._clear_terminal_on_exit()
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:

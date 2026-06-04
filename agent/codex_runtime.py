@@ -716,6 +716,11 @@ def _codex_response_output_items(final: SimpleNamespace) -> List[Any]:
             if not isinstance(encrypted, str) or not encrypted:
                 continue
             reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
+            item_id = item.get("id")
+            if isinstance(item_id, str):
+                item_id = item_id.strip()
+                if item_id and not item_id.startswith("rs_tmp_"):
+                    reasoning_item["id"] = item_id
             summary = item.get("summary")
             reasoning_item["summary"] = _plain_jsonish(summary) if isinstance(summary, list) else []
             reasoning_items.append(reasoning_item)

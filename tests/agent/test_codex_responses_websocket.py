@@ -854,6 +854,7 @@ def test_websocket_session_projects_reasoning_items_for_next_turn_baseline():
                 *first_input,
                 {
                     "type": "reasoning",
+                    "id": "rs_1",
                     "encrypted_content": "encrypted-state",
                     "summary": [],
                 },
@@ -914,6 +915,7 @@ def test_websocket_session_projects_reasoning_tool_call_sentinel_for_next_turn_b
                 *first_input,
                 {
                     "type": "reasoning",
+                    "id": "rs_1",
                     "encrypted_content": "encrypted-state",
                     "summary": [],
                 },

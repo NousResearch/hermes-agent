@@ -354,7 +354,8 @@ def _chat_messages_to_responses_input(
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
-                            item_id = ri.get("id")
+                            raw_item_id = ri.get("id")
+                            item_id = raw_item_id.strip() if isinstance(raw_item_id, str) else ""
                             if item_id and item_id in seen_item_ids:
                                 continue
                             # Cross-issuer guard: drop reasoning blocks that
@@ -380,17 +381,19 @@ def _chat_messages_to_responses_input(
                                     )
                                     _CROSS_ISSUER_WARN_EMITTED = True
                                 continue
-                            # Strip the "id" field — with store=False the
-                            # Responses API cannot look up items by ID and
-                            # returns 404.  The encrypted_content blob is
-                            # self-contained for reasoning chain continuity.
-                            # Also strip the internal "_issuer_kind" stamp;
-                            # it is a Hermes-side metadata key and not part
-                            # of the Responses API schema.
+                            # Preserve real reasoning IDs: stored assistant
+                            # message IDs can require their paired reasoning
+                            # item IDs when replayed as full Responses input.
+                            # Strip only Hermes-side metadata and transient
+                            # local IDs that were never minted by the API.
                             replay_item = {
                                 k: v for k, v in ri.items()
-                                if k not in ("id", "_issuer_kind")
+                                if k != "_issuer_kind"
                             }
+                            if item_id and not item_id.startswith("rs_tmp_"):
+                                replay_item["id"] = item_id
+                            else:
+                                replay_item.pop("id", None)
                             items.append(replay_item)
                             if item_id:
                                 seen_item_ids.add(item_id)
@@ -639,16 +642,15 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
         if item_type == "reasoning":
             encrypted = item.get("encrypted_content")
             if isinstance(encrypted, str) and encrypted:
-                item_id = item.get("id")
-                if isinstance(item_id, str) and item_id:
+                raw_item_id = item.get("id")
+                item_id = raw_item_id.strip() if isinstance(raw_item_id, str) else ""
+                if item_id:
                     if item_id in seen_ids:
                         continue
                     seen_ids.add(item_id)
                 reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
-                # Do NOT include the "id" in the outgoing item — with
-                # store=False (our default) the API tries to resolve the
-                # id server-side and returns 404.  The id is still used
-                # above for local deduplication via seen_ids.
+                if item_id and not item_id.startswith("rs_tmp_"):
+                    reasoning_item["id"] = item_id
                 summary = item.get("summary")
                 if isinstance(summary, list):
                     reasoning_item["summary"] = summary

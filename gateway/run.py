@@ -1254,6 +1254,11 @@ def _clear_planned_restart_notification() -> None:
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
 
+# Prevent torchvision from fragmenting the CUDA allocator on first import (#29292).
+# Set before any tool discovery that may lazily import torch/torchvision.
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 _ensure_ssl_certs()
 
 # Add parent directory to path

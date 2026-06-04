@@ -49,6 +49,11 @@ logger = logging.getLogger(__name__)
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
+# Prevent torchvision from fragmenting the CUDA allocator on first import (#29292).
+# Set before any tool discovery that may lazily import torch/torchvision.
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import yaml
 
 from hermes_cli.fallback_config import get_fallback_chain

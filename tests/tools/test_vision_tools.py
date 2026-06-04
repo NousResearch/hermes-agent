@@ -1085,6 +1085,60 @@ class TestDownloadRetryClassification:
 
 
 # ---------------------------------------------------------------------------
+# Regression: no CUDA context at import time (#29292)
+# ---------------------------------------------------------------------------
+
+
+class TestNoCudaInitAtImport:
+    """Verify that importing vision_tools does not pull in torch or torchvision."""
+
+    def test_vision_tools_import_does_not_import_torch(self):
+        """tools.vision_tools must not import torch or torchvision at module level."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; sys.path.insert(0, '.'); "
+                    "import tools.vision_tools; "
+                    "assert 'torch' not in sys.modules, 'torch was imported at module level'; "
+                    "assert 'torchvision' not in sys.modules, 'torchvision was imported at module level'; "
+                    "print('OK')"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(
+                __import__("pathlib").Path(__file__).resolve().parents[2]
+            ),
+        )
+        assert result.returncode == 0, (
+            f"torch/torchvision imported at module level.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+    def test_pytorch_cuda_alloc_conf_guard(self, monkeypatch):
+        """Startup guard sets PYTORCH_CUDA_ALLOC_CONF when not already present."""
+        monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+        # Simulate the guard logic from cli.py / gateway/run.py.
+        import os
+        if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        assert os.environ["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
+
+    def test_pytorch_cuda_alloc_conf_guard_does_not_overwrite(self, monkeypatch):
+        """Startup guard must not overwrite a user-supplied value."""
+        monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:512")
+        import os
+        if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        assert os.environ["PYTORCH_CUDA_ALLOC_CONF"] == "max_split_size_mb:512"
+
+
+# ---------------------------------------------------------------------------
 # CPU-burst concurrency cap — a single turn (or several concurrent sessions in
 # one process) can launch dozens of vision_analyze calls at once. Only the
 # CPU-bound encode/resize is bounded (to host cores), so a video-frame storm

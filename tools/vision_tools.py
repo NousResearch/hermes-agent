@@ -46,6 +46,11 @@ from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 import sys
 
+# IMPORTANT: torch and torchvision must NEVER be imported at module level.
+# torchvision initializes a CUDA context at import time, reserving ~7 GB
+# VRAM per process (#29292). All torch-dependent code paths must use
+# function-level imports guarded by try/except ImportError.
+
 logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")

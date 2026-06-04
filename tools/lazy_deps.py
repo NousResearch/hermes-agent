@@ -216,6 +216,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Tools ─────────────────────────────────────────────────────────────
     # ACP adapter (VS Code / Zed / JetBrains integration)
     "tool.acp": ("agent-client-protocol==0.9.0",),
+    # Local vision pixel-through (torchvision resizing); CUDA-heavy, must stay lazy (#29292)
+    "vision.torch": ("torchvision",),
     # Dashboard (`hermes dashboard`)
     "tool.dashboard": (
         "fastapi==0.133.1",

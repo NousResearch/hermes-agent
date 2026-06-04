@@ -19,6 +19,7 @@
     "profile:main:cpu": "wait-on http://127.0.0.1:5174 && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "start": "npm run build && electron .",
     "build": "node scripts/assert-root-install.cjs && node scripts/write-build-stamp.cjs && node scripts/stage-native-deps.cjs && tsc -b && vite build",
+    "prebuilder": "node scripts/patch-electron-builder-mac-binary.cjs",
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 electron-builder",
     "pack": "npm run build && npm run builder -- --dir",
     "dist": "npm run build && npm run builder",
@@ -130,6 +131,7 @@
   },
   "build": {
     "electronVersion": "40.9.3",
+    "electronDist": "../../node_modules/electron/dist",
     "appId": "com.nousresearch.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",

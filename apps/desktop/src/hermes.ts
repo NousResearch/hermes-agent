@@ -47,6 +47,18 @@ import type {
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
+export const AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS = 600_000
+const AUDIO_SPEAK_TIMEOUT_MS_PER_CHAR = 35
+
+export function audioSpeakRequestTimeoutMs(text: string): number {
+  const estimated = Math.max(
+    AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
+    Math.ceil(String(text || '').length * AUDIO_SPEAK_TIMEOUT_MS_PER_CHAR)
+  )
+
+  return Math.min(AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS, estimated)
+}
 
 export type {
   ActionResponse,
@@ -803,7 +815,11 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text },
+    // TTS blocks until provider synthesis, file read, and base64 encoding
+    // finish. Remote providers and large messages regularly exceed the
+    // default 15s Electron backend timeout.
+    timeoutMs: audioSpeakRequestTimeoutMs(text)
   })
 }
 

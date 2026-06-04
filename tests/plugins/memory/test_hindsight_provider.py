@@ -707,7 +707,10 @@ class TestSyncTurn:
         content = json.loads(item["content"])
         assert len(content) == 1
         assert content[0][0]["role"] == "user"
-        assert content[0][0]["content"] == "User (fakeusername): hello"
+        assert content[0][0]["content"] == (
+            "fakeusername(discord:fakeusername-123) "
+            "in fakeassistantname-forums(1485316232612941897): hello"
+        )
         assert content[0][1]["role"] == "assistant"
         assert content[0][1]["content"] == "Assistant (fakeassistantname): hi there"
         assert item["metadata"]["source"] == "hermes"

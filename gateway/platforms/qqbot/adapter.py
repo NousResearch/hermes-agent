@@ -1420,6 +1420,7 @@ class QQAdapter(BasePlatformAdapter):
                 user_id=str(author.get("id", "")),
                 user_name=nick or None,
                 chat_type="group",
+                guild_id=guild_id or None,
             ),
             text=text,
             message_type=self._detect_message_type(image_urls, image_media_types),

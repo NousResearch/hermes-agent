@@ -8,16 +8,14 @@ a message is dropped inside the adapter and never reaches the gateway unless it
 already passed that policy.
 
 The gateway's env-based allowlist check (``_is_user_authorized``) runs *after*
-the adapter. Before the fix it fell through to an env-only default-deny when no
-``PLATFORM_ALLOWED_USERS`` env var was set, silently rejecting ``dm_policy:
-open`` and config-only allowlists even though the adapter had already
-authorized the sender.
+the adapter. A prior compatibility fix trusted any adapter that declared
+``enforces_own_access_policy`` when gateway env allowlists were empty. That made
+``dm_policy: open`` / ``group_policy: open`` equivalent to network-wide gateway
+authorization.
 
-The fix is a single drift-proof contract: adapters that own their access policy
-declare ``enforces_own_access_policy`` (a ``BasePlatformAdapter`` property,
-default ``False``). The gateway trusts that flag and skips the env-only
-default-deny for those platforms, rather than re-implementing each adapter's
-policy logic a second time.
+The security contract is narrower: adapters may declare that they own an intake
+policy, but the gateway only treats that intake decision as authorization when
+the current source is backed by a concrete configured allowlist.
 """
 
 from types import SimpleNamespace
@@ -123,20 +121,34 @@ def test_own_policy_adapters_declare_the_flag(module_path, class_name):
 
 
 # ---------------------------------------------------------------------------
-# Layer 2: gateway trusts the adapter-enforced flag
+# Layer 2: gateway trusts only concrete adapter allowlists
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_platform_authorized_without_env_allowlist(monkeypatch, platform):
-    """A message reaching the gateway from an own-policy adapter is trusted.
-
-    With no env allowlist set, the gateway must NOT default-deny — the adapter
-    already authorized the sender at intake (e.g. ``dm_policy: open``).
-    """
+def test_own_policy_open_dm_default_denies_without_allowlist(monkeypatch, platform):
+    """Open adapter policy is not enough to authorize network callers."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
         platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform)) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_allowlisted_dm_is_authorized_without_env_allowlist(monkeypatch, platform):
+    """Config-only adapter allowlists remain valid authorization evidence."""
+    _clear_auth_env(monkeypatch)
+    allowlist_key = "dm_allow_from" if platform == Platform.YUANBAO else "allow_from"
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist", allowlist_key: ["some-user"]},
+            )
+        }
     )
     runner, _adapter = _make_runner(platform, config, enforces=True)
 
@@ -144,15 +156,128 @@ def test_own_policy_platform_authorized_without_env_allowlist(monkeypatch, platf
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
-def test_own_policy_platform_authorized_for_group_chat(monkeypatch, platform):
-    """Group traffic from an own-policy adapter is trusted the same way."""
+def test_own_policy_allowlisted_dm_rejects_non_matching_sender(monkeypatch, platform):
+    """The gateway re-checks the concrete adapter allowlist before trusting it."""
+    _clear_auth_env(monkeypatch)
+    allowlist_key = "dm_allow_from" if platform == Platform.YUANBAO else "allow_from"
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist", allowlist_key: ["allowed-user"]},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform)) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_open_group_default_denies_without_allowlist(monkeypatch, platform):
+    """Open group policy is not enough to authorize network callers."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
         platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "open"})}
     )
     runner, _adapter = _make_runner(platform, config, enforces=True)
 
+    assert runner._is_user_authorized(_source(platform, chat_type="group")) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_allowlisted_group_is_authorized_without_env_allowlist(monkeypatch, platform):
+    """Config-only group allowlists remain valid authorization evidence."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["some-chat"]},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
     assert runner._is_user_authorized(_source(platform, chat_type="group")) is True
+
+
+def test_yuanbao_env_parsed_dm_allowlist_is_authorized(monkeypatch):
+    """Adapter-parsed env allowlists are trusted without duplicating env reads."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(platforms={Platform.YUANBAO: PlatformConfig(enabled=True)})
+    runner, adapter = _make_runner(Platform.YUANBAO, config, enforces=True)
+    adapter._access_policy = SimpleNamespace(
+        dm_policy="allowlist",
+        dm_allow_from=["some-user"],
+        group_policy="open",
+        group_allow_from=[],
+    )
+
+    assert runner._is_user_authorized(_source(Platform.YUANBAO)) is True
+
+
+def test_weixin_env_parsed_group_allowlist_is_authorized(monkeypatch):
+    """Group allowlists parsed by the adapter remain valid gateway evidence."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(platforms={Platform.WEIXIN: PlatformConfig(enabled=True)})
+    runner, adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    adapter._group_policy = "allowlist"
+    adapter._group_allow_from = ["some-chat"]
+
+    assert runner._is_user_authorized(_source(Platform.WEIXIN, chat_type="group")) is True
+
+
+def test_yuanbao_group_allowlist_matches_raw_group_code(monkeypatch):
+    """Yuanbao stores raw group codes while SessionSource chat_id is prefixed."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(platforms={Platform.YUANBAO: PlatformConfig(enabled=True)})
+    runner, adapter = _make_runner(Platform.YUANBAO, config, enforces=True)
+    adapter._access_policy = SimpleNamespace(
+        dm_policy="open",
+        dm_allow_from=[],
+        group_policy="allowlist",
+        group_allow_from=["some-chat"],
+    )
+
+    source = _source(Platform.YUANBAO, chat_type="group")
+    source.chat_id = "group:some-chat"
+    assert runner._is_user_authorized(source) is True
+
+
+def test_wecom_config_allowlist_uses_adapter_normalization(monkeypatch):
+    """WeCom prefixes and case are normalized like the adapter intake check."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist", "allow_from": ["wecom:USER:Some-User"]},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="dm")) is True
+
+
+def test_qqbot_guild_group_allowlist_matches_guild_id(monkeypatch):
+    """QQBot guild messages are allowlisted by guild id, not channel id."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.QQBOT: PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["guild-1"]},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.QQBOT, config, enforces=True)
+    source = _source(Platform.QQBOT, chat_type="group")
+    source.chat_id = "channel-1"
+    source.guild_id = "guild-1"
+
+    assert runner._is_user_authorized(source) is True
 
 
 def test_non_owning_platform_still_default_denies(monkeypatch):

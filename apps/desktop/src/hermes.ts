@@ -33,14 +33,46 @@ import type {
   ProfileSoul,
   ProfilesResponse,
   SessionMessagesResponse,
+  SessionInfo,
   SessionSearchResponse,
   SkillInfo,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
 } from '@/types/hermes'
+import type {
+  ExecutionMode,
+  ProjectBundle,
+  ProjectListResponse,
+  ReferenceItem,
+  SkillBinding,
+  Workflow,
+  WorkflowComposerCompletionItem,
+  WorkflowEventsResponse,
+  WorkflowFilesResponse,
+  WorkflowIntakePayload,
+  WorkflowIntakeResponse,
+  WorkflowProject,
+  WorkflowSlashCommandItem,
+  WorkflowRunResponse
+} from '@/types/workflow'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+const WORKFLOW_SESSION_PREFIXES = ['workflow-project-', 'workflow-node-'] as const
+
+function isWorkflowSessionId(id: null | string | undefined): boolean {
+  return WORKFLOW_SESSION_PREFIXES.some(prefix => String(id ?? '').startsWith(prefix))
+}
+
+function isWorkflowSessionLike(session: Pick<SessionInfo, 'id' | 'source'> & { _lineage_root_id?: null | string }): boolean {
+  return session.source === 'workflow' || isWorkflowSessionId(session.id) || isWorkflowSessionId(session._lineage_root_id)
+}
+
+function isMissingOrMethodError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return /\b(404|405)\b/.test(message) || /method not allowed|not found/i.test(message)
+}
 
 export type {
   ActionResponse,
@@ -121,9 +153,11 @@ export async function listSessions(
     path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
   })
 
+  const sessions = result.sessions.filter(session => !isWorkflowSessionLike(session)).slice(0, limit)
+
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions,
     offset: 0
   }
 }
@@ -137,9 +171,14 @@ export function setSessionArchived(id: string, archived: boolean): Promise<{ ok:
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
-  return window.hermesDesktop.api<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
-  })
+  return window.hermesDesktop
+    .api<SessionSearchResponse>({
+      path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    })
+    .then(result => ({
+      ...result,
+      results: result.results.filter(item => item.source !== 'workflow' && !isWorkflowSessionId(item.session_id))
+    }))
 }
 
 export function getSessionMessages(id: string): Promise<SessionMessagesResponse> {
@@ -260,6 +299,298 @@ export function validateProviderCredential(
     path: '/api/providers/validate',
     method: 'POST',
     body: { key, value }
+  })
+}
+
+export function listWorkflowProjects(options: { includeArchived?: boolean } = {}): Promise<ProjectListResponse> {
+  const suffix = options.includeArchived ? '?include_archived=true' : ''
+
+  if (!window.hermesDesktop?.api) {
+    return Promise.resolve({ projects: [] })
+  }
+
+  return window.hermesDesktop.api<ProjectListResponse>({
+    path: `/api/workflows/projects${suffix}`
+  })
+}
+
+export function createWorkflowProject(payload: {
+  goal?: string
+  name: string
+  references?: string[]
+  root?: string
+}): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: '/api/workflows/projects',
+    method: 'POST',
+    body: payload
+  })
+}
+
+export function startWorkflowIntake(payload: WorkflowIntakePayload): Promise<WorkflowIntakeResponse> {
+  return window.hermesDesktop.api<WorkflowIntakeResponse>({
+    path: '/api/workflows/intake/start',
+    method: 'POST',
+    body: payload
+  })
+}
+
+export function sendWorkflowIntakeMessage(intakeId: string, message: string): Promise<WorkflowIntakeResponse> {
+  return window.hermesDesktop.api<WorkflowIntakeResponse>({
+    path: `/api/workflows/intake/${encodeURIComponent(intakeId)}/message`,
+    method: 'POST',
+    body: { message }
+  })
+}
+
+export function confirmWorkflowIntake(intakeId: string, payload: WorkflowIntakePayload & { summary?: string }): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/intake/${encodeURIComponent(intakeId)}/confirm`,
+    method: 'POST',
+    body: { ...payload, intakeId }
+  })
+}
+
+export function openWorkflowProject(root: string): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: '/api/workflows/projects/open',
+    method: 'POST',
+    body: { root }
+  })
+}
+
+export function getWorkflowProject(projectId: string): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}`
+  })
+}
+
+export function updateWorkflowProject(
+  projectId: string,
+  patch: { archived?: boolean; name?: string }
+): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}`,
+    method: 'PATCH',
+    body: patch
+  })
+}
+
+export function removeWorkflowProjectFromHistory(
+  projectId: string
+): Promise<{ ok: boolean; projectId: string; root: string; rootPreserved: boolean }> {
+  const encoded = encodeURIComponent(projectId)
+
+  return window.hermesDesktop
+    .api<{ ok: boolean; projectId: string; root: string; rootPreserved: boolean }>({
+      path: `/api/workflows/projects/${encoded}/remove-from-history`,
+      method: 'POST'
+    })
+    .catch(error => {
+      if (!isMissingOrMethodError(error)) {
+        throw error
+      }
+
+      return window.hermesDesktop
+        .api<{ ok: boolean; projectId: string; root: string; rootPreserved: boolean }>({
+          path: `/api/workflows/projects/${encoded}`,
+          method: 'DELETE'
+        })
+        .catch(deleteError => {
+          if (!isMissingOrMethodError(deleteError)) {
+            throw deleteError
+          }
+
+          return window.hermesDesktop
+            .api<ProjectBundle>({
+              path: `/api/workflows/projects/${encoded}`,
+              method: 'PATCH',
+              body: { archived: true }
+            })
+            .then(bundle => ({
+              ok: true,
+              projectId,
+              root: bundle.project.root,
+              rootPreserved: true
+            }))
+        })
+    })
+}
+
+export function exportWorkflowProject(project: WorkflowProject): Promise<{ canceled: boolean; path: null | string }> {
+  const safeName = (project.name || 'workflow-project').trim().replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '')
+
+  return window.hermesDesktop.downloadApiFile({
+    path: `/api/workflows/projects/${encodeURIComponent(project.id)}/export`,
+    defaultFilename: `${safeName || 'workflow-project'}-${project.id.slice(0, 8)}.zip`,
+    dialogTitle: 'Export workflow project',
+    filters: [{ name: 'Zip archives', extensions: ['zip'] }],
+    timeoutMs: 120_000
+  })
+}
+
+export function generateWorkflow(projectId: string): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/generate`,
+    method: 'POST'
+  })
+}
+
+export function saveWorkflow(projectId: string, workflow: Workflow, snapshotLabel = 'Workflow edited'): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/workflow`,
+    method: 'PUT',
+    body: { workflow, snapshotLabel }
+  })
+}
+
+export function startWorkflowRun(
+  projectId: string,
+  payload: { maxConcurrency?: number; mode: ExecutionMode }
+): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/runs`,
+    method: 'POST',
+    body: payload
+  })
+}
+
+export function pauseWorkflowRun(runId: string): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/pause`,
+    method: 'POST'
+  })
+}
+
+export function resumeWorkflowRun(runId: string): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/resume`,
+    method: 'POST'
+  })
+}
+
+export function stopWorkflowRun(runId: string): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/stop`,
+    method: 'POST'
+  })
+}
+
+export function confirmWorkflowNode(runId: string, nodeId: string): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/confirm`,
+    method: 'POST'
+  })
+}
+
+export function retryWorkflowNode(runId: string, nodeId: string): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/retry`,
+    method: 'POST'
+  })
+}
+
+export function skipWorkflowNode(runId: string, nodeId: string): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/skip`,
+    method: 'POST'
+  })
+}
+
+export function sendWorkflowChat(payload: {
+  attachments?: string[]
+  nodeId?: string | null
+  projectId: string
+  skillIds?: string[]
+  text: string
+}): Promise<{ ok: boolean; patch: Record<string, unknown>; reply?: string; target: string | null }> {
+  return window.hermesDesktop.api<{ ok: boolean; patch: Record<string, unknown>; reply?: string; target: string | null }>({
+    path: `/api/workflows/projects/${encodeURIComponent(payload.projectId)}/chat`,
+    method: 'POST',
+    body: {
+      attachments: payload.attachments ?? [],
+      nodeId: payload.nodeId ?? null,
+      skillIds: payload.skillIds ?? [],
+      text: payload.text
+    }
+  })
+}
+
+export function getWorkflowSlashCommands(projectId: string, query = ''): Promise<{ items: WorkflowSlashCommandItem[] }> {
+  const suffix = query ? `?q=${encodeURIComponent(query)}` : ''
+
+  return window.hermesDesktop.api<{ items: WorkflowSlashCommandItem[] }>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/composer/slash${suffix}`
+  })
+}
+
+export function executeWorkflowSlashCommand(
+  projectId: string,
+  payload: { command: string; nodeId?: string | null }
+): Promise<{ ok: boolean; output: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; output: string }>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/composer/slash`,
+    method: 'POST',
+    body: { command: payload.command, nodeId: payload.nodeId ?? null }
+  })
+}
+
+export function completeWorkflowComposer(
+  projectId: string,
+  payload: { cursor?: number; cwd?: string; text: string }
+): Promise<{ items: WorkflowComposerCompletionItem[] }> {
+  return window.hermesDesktop.api<{ items: WorkflowComposerCompletionItem[] }>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/composer/complete`,
+    method: 'POST',
+    body: payload
+  })
+}
+
+export function attachWorkflowComposerFiles(
+  projectId: string,
+  paths: string[]
+): Promise<{ attachments: ReferenceItem[]; ok: boolean; references: ReferenceItem[] }> {
+  return window.hermesDesktop.api<{ attachments: ReferenceItem[]; ok: boolean; references: ReferenceItem[] }>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/composer/attachments`,
+    method: 'POST',
+    body: { paths }
+  })
+}
+
+export function listWorkflowEvents(projectId: string, since?: number): Promise<WorkflowEventsResponse> {
+  const query = typeof since === 'number' ? `?since=${encodeURIComponent(String(since))}` : ''
+
+  return window.hermesDesktop.api<WorkflowEventsResponse>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/events${query}`
+  })
+}
+
+export function updateWorkflowReferences(projectId: string, references: ReferenceItem[]): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/references`,
+    method: 'PUT',
+    body: { references }
+  })
+}
+
+export function updateWorkflowSkills(projectId: string, skills: SkillBinding[]): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/skills`,
+    method: 'PUT',
+    body: { skills }
+  })
+}
+
+export function createWorkflowSnapshot(projectId: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/snapshots`,
+    method: 'POST'
+  })
+}
+
+export function getWorkflowFiles(projectId: string): Promise<WorkflowFilesResponse> {
+  return window.hermesDesktop.api<WorkflowFilesResponse>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/files`
   })
 }
 

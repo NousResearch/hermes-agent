@@ -20,6 +20,7 @@ export const FILE_BROWSER_MAX_WIDTH = '20rem'
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
+const SIDEBAR_PINNED_WORKFLOWS_STORAGE_KEY = 'hermes.desktop.pinnedWorkflowProjects'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
@@ -50,6 +51,7 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 })
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
+export const $pinnedWorkflowProjectIds = atom(storedStringArray(SIDEBAR_PINNED_WORKFLOWS_STORAGE_KEY))
 export const $sidebarPinsOpen = atom(true)
 export const $sidebarRecentsOpen = atom(true)
 export const $sidebarAgentsGrouped = atom(storedBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false))
@@ -57,6 +59,7 @@ export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
+$pinnedWorkflowProjectIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_WORKFLOWS_STORAGE_KEY, [...ids]))
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 
 export function setSidebarWidth(width: number) {
@@ -111,6 +114,24 @@ export function unpinSession(sessionId: string) {
 
   if (!arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
+  }
+}
+
+export function pinWorkflowProject(projectId: string, index?: number) {
+  const prev = $pinnedWorkflowProjectIds.get()
+  const next = insertUniqueId(prev, projectId, index ?? prev.filter(id => id !== projectId).length)
+
+  if (!arraysEqual(prev, next)) {
+    $pinnedWorkflowProjectIds.set(next)
+  }
+}
+
+export function unpinWorkflowProject(projectId: string) {
+  const prev = $pinnedWorkflowProjectIds.get()
+  const next = prev.filter(id => id !== projectId)
+
+  if (!arraysEqual(prev, next)) {
+    $pinnedWorkflowProjectIds.set(next)
   }
 }
 

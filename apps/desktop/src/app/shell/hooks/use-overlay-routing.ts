@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { type CommandCenterSection } from '@/app/command-center'
-import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, NEW_CHAT_ROUTE } from '@/app/routes'
+import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, WORKFLOWS_ROUTE } from '@/app/routes'
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
 const OVERLAY_VIEWS = new Set(['settings', 'command-center', 'agents'])
@@ -20,7 +20,7 @@ export function useOverlayRouting() {
 
   // Overlay routes (settings/command-center/agents) stash the underlying path
   // so closing them returns there instead of bouncing to /.
-  const returnPathRef = useRef(NEW_CHAT_ROUTE)
+  const returnPathRef = useRef(WORKFLOWS_ROUTE)
 
   useEffect(() => {
     if (!overlayOpen) {
@@ -39,7 +39,7 @@ export function useOverlayRouting() {
   )
 
   const closeOverlayToPreviousRoute = useCallback(
-    () => navigate(returnPathRef.current || NEW_CHAT_ROUTE, { replace: true }),
+    () => navigate(returnPathRef.current || WORKFLOWS_ROUTE, { replace: true }),
     [navigate]
   )
 

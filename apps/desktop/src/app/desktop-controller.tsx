@@ -65,7 +65,7 @@ import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE, WORKFLOWS_ROUTE } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -94,6 +94,7 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+const WorkflowsView = lazy(async () => ({ default: (await import('./workflows')).WorkflowsView }))
 
 export function DesktopController() {
   const queryClient = useQueryClient()
@@ -662,7 +663,19 @@ export function DesktopController() {
       </Pane>
       <PaneMain>
         <Routes>
-          <Route element={terminalTakeoverActive ? takeoverTerminalView : chatView} index />
+          <Route
+            element={terminalTakeoverActive ? takeoverTerminalView : chatView}
+            index
+          />
+          <Route element={terminalTakeoverActive ? takeoverTerminalView : chatView} path="chat" />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <WorkflowsView />
+              </Suspense>
+            }
+            path="workflows"
+          />
           <Route element={terminalTakeoverActive ? takeoverTerminalView : chatView} path=":sessionId" />
           <Route
             element={

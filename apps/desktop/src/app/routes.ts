@@ -1,5 +1,6 @@
 export const SESSION_ROUTE_PREFIX = '/'
-export const NEW_CHAT_ROUTE = '/'
+export const WORKFLOWS_ROUTE = '/workflows'
+export const NEW_CHAT_ROUTE = '/chat'
 export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
@@ -19,6 +20,7 @@ export type AppView =
   | 'profiles'
   | 'settings'
   | 'skills'
+  | 'workflows'
 
 export type AppRouteId =
   | 'agents'
@@ -30,6 +32,7 @@ export type AppRouteId =
   | 'profiles'
   | 'settings'
   | 'skills'
+  | 'workflows'
 
 export interface AppRoute {
   id: AppRouteId
@@ -38,6 +41,7 @@ export interface AppRoute {
 }
 
 export const APP_ROUTES = [
+  { id: 'workflows', path: WORKFLOWS_ROUTE, view: 'workflows' },
   { id: 'new', path: NEW_CHAT_ROUTE, view: 'chat' },
   { id: 'settings', path: SETTINGS_ROUTE, view: 'settings' },
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
@@ -71,6 +75,10 @@ export function sessionRoute(sessionId: string): string {
 }
 
 export function appViewForPath(pathname: string): AppView {
+  if (pathname === '/') {
+    return 'chat'
+  }
+
   if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
     return 'chat'
   }

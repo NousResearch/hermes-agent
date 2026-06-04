@@ -226,7 +226,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 650
   return Math.max(120, raw)
 })()
-const APP_NAME = 'Hermes'
+const APP_NAME = 'Hermes Workflow'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 const WINDOW_BUTTON_POSITION = {
@@ -2119,6 +2119,65 @@ function fetchJson(url, token, options = {}) {
   })
 }
 
+function fetchBuffer(url, token, options = {}) {
+  return new Promise((resolve, reject) => {
+    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const parsed = new URL(url)
+    const client = parsed.protocol === 'https:' ? https : http
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+      return
+    }
+
+    const req = client.request(
+      parsed,
+      {
+        method: options.method || 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Hermes-Session-Token': token,
+          ...(body ? { 'Content-Length': String(body.length) } : {})
+        }
+      },
+      res => {
+        const chunks = []
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks)
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`${res.statusCode}: ${buffer.toString('utf8') || res.statusMessage}`))
+            return
+          }
+          resolve({ buffer, headers: res.headers })
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
+    if (body) req.write(body)
+    req.end()
+  })
+}
+
+function filenameFromContentDisposition(value) {
+  const raw = String(value || '')
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(raw)
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/g, ''))
+    } catch {
+      return utf8Match[1].trim().replace(/^"|"$/g, '')
+    }
+  }
+  const plainMatch = /filename="?([^";]+)"?/i.exec(raw)
+  return plainMatch ? plainMatch[1].trim() : ''
+}
+
 function mimeTypeForPath(filePath) {
   const ext = path.extname(filePath || '').toLowerCase()
 
@@ -2704,14 +2763,14 @@ function sendWindowStateChanged(nextIsFullscreen) {
 function buildApplicationMenu() {
   const template = []
   const checkForUpdatesItem = {
-    label: 'Check for Updates…',
+    label: '检查更新…',
     click: () => sendOpenUpdatesRequested()
   }
   if (IS_MAC) {
     template.push({
       label: APP_NAME,
       submenu: [
-        { role: 'about', label: `About ${APP_NAME}` },
+        { role: 'about', label: `关于 ${APP_NAME}` },
         checkForUpdatesItem,
         { type: 'separator' },
         { role: 'services' },
@@ -2726,7 +2785,7 @@ function buildApplicationMenu() {
   }
 
   template.push({
-    label: 'File',
+    label: '文件',
     submenu: [
       IS_MAC
         ? {
@@ -2738,38 +2797,38 @@ function buildApplicationMenu() {
                 mainWindow?.close()
               }
             },
-            label: 'Close'
+            label: '关闭'
           }
-        : { role: 'quit' }
+        : { role: 'quit', label: '退出' }
     ]
   })
   template.push({
-    label: 'Edit',
+    label: '编辑',
     submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
+      { role: 'undo', label: '撤销' },
+      { role: 'redo', label: '重做' },
       { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      { role: 'delete' },
-      { role: 'selectAll' }
+      { role: 'cut', label: '剪切' },
+      { role: 'copy', label: '复制' },
+      { role: 'paste', label: '粘贴' },
+      { role: 'delete', label: '删除' },
+      { role: 'selectAll', label: '全选' }
     ]
   })
   template.push({
-    label: 'View',
+    label: '查看',
     submenu: [
-      { role: 'reload' },
-      { role: 'forceReload' },
-      { role: 'toggleDevTools' },
+      { role: 'reload', label: '重新加载' },
+      { role: 'forceReload', label: '强制重新加载' },
+      { role: 'toggleDevTools', label: '开发者工具' },
       { type: 'separator' },
       {
-        label: 'Actual Size',
+        label: '实际大小',
         accelerator: 'CommandOrControl+0',
         click: () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0) }
       },
       {
-        label: 'Zoom In',
+        label: '放大',
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2779,7 +2838,7 @@ function buildApplicationMenu() {
         }
       },
       {
-        label: 'Zoom Out',
+        label: '缩小',
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2789,17 +2848,24 @@ function buildApplicationMenu() {
         }
       },
       { type: 'separator' },
-      { role: 'togglefullscreen' }
+      { role: 'togglefullscreen', label: '切换全屏' }
     ]
   })
   template.push({
-    label: 'Window',
+    label: '窗口',
     submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      ? [
+          { role: 'minimize', label: '最小化' },
+          { role: 'zoom', label: '缩放' },
+          { role: 'front', label: '全部置前' }
+        ]
+      : [
+          { role: 'minimize', label: '最小化' },
+          { role: 'close', label: '关闭' }
+        ]
   })
   template.push({
-    label: 'Help',
+    label: '帮助',
     role: 'help',
     submenu: [checkForUpdatesItem]
   })
@@ -3415,7 +3481,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 620,
-    title: 'Hermes',
+    title: APP_NAME,
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit
@@ -3626,10 +3692,40 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   })
 })
 
+ipcMain.handle('hermes:downloadApiFile', async (_event, request) => {
+  const rawPath = String(request?.path || '')
+  if (!rawPath.startsWith('/api/')) {
+    throw new Error('downloadApiFile only supports Hermes API paths')
+  }
+  const connection = await startHermes()
+  const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+  const { buffer, headers } = await fetchBuffer(`${connection.baseUrl}${rawPath}`, connection.token, {
+    method: request?.method,
+    body: request?.body,
+    timeoutMs
+  })
+  const filename =
+    String(request?.defaultFilename || '').trim() ||
+    filenameFromContentDisposition(headers?.['content-disposition']) ||
+    'hermes-export.bin'
+  const result = await dialog.showSaveDialog(mainWindow || undefined, {
+    title: request?.dialogTitle || 'Save export',
+    defaultPath: filename,
+    filters: Array.isArray(request?.filters) ? request.filters : undefined
+  })
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true, path: null }
+  }
+
+  await fs.promises.writeFile(result.filePath, buffer)
+  return { canceled: false, path: result.filePath }
+})
+
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) return false
   new Notification({
-    title: payload?.title || 'Hermes',
+    title: payload?.title || APP_NAME,
     body: payload?.body || '',
     silent: Boolean(payload?.silent)
   }).show()
@@ -4178,11 +4274,7 @@ app.whenReady().then(() => {
   if (maybeRelocateToApplications()) return
   maybePinToDock()
 
-  if (IS_MAC) {
-    Menu.setApplicationMenu(buildApplicationMenu())
-  } else {
-    Menu.setApplicationMenu(null)
-  }
+  Menu.setApplicationMenu(buildApplicationMenu())
   installMediaPermissions()
   registerMediaProtocol()
   ensureWslWindowsFonts()

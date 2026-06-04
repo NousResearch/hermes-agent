@@ -10,6 +10,7 @@ declare global {
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
       api: <T>(request: HermesApiRequest) => Promise<T>
+      downloadApiFile: (request: HermesApiDownloadRequest) => Promise<HermesApiDownloadResult>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
@@ -71,6 +72,17 @@ export interface HermesTerminalSession {
   cwd: string
   id: string
   shell: string
+}
+
+export interface HermesApiDownloadRequest extends HermesApiRequest {
+  defaultFilename?: string
+  dialogTitle?: string
+  filters?: Array<{ extensions: string[]; name: string }>
+}
+
+export interface HermesApiDownloadResult {
+  canceled: boolean
+  path: string | null
 }
 
 export interface HermesTerminalExit {

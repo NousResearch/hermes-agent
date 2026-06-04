@@ -1,9 +1,9 @@
 {
-  "name": "hermes",
-  "productName": "Hermes",
+  "name": "hermes-workflow",
+  "productName": "Hermes Workflow",
   "private": true,
   "version": "0.15.1",
-  "description": "Native desktop shell for Hermes Agent.",
+  "description": "Workflow-first desktop workbench for Hermes Agent.",
   "author": "Nous Research",
   "type": "module",
   "main": "electron/main.cjs",
@@ -69,6 +69,7 @@
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
+    "@xyflow/react": "^12.11.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -130,10 +131,10 @@
   },
   "build": {
     "electronVersion": "40.9.3",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "appId": "com.hermesworkflow.desktop",
+    "productName": "Hermes Workflow",
+    "executableName": "Hermes Workflow",
+    "artifactName": "Hermes-Workflow-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
       "output": "release"
@@ -172,9 +173,9 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
+        "CFBundleDisplayName": "Hermes Workflow",
+        "CFBundleExecutable": "Hermes Workflow",
+        "CFBundleName": "Hermes Workflow",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
         "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
       },
@@ -186,7 +187,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install Hermes Workflow",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -208,7 +209,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "Hermes Workflow",
       "target": [
         "nsis",
         "msi"
@@ -229,8 +230,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "Hermes Workflow",
+      "uninstallDisplayName": "Hermes Workflow",
       "warningsAsErrors": false
     }
   }

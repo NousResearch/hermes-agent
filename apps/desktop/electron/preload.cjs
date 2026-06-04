@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),
   testConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:test', payload),
   api: request => ipcRenderer.invoke('hermes:api', request),
+  downloadApiFile: request => ipcRenderer.invoke('hermes:downloadApiFile', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),

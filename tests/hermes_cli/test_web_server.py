@@ -297,6 +297,29 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_sessions_api_hides_workflow_sessions(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="workflow-project-hidden", source="workflow")
+            db.append_message("workflow-project-hidden", role="user", content="workflow hidden needle")
+            db.create_session(session_id="normal-visible", source="cli")
+            db.append_message("normal-visible", role="user", content="normal visible needle")
+        finally:
+            db.close()
+
+        listed = self.client.get("/api/sessions?limit=20&offset=0").json()
+        ids = {row["id"] for row in listed["sessions"]}
+        assert "normal-visible" in ids
+        assert "workflow-project-hidden" not in ids
+        assert listed["total"] == 1
+
+        searched = self.client.get("/api/sessions/search?q=needle").json()
+        result_ids = {row["session_id"] for row in searched["results"]}
+        assert "normal-visible" in result_ids
+        assert "workflow-project-hidden" not in result_ids
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""

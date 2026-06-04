@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, FileText, Loader2, RefreshCw, Wrench } from '@/lib/icons'
@@ -15,11 +16,15 @@ type BusyAction = 'local' | 'repair' | 'retry' | null
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
+  const location = useLocation()
   const [busy, setBusy] = useState<BusyAction>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
 
-  const visible = Boolean(boot.error) && !boot.running
+  const isWorkflowRoute =
+    location.pathname.startsWith('/workflows') || window.location.hash.startsWith('#/workflows')
+
+  const visible = Boolean(boot.error) && !boot.running && !isWorkflowRoute
   // While first-run onboarding owns the picker/flow we let it surface its own
   // progress; the recovery overlay is for hard failures, which it covers via a
   // higher z-index regardless of onboarding state.

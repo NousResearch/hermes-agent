@@ -1306,8 +1306,10 @@ class TestCounts:
         db.create_session(session_id="s1", source="cli")
         db.create_session(session_id="s2", source="telegram")
         db.create_session(session_id="s3", source="cli")
+        db.create_session(session_id="s4", source="workflow")
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
+        assert db.session_count(exclude_sources=["workflow"]) == 3
 
     def test_message_count_total(self, db):
         assert db.message_count() == 0

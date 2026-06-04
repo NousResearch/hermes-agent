@@ -1461,6 +1461,15 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+_HIDDEN_SESSION_SOURCES = ["workflow"]
+
+
+def _is_hidden_session_row(row: dict) -> bool:
+    session_id = str(row.get("id") or row.get("session_id") or "")
+    source = str(row.get("source") or "")
+    return source == "workflow" or session_id.startswith("workflow-project-") or session_id.startswith("workflow-node-")
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -1502,15 +1511,18 @@ async def get_sessions(
                 limit=limit,
                 offset=offset,
                 min_message_count=min_message_count,
+                exclude_sources=_HIDDEN_SESSION_SOURCES,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
             )
             total = db.session_count(
                 min_message_count=min_message_count,
+                exclude_sources=_HIDDEN_SESSION_SOURCES,
                 include_archived=include_archived,
                 archived_only=archived_only,
             )
+            sessions = [s for s in sessions if not _is_hidden_session_row(s)]
             now = time.time()
             for s in sessions:
                 s["is_active"] = (
@@ -1547,10 +1559,12 @@ async def search_sessions(q: str = "", limit: int = 20):
                 else:
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
+            matches = db.search_messages(query=prefix_query, limit=limit, exclude_sources=_HIDDEN_SESSION_SOURCES)
             # Group by session_id — return unique sessions with their best snippet
             seen: dict = {}
             for m in matches:
+                if _is_hidden_session_row(m):
+                    continue
                 sid = m["session_id"]
                 if sid not in seen:
                     seen[sid] = {
@@ -8402,6 +8416,12 @@ _mount_plugin_api_routes()
 # not whether the routes exist.
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
 app.include_router(_dashboard_auth_router)
+
+# Native desktop workflow workbench routes.  HTTP requests inherit the same
+# /api token middleware as the rest of the dashboard, while the event WebSocket
+# explicitly receives the dashboard's WS auth predicate.
+from hermes_cli.workflow_api import create_workflow_router  # noqa: E402
+app.include_router(create_workflow_router(_ws_auth_ok))
 
 mount_spa(app)
 

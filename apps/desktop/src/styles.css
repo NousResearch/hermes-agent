@@ -2,7 +2,6 @@
 @plugin '@tailwindcss/typography';
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
-@import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
 @font-face {
@@ -439,6 +438,26 @@
   100% {
     background-position: 75% 75%;
   }
+}
+
+@keyframes codicon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.codicon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  fill: currentColor;
+  vertical-align: -0.125em;
+}
+
+.codicon-modifier-spin {
+  animation: codicon-spin 1.5s linear infinite;
+  transform-origin: center;
 }
 
 .arc-border {

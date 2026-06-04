@@ -22,7 +22,8 @@ export default defineConfig({
       react: path.resolve(__dirname, '../../node_modules/react'),
       'react-dom': path.resolve(__dirname, '../../node_modules/react-dom'),
       'react/jsx-dev-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-dev-runtime.js'),
-      'react/jsx-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-runtime.js')
+      'react/jsx-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-runtime.js'),
+      'shiki/wasm': path.resolve(__dirname, '../../node_modules/@streamdown/code/node_modules/shiki/dist/wasm.mjs')
     },
     dedupe: ['react', 'react-dom']
   },

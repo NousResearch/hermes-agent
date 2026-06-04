@@ -17,11 +17,23 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { writeClipboardText } from '@/components/ui/copy-button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { KbdGroup } from '@/components/ui/kbd'
 import {
   Sidebar,
@@ -33,22 +45,35 @@ import {
   SidebarMenuItem
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
-import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import {
+  exportWorkflowProject,
+  listWorkflowProjects,
+  removeWorkflowProjectFromHistory,
+  searchSessions,
+  updateWorkflowProject,
+  type SessionInfo,
+  type SessionSearchResult
+} from '@/hermes'
+import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import {
+  $pinnedWorkflowProjectIds,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
   $sidebarOpen,
   $sidebarPinsOpen,
   $sidebarRecentsOpen,
   pinSession,
+  pinWorkflowProject,
   reorderPinnedSession,
   setSidebarAgentsGrouped,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
   SIDEBAR_SESSIONS_PAGE_SIZE,
-  unpinSession
+  unpinSession,
+  unpinWorkflowProject
 } from '@/store/layout'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $selectedStoredSessionId,
   $sessions,
@@ -57,8 +82,9 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
+import type { WorkflowProject } from '@/types/workflow'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE, WORKFLOWS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -76,9 +102,15 @@ const NEW_SESSION_KBD: readonly string[] =
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
-    label: 'New session',
+    label: 'New chat',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
+  },
+  {
+    id: 'workflows',
+    label: 'Workflow 工作台',
+    icon: props => <Codicon name="graph" {...props} />,
+    route: `${WORKFLOWS_ROUTE}?new=1`
   },
   {
     id: 'skills',
@@ -92,11 +124,35 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
 
 const WORKSPACE_PAGE = 5
 const WS_ID_PREFIX = 'workspace:'
+const WORKFLOW_SESSION_PREFIXES = ['workflow-project-', 'workflow-node-'] as const
 
 const wsId = (id: string) => `${WS_ID_PREFIX}${id}`
 const parseWsId = (id: string) => (id.startsWith(WS_ID_PREFIX) ? id.slice(WS_ID_PREFIX.length) : null)
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
+const isWorkflowSessionId = (id: null | string | undefined) =>
+  WORKFLOW_SESSION_PREFIXES.some(prefix => String(id ?? '').startsWith(prefix))
+const isWorkflowSession = (session: Pick<SessionInfo, 'id' | 'source' | '_lineage_root_id'>) =>
+  session.source === 'workflow' || isWorkflowSessionId(session.id) || isWorkflowSessionId(session._lineage_root_id)
+
+const relativeProjectTime = (project: WorkflowProject) => {
+  const timestamp = project.lastOpenedAt ?? project.updatedAt ?? project.createdAt
+  const seconds = Math.max(0, Date.now() / 1000 - timestamp)
+
+  if (seconds < 60) {
+    return 'now'
+  }
+
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)}m`
+  }
+
+  if (seconds < 86400) {
+    return `${Math.floor(seconds / 3600)}h`
+  }
+
+  return `${Math.floor(seconds / 86400)}d`
+}
 
 function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[]): T[] {
   if (!orderIds.length) {
@@ -213,8 +269,10 @@ export function ChatSidebar({
   onNewSessionInWorkspace
 }: ChatSidebarProps) {
   const sidebarOpen = useStore($sidebarOpen)
+  const location = useLocation()
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
+  const pinnedWorkflowProjectIds = useStore($pinnedWorkflowProjectIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -226,25 +284,95 @@ export function ChatSidebar({
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [workflowProjects, setWorkflowProjects] = useState<WorkflowProject[]>([])
+  const [workflowProjectsLoading, setWorkflowProjectsLoading] = useState(false)
+  const [workflowProjectsOpen, setWorkflowProjectsOpen] = useState(true)
   const trimmedQuery = searchQuery.trim()
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
+  const currentWorkflowProjectId = useMemo(() => {
+    if (currentView !== 'workflows') {
+      return null
+    }
+
+    return new URLSearchParams(location.search).get('project')
+  }, [currentView, location.search])
+
+  const navigateToHermesHome = () =>
+    onNavigate({
+      action: 'new-session',
+      icon: props => <Codicon name="robot" {...props} />,
+      id: 'new-session',
+      label: 'New chat'
+    })
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
-  const sortedSessions = useMemo(() => [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a)), [sessions])
+  const sortedSessions = useMemo(
+    () => sessions.filter(session => !isWorkflowSession(session)).sort((a, b) => sessionTime(b) - sessionTime(a)),
+    [sessions]
+  )
+
+  const sortedWorkflowProjects = useMemo(() => {
+    const pinOrder = new Map(pinnedWorkflowProjectIds.map((id, index) => [id, index]))
+
+    return workflowProjects
+      .filter(project => !project.archived)
+      .sort((a, b) => {
+        const aPin = pinOrder.get(a.id)
+        const bPin = pinOrder.get(b.id)
+        if (aPin !== undefined || bPin !== undefined) {
+          if (aPin === undefined) return 1
+          if (bPin === undefined) return -1
+          return aPin - bPin
+        }
+
+        return (b.lastOpenedAt ?? b.updatedAt) - (a.lastOpenedAt ?? a.updatedAt)
+      })
+  }, [pinnedWorkflowProjectIds, workflowProjects])
+
+  const pinnedWorkflowProjectIdSet = useMemo(() => new Set(pinnedWorkflowProjectIds), [pinnedWorkflowProjectIds])
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      return
+    }
+
+    let disposed = false
+    setWorkflowProjectsLoading(true)
+    void listWorkflowProjects()
+      .then(result => {
+        if (!disposed) {
+          setWorkflowProjects(result.projects)
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setWorkflowProjects([])
+        }
+      })
+      .finally(() => {
+        if (!disposed) {
+          setWorkflowProjectsLoading(false)
+        }
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [sidebarOpen])
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
-    for (const s of sessions) {
+    for (const s of sortedSessions) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
@@ -253,7 +381,7 @@ export function ChatSidebar({
     }
 
     return map
-  }, [sessions])
+  }, [sortedSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -316,6 +444,10 @@ export function ChatSidebar({
     }
 
     for (const match of serverMatches) {
+      if (match.source === 'workflow' || isWorkflowSessionId(match.session_id)) {
+        continue
+      }
+
       if (out.has(match.session_id)) {
         continue
       }
@@ -420,6 +552,8 @@ export function ChatSidebar({
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
+                  (item.id === 'new-session' && currentView === 'chat') ||
+                  (item.id === 'workflows' && currentView === 'workflows') ||
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts')
@@ -503,6 +637,53 @@ export function ChatSidebar({
             rootClassName="min-h-0 flex-1 p-0"
             sessions={searchResults}
             workingSessionIdSet={workingSessionIdSet}
+          />
+        )}
+
+        {sidebarOpen && !trimmedQuery && (
+          <SidebarWorkflowProjectsSection
+            loading={workflowProjectsLoading}
+            onOpenProject={projectId =>
+              onNavigate({
+                id: 'workflows',
+                label: 'Workflow 工作台',
+                route: `${WORKFLOWS_ROUTE}?project=${encodeURIComponent(projectId)}`,
+                icon: props => <Codicon name="graph" {...props} />
+              })
+            }
+            onProjectRemoved={projectId => {
+              setWorkflowProjects(projects => projects.filter(project => project.id !== projectId))
+              unpinWorkflowProject(projectId)
+              if (currentWorkflowProjectId === projectId) {
+                navigateToHermesHome()
+              }
+            }}
+            onProjectUpdated={project => {
+              setWorkflowProjects(projects => {
+                if (project.archived) {
+                  return projects.filter(item => item.id !== project.id)
+                }
+
+                return projects.some(item => item.id === project.id)
+                  ? projects.map(item => (item.id === project.id ? project : item))
+                  : [project, ...projects]
+              })
+
+              if (project.archived && currentWorkflowProjectId === project.id) {
+                navigateToHermesHome()
+              }
+            }}
+            onTogglePin={projectId => {
+              if (pinnedWorkflowProjectIdSet.has(projectId)) {
+                unpinWorkflowProject(projectId)
+              } else {
+                pinWorkflowProject(projectId)
+              }
+            }}
+            onToggle={() => setWorkflowProjectsOpen(value => !value)}
+            open={workflowProjectsOpen}
+            pinnedProjectIds={pinnedWorkflowProjectIdSet}
+            projects={sortedWorkflowProjects}
           />
         )}
 
@@ -646,6 +827,267 @@ function SidebarPinnedEmptyState() {
       </span>
       <span>Shift-click a chat to pin · drag to reorder</span>
     </div>
+  )
+}
+
+function SidebarWorkflowProjectsSection({
+  loading,
+  onOpenProject,
+  onProjectRemoved,
+  onProjectUpdated,
+  onTogglePin,
+  onToggle,
+  open,
+  pinnedProjectIds,
+  projects
+}: {
+  loading: boolean
+  onOpenProject: (projectId: string) => void
+  onProjectRemoved: (projectId: string) => void
+  onProjectUpdated: (project: WorkflowProject) => void
+  onTogglePin: (projectId: string) => void
+  onToggle: () => void
+  open: boolean
+  pinnedProjectIds: Set<string>
+  projects: WorkflowProject[]
+}) {
+  return (
+    <SidebarGroup className="shrink-0 p-0 pb-1">
+      <SidebarSectionHeader label="Workflows" meta={loading ? '...' : String(projects.length)} onToggle={onToggle} open={open} />
+      {open && (
+        <SidebarGroupContent className="flex max-h-44 min-h-0 flex-col gap-px overflow-y-auto rounded-lg pb-2 pt-1">
+          {loading && projects.length === 0 ? (
+            <SidebarSessionSkeletons />
+          ) : projects.length ? (
+            projects.slice(0, 16).map(project => (
+              <WorkflowProjectContextMenu
+                key={project.id}
+                onProjectRemoved={onProjectRemoved}
+                onProjectUpdated={onProjectUpdated}
+                onTogglePin={onTogglePin}
+                pinned={pinnedProjectIds.has(project.id)}
+                project={project}
+              >
+                <button
+                  className="group flex min-h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-[0.8125rem] text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                  onClick={() => onOpenProject(project.id)}
+                  title={project.root}
+                  type="button"
+                >
+                  <Codicon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" name={pinnedProjectIds.has(project.id) ? 'pin' : 'graph'} />
+                  <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                  <span className="shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)">{relativeProjectTime(project)}</span>
+                </button>
+              </WorkflowProjectContextMenu>
+            ))
+          ) : (
+            <div className="rounded-md px-2 py-2 text-xs text-(--ui-text-tertiary)">No workflow projects yet.</div>
+          )}
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
+  )
+}
+
+function WorkflowProjectContextMenu({
+  children,
+  onProjectRemoved,
+  onProjectUpdated,
+  onTogglePin,
+  pinned,
+  project
+}: {
+  children: React.ReactNode
+  onProjectRemoved: (projectId: string) => void
+  onProjectUpdated: (project: WorkflowProject) => void
+  onTogglePin: (projectId: string) => void
+  pinned: boolean
+  project: WorkflowProject
+}) {
+  const [renameOpen, setRenameOpen] = useState(false)
+
+  const archiveProject = async () => {
+    triggerHaptic('selection')
+    try {
+      const bundle = await updateWorkflowProject(project.id, { archived: true })
+      onProjectUpdated(bundle.project)
+      notify({ durationMs: 2_000, kind: 'success', message: 'Workflow archived' })
+    } catch (err) {
+      notifyError(err, 'Archive workflow failed')
+    }
+  }
+
+  const removeProject = async () => {
+    triggerHaptic('warning')
+    const confirmed = window.confirm(`Remove "${project.name}" from Workflow history?\n\nThe project folder will not be deleted.`)
+    if (!confirmed) {
+      return
+    }
+    onProjectRemoved(project.id)
+    try {
+      await removeWorkflowProjectFromHistory(project.id)
+      notify({ durationMs: 2_000, kind: 'success', message: 'Workflow removed from history' })
+    } catch (err) {
+      onProjectUpdated(project)
+      if (pinned) {
+        onTogglePin(project.id)
+      }
+      notifyError(err, 'Remove workflow failed')
+    }
+  }
+
+  const exportProject = async () => {
+    triggerHaptic('selection')
+    try {
+      const result = await exportWorkflowProject(project)
+      if (!result.canceled) {
+        notify({ durationMs: 2_500, kind: 'success', message: 'Workflow exported' })
+      }
+    } catch (err) {
+      notifyError(err, 'Export workflow failed')
+    }
+  }
+
+  const copyText = async (value: string, label: string) => {
+    triggerHaptic('selection')
+    try {
+      await writeClipboardText(value)
+      notify({ durationMs: 1_500, kind: 'success', message: `${label} copied` })
+    } catch (err) {
+      notifyError(err, `Could not copy ${label.toLowerCase()}`)
+    }
+  }
+
+  return (
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+        <ContextMenuContent aria-label={`Actions for ${project.name}`} className="w-48">
+          <ContextMenuItem onSelect={() => onTogglePin(project.id)}>
+            <Codicon name="pin" size="0.875rem" />
+            <span>{pinned ? 'Unpin' : 'Pin'}</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={event => {
+            event.preventDefault()
+            void copyText(project.id, 'Workflow ID')
+          }}>
+            <Codicon name="copy" size="0.875rem" />
+            <span>Copy ID</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={event => {
+            event.preventDefault()
+            void copyText(project.root, 'Workflow path')
+          }}>
+            <Codicon name="root-folder" size="0.875rem" />
+            <span>Copy Path</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void exportProject()}>
+            <Codicon name="cloud-download" size="0.875rem" />
+            <span>Export</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => setRenameOpen(true)}>
+            <Codicon name="edit" size="0.875rem" />
+            <span>Rename</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => void archiveProject()}>
+            <Codicon name="archive" size="0.875rem" />
+            <span>Archive</span>
+          </ContextMenuItem>
+          <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={() => void removeProject()} variant="destructive">
+            <Codicon name="trash" size="0.875rem" />
+            <span>Remove from history</span>
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      <RenameWorkflowProjectDialog
+        currentName={project.name}
+        onOpenChange={setRenameOpen}
+        onProjectUpdated={onProjectUpdated}
+        open={renameOpen}
+        projectId={project.id}
+      />
+    </>
+  )
+}
+
+function RenameWorkflowProjectDialog({
+  currentName,
+  onOpenChange,
+  onProjectUpdated,
+  open,
+  projectId
+}: {
+  currentName: string
+  onOpenChange: (open: boolean) => void
+  onProjectUpdated: (project: WorkflowProject) => void
+  open: boolean
+  projectId: string
+}) {
+  const [value, setValue] = useState(currentName)
+  const [submitting, setSubmitting] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (open) {
+      setValue(currentName)
+      window.setTimeout(() => inputRef.current?.select(), 0)
+    }
+  }, [currentName, open])
+
+  const submit = async () => {
+    const next = value.trim()
+    if (!next || submitting) {
+      return
+    }
+    if (next === currentName.trim()) {
+      onOpenChange(false)
+      return
+    }
+    setSubmitting(true)
+    try {
+      const bundle = await updateWorkflowProject(projectId, { name: next })
+      onProjectUpdated(bundle.project)
+      notify({ durationMs: 2_000, kind: 'success', message: 'Workflow renamed' })
+      onOpenChange(false)
+    } catch (err) {
+      notifyError(err, 'Rename workflow failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Rename workflow</DialogTitle>
+          <DialogDescription>Update the display name in the Workflow list. The folder path is not changed.</DialogDescription>
+        </DialogHeader>
+        <Input
+          autoFocus
+          disabled={submitting}
+          onChange={event => setValue(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void submit()
+            } else if (event.key === 'Escape') {
+              onOpenChange(false)
+            }
+          }}
+          ref={inputRef}
+          value={value}
+        />
+        <DialogFooter>
+          <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
+            Cancel
+          </Button>
+          <Button disabled={submitting || !value.trim()} onClick={() => void submit()} type="button">
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

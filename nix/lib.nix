@@ -233,27 +233,30 @@ in
       OLD_HASH=$(grep -oE 'npmDepsHash = "sha256-[^"]+"' "$LIB_FILE" | head -1 \
         | sed -E 's/npmDepsHash = "(.*)"/\1/')
 
-      if [ "$NEW_HASH" = "$OLD_HASH" ]; then
-        VERIFY_OUTPUT=$(nix build ".#${attr}.npmDeps" --no-link --print-build-logs 2>&1)
-        VERIFY_STATUS=$?
-        if [ "$VERIFY_STATUS" -eq 0 ]; then
-          echo "ok"
-          if [ -n "''${GITHUB_OUTPUT:-}" ]; then
-            {
-              echo "stale=false"
-              echo "changed=false"
-            } >> "$GITHUB_OUTPUT"
-          fi
-          exit 0
-        fi
-
+      VERIFY_OUTPUT=$(nix build ".#${attr}.npmDeps" --no-link --print-build-logs 2>&1)
+      VERIFY_STATUS=$?
+      if [ "$VERIFY_STATUS" -eq 0 ]; then
+        NEW_HASH="$OLD_HASH"
+      else
         CORRECT_HASH=$(echo "$VERIFY_OUTPUT" | awk '/got:/ {print $2; exit}')
-        if [ -z "$CORRECT_HASH" ]; then
+        if [ -n "$CORRECT_HASH" ]; then
+          NEW_HASH="$CORRECT_HASH"
+        else
           echo "npm deps verification failed with no hash mismatch:" >&2
           echo "$VERIFY_OUTPUT" | tail -40 >&2
           exit 1
         fi
-        NEW_HASH="$CORRECT_HASH"
+      fi
+
+      if [ "$NEW_HASH" = "$OLD_HASH" ]; then
+        echo "ok"
+        if [ -n "''${GITHUB_OUTPUT:-}" ]; then
+          {
+            echo "stale=false"
+            echo "changed=false"
+          } >> "$GITHUB_OUTPUT"
+        fi
+        exit 0
       fi
 
       HASH_LINE=$(grep -n 'npmDepsHash = "sha256-' "$LIB_FILE" | head -1 | cut -d: -f1)

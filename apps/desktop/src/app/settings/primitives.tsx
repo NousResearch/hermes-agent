@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -18,16 +19,7 @@ export function SettingsContent({ children }: { children: ReactNode }) {
 }
 
 export function Pill({ tone = 'muted', children }: { tone?: 'muted' | 'primary'; children: ReactNode }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6875rem]',
-        tone === 'primary' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
-      )}
-    >
-      {children}
-    </span>
-  )
+  return <Badge variant={tone === 'primary' ? 'default' : 'muted'}>{children}</Badge>
 }
 
 export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {

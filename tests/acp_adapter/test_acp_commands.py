@@ -196,3 +196,35 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
     assert state.queued_prompts == []
     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(agent_messages) >= 2
+
+
+@pytest.mark.asyncio
+async def test_send_usage_update_best_effort_returns_on_hang():
+    """_send_usage_update_best_effort must not block prompt() when the ACP
+    client does not consume the usage_update session update."""
+    import asyncio
+
+    class HangingConn:
+        """Connection whose session_update never returns."""
+        async def session_update(self, *args, **kwargs):
+            await asyncio.sleep(999)  # hang forever
+
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    # Give the fake agent a context compressor so _build_usage_update
+    # returns a real UsageUpdate (otherwise it short-circuits with None).
+    fake.context_compressor = SimpleNamespace(
+        context_length=128000, last_prompt_tokens=1000
+    )
+    state.agent = fake
+    acp_agent._conn = HangingConn()
+
+    # Use a very short timeout so the test doesn't wait 3 seconds.
+    acp_agent._USAGE_UPDATE_TIMEOUT = 0.1
+
+    import time
+    start = time.monotonic()
+    await acp_agent._send_usage_update_best_effort(state)
+    elapsed = time.monotonic() - start
+
+    # Must return well within the timeout (0.1s) plus some margin.
+    assert elapsed < 1.0, f"Best-effort update took {elapsed:.2f}s, expected < 1.0s"

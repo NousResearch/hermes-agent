@@ -690,6 +690,10 @@ class HermesACPAgent(acp.Agent):
             used=max(used, 0),
         )
 
+    # Timeout for best-effort session updates before returning PromptResponse.
+    # Non-critical telemetry must not block the final ACP response indefinitely.
+    _USAGE_UPDATE_TIMEOUT: float = 3.0
+
     async def _send_usage_update(self, state: SessionState) -> None:
         """Send ACP native context usage to the connected client."""
         if not self._conn:
@@ -708,6 +712,31 @@ class HermesACPAgent(acp.Agent):
                 state.session_id,
                 exc_info=True,
             )
+
+    async def _send_usage_update_best_effort(self, state: SessionState) -> None:
+        """Send usage update with a short timeout so it cannot block ``prompt()``.
+
+        Non-critical telemetry updates (context-usage indicators) should never
+        prevent the final ``PromptResponse(stop_reason="end_turn")`` from being
+        returned to the ACP client.  If the update hangs or the client is not
+        consuming it, we log and continue.
+        """
+        try:
+            await asyncio.wait_for(
+                self._send_usage_update(state),
+                timeout=self._USAGE_UPDATE_TIMEOUT,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning(
+                "ACP usage update timed out after %.1fs for session %s; "
+                "continuing without blocking prompt response",
+                self._USAGE_UPDATE_TIMEOUT,
+                state.session_id,
+            )
+        except Exception:
+            # Already logged inside _send_usage_update; swallow here to
+            # guarantee prompt() can return.
+            pass
 
     async def _send_session_info_update(self, session_id: str) -> None:
         """Send ACP native session metadata after Hermes changes it."""
@@ -1310,7 +1339,7 @@ class HermesACPAgent(acp.Agent):
                 if self._conn:
                     update = acp.update_agent_message_text(response_text)
                     await self._conn.session_update(session_id, update)
-                    await self._send_usage_update(state)
+                    await self._send_usage_update_best_effort(state)
                 return PromptResponse(stop_reason="end_turn")
 
         # If Zed sends another regular prompt while the same ACP session is
@@ -1574,7 +1603,7 @@ class HermesACPAgent(acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
 
-        await self._send_usage_update(state)
+        await self._send_usage_update_best_effort(state)
 
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)

@@ -197,6 +197,7 @@ export function ChatBar({
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
     pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS)
   )
+
   const prevSessionIdRef = useRef(sessionId)
 
   useEffect(() => {

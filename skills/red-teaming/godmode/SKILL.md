@@ -90,7 +90,7 @@ undo_jailbreak()
 7. **If a strategy works**, locks it in:
    - Writes the winning system prompt to `agent.system_prompt` in `config.yaml`
    - Writes prefill messages to `~/.hermes/prefill.json`
-   - Sets `agent.prefill_messages_file: "prefill.json"` in `config.yaml`
+   - Sets `prefill_messages_file: "prefill.json"` in `config.yaml`
 8. **Reports results** — which strategy won, score, preview of compliant response
 
 ### Strategy order per model family:
@@ -171,8 +171,7 @@ Create `~/.hermes/prefill.json`:
 
 Then set in `~/.hermes/config.yaml`:
 ```yaml
-agent:
-  prefill_messages_file: "prefill.json"
+prefill_messages_file: "prefill.json"
 ```
 
 Prefill messages are injected at the start of every API call, after the system prompt. They are ephemeral — never saved to sessions or trajectories. The model sees them as prior conversation context, establishing a pattern of compliance.

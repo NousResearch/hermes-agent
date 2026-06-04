@@ -281,26 +281,36 @@ def _collect_builtin_skill_names() -> Set[str]:
 def _collect_all_skill_names() -> Set[str]:
     """Scan all skill directories for available skill names."""
     names = _collect_builtin_skill_names()
+    if names:
+        logger.debug("内置 skills 已加载：%s", ", ".join(sorted(names)))
     for ext_dir in get_external_skills_dirs():
         if ext_dir.exists():
+            ext_names: Set[str] = set()
             for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
                 try:
                     content = skill_md.read_text(encoding="utf-8")[:2000]
                     frontmatter, _ = parse_frontmatter(content)
                     name = frontmatter.get("name", skill_md.parent.name)
-                    names.add(str(name).strip())
+                    ext_names.add(str(name).strip())
                 except Exception:
                     continue
+            if ext_names:
+                names |= ext_names
+                logger.debug("外部 skills 已加载（%s）：%s", ext_dir, ", ".join(sorted(ext_names)))
     user_dir = get_user_skills_dir()
     if user_dir.exists():
+        user_names: Set[str] = set()
         for skill_md in iter_skill_index_files(user_dir, "SKILL.md"):
             try:
                 content = skill_md.read_text(encoding="utf-8")[:2000]
                 frontmatter, _ = parse_frontmatter(content)
                 name = frontmatter.get("name", skill_md.parent.name)
-                names.add(str(name).strip())
+                user_names.add(str(name).strip())
             except Exception:
                 continue
+        if user_names:
+            names |= user_names
+            logger.debug("用户 skills 已加载（%s）：%s", user_dir, ", ".join(sorted(user_names)))
     return names
 
 
@@ -415,13 +425,18 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories: local ``~/.hermes/skills/`` first,
+    then user-downloaded ``skills_user/``, then external dirs.
 
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
     """
     dirs = [get_skills_dir()]
+    user_dir = get_user_skills_dir()
+    if user_dir.exists():
+        dirs.append(user_dir)
     dirs.extend(get_external_skills_dirs())
+    logger.debug("skills 搜索目录：%s", ", ".join(str(d) for d in dirs))
     return dirs
 
 

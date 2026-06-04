@@ -558,7 +558,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import get_external_skills_dirs, get_user_skills_dir, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -566,11 +566,15 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan local dir first, then user-downloaded, then external dirs
     dirs_to_scan = []
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
+    user_dir = get_user_skills_dir()
+    if user_dir.exists():
+        dirs_to_scan.append(user_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
+    logger.debug("skills 搜索目录：%s", ", ".join(str(d) for d in dirs_to_scan))
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):

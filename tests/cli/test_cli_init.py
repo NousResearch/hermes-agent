@@ -824,3 +824,32 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestSubagentSessionEnvPreservation:
+    """init_agent must not clobber the parent's HERMES_SESSION_ID when called
+    as a subagent (parent_session_id set).
+
+    Regression: before the fix, every child AIAgent.__init__ wrote its own
+    session_id into os.environ["HERMES_SESSION_ID"], overwriting the parent
+    session ID that tools and the CLI rely on for cross-session coordination.
+    """
+
+    def test_init_agent_subagent_preserves_parent_environ(self):
+        from run_agent import AIAgent
+
+        os.environ["HERMES_SESSION_ID"] = "parent-session"
+        try:
+            AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                parent_session_id="parent-session",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert os.environ.get("HERMES_SESSION_ID") == "parent-session", (
+                "init_agent must not overwrite HERMES_SESSION_ID when parent_session_id is set"
+            )
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)

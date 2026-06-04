@@ -1259,12 +1259,17 @@ def init_agent(
     # reference their own session for --resume commands, cross-session
     # coordination, and logging. Keep the ContextVar and os.environ
     # fallback synchronized because different tool paths still read both.
+    # Subagents skip the os.environ write so they don't clobber the parent's
+    # process-global HERMES_SESSION_ID; the ContextVar update is sufficient
+    # because subagent tool calls run in the same async task context.
+    _is_subagent = bool(parent_session_id)
     try:
         from gateway.session_context import set_current_session_id
 
-        set_current_session_id(agent.session_id)
+        set_current_session_id(agent.session_id, update_environ=not _is_subagent)
     except Exception:
-        os.environ["HERMES_SESSION_ID"] = agent.session_id
+        if not _is_subagent:
+            os.environ["HERMES_SESSION_ID"] = agent.session_id
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()

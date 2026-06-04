@@ -3155,5 +3155,44 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestSubagentSessionEnvIsolation(unittest.TestCase):
+    """Subagent init must not clobber the parent's HERMES_SESSION_ID env var.
+
+    Regression: before the fix, every child AIAgent.__init__ called
+    set_current_session_id(child_session_id) which overwrote the process-global
+    os.environ["HERMES_SESSION_ID"] with the child's ID. The parent's tools
+    (and any code reading the env var after delegation) then saw the child's
+    session ID instead of the original parent session.
+    """
+
+    def test_subagent_does_not_clobber_parent_environ(self):
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "parent-session-abc"
+
+        os.environ["HERMES_SESSION_ID"] = "parent-original"
+        try:
+            with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+                 patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_child = MagicMock()
+                mock_child.session_id = "child-session-xyz"
+                mock_build.return_value = mock_child
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "done",
+                    "api_calls": 1,
+                    "duration_seconds": 0.5,
+                }
+                delegate_task(goal="isolation test", parent_agent=parent)
+
+            self.assertEqual(
+                os.environ.get("HERMES_SESSION_ID"),
+                "parent-original",
+                "delegate_task must not overwrite the parent's HERMES_SESSION_ID",
+            )
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)
+
+
 if __name__ == "__main__":
     unittest.main()

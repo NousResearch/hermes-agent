@@ -3624,15 +3624,21 @@ async function probeRemoteAuthMode(rawUrl) {
   let providers = []
 
   if (authRequired) {
-    // Best-effort: a gated gateway exposes the registered OAuth providers so
-    // the button can read "Log in with Nous Research" instead of a generic
-    // label. A failure here doesn't change the auth mode, so swallow it.
+    // Best-effort: a gated gateway exposes the registered providers so the
+    // button can read "Sign in with Nous Research" instead of a generic
+    // label, and so a username/password provider can be distinguished from
+    // an OAuth-redirect one (``supports_password``). A failure here doesn't
+    // change the auth mode, so swallow it.
     try {
       const body = await fetchPublicJson(`${baseUrl}/api/auth/providers`, { timeoutMs: 8_000 })
       if (Array.isArray(body?.providers)) {
         providers = body.providers
           .filter(p => p && typeof p === 'object')
-          .map(p => ({ name: String(p.name || ''), displayName: String(p.display_name || p.name || '') }))
+          .map(p => ({
+            name: String(p.name || ''),
+            displayName: String(p.display_name || p.name || ''),
+            supportsPassword: Boolean(p.supports_password)
+          }))
           .filter(p => p.name)
       }
     } catch {

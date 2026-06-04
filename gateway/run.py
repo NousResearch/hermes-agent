@@ -3916,12 +3916,27 @@ class GatewayRunner:
             import textwrap
             from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
+            use_windows_service_spawn = False
+            try:
+                from hermes_cli.gateway_windows import (
+                    is_startup_entry_installed,
+                    is_task_registered,
+                )
+
+                use_windows_service_spawn = bool(
+                    is_task_registered() or is_startup_entry_installed()
+                )
+            except Exception:
+                use_windows_service_spawn = False
+
+            watcher_mode = "service-spawn" if use_windows_service_spawn else "cli-restart"
             cmd_argv = [*hermes_cmd, "gateway", "restart"]
             watcher = textwrap.dedent(
                 """
                 import os, subprocess, sys, time
                 pid = int(sys.argv[1])
-                cmd = sys.argv[2:]
+                mode = sys.argv[2]
+                cmd = sys.argv[3:]
                 deadline = time.monotonic() + 120
 
                 def _alive(p):
@@ -3955,19 +3970,23 @@ class GatewayRunner:
                     if not _alive(pid):
                         break
                     time.sleep(0.2)
-                _CREATE_NEW_PROCESS_GROUP = 0x00000200
-                _DETACHED_PROCESS = 0x00000008
-                _CREATE_NO_WINDOW = 0x08000000
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW,
-                )
+                if mode == "service-spawn":
+                    from hermes_cli.gateway_windows import _spawn_detached
+                    _spawn_detached()
+                else:
+                    _CREATE_NEW_PROCESS_GROUP = 0x00000200
+                    _DETACHED_PROCESS = 0x00000008
+                    _CREATE_NO_WINDOW = 0x08000000
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW,
+                    )
                 """
             ).strip()
             subprocess.Popen(
-                [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
+                [sys.executable, "-c", watcher, str(current_pid), watcher_mode, *cmd_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **windows_detach_popen_kwargs(),

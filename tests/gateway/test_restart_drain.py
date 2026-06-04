@@ -1,12 +1,15 @@
 import asyncio
 import shutil
 import subprocess
+import sys
+from types import SimpleNamespace
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import gateway.run as gateway_run
+import hermes_cli._subprocess_compat as subprocess_compat
 from agent.i18n import t
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -202,6 +205,86 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_uses_windows_service_spawn(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["C:/Hermes/hermes.exe"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.gateway_windows",
+        SimpleNamespace(
+            is_task_registered=lambda: True,
+            is_startup_entry_installed=lambda: False,
+        ),
+    )
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"creationflags": 0x1234},
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:3] == [gateway_run.sys.executable, "-c", cmd[2]]
+    assert cmd[3:5] == ["321", "service-spawn"]
+    assert "_spawn_detached()" in cmd[2]
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["creationflags"] == 0x1234
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_keeps_windows_cli_restart_without_service(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["C:/Hermes/hermes.exe"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.gateway_windows",
+        SimpleNamespace(
+            is_task_registered=lambda: False,
+            is_startup_entry_installed=lambda: False,
+        ),
+    )
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"creationflags": 0x5678},
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[3:5] == ["321", "cli-restart"]
+    assert cmd[-3:] == ["C:/Hermes/hermes.exe", "gateway", "restart"]
+    assert "_spawn_detached()" in cmd[2]
+    assert kwargs["creationflags"] == 0x5678
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

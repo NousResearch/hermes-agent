@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AlertCircle, AlertTriangle, CheckCircle2, type IconComponent, Info } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -30,8 +31,10 @@ const GHOST_BTN = 'bg-transparent text-muted-foreground hover:text-foreground'
 
 export function NotificationStack() {
   const notifications = useStore($notifications)
+  const { t } = useI18n()
   const lastNotificationIdRef = useRef<string | null>(null)
   const [expanded, setExpanded] = useState(false)
+  const copy = t.notifications
 
   useEffect(() => {
     if (notifications.length <= 1) {
@@ -72,7 +75,7 @@ export function NotificationStack() {
   // scope, so fall back to its constant (34px) when mounted on <body>.
   return createPortal(
     <div
-      aria-label="Notifications"
+      aria-label={copy.region}
       className="pointer-events-none fixed left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] z-[200] flex w-[min(32rem,calc(100%-2rem))] -translate-x-1/2 flex-col gap-2"
       role="region"
     >
@@ -81,10 +84,10 @@ export function NotificationStack() {
       {overflowCount > 0 && (
         <div className={cn(STACK_SURFACE, 'flex min-h-8 items-center justify-between rounded-lg px-3 text-xs')}>
           <button className={cn(GHOST_BTN, 'font-medium')} onClick={() => setExpanded(v => !v)} type="button">
-            {expanded ? 'Hide' : 'Show'} {overflowCount} more {overflowCount === 1 ? 'notification' : 'notifications'}
+            {expanded ? copy.hide : copy.show} {copy.more(overflowCount)}
           </button>
           <button className={GHOST_BTN} onClick={clearNotifications} type="button">
-            Clear all
+            {copy.clearAll}
           </button>
         </div>
       )}
@@ -97,6 +100,8 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
   const styles = tone[notification.kind]
   const Icon = styles.icon
   const hasDetail = Boolean(notification.detail && notification.detail !== notification.message)
+  const { t } = useI18n()
+  const copy = t.notifications
 
   return (
     <Alert
@@ -126,7 +131,7 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
         </AlertDescription>
       </div>
       <button
-        aria-label="Dismiss notification"
+        aria-label={copy.dismiss}
         className="col-start-3 -mr-1 grid size-6 place-items-center rounded-md bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={() => dismissNotification(notification.id)}
         type="button"
@@ -138,9 +143,12 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
 }
 
 function NotificationDetail({ detail }: { detail: string }) {
+  const { t } = useI18n()
+  const copy = t.notifications
+
   return (
     <details className="mt-2 text-xs text-muted-foreground">
-      <summary className="select-none font-medium text-muted-foreground hover:text-foreground">Details</summary>
+      <summary className="select-none font-medium text-muted-foreground hover:text-foreground">{copy.details}</summary>
       <div className="mt-1 rounded-md border border-border/70 bg-background/65 p-2">
         <pre className="max-h-32 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed">
           {detail}
@@ -148,12 +156,12 @@ function NotificationDetail({ detail }: { detail: string }) {
         <CopyButton
           appearance="inline"
           className="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-accent hover:text-foreground"
-          errorMessage="Could not copy notification detail"
+          errorMessage={copy.copyDetailFailed}
           iconClassName="size-3"
-          label="Copy detail"
+          label={copy.copyDetail}
           text={detail}
         >
-          Copy detail
+          {copy.copyDetail}
         </CopyButton>
       </div>
     </details>

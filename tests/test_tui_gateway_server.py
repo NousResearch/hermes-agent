@@ -2476,11 +2476,15 @@ def test_prompt_submit_rebinds_session_transport_for_reconnected_client(monkeypa
     assert resp["result"]["status"] == "streaming"
     assert session["transport"] is new_transport
     assert old_transport.frames == []
+    # The fork's rebinding guarantee: every event for this turn lands on the
+    # reconnected (new) transport, none on the stale old one. Upstream now emits
+    # a trailing session.info from the turn-dispatcher finally block after the
+    # streaming message.* sequence, so it appears here too.
     assert [
         frame["params"]["type"]
         for frame in new_transport.frames
         if frame.get("method") == "event"
-    ] == ["message.start", "message.delta", "message.complete"]
+    ] == ["message.start", "message.delta", "message.complete", "session.info"]
 
 
 def test_prompt_submit_expands_context_refs(monkeypatch):

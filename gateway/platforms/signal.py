@@ -15,6 +15,7 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import os
 import random
 import time
@@ -226,14 +227,6 @@ class SignalAdapter(BasePlatformAdapter):
         # recorded at adapter level (run.py still enforces auth separately).
         dm_allowed_str = os.getenv("SIGNAL_ALLOWED_USERS", "*")
         self.dm_allow_from = set(_parse_comma_list(dm_allowed_str))
-
-        # Path remapping for multi-container setups where signal-cli runs
-        # in a separate container.  HERMES_HOME (default /opt/data) is the
-        # container-internal path, but signal-cli mounts the host data dir
-        # at its real path.  HERMES_HOST_DATA_DIR tells us the host path
-        # so we can translate before passing to signal-cli RPC.
-        self._container_data_dir = os.environ.get("HERMES_HOME", "/opt/data")
-        self._host_data_dir = os.environ.get("HERMES_HOST_DATA_DIR", "")
 
         # HTTP client
         self.client: Optional[httpx.AsyncClient] = None
@@ -1064,35 +1057,33 @@ class SignalAdapter(BasePlatformAdapter):
     # JSON-RPC Communication
     # ------------------------------------------------------------------
 
-    def _remap_path(self, path: str) -> str:
-        """Translate container-internal paths to host paths for signal-cli.
+    def _attachment_arg(self, path: str) -> str:
+        """Build the signal-cli ``send`` attachment argument for a local file.
 
-        In multi-container setups signal-cli can't see /opt/data - it mounts
-        the host data dir at its real path.  When HERMES_HOST_DATA_DIR is set,
-        rewrite /opt/data/... -> /host/path/... so signal-cli can read the file.
+        In HSM multi-container deployments signal-cli runs in its own
+        container and cannot see the agent's filesystem (``/opt/data``,
+        ``/tmp``), so a bare file path passed to the ``send`` RPC fails with
+        ``AttachmentInvalidException``. Rather than depend on a brittle web
+        of shared host mounts (one per agent, which doesn't scale and the
+        daemon compose never wired up), inline the file as a base64
+        ``data:`` URI — signal-cli 0.14+ accepts
+        ``data:<mime>;filename=<name>;base64,<data>`` for ``--attachment``.
+        This mirrors the inbound path, which already pulls attachments as
+        base64 via ``getAttachment``, and works for any source directory
+        with zero compose changes (single-container setups included).
 
-        Files in /tmp/ are copied to the data dir first since /tmp/ is never
-        shared between containers.
+        Falls back to the raw path if the file can't be read, so a genuinely
+        missing file surfaces signal-cli's own error instead of being masked.
         """
-        if not self._host_data_dir:
+        try:
+            data = Path(path).read_bytes()
+        except OSError as e:
+            logger.warning("Signal: could not read attachment %s: %s", path, e)
             return path
-
-        # /tmp/ files: copy to data dir so signal-cli can access them
-        if path.startswith("/tmp/"):
-            import shutil
-            cache_dir = Path(self._container_data_dir) / "cache" / "images"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            dest = cache_dir / Path(path).name
-            try:
-                shutil.copy2(path, dest)
-                path = str(dest)
-            except Exception as e:
-                logger.warning("Signal: failed to copy %s to data dir: %s", path, e)
-                return path
-
-        if path.startswith(self._container_data_dir):
-            return self._host_data_dir + path[len(self._container_data_dir):]
-        return path
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        name = Path(path).name
+        b64 = base64.b64encode(data).decode("ascii")
+        return f"data:{mime};filename={name};base64,{b64}"
 
     async def _rpc(
         self,
@@ -1516,7 +1507,7 @@ class SignalAdapter(BasePlatformAdapter):
                     chat_id, idx + 1, len(att_batches), estimated
                 )
 
-            params = dict(base_params, attachments=[self._remap_path(p) for p in att_batch])
+            params = dict(base_params, attachments=[self._attachment_arg(p) for p in att_batch])
             send_timeout = _signal_send_timeout(n)
 
             for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
@@ -1624,7 +1615,7 @@ class SignalAdapter(BasePlatformAdapter):
         params: Dict[str, Any] = {
             "account": self.account,
             "message": caption or "",
-            "attachments": [self._remap_path(file_path)],
+            "attachments": [self._attachment_arg(file_path)],
         }
 
         if chat_id.startswith("group:"):
@@ -1663,7 +1654,7 @@ class SignalAdapter(BasePlatformAdapter):
         params: Dict[str, Any] = {
             "account": self.account,
             "message": caption or "",
-            "attachments": [self._remap_path(file_path)],
+            "attachments": [self._attachment_arg(file_path)],
         }
 
         if chat_id.startswith("group:"):

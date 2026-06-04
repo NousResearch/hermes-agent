@@ -407,7 +407,9 @@ class TestSignalSendImageFile:
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["account"] == adapter.account
         assert captured[0]["params"]["recipient"] == ["+155****4567"]
-        assert captured[0]["params"]["attachments"] == [str(img_path)]
+        _att = captured[0]["params"]["attachments"]
+        assert len(_att) == 1 and _att[0].startswith("data:") and ";base64," in _att[0]
+        assert f"filename={img_path.name}" in _att[0]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         # Typing indicator must be stopped before sending
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
@@ -592,7 +594,9 @@ class TestSignalSendVoice:
 
         assert result.success is True
         assert captured[0]["method"] == "send"
-        assert captured[0]["params"]["attachments"] == [str(audio_path)]
+        _att = captured[0]["params"]["attachments"]
+        assert len(_att) == 1 and _att[0].startswith("data:") and ";base64," in _att[0]
+        assert f"filename={audio_path.name}" in _att[0]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
@@ -681,7 +685,9 @@ class TestSignalSendVideo:
 
         assert result.success is True
         assert captured[0]["method"] == "send"
-        assert captured[0]["params"]["attachments"] == [str(vid_path)]
+        _att = captured[0]["params"]["attachments"]
+        assert len(_att) == 1 and _att[0].startswith("data:") and ";base64," in _att[0]
+        assert f"filename={vid_path.name}" in _att[0]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
@@ -2022,21 +2028,42 @@ class TestObserveOnlyReactionSuppression:
         adapter.send_reaction.assert_called_once()
 
 
-class TestRemapPath:
-    """Multi-container path remapping for signal-cli (HERMES_HOST_DATA_DIR)."""
+class TestAttachmentArg:
+    """Outbound attachments are inlined as base64 data: URIs so a
+    separate-container signal-cli can read them without shared mounts."""
 
-    def test_passthrough_when_host_dir_unset(self, monkeypatch):
-        monkeypatch.delenv("HERMES_HOST_DATA_DIR", raising=False)
+    def test_encodes_file_as_data_uri(self, monkeypatch, tmp_path):
+        import base64 as _b64
         adapter = _make_signal_adapter(monkeypatch)
-        assert adapter._remap_path("/opt/data/cache/x.jpg") == "/opt/data/cache/x.jpg"
+        f = tmp_path / "hello.txt"
+        f.write_bytes(b"hello-attachment")
+        arg = adapter._attachment_arg(str(f))
+        assert arg.startswith("data:text/plain;filename=hello.txt;base64,")
+        payload = arg.split("base64,", 1)[1]
+        assert _b64.b64decode(payload) == b"hello-attachment"
 
-    def test_remaps_container_path_to_host(self, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", "/opt/data")
-        monkeypatch.setenv("HERMES_HOST_DATA_DIR", "/host/hermes-data")
+    def test_guesses_mime_from_extension(self, monkeypatch, tmp_path):
         adapter = _make_signal_adapter(monkeypatch)
-        assert adapter._remap_path("/opt/data/cache/x.jpg") == "/host/hermes-data/cache/x.jpg"
+        f = tmp_path / "pic.jpg"
+        f.write_bytes(b"\xff\xd8\xff\xe0jpegbytes")
+        arg = adapter._attachment_arg(str(f))
+        assert arg.startswith("data:image/jpeg;filename=pic.jpg;base64,")
 
-    def test_unrelated_path_passthrough_with_host_set(self, monkeypatch):
-        monkeypatch.setenv("HERMES_HOST_DATA_DIR", "/host/hermes-data")
+    def test_unknown_extension_falls_back_to_octet_stream(self, monkeypatch, tmp_path):
         adapter = _make_signal_adapter(monkeypatch)
-        assert adapter._remap_path("/srv/other.jpg") == "/srv/other.jpg"
+        f = tmp_path / "blob.weirdext"
+        f.write_bytes(b"\x00\x01\x02")
+        arg = adapter._attachment_arg(str(f))
+        assert arg.startswith("data:application/octet-stream;filename=blob.weirdext;base64,")
+
+    def test_missing_file_falls_back_to_raw_path(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter._attachment_arg("/nope/missing.jpg") == "/nope/missing.jpg"
+
+    def test_works_for_tmp_paths(self, monkeypatch, tmp_path):
+        # /tmp is never shared between containers; base64 sidesteps that.
+        adapter = _make_signal_adapter(monkeypatch)
+        f = tmp_path / "voice.m4a"
+        f.write_bytes(b"audio-bytes")
+        arg = adapter._attachment_arg(str(f))
+        assert ";base64," in arg and "filename=voice.m4a" in arg

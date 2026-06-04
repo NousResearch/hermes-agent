@@ -6380,6 +6380,25 @@ class GatewayRunner:
             return YuanbaoAdapter(config)
 
         return None
+    @staticmethod
+    def _chat_id_in_allowlist(source: SessionSource, allowed_group_ids: set) -> bool:
+        """Return True if this group chat is in *allowed_group_ids*.
+
+        Matches the platform chat id and any platform-internal alias. Signal
+        exposes ``chat_id`` as ``group:<id>`` while ``SIGNAL_GROUP_ALLOWED_USERS``
+        lists the bare ``<id>``; ``chat_id_alt`` carries that bare id and the
+        ``group:`` prefix is also stripped so explicit group IDs match either
+        form. (Wildcard ``*`` is handled by the caller.)
+        """
+        candidates = set()
+        if source.chat_id:
+            candidates.add(source.chat_id)
+            if ":" in source.chat_id:
+                candidates.add(source.chat_id.split(":", 1)[1])
+        if getattr(source, "chat_id_alt", None):
+            candidates.add(source.chat_id_alt)
+        return bool(candidates & allowed_group_ids)
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -6415,6 +6434,14 @@ class GatewayRunner:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                # Signal authorizes by group, not by sender. SIGNAL_GROUP_ALLOWED_USERS
+                # holds the allowed group IDs (or "*" = all groups). The Signal
+                # adapter already drops messages from non-allowlisted groups and
+                # marks unmentioned messages observe_only, so any group message
+                # reaching here is from an allowed group — authorize the sender so
+                # non-admin members get answered when they @mention the bot.
+                # DMs remain gated by SIGNAL_ALLOWED_USERS (handled below).
+                Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
@@ -6424,7 +6451,9 @@ class GatewayRunner:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    if "*" in allowed_group_ids or self._chat_id_in_allowlist(
+                        source, allowed_group_ids
+                    ):
                         return True
 
         if not user_id:
@@ -6455,6 +6484,7 @@ class GatewayRunner:
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -6529,7 +6559,9 @@ class GatewayRunner:
             allowed_group_ids = {
                 chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
             }
-            if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+            if "*" in allowed_group_ids or self._chat_id_in_allowlist(
+                source, allowed_group_ids
+            ):
                 return True
 
         # Backward-compat shim for #15027: prior to PR #17686,

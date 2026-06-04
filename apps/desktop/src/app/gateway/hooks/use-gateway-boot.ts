@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
+import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -232,8 +233,10 @@ export function useGatewayBoot({
         publish(conn)
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
-        // conn.wsUrl can already be stale; getGatewayWsUrl() re-mints it.
-        const wsUrl = (await desktop.getGatewayWsUrl?.().catch(() => null)) || conn.wsUrl
+        // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
+        // failure, throws a reauth error rather than connecting with a dead
+        // ticket (which would surface as an opaque "connection closed").
+        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
 
         if (cancelled) {

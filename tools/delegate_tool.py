@@ -13,12 +13,13 @@ Each child gets:
   - A focused system prompt built from the delegated goal + context
 
 The parent's context only sees the delegation call and the summary result,
-never the child's intermediate tool calls or reasoning.
+never the child's intermediate tool calls or reasoning.  A compact streaming_log shows real-time tool usage.
 """
 
 import enum
 import json
 import logging
+import queue
 
 logger = logging.getLogger(__name__)
 import os
@@ -691,6 +692,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    event_queue=None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -744,6 +746,19 @@ def _build_child_progress_callback(
     def _relay(
         event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs
     ):
+        # Push to streaming event queue for parent real-time monitoring
+        if event_queue is not None:
+            try:
+                event_queue.put_nowait({
+                    "type": event_type,
+                    "tool_name": tool_name,
+                    "preview": preview,
+                    "timestamp": time.time(),
+                    "task_index": task_index,
+                })
+            except (queue.Full, Exception):
+                pass  # non-blocking: queue full → drop event, don't block child
+
         if not parent_cb:
             return
         payload = _identity_kwargs()
@@ -888,6 +903,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    event_queue=None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -997,6 +1013,7 @@ def _build_child_agent(
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
+        event_queue=event_queue,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1931,6 +1948,47 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _drain_streaming_events(q: queue.Queue) -> list:
+    """Drain all events from the queue into a compact, deduplicated log."""
+    events = []
+    while True:
+        try:
+            events.append(q.get_nowait())
+        except queue.Empty:
+            break
+
+    if not events:
+        return []
+
+    # Deduplicate: consecutive same-tool events are collapsed
+    compact = []
+    for evt in events:
+        if compact and compact[-1].get("tool_name") == evt.get("tool_name") \
+           and evt.get("type") == "subagent.tool":
+            # Update the last entry's count
+            compact[-1]["count"] = compact[-1].get("count", 1) + 1
+            continue
+        evt["count"] = 1
+        compact.append(evt)
+
+    # Format for parent context (keep it terse for token efficiency)
+    lines = []
+    for evt in compact:
+        ts = evt.get("task_index", "?")
+        kind = evt.get("type", "?")
+        tool = evt.get("tool_name") or ""
+        count = evt.get("count", 1)
+        if kind == "subagent.tool":
+            suffix = f" (x{count})" if count > 1 else ""
+            lines.append(f"[sub-{ts}] {tool}{suffix}")
+        elif kind == "subagent.thinking":
+            preview = (evt.get("preview") or "")[:60]
+            lines.append(f"[sub-{ts}] thinking: {preview}")
+        elif kind == "subagent.progress":
+            lines.append(f"[sub-{ts}] {evt.get('preview', '')}")
+    return lines
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2052,6 +2110,7 @@ def delegate_task(
 
     overall_start = time.monotonic()
     results = []
+    streaming_events = queue.Queue()
 
     n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)
@@ -2096,6 +2155,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                event_queue=streaming_events,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2324,10 +2384,14 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
+    # Drain streaming events into a compact log for the parent agent's context
+    streaming_log = _drain_streaming_events(streaming_events)
+
     return json.dumps(
         {
             "results": results,
             "total_duration_seconds": total_duration,
+            "streaming_log": streaming_log,
         },
         ensure_ascii=False,
     )
@@ -2557,7 +2621,7 @@ def _build_top_level_description() -> str:
     return (
         "Spawn one or more subagents to work on tasks in isolated contexts. "
         "Each subagent gets its own conversation, terminal session, and toolset. "
-        "Only the final summary is returned -- intermediate tool results "
+        "A compact streaming_log of subagent tool usage is returned alongside the final summary — intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"

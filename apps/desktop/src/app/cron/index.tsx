@@ -1,4 +1,3 @@
-import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
@@ -13,6 +12,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { SearchField } from '@/components/ui/search-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -29,8 +29,8 @@ import { AlertTriangle, Clock, Pause, Pencil, Play, Trash2, Zap } from '@/lib/ic
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
-import { PageSearchShell } from '../page-search-shell'
-import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import { OverlayView } from '../overlays/overlay-view'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -305,14 +305,13 @@ function matchesQuery(job: CronJob, q: string): boolean {
   )
 }
 
-interface CronViewProps extends React.ComponentProps<'section'> {
-  setStatusbarItemGroup?: SetStatusbarItemGroup
+interface CronViewProps {
+  onClose: () => void
 }
 
-export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
+export function CronView({ onClose }: CronViewProps) {
   const [jobs, setJobs] = useState<CronJob[] | null>(null)
   const [query, setQuery] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
   const [busyJobId, setBusyJobId] = useState<null | string>(null)
 
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
@@ -320,17 +319,15 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
   const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const result = await getCronJobs()
       setJobs(result)
     } catch (err) {
       notifyError(err, 'Failed to load cron jobs')
-    } finally {
-      setRefreshing(false)
     }
   }, [])
+
+  useRefreshHotkey(refresh)
 
   useEffect(() => {
     void refresh()
@@ -426,29 +423,19 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
   }
 
   return (
-    <PageSearchShell
-      {...props}
-      onSearchChange={setQuery}
-      searchPlaceholder="Search cron jobs..."
-      searchTrailingAction={
-        <Button
-          aria-label={refreshing ? 'Refreshing cron jobs' : 'Refresh cron jobs'}
-          className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          disabled={refreshing}
-          onClick={() => void refresh()}
-          size="icon-xs"
-          title={refreshing ? 'Refreshing cron jobs' : 'Refresh cron jobs'}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
-        </Button>
-      }
-      searchValue={query}
-    >
-      {!jobs ? (
-        <PageLoader label="Loading cron jobs..." />
-      ) : visibleJobs.length === 0 ? (
+    <OverlayView closeLabel="Close cron" onClose={onClose}>
+      <div className="flex min-h-0 flex-1 flex-col pt-[calc(var(--titlebar-height)+0.5rem)]">
+        <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 pb-2">
+          <SearchField
+            containerClassName="max-w-[60vw]"
+            onChange={setQuery}
+            placeholder="Search cron jobs…"
+            value={query}
+          />
+        </div>
+        {!jobs ? (
+          <PageLoader label="Loading cron jobs..." />
+        ) : visibleJobs.length === 0 ? (
         // Empty state owns the primary "create" CTA — we used to also have
         // one in the filters bar but it was redundant. Only show the button
         // when there are zero jobs total; the search-empty case ("No
@@ -463,36 +450,37 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
           onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
           title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
         />
-      ) : (
-        <div className="h-full overflow-y-auto px-4 py-3">
-          {/* Inline header replaces the old top-bar "New cron" button. We
-              still need a single, always-visible affordance to add a job
-              when the list is non-empty (rows themselves only expose
-              edit/pause/trigger/delete). */}
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
-              {enabledCount}/{totalCount} active
-            </span>
-            <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
-              <Codicon name="add" />
-              New cron
-            </Button>
+        ) : (
+          <div className="mx-auto w-full max-w-4xl min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            {/* Inline header replaces the old top-bar "New cron" button. We
+                still need a single, always-visible affordance to add a job
+                when the list is non-empty (rows themselves only expose
+                edit/pause/trigger/delete). */}
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
+                {enabledCount}/{totalCount} active
+              </span>
+              <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                <Codicon name="add" />
+                New cron
+              </Button>
+            </div>
+            <div>
+              {visibleJobs.map(job => (
+                <CronJobRow
+                  busy={busyJobId === job.id}
+                  job={job}
+                  key={job.id}
+                  onDelete={() => setPendingDelete(job)}
+                  onEdit={() => setEditor({ mode: 'edit', job })}
+                  onPauseResume={() => void handlePauseResume(job)}
+                  onTrigger={() => void handleTrigger(job)}
+                />
+              ))}
+            </div>
           </div>
-          <div className="divide-y divide-border/40 rounded-lg border border-border/40 bg-background/70">
-            {visibleJobs.map(job => (
-              <CronJobRow
-                busy={busyJobId === job.id}
-                job={job}
-                key={job.id}
-                onDelete={() => setPendingDelete(job)}
-                onEdit={() => setEditor({ mode: 'edit', job })}
-                onPauseResume={() => void handlePauseResume(job)}
-                onTrigger={() => void handleTrigger(job)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
       <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
 
       <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
@@ -519,7 +507,7 @@ export function CronView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...pro
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </PageSearchShell>
+    </OverlayView>
   )
 }
 

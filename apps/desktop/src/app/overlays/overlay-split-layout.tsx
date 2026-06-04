@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { PAGE_INSET_X } from '../layout-constants'
+
 interface OverlaySplitLayoutProps {
   children: ReactNode
   className?: string
@@ -58,7 +60,8 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
     <main
       className={cn(
-        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent px-3 pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
+        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
+        PAGE_INSET_X,
         className
       )}
     >

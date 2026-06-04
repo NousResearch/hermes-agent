@@ -17,6 +17,7 @@ import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -213,6 +214,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [])
 
+  useRefreshHotkey(() => void refreshPlatforms())
+
   useEffect(() => {
     void refreshPlatforms()
   }, [refreshPlatforms])
@@ -344,14 +347,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {...props}
       onSearchChange={setQuery}
       searchPlaceholder="Search messaging..."
-      searchTrailingAction={null}
       searchValue={query}
     >
       {!platforms ? (
         <PageLoader label="Loading messaging platforms..." />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-y-auto border-b border-(--ui-stroke-tertiary) p-2 lg:border-b-0 lg:border-r">
+          <aside className="min-h-0 overflow-y-auto p-2">
             <ul className="space-y-1">
               {visiblePlatforms.map(platform => (
                 <li key={platform.id}>
@@ -406,8 +408,8 @@ function PlatformRow({
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
         active
-          ? 'bg-(--ui-bg-tertiary) text-foreground'
-          : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+          ? 'bg-(--ui-row-active-background) text-foreground'
+          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
       )}
       onClick={onSelect}
       type="button"
@@ -482,7 +484,7 @@ function PlatformDetail({
               {introCopy(platform)}
             </p>
             <div className="mt-3">
-              <Button asChild size="sm" variant="outline">
+              <Button asChild size="sm" variant="textStrong">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
                   Open setup guide
                   <ExternalLink className="size-3.5" />
@@ -560,19 +562,15 @@ function PlatformDetail({
         </div>
       </div>
 
-      <footer className="border-t border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-5 py-2.5">
+      <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
-            <Switch
-              aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
-              checked={platform.enabled}
-              disabled={saving === `enabled:${platform.id}`}
-              onCheckedChange={onToggle}
-            />
-            <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </label>
+          <Switch
+            aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
+            checked={platform.enabled}
+            disabled={saving === `enabled:${platform.id}`}
+            onCheckedChange={onToggle}
+            size="xs"
+          />
 
           <div className="ml-auto flex items-center gap-2">
             {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}

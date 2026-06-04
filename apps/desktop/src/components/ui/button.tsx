@@ -20,10 +20,12 @@ const buttonVariants = cva(
         secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50',
         link: 'text-primary underline-offset-4 decoration-current/20 hover:underline',
-        // Boxless inline-text action (no bg/border). Reads as label text; add
-        // `font-semibold` and/or `underline` at the call site to emphasize the
-        // actionable word (e.g. a "Change" affordance next to muted copy).
-        text: 'text-muted-foreground underline-offset-4 hover:text-foreground hover:underline'
+        // Boxless inline-text action (no bg/border). Quiet by default — reads as
+        // muted label text, underlines on hover (e.g. "Cancel", "Clear").
+        text: 'text-muted-foreground underline-offset-4 hover:text-foreground hover:underline',
+        // Emphasized inline-text action: bold + always-underlined link. Use for
+        // the actionable affordance in a row ("Change", "Set", "Open logs", …).
+        textStrong: 'font-semibold text-muted-foreground underline underline-offset-4 hover:text-foreground'
       },
       size: {
         default: 'px-3 py-1.5 has-[>svg]:px-2.5',

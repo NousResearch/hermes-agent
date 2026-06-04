@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { getGlobalModelOptions } from '@/hermes'
 import {
@@ -167,20 +168,20 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
 
   return (
     <div className="fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
+      <div className="relative w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
         <Header />
+        {onboarding.manual ? (
+          <Button
+            aria-label="Close"
+            className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+            onClick={() => closeManualOnboarding()}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Codicon name="close" size="1rem" />
+          </Button>
+        ) : null}
         <div className="grid gap-3 p-5">
-          {onboarding.manual ? (
-            <div className="flex justify-end">
-              <button
-                className="text-xs font-medium text-muted-foreground transition hover:text-foreground"
-                onClick={() => closeManualOnboarding()}
-                type="button"
-              >
-                Close
-              </button>
-            </div>
-          ) : null}
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? showPicker ? <Picker ctx={ctx} /> : <FlowPanel ctx={ctx} flow={flow} /> : <Preparing boot={boot} />}
         </div>

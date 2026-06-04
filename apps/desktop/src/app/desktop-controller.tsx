@@ -129,9 +129,11 @@ export function DesktopController() {
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
     commandCenterOpen,
+    cronOpen,
     currentView,
     openAgents,
     openCommandCenterSection,
+    profilesOpen,
     settingsOpen,
     toggleCommandCenter
   } = useOverlayRouting()
@@ -612,7 +614,6 @@ export function DesktopController() {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
-            onNavigateRoute={path => navigate(path)}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
         </Suspense>
@@ -621,6 +622,18 @@ export function DesktopController() {
       {agentsOpen && (
         <Suspense fallback={null}>
           <AgentsView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {cronOpen && (
+        <Suspense fallback={null}>
+          <CronView onClose={closeOverlayToPreviousRoute} />
+        </Suspense>
+      )}
+
+      {profilesOpen && (
+        <Suspense fallback={null}>
+          <ProfilesView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
     </>
@@ -751,25 +764,8 @@ export function DesktopController() {
             }
             path="artifacts"
           />
-          <Route
-            element={
-              <Suspense fallback={null}>
-                <CronView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
-            }
-            path="cron"
-          />
-          <Route
-            element={
-              <Suspense fallback={null}>
-                <ProfilesView
-                  setStatusbarItemGroup={setStatusbarItemGroup}
-                  setTitlebarToolGroup={setTitlebarToolGroup}
-                />
-              </Suspense>
-            }
-            path="profiles"
-          />
+          <Route element={null} path="cron" />
+          <Route element={null} path="profiles" />
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />
           <Route element={null} path="agents" />

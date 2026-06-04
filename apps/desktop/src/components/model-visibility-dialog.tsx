@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
+import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
@@ -86,7 +87,11 @@ export function ModelVisibilityDialog({ gw, onOpenChange, onOpenProviders, open,
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? 'Loading…' : 'No authenticated providers.'}
+              {modelOptions.isPending ? (
+                <BrailleSpinner className="mx-auto text-sm" />
+              ) : (
+                'No authenticated providers.'
+              )}
             </div>
           ) : (
             providers.map(provider => {

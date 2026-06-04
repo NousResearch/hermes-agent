@@ -298,12 +298,3 @@ export const MODE_OPTIONS: ModeOption[] = [
   { id: 'dark', label: 'Dark', description: 'Low-glare workspace', icon: Moon },
   { id: 'system', label: 'System', description: 'Follow OS appearance', icon: Monitor }
 ]
-
-export const SEARCH_PLACEHOLDER: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string> = {
-  about: 'About Hermes Desktop',
-  config: 'Search settings...',
-  gateway: 'Gateway connection...',
-  keys: 'Search API keys...',
-  mcp: 'Search MCP servers...',
-  sessions: 'Search archived sessions...'
-}

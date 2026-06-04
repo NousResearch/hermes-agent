@@ -117,7 +117,7 @@ class TestRebuildVenv:
 
         def fake_run(cmd, **kwargs):
             m = MagicMock(returncode=0)
-            if cmd[1] == "venv":
+            if "venv" in cmd:
                 # Simulate uv creating the venv dir
                 venv_dir.mkdir(exist_ok=True)
                 bin_dir = venv_dir / "bin"
@@ -132,7 +132,62 @@ class TestRebuildVenv:
             from hermes_cli.managed_uv import rebuild_venv
             result = rebuild_venv(uv_bin, venv_dir)
             assert result is True
-            mock_rmtree.assert_called_once_with(venv_dir, ignore_errors=True)
+            # rmtree is called without ignore_errors; failures are caught explicitly
+            mock_rmtree.assert_called_once_with(venv_dir)
+
+    def test_uv_venv_called_with_clear_flag(self, tmp_path):
+        """uv venv must always receive --clear so locked Windows dirs are handled atomically."""
+        venv_dir = tmp_path / "venv"
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock(returncode=0)
+            if "venv" in cmd:
+                venv_dir.mkdir(exist_ok=True)
+                bin_dir = venv_dir / "bin"
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                (bin_dir / "python").write_text("fake python")
+            elif "--version" in cmd:
+                m.stdout = "Python 3.11.0"
+            return m
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run) as mock_run, \
+             patch("hermes_cli.managed_uv.shutil.rmtree"):
+            from hermes_cli.managed_uv import rebuild_venv
+            rebuild_venv(uv_bin, venv_dir)
+
+        venv_call = next(c for c in mock_run.call_args_list if "venv" in c[0][0])
+        assert "--clear" in venv_call[0][0], "uv venv must be called with --clear"
+
+    def test_rmtree_failure_on_windows_is_warned_not_raised(self, tmp_path):
+        """On Windows, locked files cause rmtree to fail; this must be logged/warned, not raised."""
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock(returncode=0)
+            if "venv" in cmd:
+                venv_dir.mkdir(exist_ok=True)
+                bin_dir = venv_dir / "bin"
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                (bin_dir / "python").write_text("fake python")
+            elif "--version" in cmd:
+                m.stdout = "Python 3.11.0"
+            return m
+
+        lock_error = PermissionError("file in use by another process")
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.managed_uv.shutil.rmtree", side_effect=lock_error), \
+             patch("hermes_cli.managed_uv.logger") as mock_logger:
+            from hermes_cli.managed_uv import rebuild_venv
+            # Must not raise even though rmtree failed
+            result = rebuild_venv(uv_bin, venv_dir)
+
+        assert result is True, "rebuild_venv should succeed when rmtree fails but uv --clear succeeds"
+        mock_logger.warning.assert_called_once()
+        warning_msg = mock_logger.warning.call_args[0][0]
+        assert "--clear" in warning_msg or "clear" in warning_msg.lower()
 
     def test_rebuild_failure_returns_false(self, tmp_path):
         venv_dir = tmp_path / "venv"

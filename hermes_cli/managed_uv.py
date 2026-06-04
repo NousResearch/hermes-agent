@@ -105,13 +105,33 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
     old venv may point to a Python without FTS5, so we rebuild it with a
     fresh interpreter from the current managed uv.  Returns ``True`` on
     success.
+
+    On Windows, running hermes.exe / python.exe locks files inside the venv so
+    ``shutil.rmtree`` often fails silently (ignore_errors=True).  We therefore
+    always pass ``--clear`` to ``uv venv`` so uv itself handles the pre-existing
+    directory atomically, even when rmtree leaves behind locked files.
     """
     if venv_dir.exists():
         print(f"  → Rebuilding venv (old Python may lack FTS5)...")
-        shutil.rmtree(venv_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(venv_dir)
+        except Exception as exc:
+            # On Windows, running hermes.exe / python.exe holds file locks
+            # inside the venv, so rmtree fails.  Log a warning and let
+            # ``uv venv --clear`` handle the leftover directory atomically.
+            logger.warning(
+                "Could not remove venv dir %s before rebuild (will rely on "
+                "`uv venv --clear` to clear it): %s",
+                venv_dir,
+                exc,
+            )
+            print(
+                f"  ⚠ Could not remove {venv_dir} ({exc}); "
+                "uv will clear it via --clear"
+            )
 
     result = subprocess.run(
-        [uv_bin, "venv", str(venv_dir), "--python", python_version],
+        [uv_bin, "venv", "--clear", str(venv_dir), "--python", python_version],
         capture_output=True,
         text=True,
         check=False,

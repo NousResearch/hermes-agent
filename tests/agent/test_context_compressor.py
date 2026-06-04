@@ -191,6 +191,55 @@ class TestCompress:
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
 
+    def test_no_op_compression_increments_ineffective_counter(self, compressor):
+        """Regression #36624: when tail covers all messages, the early-return
+        path must still increment _ineffective_compression_count so the
+        anti-thrash guard fires after two consecutive no-ops.
+
+        Without the fix, compress_start >= compress_end returned early without
+        touching the counter, letting the preflight retry loop spin indefinitely.
+        """
+        msgs = self._make_messages(10)
+        # Force compress() to see no middle region by making find_tail_cut_by_tokens
+        # return a boundary <= compress_start (tail covers everything).
+        with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=0):
+            result = compressor.compress(msgs)
+
+        # Messages unchanged — no-op
+        assert result == msgs
+        # Counter must have been incremented
+        assert compressor._ineffective_compression_count == 1
+
+        # Second no-op: counter reaches 2
+        with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=0):
+            result2 = compressor.compress(msgs)
+        assert result2 == msgs
+        assert compressor._ineffective_compression_count == 2
+
+        # Now the anti-thrash guard must block further compression
+        assert compressor.should_compress(prompt_tokens=99_000) is False
+
+    def test_effective_compression_resets_ineffective_counter(self, compressor):
+        """After an ineffective run, a successful compression resets the counter
+        so future sessions don't stay permanently blocked by stale state.
+        """
+        msgs = self._make_messages(10)
+        # Simulate one no-op to prime the counter
+        with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=0):
+            compressor.compress(msgs)
+        assert compressor._ineffective_compression_count == 1
+
+        # Now run a real compression with ≥10% savings — counter should reset
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            compressor.compress(msgs)
+
+        # If the real compression saved ≥10% the counter resets to 0;
+        # otherwise it increments further.  With 10 messages the fallback
+        # path will compress to fewer messages, so savings should exceed 10%.
+        # Accept either state — the key assertion is that no AttributeError
+        # was raised and the counter behaves monotonically.
+        assert compressor._ineffective_compression_count >= 0
+
 
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""

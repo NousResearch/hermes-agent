@@ -531,7 +531,8 @@ export function useMessageStream({
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
-          busy: false
+          busy: false,
+          needsInput: false
         }
       })
 
@@ -588,7 +589,8 @@ export function useMessageStream({
           pendingBranchGroup: null,
           sawAssistantPayload: true,
           awaitingResponse: false,
-          busy: false
+          busy: false,
+          needsInput: false
         }
       })
     },
@@ -786,6 +788,11 @@ export function useMessageStream({
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+          // A pending clarify blocks the turn, so the first tool.complete after
+          // one is the clarify resolving — drop the "needs input" flag here so
+          // the sidebar indicator clears as soon as it's answered, not only at
+          // message.complete.
+          updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
@@ -829,13 +836,11 @@ export function useMessageStream({
 
           // The transcript only renders the active session, so a background
           // clarify is otherwise invisible (the row just keeps spinning like
-          // it's working). Nudge the user toward the chat that needs them.
-          if (!isActiveEvent) {
-            notify({
-              kind: 'info',
-              title: 'Another chat needs input',
-              message: 'Hermes asked a question in a background session. Open it to answer.'
-            })
+          // it's working). Flag the session so the sidebar shows a persistent
+          // "needs input" indicator on its row — works for the active session
+          // too, and survives alt-tab / window blur (unlike a toast).
+          if (sessionId) {
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
         }
       } else if (event.type === 'approval.request') {

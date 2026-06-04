@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { ComponentProps, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenu,
@@ -12,7 +13,6 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
-import { Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { $fileBrowserOpen, $sidebarOpen, toggleFileBrowserOpen, toggleSidebarOpen } from '@/store/layout'
@@ -109,7 +109,7 @@ export function TitlebarControls({
   const systemTools: TitlebarTool[] = [
     {
       active: hapticsMuted,
-      icon: hapticsMuted ? <VolumeX /> : <Volume2 />,
+      icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
       id: 'haptics',
       label: hapticsMuted ? 'Unmute haptics' : 'Mute haptics',
       onSelect: toggleHaptics
@@ -181,15 +181,20 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
+        <Button
           aria-label="Profiles"
-          className={cn(titlebarButtonClass, 'grid place-items-center bg-transparent select-none [&_svg]:size-4')}
+          className={cn(titlebarButtonClass, 'bg-transparent select-none')}
           onPointerDown={event => event.stopPropagation()}
+          size="icon-titlebar"
           title="Profiles"
           type="button"
+          variant="ghost"
         >
-          <Codicon name="account" />
-        </button>
+          {/* Optical bump: the `account` glyph has more internal padding than
+              `search`/`settings-gear`, so at the shared 0.875rem it reads small.
+              Nudge just this glyph to visually match its neighbours. */}
+          <Codicon name="account" size="1rem" />
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64" sideOffset={8}>
         <DropdownMenuLabel>
@@ -216,29 +221,30 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
 function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
   const className = cn(
     titlebarButtonClass,
-    'grid place-items-center bg-transparent select-none [&_svg]:size-4',
+    'bg-transparent select-none',
     tool.active && 'bg-(--ui-control-active-background)! text-foreground!',
     tool.className
   )
 
   if (tool.href) {
     return (
-      <a
-        aria-label={tool.label}
-        className={className}
-        href={tool.href}
-        onPointerDown={event => event.stopPropagation()}
-        rel="noreferrer"
-        target="_blank"
-        title={tool.title ?? tool.label}
-      >
-        {tool.icon}
-      </a>
+      <Button asChild className={className} size="icon-titlebar" variant="ghost">
+        <a
+          aria-label={tool.label}
+          href={tool.href}
+          onPointerDown={event => event.stopPropagation()}
+          rel="noreferrer"
+          target="_blank"
+          title={tool.title ?? tool.label}
+        >
+          {tool.icon}
+        </a>
+      </Button>
     )
   }
 
   return (
-    <button
+    <Button
       aria-label={tool.label}
       aria-pressed={tool.active ?? undefined}
       className={className}
@@ -251,10 +257,12 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         tool.onSelect?.()
       }}
       onPointerDown={event => event.stopPropagation()}
+      size="icon-titlebar"
       title={tool.title ?? tool.label}
       type="button"
+      variant="ghost"
     >
       {tool.icon}
-    </button>
+    </Button>
   )
 }

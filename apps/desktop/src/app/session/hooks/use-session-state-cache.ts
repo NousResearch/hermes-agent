@@ -4,7 +4,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $busy, $messages, noteSessionActivity, setSessionWorking } from '@/store/session'
+import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -152,7 +152,12 @@ export function useSessionStateCache({
         setSessionWorking(previous.storedSessionId, false)
       }
 
+      if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
+        setSessionAttention(previous.storedSessionId, false)
+      }
+
       setSessionWorking(next.storedSessionId, next.busy)
+      setSessionAttention(next.storedSessionId, next.needsInput)
       // Every state update is effectively a "still alive" heartbeat for
       // streaming events. The session-store watchdog uses this to keep the
       // working flag alive during long-running turns and to clear it once

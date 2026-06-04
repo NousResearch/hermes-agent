@@ -31,7 +31,7 @@ interface RightSidebarTab {
 }
 
 const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
-  { id: 'files', label: 'File system', icon: 'files' },
+  { id: 'files', label: 'File system', icon: 'list-tree' },
   { id: 'terminal', label: 'Terminal', icon: 'terminal' }
 ]
 
@@ -141,23 +141,24 @@ function RightSidebarChrome({
       <div className="flex items-center gap-2 px-2.5 py-1">
         <nav aria-label="Right sidebar panels" className="flex min-w-0 items-center gap-1">
           {tabs.map(tab => (
-            <button
+            <Button
               aria-label={tab.label}
               aria-pressed={tab.id === activeTab}
               className={cn(
-                'grid size-6 shrink-0 place-items-center rounded-lg text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring active:bg-(--ui-control-active-background) active:text-foreground',
-                'data-[active=true]:bg-(--ui-control-active-background) data-[active=true]:text-foreground'
+                'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                tab.id === activeTab && 'bg-(--ui-control-active-background) text-foreground'
               )}
-              data-active={tab.id === activeTab}
               key={tab.id}
               onClick={() => setRightSidebarTab(tab.id)}
+              size="icon-xs"
               title={tab.label}
-              type="button"
+              variant="ghost"
             >
               <Codicon name={tab.icon} size="0.875rem" />
-            </button>
+            </Button>
           ))}
         </nav>
+
         {branch && (
           <span className="ml-auto flex min-w-0 items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
             <Codicon className="shrink-0" name="git-branch" size="0.75rem" />
@@ -178,8 +179,11 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   onRefresh: () => void
 }
 
+// Sidebar-specific color/hover treatment only — size, radius, cursor and the
+// base focus ring come from <Button size="icon-xs">. This constant exists
+// purely to share the sidebar palette + the hover-reveal behavior below.
 const HEADER_ACTION_CLASS =
-  'size-6 shrink-0 rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-2 focus-visible:ring-sidebar-ring'
+  'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
 const HEADER_ACTION_REVEAL_CLASS = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
 
@@ -214,10 +218,21 @@ function FilesystemTab({
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </button>
         <Button
+          aria-label="Refresh tree"
+          className={HEADER_ACTION_CLASS}
+          disabled={!hasCwd || loading}
+          onClick={onRefresh}
+          size="icon-xs"
+          title="Refresh tree"
+          variant="ghost"
+        >
+          <Codicon name="refresh" size="0.8125rem" spinning={loading} />
+        </Button>
+        <Button
           aria-label="Open folder"
           className={HEADER_ACTION_CLASS}
           onClick={() => void onChangeFolder()}
-          size="icon"
+          size="icon-xs"
           title={hasCwd ? 'Open a different folder' : 'Open a folder'}
           variant="ghost"
         >
@@ -228,22 +243,11 @@ function FilesystemTab({
           className={HEADER_ACTION_REVEAL_CLASS}
           disabled={!hasCwd || !canCollapse}
           onClick={onCollapseAll}
-          size="icon"
+          size="icon-xs"
           title="Collapse all folders"
           variant="ghost"
         >
           <Codicon name="collapse-all" size="0.8125rem" />
-        </Button>
-        <Button
-          aria-label="Refresh tree"
-          className={HEADER_ACTION_REVEAL_CLASS}
-          disabled={!hasCwd || loading}
-          onClick={onRefresh}
-          size="icon"
-          title="Refresh tree"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.8125rem" spinning={loading} />
         </Button>
       </RightSidebarSectionHeader>
       <FileTreeBody
@@ -264,7 +268,7 @@ function FilesystemTab({
 }
 
 export function RightSidebarSectionHeader({ children }: { children: ReactNode }) {
-  return <div className="flex h-7 shrink-0 items-center px-2">{children}</div>
+  return <div className="flex h-7 shrink-0 items-center px-2.5">{children}</div>
 }
 
 interface FileTreeBodyProps {

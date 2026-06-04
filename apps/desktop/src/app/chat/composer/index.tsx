@@ -407,13 +407,19 @@ export function ChatBar({
       return
     }
 
-    const pastedText = event.clipboardData.getData('text')
+    // Trim surrounding whitespace so a copy that dragged along leading/trailing
+    // blank lines (common when selecting from terminals, code blocks, web pages)
+    // doesn't dump multiline padding into the composer. Internal newlines are
+    // preserved — only the edges are cleaned up.
+    const pastedText = event.clipboardData.getData('text').trim()
 
     if (!pastedText) {
+      event.preventDefault()
+
       return
     }
 
-    if (DATA_IMAGE_URL_RE.test(pastedText.trim())) {
+    if (DATA_IMAGE_URL_RE.test(pastedText)) {
       event.preventDefault()
 
       return

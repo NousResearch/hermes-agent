@@ -110,6 +110,13 @@ function ChatHeader({
       ? pinnedSessionIds.includes(selectedSessionId)
       : false
 
+  // A brand-new session has no session to pin/delete/rename, so the header is
+  // just a dead "New session" label + chevron. Drop it (and its border)
+  // entirely until there's a real session to act on.
+  if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
+    return null
+  }
+
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
       <div className="min-w-0 flex-1">

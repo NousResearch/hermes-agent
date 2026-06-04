@@ -3,7 +3,6 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import {
-  $currentCwd,
   setAvailablePersonalities,
   setCurrentCwd,
   setCurrentFastMode,
@@ -53,8 +52,8 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       const cwd = (config.terminal?.cwd ?? '').trim()
 
       if (cwd && cwd !== '.') {
-        setCurrentCwd(prev => prev || cwd)
-        void refreshProjectBranch($currentCwd.get() || cwd)
+        setCurrentCwd(cwd)
+        void refreshProjectBranch(cwd)
       }
 
       const reasoning = (config.agent?.reasoning_effort ?? '').trim()

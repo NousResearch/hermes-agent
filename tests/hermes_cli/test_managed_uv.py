@@ -145,6 +145,85 @@ class TestRebuildVenv:
             result = rebuild_venv(uv_bin, venv_dir)
             assert result is False
 
+    def test_retries_with_clear_when_dir_already_exists(self, tmp_path):
+        """On Windows, rmtree can silently fail when an open handle holds a
+        file in the venv (running hermes.exe, gateway, AV scanner). uv then
+        refuses with ``Caused by: A directory already exists at: venv``.
+        Make sure we don't give up — retry with ``--clear`` to force uv past
+        the stale directory and rebuild successfully."""
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        (venv_dir / "stale_open_handle").write_text("rmtree couldn't delete me")
+
+        uv_bin = str(tmp_path / "bin" / "uv")
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            call_log.append(list(cmd))
+            m = MagicMock()
+            if cmd[1] == "venv" and "--clear" not in cmd:
+                # First attempt: uv refuses because dir still exists
+                m.returncode = 1
+                m.stderr = (
+                    "error: Failed to create virtual environment\n"
+                    "  Caused by: A directory already exists at: venv\n"
+                    "hint: Use the `--clear` flag or set `UV_VENV_CLEAR=1` to replace the existing directory\n"
+                )
+                m.stdout = ""
+                return m
+            if cmd[1] == "venv" and "--clear" in cmd:
+                # Retry: succeeds. Simulate uv writing the python shim.
+                m.returncode = 0
+                m.stderr = ""
+                m.stdout = ""
+                bin_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                python_name = "python.exe" if os.name == "nt" else "python"
+                (bin_dir / python_name).write_text("#!/bin/sh\necho Python 3.11.0")
+                return m
+            if "--version" in cmd:
+                m.returncode = 0
+                m.stdout = "Python 3.11.0"
+                m.stderr = ""
+                return m
+            m.returncode = 0
+            return m
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.managed_uv.shutil.rmtree"):
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+
+        assert result is True, "rebuild should succeed after --clear retry"
+        # We expect exactly two ``uv venv`` calls: one without --clear, one with.
+        venv_calls = [c for c in call_log if len(c) >= 2 and c[1] == "venv"]
+        assert len(venv_calls) == 2, f"expected 2 venv calls, got {venv_calls}"
+        assert "--clear" not in venv_calls[0], "first call should not pass --clear"
+        assert "--clear" in venv_calls[1], "retry must pass --clear"
+
+    def test_does_not_retry_when_first_failure_is_not_dir_exists(self, tmp_path):
+        """If uv venv fails for some other reason (e.g. interpreter download
+        failed, disk full), we should NOT silently retry with --clear —
+        that would mask a real problem. Just surface the original failure."""
+        venv_dir = tmp_path / "venv"
+        uv_bin = str(tmp_path / "bin" / "uv")
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            call_log.append(list(cmd))
+            m = MagicMock(returncode=1, stderr="error: No space left on device", stdout="")
+            return m
+
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.managed_uv.shutil.rmtree"):
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+
+        assert result is False
+        venv_calls = [c for c in call_log if len(c) >= 2 and c[1] == "venv"]
+        assert len(venv_calls) == 1, "should not retry on non-dir-exists failures"
+        assert "--clear" not in venv_calls[0]
+
 
 # ---------------------------------------------------------------------------
 # update_managed_uv

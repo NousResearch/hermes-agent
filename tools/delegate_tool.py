@@ -2385,6 +2385,56 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
+# Models exposed *only* via the openai-codex OAuth backend (ChatGPT Pro).
+# gpt-5.3-codex-spark is a research-preview slug that is NOT served by the
+# public OpenAI API or any OpenAI-compatible reseller (see the extended note
+# in hermes_cli/codex_models.py). Delegating to it on any other provider
+# silently 404s / errors at child-agent runtime, which is hard to diagnose.
+# Enforce the routing constraint at resolve time with an actionable error.
+_CODEX_OAUTH_ONLY_MODELS = frozenset({"gpt-5.3-codex-spark"})
+
+
+def _is_codex_oauth_backed(resolved: dict) -> bool:
+    """True if the resolved bundle targets the openai-codex OAuth backend."""
+    if (resolved.get("provider") or "").strip().lower() == "openai-codex":
+        return True
+    base = (resolved.get("base_url") or "").strip().lower()
+    if not base:
+        return False
+    return base_url_hostname(base) == "chatgpt.com" and "/backend-api/codex" in base
+
+
+def _enforce_model_provider_routing(resolved: dict, parent_agent=None) -> dict:
+    """Guard: refuse to route a Codex-OAuth-only model to a provider that
+    cannot serve it.
+
+    Returns ``resolved`` unchanged when routing is valid; raises ValueError
+    with an actionable message otherwise. Only fires when delegation explicitly
+    targets a Codex-OAuth-only model — the common inherit-from-parent path
+    (no model configured) is unaffected. When the provider is unset the child
+    inherits the parent agent's provider, so a Spark model is allowed if the
+    parent itself runs on the openai-codex backend.
+    """
+    model = (resolved.get("model") or "").strip()
+    if model not in _CODEX_OAUTH_ONLY_MODELS:
+        return resolved
+    if _is_codex_oauth_backed(resolved):
+        return resolved
+    if not (resolved.get("provider") or "").strip():
+        parent_provider = (getattr(parent_agent, "provider", None) or "").strip().lower()
+        if parent_provider == "openai-codex":
+            return resolved
+        effective = parent_provider or "inherited"
+    else:
+        effective = resolved.get("provider")
+    raise ValueError(
+        f"Delegation routing rejected: model '{model}' is served only by the "
+        f"openai-codex (ChatGPT Pro OAuth) backend, but delegation resolved "
+        f"provider '{effective}'. Set delegation.provider=openai-codex (or a "
+        f"chatgpt.com/backend-api/codex base_url) to delegate to this model."
+    )
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -2450,23 +2500,23 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             api_mode = configured_api_mode
 
-        return {
+        return _enforce_model_provider_routing({
             "model": configured_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
-        }
+        }, parent_agent)
 
     if not configured_provider:
         # No provider override — child inherits everything from parent
-        return {
+        return _enforce_model_provider_routing({
             "model": configured_model,
             "provider": None,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
-        }
+        }, parent_agent)
 
     # Provider is configured — resolve full credentials
     try:
@@ -2488,7 +2538,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
-    return {
+    return _enforce_model_provider_routing({
         "model": configured_model or runtime.get("model") or None,
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         "base_url": runtime.get("base_url"),
@@ -2496,7 +2546,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
-    }
+    }, parent_agent)
 
 
 def _load_config() -> dict:

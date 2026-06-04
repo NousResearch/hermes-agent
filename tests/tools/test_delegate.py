@@ -1097,6 +1097,76 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+class TestDelegationModelProviderRouting(unittest.TestCase):
+    """Enforcement guard: Codex-OAuth-only models (Spark) must route only to
+    the openai-codex backend. Regression guard for t_cd5dee0f (audit and
+    enforce Claude/Spark child delegation routing)."""
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_spark_on_openai_codex_provider_is_allowed(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-oauth-token",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "gpt-5.3-codex-spark", "provider": "openai-codex"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "gpt-5.3-codex-spark")
+        self.assertEqual(creds["provider"], "openai-codex")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_spark_on_wrong_provider_is_rejected(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "or-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "gpt-5.3-codex-spark", "provider": "openrouter"}
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(cfg, parent)
+        msg = str(ctx.exception)
+        self.assertIn("gpt-5.3-codex-spark", msg)
+        self.assertIn("openai-codex", msg)
+
+    def test_spark_via_chatgpt_codex_base_url_is_allowed(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "gpt-5.3-codex-spark",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "openai-codex")
+        self.assertEqual(creds["model"], "gpt-5.3-codex-spark")
+
+    def test_spark_inherit_from_non_codex_parent_is_rejected(self):
+        # model-only (no provider) inherits parent provider; parent is openrouter.
+        parent = _make_mock_parent(depth=0)  # provider defaults to "openrouter"
+        cfg = {"model": "gpt-5.3-codex-spark", "provider": ""}
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("openai-codex", str(ctx.exception))
+
+    def test_spark_inherit_from_codex_parent_is_allowed(self):
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "openai-codex"
+        cfg = {"model": "gpt-5.3-codex-spark", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "gpt-5.3-codex-spark")
+        self.assertIsNone(creds["provider"])
+
+    def test_non_spark_model_unaffected_by_guard(self):
+        # Regression: ordinary Claude model on openrouter must not be blocked.
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "anthropic/claude-sonnet-4", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "anthropic/claude-sonnet-4")
+        self.assertIsNone(creds["provider"])
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 

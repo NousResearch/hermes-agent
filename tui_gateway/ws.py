@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from tui_gateway import server
@@ -261,28 +262,33 @@ async def handle_ws(ws: Any) -> None:
                 )
                 break
     finally:
-        detached_sessions = 0
+        finalized_sessions = 0
         if transport is not None:
             transport.close()
 
             # Detach the transport from any sessions it owned so later emits
-            # fall back to stdio instead of crashing into a closed socket.
-            for _, sess in list(server._sessions.items()):
+            # fall back to stdio instead of crashing into a closed socket,
+            # AND finalize the session so it doesn't ghost the /resume list
+            # with ended_at=NULL (fixes #39178 — abnormal WS disconnect
+            # code 1006 means the client never sent session.close).
+            for sid, sess in list(server._sessions.items()):
                 if sess.get("transport") is transport:
                     sess["transport"] = server._stdio_transport
-                    detached_sessions += 1
+                    sess["_disconnected_at"] = time.time()
+                    server._finalize_session(sess, end_reason="ws_disconnect")
+                    finalized_sessions += 1
         try:
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d detached_sessions=%d",
+            "dispatch_crashes=%d send_failures=%d finalized_sessions=%d",
             peer,
             disconnect_reason,
             messages,
             parse_errors,
             dispatch_crashes,
             send_failures,
-            detached_sessions,
+            finalized_sessions,
         )

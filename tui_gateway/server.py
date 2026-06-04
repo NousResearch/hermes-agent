@@ -137,6 +137,20 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
+# ── Session lifecycle hygiene (#39178) ──────────────────────────────
+# Startup- and health-check-based cleanup ensures sessions with
+# ended_at=NULL never ghost the /resume list after an abnormal
+# WebSocket disconnect.
+
+_ORPHAN_CUTOFF_S = 300        # 5 minutes — sessions started before this
+                              # and never ended are considered orphaned
+                              # on startup.
+_DISCONNECTED_FINALIZE_DELAY_S = 30  # Grace period after a transport
+                                      # detach before the health check
+                                      # force-finalizes the session.
+_HEALTH_CHECK_INTERVAL_S = 60        # How often the background health
+                                      # check thread runs.
+
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
@@ -336,6 +350,64 @@ def _shutdown_sessions() -> None:
 
 
 atexit.register(_shutdown_sessions)
+
+
+# ── Session lifecycle hygiene (#39178) ──────────────────────────────
+
+
+def _finalize_orphaned_sessions() -> None:
+    """Startup cleanup: close any DB sessions with ended_at=NULL that
+    started more than ``_ORPHAN_CUTOFF_S`` seconds ago.
+
+    These accumulate when a WebSocket client disconnects abnormally
+    (code 1006) without a clean ``session.close`` RPC.  Without this
+    cleanup they ghost the session-picker UI forever.
+    """
+    db = _get_db()
+    if db is None:
+        return
+    try:
+        cutoff = time.time() - _ORPHAN_CUTOFF_S
+        db._execute_write(
+            lambda conn: conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "WHERE ended_at IS NULL AND started_at < ?",
+                (time.time(), "tui_startup_cleanup", cutoff),
+            )
+        )
+        logger.info(
+            "Finalized orphaned DB sessions with ended_at=NULL started before cutoff=%s",
+            cutoff,
+        )
+    except Exception:
+        logger.exception("Failed to finalize orphaned sessions on startup")
+
+
+def _health_check_loop() -> None:
+    """Background daemon thread that periodically finalizes in-memory
+    sessions whose WebSocket transport was detached but whose
+    ``_finalize_session`` call was never made.
+
+    This is a defense-in-depth layer on top of the direct finalization
+    that happens in ``handle_ws``'s finally block.
+    """
+    while True:
+        time.sleep(_HEALTH_CHECK_INTERVAL_S)
+        try:
+            now = time.time()
+            for sid, sess in list(_sessions.items()):
+                if sess.get("_finalized"):
+                    continue
+                disconnected_at = sess.get("_disconnected_at")
+                if disconnected_at is not None and (now - disconnected_at) > _DISCONNECTED_FINALIZE_DELAY_S:
+                    logger.info(
+                        "Health check finalizing session sid=%s disconnected=%.1fs ago",
+                        sid,
+                        now - disconnected_at,
+                    )
+                    _finalize_session(sess, end_reason="tui_health_check")
+        except Exception:
+            logger.exception("Health check iteration failed")
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -8137,3 +8209,18 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5002, "command timed out (30s)")
     except Exception as e:
         return _err(rid, 5003, str(e))
+
+
+# ── Session lifecycle hygiene bootstrap (#39178) ─────────────────────
+# These run at module-load time after all functions are defined so
+# every dependency (_get_db, _finalize_session, _sessions, etc.) is
+# already available.
+
+_health_thread = threading.Thread(
+    target=_health_check_loop,
+    name="tui-health-check",
+    daemon=True,
+)
+_health_thread.start()
+
+_finalize_orphaned_sessions()

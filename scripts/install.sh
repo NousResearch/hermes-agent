@@ -1121,16 +1121,36 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
+        # Extract SSH host from REPO_URL_SSH (e.g., git@github.com:NousResearch/hermes-agent.git → github.com)
+        # This allows the probe to work with GitHub Enterprise, GitLab, or other Git hosts.
+        local ssh_host="${REPO_URL_SSH#*@}"  # Remove "git@"
+        ssh_host="${ssh_host%%:*}"            # Remove everything after ":"
+        
+        # Probe SSH connectivity first (fast, silent) using the SSH exit status.
+        # GitHub commonly returns 1 when authentication succeeds but no shell is
+        # provided, and 255 when authentication or connection fails.
+        # Use StrictHostKeyChecking=accept-new to avoid host key verification hangs in CI.
+        local git_ssh_command="ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
+        local ssh_probe_status=0
+        ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+            -T "git@${ssh_host}" >/dev/null 2>&1 || ssh_probe_status=$?
+        
+        if [ "$ssh_probe_status" -eq 0 ] || [ "$ssh_probe_status" -eq 1 ]; then
+            log_info "Cloning via SSH..."
+            if GIT_SSH_COMMAND="$git_ssh_command" git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR"; then
+                log_success "Cloned via SSH"
+            else
+                rm -rf "$INSTALL_DIR" 2>/dev/null
+                log_info "SSH clone failed, trying HTTPS..."
+                if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    log_success "Cloned via HTTPS"
+                else
+                    log_error "Failed to clone repository"
+                    exit 1
+                fi
+            fi
         else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
+            log_info "No SSH key for $ssh_host, cloning via HTTPS..."
             if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else

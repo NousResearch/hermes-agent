@@ -184,6 +184,12 @@ def get_read_block_error(path: str) -> Optional[str]:
         own projects. The agent helping debug a project shouldn't normally
         need to read these — ``.env.example`` is the documented-shape
         substitute.
+      * External provider-CLI credential stores that Hermes imports OAuth
+        tokens from but which live OUTSIDE HERMES_HOME:
+        ``~/.claude/.credentials.json``, ``~/.claude.json``,
+        ``~/.config/github-copilot/{hosts,apps}.json`` (``XDG_CONFIG_HOME``
+        honored), and ``~/.minimax/credentials.json``. ``~/.codex/auth.json``
+        is intentionally excluded (#12360 made Hermes stop touching it).
 
     **This is NOT a security boundary.** The terminal tool runs as the
     same OS user with shell access; the agent can still ``cat auth.json``
@@ -291,6 +297,39 @@ def get_read_block_error(path: str) -> Optional[str]:
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
         )
+
+    # External provider-CLI credential stores that Hermes imports tokens from.
+    # These live OUTSIDE HERMES_HOME (in the provider tool's own home), so the
+    # hermes_dirs loop above never reaches them — yet they hold plaintext OAuth /
+    # API-key material the agent's read_file can exfiltrate (same vector as the
+    # HERMES_HOME credential stores hardened in #17656 / #30721 / #30972).
+    # Hermes ACTIVELY reads several of these (e.g. ~/.claude/.credentials.json in
+    # the anthropic adapter), so they are live paths, not theoretical.
+    # NOTE: ~/.codex/auth.json is intentionally NOT listed — #12360 made Hermes
+    # stop touching it (single-use refresh-token race); it is external by design.
+    home = Path(os.path.expanduser("~"))
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    config_home = Path(xdg) if xdg else (home / ".config")
+    external_credential_paths = (
+        home / ".claude" / ".credentials.json",        # Claude Code OAuth
+        home / ".claude.json",                          # Claude Code creds (legacy)
+        config_home / "github-copilot" / "hosts.json",  # GitHub Copilot OAuth
+        config_home / "github-copilot" / "apps.json",   # GitHub Copilot OAuth (apps)
+        home / ".minimax" / "credentials.json",         # MiniMax OAuth
+    )
+    for ext in external_credential_paths:
+        try:
+            blocked = ext.resolve()
+        except Exception:
+            continue
+        if resolved == blocked:
+            return (
+                f"Access denied: {path} is an external provider credential "
+                "store (Claude Code / GitHub Copilot / MiniMax OAuth tokens) "
+                "and cannot be read directly. Hermes consumes these through its "
+                "credential pool. (Defense-in-depth — not a security boundary; "
+                "the terminal tool can still bypass.)"
+            )
 
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw

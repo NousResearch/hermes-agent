@@ -146,3 +146,76 @@ class TestCombinedGuards:
             error = get_read_block_error(str(cache))
             assert error is not None
             assert "internal Hermes cache" in error
+
+
+# ---------------------------------------------------------------------------
+# External provider-CLI credential stores (sibling follow-up to #17656)
+#
+# #17656 / #30721 / #30972 only read-deny credential stores UNDER HERMES_HOME.
+# The provider-CLI stores Hermes imports OAuth tokens from live OUTSIDE
+# HERMES_HOME, so the hermes_dirs resolve-loop never reaches them — yet
+# read_file can exfiltrate them. ~/.codex/auth.json is intentionally excluded
+# (#12360 made Hermes stop touching it by design).
+# ---------------------------------------------------------------------------
+
+
+class TestExternalCredentialStoreReadBlocking:
+    """External provider-CLI credential stores must be read-denied."""
+
+    @pytest.mark.parametrize("rel", [
+        ".claude/.credentials.json",
+        ".claude.json",
+        ".config/github-copilot/hosts.json",
+        ".config/github-copilot/apps.json",
+        ".minimax/credentials.json",
+    ])
+    def test_external_credential_stores_read_denied(self, monkeypatch, tmp_path, rel):
+        """read_file on external provider-CLI credential stores is blocked."""
+        # Isolate OS home and HERMES_HOME at separate tmp dirs so the
+        # HERMES_HOME credential loop cannot coincidentally match (profile-safe
+        # rule: tests that mock home must also pin HERMES_HOME).
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}")
+
+        error = get_read_block_error(str(target))
+        assert error is not None, f"{rel} should be read-denied"
+        assert "Access denied" in error
+        assert "credential" in error.lower()
+
+    def test_xdg_config_home_honored_for_copilot(self, monkeypatch, tmp_path):
+        """Copilot store under a custom XDG_CONFIG_HOME is still read-denied."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        xdg = tmp_path / "xdg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        target = xdg / "github-copilot" / "hosts.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}")
+
+        assert get_read_block_error(str(target)) is not None
+
+    def test_codex_auth_not_read_denied(self, monkeypatch, tmp_path):
+        """~/.codex/auth.json is intentionally external (#12360) — not denied here."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        target = tmp_path / ".codex" / "auth.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}")
+
+        assert get_read_block_error(str(target)) is None
+
+    def test_non_credential_file_in_claude_dir_readable(self, monkeypatch, tmp_path):
+        """Negative: a non-credential file under ~/.claude stays readable."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        target = tmp_path / ".claude" / "CLAUDE.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("hi")
+
+        assert get_read_block_error(str(target)) is None

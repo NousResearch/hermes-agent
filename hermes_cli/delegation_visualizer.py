@@ -269,27 +269,67 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     Mirrors ``hermes_cli.curator.register_cli``: the caller passes the
     ArgumentParser returned by ``subparsers.add_parser("delegation", ...)``.
+    Sets an informative ``description`` and an ``epilog`` with example
+    invocations on *parent*, plus descriptive ``help``/``description`` on each
+    of the three subcommands (status, verify, report).
     """
+    parent.description = (
+        "Inspect multi-agent delegation runs (status, verify, report). "
+        "A thin wrapper around the standalone hermes-delegation visualizer: "
+        "check the verifier daemon, re-derive a task's snapshot from its "
+        "ledger, or render the Markdown report."
+    )
+    parent.epilog = (
+        "Examples:\n"
+        "  hermes delegation status\n"
+        "  hermes delegation verify <task-id>\n"
+        "  hermes delegation report <task-id> --output report.md\n"
+    )
+    parent.formatter_class = argparse.RawDescriptionHelpFormatter
+
     parent.set_defaults(func=lambda a: (parent.print_help(), 0)[1])
     subs = parent.add_subparsers(dest="delegation_command")
 
+    status_help = "Show whether the verifier daemon is running"
     p_status = subs.add_parser(
-        "status", help="Show whether the verifier daemon is running"
+        "status",
+        help=status_help,
+        description=(
+            status_help
+            + ". Checks whether the verifier daemon is listening on its Unix "
+            "socket and prints the socket path. Exit code 0 when running, 1 "
+            "otherwise (usable as a health check)."
+        ),
     )
     _add_socket_path(p_status)
     p_status.set_defaults(func=_cmd_status)
 
+    verify_help = "Re-derive a task's snapshot from its ledger and print JSON"
     p_verify = subs.add_parser(
         "verify",
-        help="Re-derive a task's snapshot from its ledger and print JSON",
+        help=verify_help,
+        description=(
+            verify_help
+            + ". Re-derives the authoritative snapshot from "
+            "<base-dir>/<task_id>.jsonl by recomputing it (no daemon required) "
+            "and prints it as pretty JSON. Fails if the ledger is missing or "
+            "malformed."
+        ),
     )
     p_verify.add_argument("task_id", help="task id to verify")
     _add_base_dir(p_verify)
     p_verify.set_defaults(func=_cmd_verify)
 
+    report_help = "Render the Markdown delegation report for a task"
     p_report = subs.add_parser(
         "report",
-        help="Render the Markdown delegation report for a task",
+        help=report_help,
+        description=(
+            report_help
+            + ". Computes the snapshot like `verify`, then renders the "
+            "Markdown delegation report. Writes to --output when given, "
+            "otherwise prints to stdout."
+        ),
     )
     p_report.add_argument("task_id", help="task id to report on")
     _add_base_dir(p_report)

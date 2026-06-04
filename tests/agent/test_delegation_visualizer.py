@@ -82,6 +82,63 @@ def test_register_cli_attaches_subcommands():
 
 
 # ---------------------------------------------------------------------------
+# --help text (descriptions + epilog + per-subcommand help)
+# ---------------------------------------------------------------------------
+
+def _help_text(capsys, argv):
+    """Run cli_main with a --help argv and return its stdout.
+
+    argparse prints help to stdout then raises SystemExit; we swallow it.
+    """
+    with pytest.raises(SystemExit):
+        dv.cli_main(argv)
+    return capsys.readouterr().out
+
+
+def test_top_level_help_has_description(capsys):
+    out = _help_text(capsys, ["--help"])
+    assert "delegation" in out.lower()
+    # A real description, not just a bare list of subcommands.
+    assert "status" in out and "verify" in out and "report" in out
+    assert "Inspect" in out or "delegation runs" in out
+
+
+def test_top_level_help_has_examples(capsys):
+    out = _help_text(capsys, ["--help"])
+    assert "Examples:" in out or "hermes delegation status" in out
+
+
+def test_status_help_describes_command(capsys):
+    out = _help_text(capsys, ["status", "--help"])
+    assert "verifier daemon is running" in out or "Show whether" in out
+
+
+def test_status_help_mentions_socket_path(capsys):
+    out = _help_text(capsys, ["status", "--help"])
+    assert "--socket-path" in out
+
+
+def test_verify_help_describes_command(capsys):
+    out = _help_text(capsys, ["verify", "--help"])
+    assert "Re-derive" in out or "Re-compute" in out
+
+
+def test_verify_help_mentions_base_dir(capsys):
+    out = _help_text(capsys, ["verify", "--help"])
+    assert "--base-dir" in out
+
+
+def test_report_help_describes_command(capsys):
+    out = _help_text(capsys, ["report", "--help"])
+    assert "Render" in out or "Markdown" in out
+
+
+def test_report_help_mentions_output(capsys):
+    out = _help_text(capsys, ["report", "--help"])
+    assert "--output" in out
+
+
+# ---------------------------------------------------------------------------
 # status
 # ---------------------------------------------------------------------------
 

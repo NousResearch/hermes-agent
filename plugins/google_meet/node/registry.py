@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 
 def _default_path() -> Path:
@@ -52,10 +53,12 @@ class NodeRegistry:
         return data
 
     def _save(self, data: Dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        # Registry entries contain bearer tokens with full remote-node RPC
+        # access.  The shared writer creates a unique same-directory temp file,
+        # flushes and fsyncs it, and atomically replaces the old registry.  An
+        # explicit mode prevents both new and updated registries from inheriting
+        # process-default or previously permissive permissions.
+        atomic_json_write(self.path, data, indent=2, mode=0o600)
 
     # ----- public API ---------------------------------------------------
 

@@ -1093,7 +1093,12 @@ function Install-Repository {
                     git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"
                     if ($LASTEXITCODE -ne 0) { throw "git checkout tag $Tag failed (exit $LASTEXITCODE)" }
                 } else {
-                    git -c windows.appendAtomically=false checkout $Branch
+                    # Use -B to create or reset the local branch and --track to
+                    # wire up remote-tracking. Plain `git checkout $Branch` fails
+                    # with exit 1 when the repo is in detached HEAD (e.g. after a
+                    # previous commit/tag pin) or when the local branch ref is
+                    # absent (e.g. after a ZIP-fallback install). Fixes #37827.
+                    git -c windows.appendAtomically=false checkout -B $Branch --track "origin/$Branch"
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
                     git -c windows.appendAtomically=false pull origin $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git pull failed (exit $LASTEXITCODE)" }
@@ -1184,11 +1189,27 @@ function Install-Repository {
                     Move-Item $extractedDir.FullName $InstallDir -Force
                     Write-Success "Downloaded and extracted"
 
-                    # Initialize git repo so updates work later
+                    # Initialize git repo so updates work later.
+                    # We also fetch the branch from origin and create a local
+                    # tracking branch so a subsequent re-run doesn't hit
+                    # "git checkout main failed (exit 1)" when the update path
+                    # tries `git checkout -B $Branch --track origin/$Branch`
+                    # against a bare-init repo with no remote refs. Fixes #37827.
                     Push-Location $InstallDir
                     git -c windows.appendAtomically=false init 2>$null
                     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
                     git remote add origin $RepoUrlHttps 2>$null
+                    # Fetch the branch ref so origin/$Branch exists locally.
+                    # Best-effort: if offline this is a no-op; the next `hermes update`
+                    # will re-fetch.  Suppress output — we already told the user the
+                    # ZIP extracted successfully.
+                    $prevEAPzip = $ErrorActionPreference
+                    $ErrorActionPreference = "Continue"
+                    git -c windows.appendAtomically=false fetch --depth 1 origin $Branch 2>$null
+                    if ($LASTEXITCODE -eq 0) {
+                        git -c windows.appendAtomically=false checkout -B $Branch --track "origin/$Branch" 2>$null
+                    }
+                    $ErrorActionPreference = $prevEAPzip
                     Pop-Location
                     Write-Success "Git repo initialized for future updates"
 

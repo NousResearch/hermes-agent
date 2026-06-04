@@ -16,6 +16,7 @@ import {
   PaginationPrevious
 } from '@/components/ui/pagination'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
+import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listSessions } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
@@ -736,7 +737,6 @@ function ArtifactCellAction({
     <button
       className="flex h-full w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) font-normal text-(--ui-text-secondary) no-underline underline-offset-4 decoration-current/20 transition-colors hover:text-foreground hover:underline"
       onClick={onClick}
-      title={title}
       type="button"
     >
       {children}
@@ -774,15 +774,16 @@ function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) 
 
   return (
     <div className="group/location flex min-w-0 items-center gap-1.5">
-      <div
-        className={cn(
-          'min-w-0 flex-1 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)',
-          isLink ? 'font-normal' : 'font-mono'
-        )}
-        title={artifact.value}
-      >
-        {value}
-      </div>
+      <Tip label={artifact.value}>
+        <div
+          className={cn(
+            'min-w-0 flex-1 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)',
+            isLink ? 'font-normal' : 'font-mono'
+          )}
+        >
+          {value}
+        </div>
+      </Tip>
       <CopyButton
         appearance="icon"
         buttonSize="icon-xs"

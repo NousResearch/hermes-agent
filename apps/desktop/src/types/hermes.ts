@@ -241,6 +241,14 @@ export interface PaginatedSessions {
   offset: number
   sessions: SessionInfo[]
   total: number
+  /** Listable conversation count per profile (children excluded), keyed by
+   *  profile name. Lets the sidebar scope its "Load more" footer to the active
+   *  profile instead of the global total. Present only on
+   *  `/api/profiles/sessions`. */
+  profile_totals?: Record<string, number>
+  /** Per-profile read failures from the cross-profile aggregator (e.g. a locked
+   *  or corrupt state.db). Present only on `/api/profiles/sessions`. */
+  errors?: Array<{ profile: string; error: string }>
 }
 
 export interface RpcEvent<T = unknown> {
@@ -277,6 +285,15 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  /** Owning profile name, set by the cross-profile aggregator
+   *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
+   *  which the UI treats as the default profile. */
+  profile?: string
+  /** True when {@link profile} is the default profile. */
+  is_default_profile?: boolean
+  /** Optional per-session glyph the user picked so sessions from different
+   *  profiles are visually distinguishable in the unified list. */
+  icon?: null | string
 }
 
 export interface SessionMessage {
@@ -435,6 +452,8 @@ export interface CronJobUpdates {
 }
 
 export interface ProfileCreatePayload {
+  clone_all?: boolean
+  clone_from?: string
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
@@ -448,10 +467,6 @@ export interface ProfileInfo {
   path: string
   provider: null | string
   skill_count: number
-}
-
-export interface ProfileSetupCommand {
-  command: string
 }
 
 export interface ProfileSoul {

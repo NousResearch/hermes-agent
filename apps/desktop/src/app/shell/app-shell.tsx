@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 
+import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import {
@@ -153,6 +154,10 @@ export function AppShell({
       </main>
 
       {overlays}
+
+      {/* Mounted at the shell root (after overlays) so success/error toasts
+          surface above every route and overlay — not just the chat view. */}
+      <NotificationStack />
     </SidebarProvider>
   )
 }

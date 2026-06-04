@@ -5,6 +5,7 @@ import { useStore } from '@nanostores/react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { Tip } from '@/components/ui/tooltip'
 
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { $terminalTakeover, setRightSidebarTab, setTerminalTakeover } from '../store'
@@ -39,17 +40,18 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 px-2.5">
         <SidebarPanelLabel className="text-white!">{shellName}</SidebarPanelLabel>
-        <Button
-          aria-label={label}
-          className="ml-auto size-6 rounded-md text-white!"
-          onClick={toggleTakeover}
-          size="icon"
-          title={label}
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name={takeover ? 'screen-normal' : 'screen-full'} size="0.875rem" />
-        </Button>
+        <Tip label={label}>
+          <Button
+            aria-label={label}
+            className="ml-auto size-6 rounded-md text-white!"
+            onClick={toggleTakeover}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name={takeover ? 'screen-normal' : 'screen-full'} size="0.875rem" />
+          </Button>
+        </Tip>
       </div>
       <div className="relative min-h-0 flex-1 bg-[#002b36] p-2">
         {status === 'starting' && (

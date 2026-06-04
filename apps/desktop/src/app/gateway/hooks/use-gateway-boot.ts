@@ -12,6 +12,7 @@ import {
 } from '@/store/boot'
 import { setGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, touchActiveGatewayBackend } from '@/store/profile'
 import { $connection, setConnection, setGatewayState, setSessionsLoading } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -97,7 +98,7 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
-        const conn = await desktop.getConnection()
+        const conn = await desktop.getConnection($activeGatewayProfile.get())
 
         if (cancelled) {
           return
@@ -212,6 +213,11 @@ export function useGatewayBoot({
     window.addEventListener('online', onOnline)
     document.addEventListener('visibilitychange', onVisible)
 
+    // Keep the active pool backend alive while this window is open (the main
+    // process can't observe the direct renderer↔backend WS). No-op for the
+    // primary backend.
+    const keepaliveTimer = setInterval(() => touchActiveGatewayBackend(), 60_000)
+
     const offWindowState = desktop.onWindowStateChanged?.(payload => {
       const current = $connection.get()
 
@@ -259,6 +265,16 @@ export function useGatewayBoot({
           return
         }
 
+        // Record which profile the primary (window) backend booted as, so
+        // same-profile resumes are no-op swaps and any reconnect targets the
+        // right backend. Best-effort: a missing preference means "default".
+        try {
+          const pref = await desktop.profile?.get?.()
+          $activeGatewayProfile.set((pref?.profile ?? '').trim() || 'default')
+        } catch {
+          $activeGatewayProfile.set('default')
+        }
+
         setDesktopBootStep({
           phase: 'renderer.config',
           message: 'Loading Hermes settings',
@@ -293,6 +309,7 @@ export function useGatewayBoot({
     return () => {
       cancelled = true
       clearReconnectTimer()
+      clearInterval(keepaliveTimer)
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       offPowerResume?.()

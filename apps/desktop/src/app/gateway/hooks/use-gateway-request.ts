@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -49,7 +50,10 @@ export function useGatewayRequest() {
       reauthErrorRef.current = null
 
       try {
-        const conn = await desktop.getConnection()
+        // Reconnect to whichever profile the gateway is currently routed to (not
+        // always the primary), so a sleep/wake reconnect keeps the user on the
+        // profile they were chatting in.
+        const conn = await desktop.getConnection($activeGatewayProfile.get())
         connectionRef.current = conn
         setConnection(conn)
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use

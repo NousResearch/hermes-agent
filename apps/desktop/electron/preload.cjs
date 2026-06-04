@@ -1,8 +1,9 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
-  getConnection: () => ipcRenderer.invoke('hermes:connection'),
-  getGatewayWsUrl: () => ipcRenderer.invoke('hermes:gateway:ws-url'),
+  getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
+  touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
+  getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: () => ipcRenderer.invoke('hermes:connection-config:get'),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
@@ -11,6 +12,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
   oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
+  profile: {
+    get: () => ipcRenderer.invoke('hermes:profile:get'),
+    set: name => ipcRenderer.invoke('hermes:profile:set', name)
+  },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),

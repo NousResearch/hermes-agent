@@ -12,6 +12,7 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
   $messages,
@@ -173,6 +174,10 @@ function upsertOptimisticSession(
   preview: string | null = null
 ) {
   const now = Date.now() / 1000
+  // Stamp the profile the session was just created on (= the live gateway's
+  // profile) so the scoped sidebar shows the new row immediately instead of
+  // filtering it out as "default" until the aggregator re-fetches.
+  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
 
   const session: SessionInfo = {
     cwd: created.info?.cwd ?? null,
@@ -180,11 +185,13 @@ function upsertOptimisticSession(
     id,
     input_tokens: 0,
     is_active: true,
+    is_default_profile: profileKey === 'default',
     last_active: now,
     message_count: created.message_count ?? created.messages?.length ?? 0,
     model: created.info?.model ?? null,
     output_tokens: 0,
     preview,
+    profile: profileKey,
     source: 'tui',
     started_at: now,
     title,
@@ -320,6 +327,9 @@ export function useSessionActions({
       creatingSessionRef.current = true
 
       try {
+        // Route the new chat to the chosen profile's backend (null = primary,
+        // so single-profile users are unaffected).
+        await ensureGatewayProfile($newChatProfile.get())
         const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
         const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
         const stored = created.stored_session_id ?? null
@@ -420,6 +430,12 @@ export function useSessionActions({
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
 
+      // Swap the single live gateway to this session's profile before any
+      // gateway call (no-op when it's already on that profile / single-profile).
+      const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
+      const sessionProfile = storedForProfile?.profile
+      await ensureGatewayProfile(sessionProfile)
+
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
@@ -482,7 +498,7 @@ export function useSessionActions({
         let localSnapshot = $messages.get()
 
         try {
-          const storedMessages = await getSessionMessages(storedSessionId)
+          const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
           if (isCurrentResume()) {
             localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
@@ -552,7 +568,7 @@ export function useSessionActions({
           return
         }
 
-        const fallback = await getSessionMessages(storedSessionId)
+        const fallback = await getSessionMessages(storedSessionId, sessionProfile)
 
         if (!isCurrentResume()) {
           return

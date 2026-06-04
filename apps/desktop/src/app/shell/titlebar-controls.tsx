@@ -4,14 +4,6 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
@@ -24,7 +16,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 
-import { appViewForPath, isOverlayView, PROFILES_ROUTE } from '../routes'
+import { appViewForPath, isOverlayView } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -185,52 +177,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleSystemToolsBeforeSettings.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        <ProfilesMenuButton navigate={navigate} />
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>
     </>
-  )
-}
-
-function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavigate> }) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          aria-label="Profiles"
-          className={cn(titlebarButtonClass, 'bg-transparent select-none')}
-          onPointerDown={event => event.stopPropagation()}
-          size="icon-titlebar"
-          title="Profiles"
-          type="button"
-          variant="ghost"
-        >
-          {/* Optical bump: the `account` glyph has more internal padding than
-              `search`/`settings-gear`, so at the shared 0.875rem it reads small.
-              Nudge just this glyph to visually match its neighbours. */}
-          <Codicon name="account" size="1rem" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64" sideOffset={8}>
-        <DropdownMenuLabel>
-          <div className="text-sm font-medium text-foreground">Profiles</div>
-          <div className="mt-1 text-xs font-normal leading-4 text-muted-foreground">
-            Advanced Hermes environments for separate personas, config, skills, and SOUL.md.
-          </div>
-        </DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => {
-            triggerHaptic('open')
-            navigate(PROFILES_ROUTE)
-          }}
-        >
-          <Codicon name="account" size="1rem" />
-          <span>Manage profiles</span>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
   )
 }
 
@@ -249,7 +199,6 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
           onPointerDown={event => event.stopPropagation()}
           rel="noreferrer"
           target="_blank"
-          title={tool.title ?? tool.label}
         >
           {tool.icon}
         </a>
@@ -272,7 +221,6 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
       }}
       onPointerDown={event => event.stopPropagation()}
       size="icon-titlebar"
-      title={tool.title ?? tool.label}
       type="button"
       variant="ghost"
     >

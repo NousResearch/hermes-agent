@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Tip } from '@/components/ui/tooltip'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
 import { Check, ExternalLink, Eye, EyeOff, Loader2, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -110,7 +111,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {envVar.url && (
-            <Button asChild size="xs" title="Open provider docs" variant="ghost">
+            <Button asChild size="xs" variant="ghost">
               <a href={envVar.url} rel="noreferrer" target="_blank">
                 Docs
                 <ExternalLink className="size-3" />
@@ -118,23 +119,21 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             </Button>
           )}
           {isSet && (
-            <Button onClick={() => void handleReveal()} size="icon-xs" title="Reveal value" variant="ghost">
-              {revealed !== null ? <EyeOff /> : <Eye />}
-            </Button>
+            <Tip label="Reveal value">
+              <Button onClick={() => void handleReveal()} size="icon-xs" variant="ghost">
+                {revealed !== null ? <EyeOff /> : <Eye />}
+              </Button>
+            </Tip>
           )}
           <Button onClick={() => setEditing(e => !e)} size="xs" variant="textStrong">
             {isSet ? 'Replace' : 'Set'}
           </Button>
           {isSet && (
-            <Button
-              disabled={busy}
-              onClick={() => void handleClear()}
-              size="icon-xs"
-              title="Clear value"
-              variant="ghost"
-            >
-              <Trash2 />
-            </Button>
+            <Tip label="Clear value">
+              <Button disabled={busy} onClick={() => void handleClear()} size="icon-xs" variant="ghost">
+                <Trash2 />
+              </Button>
+            </Tip>
           )}
         </div>
       </div>

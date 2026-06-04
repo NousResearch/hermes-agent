@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from 'react'
 
 import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { CopyButton } from '@/components/ui/copy-button'
+import { Tip } from '@/components/ui/tooltip'
 import { PanelBottom, Send, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
@@ -80,17 +81,18 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
         selected && 'border-border/60 bg-accent/40'
       )}
     >
-      <button
-        className={cn(
-          'mt-0.5 text-left uppercase opacity-70 transition-colors hover:opacity-100',
-          consoleLevelClass[log.level] ?? consoleLevelClass[0]
-        )}
-        onClick={onToggleSelect}
-        title={selected ? 'Deselect entry' : 'Select entry'}
-        type="button"
-      >
-        {consoleLevelLabel[log.level] || 'log'}
-      </button>
+      <Tip label={selected ? 'Deselect entry' : 'Select entry'}>
+        <button
+          className={cn(
+            'mt-0.5 text-left uppercase opacity-70 transition-colors hover:opacity-100',
+            consoleLevelClass[log.level] ?? consoleLevelClass[0]
+          )}
+          onClick={onToggleSelect}
+          type="button"
+        >
+          {consoleLevelLabel[log.level] || 'log'}
+        </button>
+      </Tip>
       <div className="min-w-0" data-selectable-text="true">
         <span className={cn('block wrap-break-word', consoleLevelClass[log.level] ?? consoleLevelClass[0])}>
           {log.message}
@@ -112,14 +114,15 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
           showLabel={false}
           text={copyText}
         />
-        <button
-          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          onClick={onSend}
-          title="Send this entry to chat"
-          type="button"
-        >
-          <Send className="size-3" />
-        </button>
+        <Tip label="Send this entry to chat">
+          <button
+            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            onClick={onSend}
+            type="button"
+          >
+            <Send className="size-3" />
+          </button>
+        </Tip>
       </span>
     </div>
   )
@@ -225,11 +228,6 @@ export function PreviewConsolePanel({
             className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
             disabled={sendableLogs.length === 0}
             onClick={() => sendLogsToComposer(sendableLogs)}
-            title={
-              visibleSelection.length > 0
-                ? `Send ${visibleSelection.length} selected to chat`
-                : 'Send all log entries to chat'
-            }
             type="button"
           >
             <Send className="size-3" />
@@ -250,7 +248,6 @@ export function PreviewConsolePanel({
             className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
             disabled={logs.length === 0}
             onClick={consoleState.clear}
-            title="Clear console"
             type="button"
           >
             <Trash2 className="size-3" />

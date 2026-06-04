@@ -5,6 +5,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { Tip } from '@/components/ui/tooltip'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
@@ -148,21 +149,21 @@ function RightSidebarChrome({
       <div className="flex items-center gap-2 px-2.5 py-1">
         <nav aria-label="Right sidebar panels" className="flex min-w-0 items-center gap-1">
           {tabs.map(tab => (
-            <Button
-              aria-label={tab.label}
-              aria-pressed={tab.id === activeTab}
-              className={cn(
-                'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
-                tab.id === activeTab && 'bg-(--ui-control-active-background) text-foreground'
-              )}
-              key={tab.id}
-              onClick={() => setRightSidebarTab(tab.id)}
-              size="icon-xs"
-              title={tab.label}
-              variant="ghost"
-            >
-              <Codicon name={tab.icon} size="0.875rem" />
-            </Button>
+            <Tip key={tab.id} label={tab.label}>
+              <Button
+                aria-label={tab.label}
+                aria-pressed={tab.id === activeTab}
+                className={cn(
+                  'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                  tab.id === activeTab && 'bg-(--ui-control-active-background) text-foreground'
+                )}
+                onClick={() => setRightSidebarTab(tab.id)}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name={tab.icon} size="0.875rem" />
+              </Button>
+            </Tip>
           ))}
         </nav>
 
@@ -216,21 +217,21 @@ function FilesystemTab({
   return (
     <div className="group/project-header flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <button
-          className="flex min-w-0 flex-1 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
-          onClick={() => void onChangeFolder()}
-          title={hasCwd ? `${cwd} — click to change folder` : 'Open a folder'}
-          type="button"
-        >
-          <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
-        </button>
+        <Tip label={hasCwd ? `${cwd} — click to change folder` : 'Open a folder'}>
+          <button
+            className="flex min-w-0 flex-1 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
+            onClick={() => void onChangeFolder()}
+            type="button"
+          >
+            <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
+          </button>
+        </Tip>
         <Button
           aria-label="Refresh tree"
           className={HEADER_ACTION_CLASS}
           disabled={!hasCwd || loading}
           onClick={onRefresh}
           size="icon-xs"
-          title="Refresh tree"
           variant="ghost"
         >
           <Codicon name="refresh" size="0.8125rem" spinning={loading} />
@@ -240,7 +241,6 @@ function FilesystemTab({
           className={HEADER_ACTION_CLASS}
           onClick={() => void onChangeFolder()}
           size="icon-xs"
-          title={hasCwd ? 'Open a different folder' : 'Open a folder'}
           variant="ghost"
         >
           <Codicon name="folder-opened" size="0.8125rem" />
@@ -251,7 +251,6 @@ function FilesystemTab({
           disabled={!hasCwd || !canCollapse}
           onClick={onCollapseAll}
           size="icon-xs"
-          title="Collapse all folders"
           variant="ghost"
         >
           <Codicon name="collapse-all" size="0.8125rem" />

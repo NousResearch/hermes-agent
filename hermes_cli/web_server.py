@@ -1016,6 +1016,51 @@ async def run_config_migrate():
     return {"ok": True, "pid": proc.pid, "name": "config-migrate"}
 
 
+class DebugShareRequest(BaseModel):
+    # Redaction is ON by default — force-mode scrubs credential-shaped tokens
+    # out of log content before it leaves the machine. The toggle exists so an
+    # operator who knows the logs are clean can opt out for fuller fidelity.
+    redact: bool = True
+    # Recent log lines included in the summary tail (full logs are separate).
+    lines: int = 200
+
+
+@app.post("/api/ops/debug-share")
+async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
+    """Upload a redacted debug report + full logs and return the paste URLs.
+
+    Unlike the other diagnostics actions (doctor, dump, prompt-size) this is
+    *synchronous*: the whole point of ``debug share`` is the set of shareable
+    URLs it produces, so we run the upload in a worker thread and return the
+    structured ``{urls, failures, redacted, ...}`` payload directly. The
+    dashboard renders those as real, copyable links instead of scraping a log
+    tail. Pastes auto-delete after 6 hours (handled inside the share core).
+    """
+    from hermes_cli.debug import build_debug_share
+
+    req = body or DebugShareRequest()
+    try:
+        result = await asyncio.to_thread(
+            build_debug_share,
+            log_lines=max(1, min(int(req.lines), 5000)),
+            redact=bool(req.redact),
+        )
+    except RuntimeError as exc:
+        # Required summary-report upload failed (offline / paste service down).
+        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+    except Exception as exc:
+        _log.exception("debug share failed")
+        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+
+    return {
+        "ok": True,
+        "urls": result.urls,
+        "failures": result.failures,
+        "redacted": result.redacted,
+        "auto_delete_seconds": result.auto_delete_seconds,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Gateway + update actions (invoked from the Status page).
 #

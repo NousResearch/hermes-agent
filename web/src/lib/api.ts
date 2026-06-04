@@ -853,6 +853,15 @@ export const api = {
   runDump: () => fetchJSON<ActionResponse>("/api/ops/dump", { method: "POST" }),
   runConfigMigrate: () =>
     fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
+  runDebugShare: (opts?: { redact?: boolean; lines?: number }) =>
+    fetchJSON<DebugShareResponse>("/api/ops/debug-share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redact: opts?.redact ?? true,
+        lines: opts?.lines ?? 200,
+      }),
+    }),
 
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
@@ -904,6 +913,16 @@ export interface ActionResponse {
   error?: string;
   message?: string;
   update_command?: string;
+}
+
+export interface DebugShareResponse {
+  ok: boolean;
+  // label -> paste URL, e.g. { Report: "https://paste.rs/abc", "agent.log": "..." }
+  urls: Record<string, string>;
+  // "label: error" strings for optional full-log uploads that failed.
+  failures: string[];
+  redacted: boolean;
+  auto_delete_seconds: number;
 }
 
 export interface SessionStoreStats {

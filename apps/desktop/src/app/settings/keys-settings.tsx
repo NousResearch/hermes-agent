@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -28,6 +28,11 @@ const VIEW_CATEGORIES: Record<KeysView, readonly string[]> = {
 
 export function KeysSettings({ view }: KeysSettingsProps) {
   const { rowProps, vars } = useEnvCredentials()
+  const [openKey, setOpenKey] = useState<null | string>(null)
+
+  useEffect(() => {
+    setOpenKey(null)
+  }, [view])
 
   const groups = useMemo(() => {
     if (!vars) {
@@ -54,15 +59,18 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   return (
     <SettingsContent>
       {visible.map(group => (
-        <div className="grid gap-1" key={group.category}>
+        <div className="grid gap-2" key={group.category}>
           {group.entries.map(([key, info]: [string, EnvVarInfo]) => {
             const label = credentialRowLabel(key, info)
 
             return (
               <CredentialKeyCard
+                expanded={openKey === key}
                 info={info}
                 key={key}
                 label={label}
+                onExpand={() => setOpenKey(key)}
+                onToggle={() => setOpenKey(prev => (prev === key ? null : key))}
                 placeholder={credentialPlaceholder(key, info, label)}
                 rowProps={rowProps}
                 varKey={key}

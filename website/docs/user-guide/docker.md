@@ -100,14 +100,14 @@ The dashboard is supervised by s6 — if it crashes, `s6-supervise` restarts it 
 
 The dashboard inside the container defaults to binding `0.0.0.0` — without it, the published `-p 9119:9119` port would not be reachable from the host. To restrict the bind to container loopback (for sidecar / reverse-proxy setups), set `HERMES_DASHBOARD_HOST=127.0.0.1`.
 
-The dashboard's OAuth auth gate engages automatically when both of the following are true:
+The dashboard's auth gate engages automatically when both of the following are true:
 
 1. The bind host is non-loopback (e.g. the default `0.0.0.0` inside the container), **and**
 2. A `DashboardAuthProvider` plugin is registered.
 
-The bundled `dashboard_auth/nous` provider activates whenever `HERMES_DASHBOARD_OAUTH_CLIENT_ID` is set (see [Web Dashboard → Authentication](features/web-dashboard.md)). With the gate engaged, browser callers are redirected to the configured portal's OAuth flow before they can reach any protected route.
+The simplest way to satisfy the second condition is the bundled **username/password** provider: set `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` (and `HERMES_DASHBOARD_BASIC_AUTH_SECRET` for restart-stable sessions). For hosted/public deploys the OAuth (`dashboard_auth/nous`) provider activates whenever `HERMES_DASHBOARD_OAUTH_CLIENT_ID` is set. Either way the gate redirects callers to a login page before they can reach any protected route. See [Web Dashboard → Authentication](features/web-dashboard.md#authentication-gated-mode) for both providers.
 
-If no provider is registered and the bind is non-loopback, the dashboard **fails closed at startup** with a specific error pointing at the missing env var. To opt out of the gate explicitly — for a trusted-LAN deployment behind your own reverse proxy without the OAuth contract — set `HERMES_DASHBOARD_INSECURE=1`. This is the **only** path that disables the gate; the bind host alone never implies `--insecure` (it used to, but that predated the OAuth gate and silently disabled it on every container-deployed dashboard).
+If no provider is registered and the bind is non-loopback, the dashboard **fails closed at startup** with a specific error pointing at the missing env var. The `HERMES_DASHBOARD_INSECURE=1` escape hatch disables the gate entirely (the bind host alone never implies `--insecure`), but it serves an unauthenticated dashboard — configure a provider instead unless you have your own auth layer in front.
 
 :::warning `HERMES_DASHBOARD_INSECURE=1` exposes API keys
 Opting out of the OAuth gate serves the dashboard's API surface (including model keys and session data) to anyone who can reach the published port. Only enable it when you have your own auth layer in front, or on a trusted LAN you fully control.

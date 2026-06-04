@@ -387,6 +387,57 @@ class TestHTTP413Compression:
             "content": "compressed summary",
         }
 
+    def test_context_overflow_retries_when_compression_reduces_tokens_not_message_count(self, agent):
+        """A summarizer can shrink message content without shrinking message count."""
+        agent.base_url = "http://10.10.20.211:8080/v1"
+        agent.provider = "custom"
+        agent.context_compressor.context_length = 131_072
+
+        err_400 = Exception(
+            "HTTP 400: request (70838 tokens) exceeds the available context size "
+            "(65536 tokens), try increasing it"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "previous question " * 200},
+            {"role": "assistant", "content": "previous answer " * 200},
+        ]
+
+        request_estimate_calls = {"n": 0}
+
+        def _request_estimate(*_args, **_kwargs):
+            request_estimate_calls["n"] += 1
+            return 70_838 if request_estimate_calls["n"] == 1 else 37_142
+
+        def _compress_same_count(messages, *_args, **_kwargs):
+            return (
+                [
+                    {**msg, "content": f"short {idx}"}
+                    for idx, msg in enumerate(messages)
+                ],
+                "compressed prompt",
+            )
+
+        with (
+            patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_request_estimate),
+            patch("agent.conversation_loop.save_context_length"),
+            patch.object(agent, "_compress_context", side_effect=_compress_same_count) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert agent.client.chat.completions.create.call_count == 2
+        assert agent.context_compressor.context_length == 65_536
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        assert result.get("compression_exhausted") is not True
+
     def test_413_cannot_compress_further(self, agent):
         """When compression can't reduce messages, return partial result."""
         err_413 = _make_413_error()

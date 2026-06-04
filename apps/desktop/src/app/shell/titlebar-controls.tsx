@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
-import { Volume2, VolumeX, Globe, Language } from '@/lib/icons'
+import { Volume2, VolumeX, WorldGlobe, Language } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
 import { useLocaleSync } from '@/store/use-locale-sync'
@@ -232,7 +232,7 @@ function LanguageMenuButton() {
           title={currentLabel}
           type="button"
         >
-          <Globe />
+          <WorldGlobe />
           <Language />
         </button>
       </DropdownMenuTrigger>

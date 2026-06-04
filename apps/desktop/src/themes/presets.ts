@@ -278,13 +278,80 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Magenta rose palette ported from hermes-webui-nesquena's Hepburn skin. */
+export const hepburnTheme: DesktopTheme = {
+  name: 'hepburn',
+  label: 'Hepburn',
+  description: 'Magenta rose from the Hermes WebUI Hepburn skin',
+  colors: {
+    background: '#fff3f7',
+    foreground: '#3d1a28',
+    card: '#fff9fb',
+    cardForeground: '#3d1a28',
+    muted: '#fbe6ef',
+    mutedForeground: '#906270',
+    popover: '#fff9fb',
+    popoverForeground: '#3d1a28',
+    primary: '#d44a7a',
+    primaryForeground: '#ffffff',
+    secondary: 'rgba(242,120,173,0.10)',
+    secondaryForeground: '#3d1a28',
+    accent: 'rgba(242,120,173,0.10)',
+    accentForeground: '#3d1a28',
+    border: '#ecc8d5',
+    input: 'rgba(242,120,173,0.06)',
+    ring: '#d44a7a',
+    midground: '#d44a7a',
+    composerRing: '#d44a7a',
+    destructive: '#c0392b',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#fbe4ed',
+    sidebarBorder: '#ecc8d5',
+    userBubble: '#fbe4ed',
+    userBubbleBorder: '#ecc8d5'
+  },
+  darkColors: {
+    background: '#110a0f',
+    foreground: '#f2e4ee',
+    card: '#241420',
+    cardForeground: '#f2e4ee',
+    muted: '#1e0f19',
+    mutedForeground: '#c8a4b8',
+    popover: '#241420',
+    popoverForeground: '#f2e4ee',
+    primary: '#f278ad',
+    primaryForeground: '#110a0f',
+    secondary: 'rgba(242,120,173,0.14)',
+    secondaryForeground: '#f2e4ee',
+    accent: 'rgba(242,120,173,0.14)',
+    accentForeground: '#f2e4ee',
+    border: '#311a28',
+    input: 'rgba(242,120,173,0.08)',
+    ring: '#f278ad',
+    midground: '#f278ad',
+    composerRing: '#f278ad',
+    destructive: '#ff5c5c',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#1e0f19',
+    sidebarBorder: '#311a28',
+    userBubble: '#241420',
+    userBubbleBorder: '#311a28'
+  },
+  typography: {
+    fontSans: SYSTEM_SANS,
+    fontMono: `"Courier Prime", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  hepburn: hepburnTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

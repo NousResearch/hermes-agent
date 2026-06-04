@@ -91,6 +91,22 @@ class TestSyncExternalMemoryForTurn:
             session_id="test_session_001",
         )
 
+    def test_skip_memory_sync_disables_sync_and_prefetch(self):
+        """Cron jobs may use memory tools explicitly while suppressing
+        automatic transcript sync of the cron prompt/report pair.
+        """
+        agent = _bare_agent()
+        setattr(agent, "skip_memory_sync", True)
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="nightly digest prompt",
+            final_response="digest report",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_not_called()
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
     def test_completed_turn_syncs_messages_when_present(self):
         agent = _bare_agent()
         messages = [

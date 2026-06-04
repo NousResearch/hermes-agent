@@ -6374,3 +6374,26 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+    def test_skip_memory_sync_guards_automatic_external_memory_hooks(self):
+        """Cron can keep memory tools available while suppressing automatic
+        external-memory provider hooks for the cron prompt/report turn.
+        """
+        import inspect
+        from agent.conversation_loop import run_conversation as _rc
+
+        src = inspect.getsource(_rc)
+        guarded = 'if agent._memory_manager and not getattr(agent, "skip_memory_sync", False):'
+        assert src.count(guarded) >= 2
+        assert "agent._memory_manager.on_turn_start" in src
+        assert "agent._memory_manager.prefetch_all" in src
+
+    def test_skip_memory_sync_disables_background_memory_nudge(self):
+        """The built-in memory-review nudge is also automatic memory IO and
+        must stay off for cron memory-digest jobs unless they call memory tools.
+        """
+        import inspect
+        from agent.conversation_loop import run_conversation as _rc
+
+        src = inspect.getsource(_rc)
+        assert 'and not getattr(agent, "skip_memory_sync", False))' in src

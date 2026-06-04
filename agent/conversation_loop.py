@@ -555,7 +555,8 @@ def run_conversation(
     _should_review_memory = False
     if (agent._memory_nudge_interval > 0
             and "memory" in agent.valid_tool_names
-            and agent._memory_store):
+            and agent._memory_store
+            and not getattr(agent, "skip_memory_sync", False)):
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             _should_review_memory = True
@@ -764,7 +765,7 @@ def run_conversation(
     # Notify memory providers of the new turn so cadence tracking works.
     # Must happen BEFORE prefetch_all() so providers know which turn it is
     # and can gate context/dialectic refresh via contextCadence/dialecticCadence.
-    if agent._memory_manager:
+    if agent._memory_manager and not getattr(agent, "skip_memory_sync", False):
         try:
             _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
             agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
@@ -777,7 +778,7 @@ def run_conversation(
     # Use original_user_message (clean input) — user_message may contain
     # injected skill content that bloats / breaks provider queries.
     _ext_prefetch_cache = ""
-    if agent._memory_manager:
+    if agent._memory_manager and not getattr(agent, "skip_memory_sync", False):
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             _ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""

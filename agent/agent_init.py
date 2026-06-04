@@ -190,6 +190,8 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    skip_memory_prompt: bool = False,
+    skip_memory_sync: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -278,6 +280,8 @@ def init_agent(
     agent.background_review_callback = None  # Optional sync callback for gateway delivery
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
+    agent.skip_memory_prompt = skip_memory_prompt
+    agent.skip_memory_sync = skip_memory_sync
     agent.pass_session_id = pass_session_id
     agent._credential_pool = credential_pool
     agent.log_prefix_chars = log_prefix_chars

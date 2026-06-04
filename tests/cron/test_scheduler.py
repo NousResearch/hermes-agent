@@ -1021,6 +1021,32 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
 
+    def test_run_job_keeps_memory_tools_without_memory_prompt_or_sync(self, tmp_path):
+        """Cron jobs need explicit memory tools (scope_recall_*) without
+        polluting prompts or auto-syncing cron transcripts into memory.
+
+        Regression: scheduler passed ``skip_memory=True`` to AIAgent, which
+        disabled the memory provider entirely. Nightly digest jobs then saw
+        ``Memory is not available`` and could not write scope-recall entries.
+        """
+        job = {
+            "id": "memory-digest-job",
+            "name": "memory digest",
+            "prompt": "write durable memories",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is False
+        assert kwargs["skip_memory_prompt"] is True
+        assert kwargs["skip_memory_sync"] is True
+
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.
 

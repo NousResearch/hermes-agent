@@ -1755,7 +1755,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Keep memory tools/provider available for explicit jobs such as
+            # nightly scope-recall digests, but do not inject durable memory
+            # blocks into the cron system prompt and do not let automatic
+            # provider hooks (turn-start, prefetch, sync) or background
+            # memory review write the cron prompt/report into memory.
+            # ``skip_memory=True`` disables the provider entirely, which
+            # makes ``scope_recall_*`` unavailable.
+            skip_memory=False,
+            skip_memory_prompt=True,
+            skip_memory_sync=True,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

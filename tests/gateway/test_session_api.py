@@ -410,6 +410,53 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
 
 
 @pytest.mark.asyncio
+async def test_session_messages_pagination(adapter, session_db):
+    session_id = session_db.create_session("page-session", "api_server")
+    for i in range(5):
+        session_db.append_message(session_id, "user", f"msg {i}")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        # Default: all 5, limit=200, offset=0, has_more=False
+        resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["object"] == "list"
+        assert len(data["data"]) == 5
+        assert data["limit"] == 200
+        assert data["offset"] == 0
+        assert data["total"] == 5
+        assert data["has_more"] is False
+
+        # First page of 2, has_more=True
+        resp = await cli.get(f"/api/sessions/{session_id}/messages?limit=2&offset=0")
+        assert resp.status == 200
+        data = await resp.json()
+        assert len(data["data"]) == 2
+        assert data["limit"] == 2
+        assert data["offset"] == 0
+        assert data["total"] == 5
+        assert data["has_more"] is True
+
+        # Last page: offset=4, limit=2, 1 item, has_more=False
+        resp = await cli.get(f"/api/sessions/{session_id}/messages?limit=2&offset=4")
+        assert resp.status == 200
+        data = await resp.json()
+        assert len(data["data"]) == 1
+        assert data["offset"] == 4
+        assert data["total"] == 5
+        assert data["has_more"] is False
+
+        # Malformed params fall back to defaults, no 400
+        resp = await cli.get(f"/api/sessions/{session_id}/messages?limit=bad&offset=-1")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["limit"] == 200
+        assert data["offset"] == 0
+        assert len(data["data"]) == 5
+
+
+@pytest.mark.asyncio
 async def test_session_endpoints_require_auth_when_key_configured(auth_adapter):
     app = _create_session_app(auth_adapter)
     async with TestClient(TestServer(app)) as cli:

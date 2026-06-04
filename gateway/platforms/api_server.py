@@ -64,29 +64,6 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
-
-def _hermes_version() -> str:
-    """Return the hermes-agent version string, or "dev" if it can't be resolved.
-
-    Tries the installed package metadata first (authoritative for a pip/uv
-    install), then the in-tree ``hermes_cli.__version__`` (covers editable /
-    source checkouts where metadata may be stale or absent). Never raises —
-    a version probe must not be able to break the health endpoint.
-    """
-    try:
-        from importlib.metadata import version
-
-        return version("hermes-agent")
-    except Exception:
-        pass
-    try:
-        from hermes_cli import __version__
-
-        return __version__
-    except Exception:
-        return "dev"
-
-
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
@@ -455,19 +432,7 @@ class ResponseStore:
             (time.time(), response_id),
         )
         self._conn.commit()
-        try:
-            return json.loads(row[0])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(
-                "Corrupted JSON in response store for id=%s, evicting entry",
-                response_id,
-            )
-            self._conn.execute(
-                "DELETE FROM responses WHERE response_id = ?",
-                (response_id,),
-            )
-            self._conn.commit()
-            return None
+        return json.loads(row[0])
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
@@ -800,7 +765,6 @@ except ImportError:
     _cron_resume = None
     _cron_trigger = None
 
-
 def _notify_cron_provider_jobs_changed() -> None:
     """Tell the active cron scheduler provider the job set changed after a REST
     mutation (no-op for the built-in). Best-effort — never breaks the handler."""
@@ -822,7 +786,6 @@ try:
     from tools.cronjob_tools import _scan_cron_prompt as _scan_cron_prompt
 except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
-
 
 class APIServerAdapter(BasePlatformAdapter):
     """
@@ -1369,9 +1332,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response(
-            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
-        )
+        return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — rich status for cross-container dashboard probing.
@@ -1818,12 +1779,19 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
         db = self._ensure_session_db()
-        resolved_id = db.resolve_resume_session_id(session_id)
-        messages = db.get_messages(resolved_id)
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=200, maximum=1000)
+        offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
+        messages = db.get_messages(session_id)
+        total = len(messages)
+        page = messages[offset:offset + limit]
         return web.json_response({
             "object": "list",
-            "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "session_id": session_id,
+            "data": [self._message_response(m) for m in page],
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "has_more": offset + len(page) < total,
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
@@ -3561,8 +3529,18 @@ class APIServerAdapter(BasePlatformAdapter):
             return cron_err
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
+            limit = self._parse_nonnegative_int(request.query.get("limit"), default=200, maximum=1000)
+            offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
             jobs = _cron_list(include_disabled=include_disabled)
-            return web.json_response({"jobs": jobs})
+            total = len(jobs)
+            page = jobs[offset:offset + limit]
+            return web.json_response({
+                "jobs": page,
+                "limit": limit,
+                "offset": offset,
+                "total": total,
+                "has_more": offset + len(page) < total,
+            })
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -3595,10 +3573,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
-            if prompt and _scan_cron_prompt is not None:
-                scan_error = _scan_cron_prompt(prompt)
-                if scan_error:
-                    return web.json_response({"error": scan_error}, status=400)
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
 
@@ -3665,10 +3639,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
-            if sanitized.get("prompt") and _scan_cron_prompt is not None:
-                scan_error = _scan_cron_prompt(sanitized["prompt"])
-                if scan_error:
-                    return web.json_response({"error": scan_error}, status=400)
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)

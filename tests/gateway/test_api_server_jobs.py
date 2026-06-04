@@ -130,6 +130,57 @@ class TestListJobs:
                 assert resp.status == 200
                 mock_list.assert_called_once_with(include_disabled=False)
 
+    @pytest.mark.asyncio
+    async def test_list_jobs_pagination_slices_and_reports_total(self, adapter):
+        """GET /api/jobs with limit/offset returns the correct page and metadata."""
+        all_jobs = [{**SAMPLE_JOB, "id": f"aabbccddeef{i}", "name": f"job-{i}"} for i in range(5)]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_list", return_value=all_jobs
+            ):
+                # First page
+                resp = await cli.get("/api/jobs?limit=2&offset=0")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["jobs"] == all_jobs[:2]
+                assert data["limit"] == 2
+                assert data["offset"] == 0
+                assert data["total"] == 5
+                assert data["has_more"] is True
+
+                # Second page
+                resp = await cli.get("/api/jobs?limit=2&offset=2")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["jobs"] == all_jobs[2:4]
+                assert data["has_more"] is True
+
+                # Last page (1 item)
+                resp = await cli.get("/api/jobs?limit=2&offset=4")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["jobs"] == all_jobs[4:]
+                assert data["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_default_limit_returns_all(self, adapter):
+        """GET /api/jobs with no limit param returns all jobs with has_more=False."""
+        all_jobs = [{**SAMPLE_JOB, "id": f"aabbccddeef{i}", "name": f"job-{i}"} for i in range(3)]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_list", return_value=all_jobs
+            ):
+                resp = await cli.get("/api/jobs")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["jobs"] == all_jobs
+                assert data["limit"] == 200
+                assert data["offset"] == 0
+                assert data["total"] == 3
+                assert data["has_more"] is False
+
 
 # ---------------------------------------------------------------------------
 # 3-7. test_create_job and validation

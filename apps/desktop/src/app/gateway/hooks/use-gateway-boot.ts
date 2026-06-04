@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
-import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
+import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -104,7 +104,15 @@ export function useGatewayBoot({
         }
 
         publish(conn)
-        await gateway.connect(conn.wsUrl)
+        // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
+        // with a short TTL, so the ticket baked into the cached conn.wsUrl is
+        // dead on every reconnect after the initial boot — reusing it surfaces
+        // as an opaque "Could not connect to Hermes gateway". resolveGatewayWsUrl
+        // mints a fresh ticket (or throws a reauth error in OAuth mode rather
+        // than connecting with a stale one). For local/token gateways the URL
+        // carries a long-lived token and the re-mint is a cheap no-op.
+        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        await gateway.connect(wsUrl)
 
         if (cancelled) {
           return
@@ -114,8 +122,14 @@ export function useGatewayBoot({
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
-      } catch {
-        // Fall through to scheduleReconnect's backoff below.
+      } catch (err) {
+        // OAuth session expired mid-reconnect: surface the actionable "sign in
+        // again" message once instead of silently looping the backoff against a
+        // ticket that can never succeed. Transport failures fall through to the
+        // backoff in the finally block below.
+        if (!cancelled && isGatewayReauthRequired(err)) {
+          notifyError(err, 'Gateway sign-in required')
+        }
       } finally {
         reconnecting = false
 

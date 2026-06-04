@@ -102,6 +102,70 @@ class TestParseAvailableOutputTokens:
         msg = "rate_limit_error: too many requests per minute"
         assert self._parse(msg) is None
 
+    # ── OpenRouter / Nous Research "X in the output" format ──────────────
+    # Regression for #38652: missing this format caused the gateway to
+    # classify a max_tokens-too-large error as a prompt-overflow, attempt
+    # compression on a brand-new session, fail to compress, auto-reset,
+    # and loop forever.
+
+    def test_openrouter_canonical_format(self):
+        """The exact error string from the issue: context=256000, text=5683,
+        tool=13410 → available = 256000 - 5683 - 13410 = 236907."""
+        msg = (
+            "This request is not valid. Check the model name and other parameters. "
+            "Additional info: This endpoint's maximum context length is 256000 tokens. "
+            "However, you requested about 281093 tokens "
+            "(5683 of text input, 13410 of tool input, 262000 in the output). "
+            "Please reduce the length of either one, or use the context-compression "
+            "plugin to compress your prompt automatically."
+        )
+        assert self._parse(msg) == 236907
+
+    def test_openrouter_zero_tool_input(self):
+        """If there is no tool input, the regex should still match as long as
+        the structural anchors are present in the same error."""
+        msg = (
+            "maximum context length is 128000 tokens. "
+            "However, you requested about 130000 tokens "
+            "(5000 of text input, 0 of tool input, 125000 in the output)."
+        )
+        # 128000 - 5000 - 0 = 123000
+        assert self._parse(msg) == 123000
+
+    def test_openrouter_format_without_max_tokens_keyword(self):
+        """The literal word 'max_tokens' is Anthropic-specific. OpenRouter
+        errors describe the same condition with 'in the output'. Without
+        the new guard, the function returned None and the gateway entered
+        an infinite compression/auto-reset loop."""
+        msg = (
+            "maximum context length is 256000 tokens. However, you requested "
+            "about 281093 tokens (5683 of text input, 13410 of tool input, "
+            "262000 in the output)."
+        )
+        result = self._parse(msg)
+        assert result is not None, (
+            "OpenRouter-format error must be recognized as an output-cap error "
+            "even though it doesn't contain the literal 'max_tokens' keyword"
+        )
+        assert result == 236907
+
+    def test_openrouter_with_max_tokens_keyword_in_message(self):
+        """Some OpenRouter-compatible providers include the literal word
+        'max_tokens' too. The function must handle this combination."""
+        msg = (
+            "max_tokens too large. maximum context length is 256000 tokens. "
+            "you requested about 281093 tokens "
+            "(5683 of text input, 13410 of tool input, 262000 in the output)."
+        )
+        assert self._parse(msg) == 236907
+
+    def test_openrouter_unparseable_returns_none(self):
+        """If the error mentions 'in the output' but doesn't include the
+        text/tool input breakdown (e.g. truncated error message), the
+        function must NOT return a garbage number — None is correct."""
+        msg = "request failed: 262000 in the output exceeds context window"
+        assert self._parse(msg) is None
+
 
 # ---------------------------------------------------------------------------
 # Context-overflow recovery — only trust provider-reported limits

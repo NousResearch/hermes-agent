@@ -951,18 +951,58 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     Anthropic's API returns errors like:
       "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
 
-    Returns the number of output tokens that would fit (e.g. 10000 above), or None if
-    the error does not look like a max_tokens-too-large error.
+    OpenRouter / Nous Research return errors like:
+      "This endpoint's maximum context length is 256000 tokens. However, you requested
+       about 281093 tokens (5683 of text input, 13410 of tool input, 262000 in the output)."
+
+    Returns the number of output tokens that would fit (e.g. 10000 above, or
+    context_length - text_input - tool_input for the OpenRouter format), or None
+    if the error does not look like a max_tokens-too-large error.
     """
     error_lower = error_msg.lower()
 
     # Must look like an output-cap error, not a prompt-length error.
+    # Two recognized shapes:
+    #   Anthropic:   "max_tokens: N" + ("available_tokens: M" | "available tokens: M")
+    #   OpenRouter:  "<N> in the output" alongside a text/tool input breakdown
+    #
+    # The OpenRouter guard is intentionally a triple of structural anchors
+    # (text input, tool input, "in the output") — requiring all three means
+    # we won't false-positive on errors that just happen to mention output
+    # tokens in some other context.
+    has_openrouter_shape = (
+        re.search(r"\d+\s+in\s+the\s+output", error_lower) is not None
+        and re.search(r"\d+\s+of\s+text\s+input", error_lower) is not None
+        and re.search(r"\d+\s+of\s+tool\s+input", error_lower) is not None
+    )
     is_output_cap_error = (
-        "max_tokens" in error_lower
-        and ("available_tokens" in error_lower or "available tokens" in error_lower)
+        ("max_tokens" in error_lower
+         and ("available_tokens" in error_lower or "available tokens" in error_lower))
+        or has_openrouter_shape
     )
     if not is_output_cap_error:
         return None
+
+    # OpenRouter / Nous format first: derive available output from
+    # context_length - text_input - tool_input.
+    # "maximum context length is 256000 tokens. However, you requested about 281093
+    #  tokens (5683 of text input, 13410 of tool input, 262000 in the output)"
+    or_match = re.search(
+        r"maximum\s+context\s+length\s+is\s+(\d+).*?"
+        r"(\d+)\s+of\s+text\s+input.*?"
+        r"(\d+)\s+of\s+tool\s+input",
+        error_lower,
+    )
+    if or_match:
+        max_ctx = int(or_match.group(1))
+        text_input = int(or_match.group(2))
+        tool_input = int(or_match.group(3))
+        available = max_ctx - text_input - tool_input
+        if available >= 1:
+            return available
+        # If the arithmetic is somehow off (corrupt numbers, future format
+        # change), fall through to the other extractors below rather than
+        # silently returning None — at least the Anthropic regexes might match.
 
     # Extract the available_tokens figure.
     # Anthropic format: "… = available_tokens: 10000"

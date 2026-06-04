@@ -20,6 +20,8 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _assert_writable,
+    _external_dirs_readonly_enabled,
     skill_manage,
     VALID_NAME_RE,
     ALLOWED_SUBDIRS,
@@ -695,12 +697,22 @@ class TestSecurityScanGate:
 
 
 @contextmanager
-def _two_roots(local_dir: Path, external_dir: Path):
-    """Patch the skill manager so local SKILLS_DIR = local_dir and
-    get_all_skills_dirs() returns [local_dir, external_dir] in order."""
+def _two_roots(local_dir: Path, external_dir: Path, readonly: bool = False):
+    """Patch the skill manager so local SKILLS_DIR = local_dir,
+    get_all_skills_dirs() returns [local_dir, external_dir] in order, and
+    get_external_skills_dirs() returns [external_dir] (what the
+    external_dirs-readonly gate consults).
+
+    ``readonly`` pins the ``skills.external_dirs_readonly`` flag: the default
+    (False) exercises the legacy in-place mutation path (PR #17512); pass
+    True to exercise the CLAWD-1110 read-only gate."""
     with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
          patch("agent.skill_utils.get_all_skills_dirs",
-               return_value=[local_dir, external_dir]):
+               return_value=[local_dir, external_dir]), \
+         patch("agent.skill_utils.get_external_skills_dirs",
+               return_value=[external_dir]), \
+         patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+               return_value=readonly):
         yield
 
 
@@ -716,12 +728,18 @@ def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
 
 class TestExternalSkillMutations:
     """Verify skill_manage can patch/edit/write/remove/delete skills that live
-    under skills.external_dirs — in place, without duplicating to local.
+    under skills.external_dirs — in place, without duplicating to local —
+    WHEN the read-only gate is off (``skills.external_dirs_readonly: false``).
 
     Regression for issues #4759 and #4381: the read-only gate used to refuse
     with 'Skill X is in an external directory and cannot be modified', which
     caused agents to create duplicate copies in ~/.hermes/skills/ as a
     workaround.
+
+    NOTE (CLAWD-1110): the read-only gate is now the DEFAULT. These tests pin
+    it off via ``_two_roots(..., readonly=False)`` (the default) to keep
+    covering the legacy in-place path; the default-on behavior is covered by
+    ``TestExternalDirsReadonlyGate`` below.
     """
 
     def test_patch_external_skill_writes_in_place(self, tmp_path):
@@ -835,6 +853,244 @@ class TestExternalSkillMutations:
         assert (local / "fresh-skill" / "SKILL.md").exists()
         assert not (external / "fresh-skill").exists()
 
+
+# ---------------------------------------------------------------------------
+# External-dirs read-only gate (CLAWD-1110) — skills.external_dirs_readonly.
+# Default ON: skill_manage mutating actions refuse external-dir skills so the
+# background skill-review fork can never write into live dev repos exposed via
+# external_dirs. Reads/listing/consumption + create (local-only) are unaffected.
+# ---------------------------------------------------------------------------
+
+
+_READONLY_ERR_TAIL = "external_dirs are read-only (skills.external_dirs_readonly)"
+
+
+class TestExternalDirsReadonlyGate:
+    """With ``skills.external_dirs_readonly`` ON (the default), the five
+    mutating actions refuse skills under an external dir WITHOUT writing,
+    while local-dir skills and ``create`` are unaffected."""
+
+    # --- (a) mutating actions blocked on an external-dir skill, error shape ---
+
+    def test_patch_external_blocked(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external, readonly=True):
+            result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is False, result
+        assert "ext-skill" in result["error"]
+        assert "read-only external skills dir" in result["error"]
+        assert _READONLY_ERR_TAIL in result["error"]
+        # Not written
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+
+    def test_edit_external_blocked(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+        original = (skill_dir / "SKILL.md").read_text()
+
+        new_content = (
+            "---\nname: ext-skill\ndescription: Rewritten.\n---\n\n"
+            "# Rewritten\n\nBrand new body.\n"
+        )
+        with _two_roots(local, external, readonly=True):
+            result = _edit_skill("ext-skill", new_content)
+
+        assert result["success"] is False, result
+        assert _READONLY_ERR_TAIL in result["error"]
+        assert (skill_dir / "SKILL.md").read_text() == original
+
+    def test_write_file_external_blocked(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external, readonly=True):
+            result = _write_file("ext-skill", "references/notes.md", "# Notes\n")
+
+        assert result["success"] is False, result
+        assert _READONLY_ERR_TAIL in result["error"]
+        assert not (skill_dir / "references" / "notes.md").exists()
+
+    def test_remove_file_external_blocked(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "notes.md").write_text("# Notes\n")
+
+        with _two_roots(local, external, readonly=True):
+            result = _remove_file("ext-skill", "references/notes.md")
+
+        assert result["success"] is False, result
+        assert _READONLY_ERR_TAIL in result["error"]
+        # File survives the refusal
+        assert (skill_dir / "references" / "notes.md").exists()
+
+    def test_delete_external_blocked(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external, readonly=True):
+            result = _delete_skill("ext-skill")
+
+        assert result["success"] is False, result
+        assert _READONLY_ERR_TAIL in result["error"]
+        # Skill NOT deleted
+        assert skill_dir.exists()
+        assert (skill_dir / "SKILL.md").exists()
+
+    def test_dispatcher_blocks_external_with_error_shape(self, tmp_path):
+        """End-to-end through skill_manage(): the JSON result carries the
+        read-only refusal, not a write."""
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external, readonly=True):
+            raw = skill_manage(
+                action="patch", name="ext-skill",
+                old_string="OLD_MARKER", new_string="NEW_MARKER",
+            )
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert _READONLY_ERR_TAIL in result["error"]
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+
+    # --- (b) same actions succeed on a LOCAL SKILLS_DIR skill ---
+
+    def test_patch_local_allowed_with_gate_on(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+
+        with _two_roots(local, external, readonly=True):
+            _create_skill("local-skill", VALID_SKILL_CONTENT.replace(
+                "name: test-skill", "name: local-skill"))
+            patch_res = _patch_skill("local-skill", "Do the thing.", "Do the new thing.")
+            edit_res = _edit_skill("local-skill", VALID_SKILL_CONTENT_2.replace(
+                "name: test-skill", "name: local-skill"))
+            write_res = _write_file("local-skill", "references/api.md", "# API\n")
+            remove_res = _remove_file("local-skill", "references/api.md")
+            delete_res = _delete_skill("local-skill")
+
+        for res in (patch_res, edit_res, write_res, remove_res, delete_res):
+            assert res["success"] is True, res
+        assert not (local / "local-skill").exists()
+
+    # --- (c) create still lands local even with the gate on ---
+
+    def test_create_lands_local_with_gate_on(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+
+        with _two_roots(local, external, readonly=True):
+            result = _create_skill("fresh-skill", VALID_SKILL_CONTENT.replace(
+                "name: test-skill", "name: fresh-skill"))
+
+        assert result["success"] is True, result
+        assert (local / "fresh-skill" / "SKILL.md").exists()
+        assert not (external / "fresh-skill").exists()
+
+    # --- (d) flag false → legacy in-place behavior (writes go through) ---
+
+    def test_flag_false_restores_legacy_in_place_write(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external, readonly=False):
+            result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
+
+    # --- robustness: symlinked external dir still caught ---
+
+    def test_symlinked_external_dir_still_blocked(self, tmp_path):
+        """A skill reached through a symlinked external root must still be
+        recognized as external (realpaths compared)."""
+        local = tmp_path / "local"; external_real = tmp_path / "vault-real"
+        local.mkdir(); external_real.mkdir()
+        skill_dir = _write_external_skill(external_real)
+
+        external_link = tmp_path / "vault-link"
+        try:
+            external_link.symlink_to(external_real, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        # external_dirs points at the SYMLINK; _find_skill resolves through it.
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local), \
+             patch("agent.skill_utils.get_all_skills_dirs",
+                   return_value=[local, external_link]), \
+             patch("agent.skill_utils.get_external_skills_dirs",
+                   return_value=[external_link]), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is False, result
+        assert _READONLY_ERR_TAIL in result["error"]
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+
+    # --- _assert_writable helper directly ---
+
+    def test_assert_writable_noop_when_flag_off(self, tmp_path):
+        external = tmp_path / "vault"; external.mkdir()
+        skill_dir = external / "ext-skill"; skill_dir.mkdir()
+        with patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=False):
+            assert _assert_writable("ext-skill", skill_dir) is None
+
+    def test_assert_writable_passes_local_dir(self, tmp_path):
+        local = tmp_path / "local"; external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = local / "local-skill"; skill_dir.mkdir()
+        with patch("agent.skill_utils.get_external_skills_dirs",
+                   return_value=[external]), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            assert _assert_writable("local-skill", skill_dir) is None
+
+
+class TestExternalDirsReadonlyFlag:
+    """_external_dirs_readonly_enabled reads skills.external_dirs_readonly,
+    defaulting True (safe-by-default — the CLAWD-1110 point)."""
+
+    def test_default_true_when_unset(self):
+        with patch("hermes_cli.config.load_config", return_value={"skills": {}}):
+            assert _external_dirs_readonly_enabled() is True
+
+    def test_explicit_false_disables(self):
+        with patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"external_dirs_readonly": False}}):
+            assert _external_dirs_readonly_enabled() is False
+
+    def test_quoted_false_disables(self):
+        for quoted in ("false", "False", "0", "no", "off"):
+            with patch("hermes_cli.config.load_config",
+                       return_value={"skills": {"external_dirs_readonly": quoted}}):
+                assert _external_dirs_readonly_enabled() is False, \
+                    f"external_dirs_readonly={quoted!r} must coerce to False"
+
+    def test_quoted_true_enables(self):
+        for quoted in ("true", "True", "1", "yes", "on"):
+            with patch("hermes_cli.config.load_config",
+                       return_value={"skills": {"external_dirs_readonly": quoted}}):
+                assert _external_dirs_readonly_enabled() is True, \
+                    f"external_dirs_readonly={quoted!r} must coerce to True"
+
+    def test_config_error_fails_safe_on(self):
+        """If load_config raises, the gate stays ON (fail-safe — a broken
+        config must not silently re-open writes into external dirs)."""
+        with patch("hermes_cli.config.load_config",
+                   side_effect=RuntimeError("boom")):
+            assert _external_dirs_readonly_enabled() is True
 
 
 # ---------------------------------------------------------------------------

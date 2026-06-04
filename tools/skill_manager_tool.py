@@ -75,6 +75,32 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
+def _external_dirs_readonly_enabled() -> bool:
+    """Read skills.external_dirs_readonly from config (default True).
+
+    On by default (safe-by-default): skills that live under a
+    ``skills.external_dirs`` entry are treated as read-only by the
+    ``skill_manage`` mutating actions (edit/patch/write_file/remove_file/
+    delete).  This stops the background skill-review fork from writing into
+    live dev repos that operators expose via external_dirs (the 2026-06-03
+    incident — see CLAWD-1110).  Reads/listing/consumption are unaffected.
+
+    Set ``skills.external_dirs_readonly: false`` to restore the legacy
+    behavior (PR #17512) of mutating external-dir skills in place.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "external_dirs_readonly"),
+            default=True,
+        )
+    except Exception:
+        # Fail safe-ON: a config read error must not silently re-open writes
+        # into external dirs.
+        return True
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
 
@@ -132,6 +158,49 @@ def _containing_skills_root(skill_path: Path) -> Path:
         except (ValueError, OSError):
             continue
     return SKILLS_DIR
+
+
+def _assert_writable(name: str, skill_dir: Path) -> Optional[str]:
+    """Return a refusal message if *skill_dir* lives under a read-only external
+    skills dir, else None.
+
+    Single chokepoint for the ``skills.external_dirs_readonly`` guard (default
+    ON): the ``skill_manage`` mutating actions call this after ``_find_skill``
+    resolves the target so external-dir skills can never be written in place.
+    Resolves realpaths before comparing so a symlinked skill dir can't slip
+    past the gate.  No-op when the flag is off (legacy in-place behavior).
+    """
+    if not _external_dirs_readonly_enabled():
+        return None
+
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+    except Exception:
+        # If we can't enumerate the external dirs we can't prove the skill is
+        # external — fall back to allowing the write rather than block every
+        # mutation on an import error.
+        return None
+
+    try:
+        resolved = skill_dir.resolve()
+    except OSError:
+        resolved = skill_dir
+
+    for ext_dir in get_external_skills_dirs():
+        try:
+            ext_resolved = ext_dir.resolve()
+        except OSError:
+            ext_resolved = ext_dir
+        try:
+            resolved.relative_to(ext_resolved)
+        except ValueError:
+            continue
+        return (
+            f"skill '{name}' lives in a read-only external skills dir "
+            f"({ext_resolved}); external_dirs are read-only "
+            f"(skills.external_dirs_readonly)"
+        )
+    return None
 
 
 def _pinned_guard(name: str) -> Optional[str]:
@@ -544,6 +613,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
+    readonly_err = _assert_writable(name, existing["path"])
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
+
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -585,6 +658,10 @@ def _patch_skill(
         return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
+
+    readonly_err = _assert_writable(name, skill_dir)
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
 
     if file_path:
         # Patching a supporting file
@@ -673,6 +750,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
+    readonly_err = _assert_writable(name, existing["path"])
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
+
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
@@ -742,6 +823,10 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
 
+    readonly_err = _assert_writable(name, existing["path"])
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
+
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -777,6 +862,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
+
+    readonly_err = _assert_writable(name, skill_dir)
+    if readonly_err:
+        return {"success": False, "error": readonly_err}
 
     target, err = _resolve_skill_target(skill_dir, file_path)
     if err:

@@ -1,3 +1,10 @@
+> ⚠️ **LIVE DEPLOY TREE — READ BEFORE TOUCHING GIT** ⚠️
+> `/opt/hermes/home/.hermes/hermes-agent` is the running **editable install** — the checked-out branch IS the live code behind the Telegram bot + dashboard.
+> **NEVER** `git checkout` / `branch` / `rebase` in the stable tree. It must always stay on `integrated`.
+> ALL dev / PR / test / MGA / CI / branch work goes in **`/opt/hermes/dev/hermes-agent`** via the **`hermesdev`** command (sandboxed HERMES_HOME).
+> To update stable: ONLY `git pull origin integrated` → `pip install -e .` → restart services → weather smoke test.
+> A systemd guard (`hermes-branch-guard.timer`) alerts if the stable tree ever drifts off `integrated`.
+
 # Hermes Agent - Development Guide
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.

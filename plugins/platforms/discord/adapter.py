@@ -5032,7 +5032,6 @@ def _component_check_auth(
 
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
-
     Called at module load (when discord.py is pre-installed) and also from
     check_discord_requirements() after a lazy install, so view classes are
     always defined whenever DISCORD_AVAILABLE is True.  Without this,
@@ -5041,31 +5040,35 @@ def _define_discord_view_classes() -> None:
     undefined, causing NameError on the first button interaction.
     """
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    
 
-    class ExecApprovalView(discord.ui.View):
-        """
-        Interactive button view for exec approval of dangerous commands.
-
-        Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
-        Clicking a button calls ``resolve_gateway_approval()`` to unblock the
-        waiting agent thread — the same mechanism as the text ``/approve`` flow.
-        Only users in the allowed list can click.  Times out after 5 minutes.
-        """
-
+class ExecApprovalView(discord.ui.View):
+        """Interactive button view for exec approval of dangerous commands."""
         def __init__(
             self,
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=300)
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
 
+        async def on_timeout(self):
+            """Disable buttons on timeout to prevent stale interactions."""
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            # Mesajı güncellemek için güvenli bir şekilde deniyoruz
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except Exception:
+                    pass
+
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Verify the user clicking is authorized."""
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             )
@@ -5074,32 +5077,38 @@ def _define_discord_view_classes() -> None:
             self, interaction: discord.Interaction, choice: str,
             color: discord.Color, label: str,
         ):
-            """Resolve the approval via the gateway approval queue and update the embed."""
             if self.resolved:
-                await interaction.response.send_message(
-                    "This approval has already been resolved~", ephemeral=True
-                )
+                await interaction.response.send_message("Already resolved~", ephemeral=True)
                 return
 
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to approve commands~", ephemeral=True
-                )
+                await interaction.response.send_message("Not authorized~", ephemeral=True)
                 return
 
             self.resolved = True
 
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            # Embed'i güvenli al
+            embed = interaction.message.embeds[0] if (interaction.message and interaction.message.embeds) else None
             if embed:
                 embed.color = color
                 embed.set_footer(text=f"{label} by {interaction.user.display_name}")
 
-            # Disable all buttons
+            # Butonları kilitle
             for child in self.children:
                 child.disabled = True
 
-            await interaction.response.edit_message(embed=embed, view=self)
+            # Mesajı güncelle (interaction.response kullanıyoruz)
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            except Exception:
+                pass
+
+            # Gateway'i unblock et
+            try:
+                from tools.approval import resolve_gateway_approval
+                resolve_gateway_approval(self.session_key, choice)
+            except Exception as exc:
+                logger.error("Failed to resolve gateway approval: %s", exc)
 
             # Unblock the waiting agent thread via the gateway approval queue
             try:

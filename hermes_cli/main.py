@@ -8567,6 +8567,48 @@ def _venv_scripts_dir() -> Path | None:
     return scripts if scripts.is_dir() else None
 
 
+def _wait_for_interpreter_venv_ready(*, timeout: float = 15.0) -> bool:
+    """Ensure the venv hosting ``sys.executable`` has an intact ``pyvenv.cfg``.
+
+    During ``hermes update`` the managed-uv path can rebuild the project venv
+    (``rebuild_venv`` → ``shutil.rmtree`` + ``uv venv``) before the
+    desktop-rebuild and profile-skills-sync steps run. Both of those steps
+    spawn a child process with ``sys.executable``. If they fire while the venv
+    is mid-rewrite, the interpreter launcher finds the venv directory but no
+    ``pyvenv.cfg`` yet and aborts with the bare stderr line
+    ``No pyvenv.cfg file`` — surfacing as a spurious "Desktop build failed" /
+    "sync failed" on an update that otherwise succeeded.
+
+    A venv's ``pyvenv.cfg`` sits one level up from the interpreter's ``bin`` /
+    ``Scripts`` dir. If ``sys.executable`` is NOT a venv interpreter (no
+    sibling marker dir, e.g. a system Python on PATH), there is nothing to
+    wait for and we return True immediately. Otherwise we poll briefly for the
+    marker to (re)appear — the rewrite window is short — and return whether
+    it's present. Best-effort: never raises, callers proceed regardless.
+    """
+    try:
+        exe = Path(sys.executable).resolve()
+    except Exception:
+        return True
+
+    venv_dir = exe.parent.parent  # .../venv/{bin,Scripts}/python -> .../venv
+    bin_dir = venv_dir / ("Scripts" if _is_windows() else "bin")
+    if not bin_dir.is_dir():
+        # Not a venv-hosted interpreter — pyvenv.cfg is irrelevant.
+        return True
+
+    cfg = venv_dir / "pyvenv.cfg"
+    if cfg.is_file():
+        return True
+
+    deadline = _time.monotonic() + max(0.0, timeout)
+    while _time.monotonic() < deadline:
+        if cfg.is_file():
+            return True
+        _time.sleep(0.25)
+    return cfg.is_file()
+
+
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     """Entry-point shims that uv may try to rewrite during ``pip install -e .``.
 
@@ -10260,11 +10302,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            build_result = subprocess.run(
-                [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
-                cwd=PROJECT_ROOT,
-                check=False,
-            )
+            # The Python-dependency step above may have rebuilt the venv that
+            # hosts sys.executable. Wait for its pyvenv.cfg to settle before
+            # spawning, or the child interpreter aborts with "No pyvenv.cfg
+            # file" and the rebuild spuriously "fails" on a successful update.
+            _wait_for_interpreter_venv_ready()
+            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+            # Stream the build output live (long Electron builds otherwise
+            # look hung). On the rare nonzero exit, retry once after waiting
+            # again for the venv — this covers a still-settling rebuild window
+            # the first wait didn't fully catch.
+            build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
+            if build_result.returncode != 0 and _wait_for_interpreter_venv_ready():
+                build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
@@ -10320,6 +10370,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if all_profiles:
                 print()
                 print("→ Syncing bundled skills to all profiles...")
+                # seed_profile_skills spawns sys.executable; if the venv was
+                # just rebuilt above, wait for pyvenv.cfg before the loop so
+                # the children don't abort with "No pyvenv.cfg file".
+                _wait_for_interpreter_venv_ready()
                 for p in all_profiles:
                     try:
                         r = seed_profile_skills(p.path, quiet=True)

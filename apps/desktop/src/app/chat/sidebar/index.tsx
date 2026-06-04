@@ -242,7 +242,10 @@ export function ChatSidebar({
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
   const multiProfile = profiles.length > 1
-  const showAllProfiles = profileScope === ALL_PROFILES
+  // Gate ALL-profiles grouping on multiProfile too: if a user drops back to one
+  // profile while scope is still ALL (persisted), the rail is hidden and they'd
+  // otherwise be stuck in the grouped view with no way out.
+  const showAllProfiles = multiProfile && profileScope === ALL_PROFILES
   const [agentOrderIds, setAgentOrderIds] = useState<string[]>([])
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')

@@ -36,6 +36,14 @@ const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
+
+/**
+ * If the last printable input arrived within this many ms before Enter,
+ * the Enter is treated as IME composition confirmation (not submit).
+ * 30ms = well below human key-repeat (50ms+) but above IME commit +
+ * Enter arriving in the same event-loop tick (~0-5ms).
+ */
+const IME_GUARD_MS = 30
 type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
@@ -465,6 +473,7 @@ export function TextInput({
   const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const mouseAnchorRef = useRef<null | number>(null)
   const lastClickRef = useRef<{ at: number; offset: number }>({ at: 0, offset: -1 })
+  const lastInputAt = useRef(0)
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -968,6 +977,12 @@ export function TextInput({
       if (k.return) {
         flushKeyBurst()
 
+        const imeGuard = Date.now() - lastInputAt.current < IME_GUARD_MS
+        if (imeGuard) {
+          lastInputAt.current = 0
+          return
+        }
+
         const sequence = (event.keypress as { sequence?: string }).sequence
         const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
 
@@ -1111,6 +1126,10 @@ export function TextInput({
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+        if (!event.keypress.isPasted) {
+          lastInputAt.current = Date.now()
+        }
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
           return

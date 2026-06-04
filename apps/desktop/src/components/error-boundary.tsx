@@ -68,19 +68,23 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
         </div>
 
         <div className="grid gap-4 p-5">
-          <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 font-mono text-[0.7rem] leading-4 text-destructive">
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 font-mono text-[0.7rem] leading-4 text-destructive">
             {error.message || String(error)}
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-4">
             <Button onClick={reset}>
               <RefreshCw className="size-4" />
               Try again
             </Button>
-            <Button onClick={() => window.location.reload()} variant="outline">
+            <Button onClick={() => window.location.reload()} variant="text">
               Reload window
             </Button>
-            <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} variant="ghost">
+            <Button
+              className="ml-auto"
+              onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)}
+              variant="text"
+            >
               Open logs
             </Button>
           </div>

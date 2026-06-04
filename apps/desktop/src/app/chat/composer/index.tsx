@@ -3,6 +3,7 @@ import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
+  type CompositionEvent,
   type FormEvent,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -574,6 +575,11 @@ export function ChatBar({
     }
 
     window.setTimeout(refreshTrigger, 0)
+  }
+
+  const handleCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
+    composingRef.current = false
+    handleEditorInput(event)
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -1199,9 +1205,7 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
-        onCompositionEnd={() => {
-          composingRef.current = false
-        }}
+        onCompositionEnd={handleCompositionEnd}
         onCompositionStart={() => {
           composingRef.current = true
         }}
@@ -1253,9 +1257,11 @@ export function ChatBar({
           onDrop={handleDrop}
           onSubmit={e => {
             e.preventDefault()
+
             if (composingRef.current) {
               return
             }
+
             submitDraft()
           }}
           ref={composerRef}

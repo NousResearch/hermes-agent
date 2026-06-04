@@ -14,6 +14,7 @@ import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
   type ClipboardEvent,
   type ComponentProps,
+  type CompositionEvent,
   type FC,
   type FocusEvent,
   type FormEvent,
@@ -884,6 +885,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   // key so the matching keyup skips refreshTrigger (timing-immune vs reading
   // `trigger`, which keyup sees as already-null after Escape).
   const triggerKeyConsumedRef = useRef(false)
+  const composingRef = useRef(false)
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -1187,6 +1189,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   }
 
   const handleInput = (event: FormEvent<HTMLDivElement>) => {
+    if (composingRef.current) {
+      return
+    }
+
     const editor = event.currentTarget
 
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
@@ -1195,6 +1201,11 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
     syncDraftFromEditor(editor)
     window.setTimeout(refreshTrigger, 0)
+  }
+
+  const handleCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
+    composingRef.current = false
+    handleInput(event)
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -1246,6 +1257,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -1358,6 +1373,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               data-placeholder="Edit message"
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onCompositionEnd={handleCompositionEnd}
+              onCompositionStart={() => {
+                composingRef.current = true
+              }}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}

@@ -96,11 +96,48 @@ class TestEnsureUv:
 
     def test_install_failure_returns_none_false(self, tmp_path):
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")):
+             patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")), \
+             patch("hermes_cli.managed_uv.shutil.which", return_value=None):
             from hermes_cli.managed_uv import ensure_uv
             path, fresh = ensure_uv()
             assert path is None
             assert fresh is False
+
+    def test_install_failure_copies_existing_path_uv(self, tmp_path):
+        path_uv = tmp_path / "path-bin" / "uv"
+        _make_executable(path_uv)
+
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")), \
+             patch("hermes_cli.managed_uv.shutil.which", return_value=str(path_uv)), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.11.14\n", stderr="")
+
+            from hermes_cli.managed_uv import ensure_uv
+            path, fresh = ensure_uv()
+
+            target = tmp_path / "bin" / "uv"
+            assert path == str(target)
+            assert fresh is True
+            assert target.read_text() == path_uv.read_text()
+            assert mock_run.call_args_list[0][0][0] == [str(path_uv), "--version"]
+
+    def test_install_failure_rejects_broken_path_uv(self, tmp_path):
+        path_uv = tmp_path / "path-bin" / "uv"
+        _make_executable(path_uv)
+
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._install_uv", side_effect=RuntimeError("network down")), \
+             patch("hermes_cli.managed_uv.shutil.which", return_value=str(path_uv)), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="broken")
+
+            from hermes_cli.managed_uv import ensure_uv
+            path, fresh = ensure_uv()
+
+            assert path is None
+            assert fresh is False
+            assert not (tmp_path / "bin" / "uv").exists()
 
 
 # ---------------------------------------------------------------------------

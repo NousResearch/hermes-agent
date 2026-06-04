@@ -80,8 +80,10 @@ def ensure_uv() -> Tuple[Optional[str], bool]:
         _install_uv(target)
     except Exception as exc:
         logger.warning("Managed uv install failed: %s", exc)
-        print(f"  ✗ Failed to install managed uv: {exc}")
-        return (None, False)
+        print(f"  ! Managed uv installer failed: {exc}")
+        if not _copy_existing_uv_from_path(target):
+            print("  ✗ Failed to install managed uv")
+            return (None, False)
 
     # Verify
     result = resolve_uv()
@@ -167,6 +169,43 @@ def update_managed_uv() -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Installer internals
 # ---------------------------------------------------------------------------
+
+def _copy_existing_uv_from_path(target: Path) -> bool:
+    """Copy an already-working PATH uv into the managed location.
+
+    This is a recovery path for Windows/macOS/Linux machines where the official
+    installer fails even though the user already has a valid uv available.  The
+    managed path remains the only path returned to callers after the copy.
+    """
+    existing = shutil.which("uv")
+    if not existing:
+        return False
+
+    existing_path = Path(existing)
+    if existing_path == target:
+        return target.is_file()
+
+    probe = subprocess.run(
+        [str(existing_path), "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        logger.warning("PATH uv probe failed: %s", probe.stderr)
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(existing_path, target)
+    try:
+        target.chmod(target.stat().st_mode | 0o755)
+    except OSError:
+        logger.debug("Could not chmod copied uv at %s", target, exc_info=True)
+
+    version = probe.stdout.strip() or "uv on PATH"
+    print(f"  ✓ Copied existing uv from PATH into managed bin ({version})")
+    return True
+
 
 def _install_uv(target: Path) -> None:
     """Bootstrap uv into *target* using the official standalone installer.

@@ -2036,7 +2036,26 @@ function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
     if ($NoVenv) {
-        $hermesBin = "$InstallDir"
+        # When -NoVenv, entry-point shims land in the system Python's Scripts dir.
+        # Skip the Microsoft Store stub (same guard as Test-Python).
+        $sysPython = Get-Command python -ErrorAction SilentlyContinue
+        $isStoreStub = $false
+        if ($sysPython) {
+            try {
+                $pythonSource = $sysPython.Source
+                if ($pythonSource -and $pythonSource -like "*\WindowsApps\*") {
+                    $isStoreStub = $true
+                } else {
+                    $item = Get-Item $pythonSource -ErrorAction SilentlyContinue
+                    if ($item -and $item.Length -eq 0) { $isStoreStub = $true }
+                }
+            } catch { }
+        }
+        if ($sysPython -and -not $isStoreStub) {
+            $hermesBin = Join-Path (Split-Path $sysPython.Source -Parent) "Scripts"
+        } else {
+            $hermesBin = "$InstallDir"
+        }
     } else {
         $hermesBin = "$InstallDir\venv\Scripts"
     }
@@ -2056,6 +2075,11 @@ function Set-PathVariable {
         Write-Info "PATH already configured"
     }
     
+    # Prepend to the current session so hermes is available immediately.
+    # Remove any existing entry first to guarantee correct precedence.
+    $filteredPath = ($env:Path -split ';' | Where-Object { $_ -ne $hermesBin }) -join ';'
+    $env:Path = "$hermesBin;$filteredPath"
+
     # Set HERMES_HOME so the Python code finds config/data in the right place.
     # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
     # of the Unix default ~/.hermes
@@ -2065,9 +2089,15 @@ function Set-PathVariable {
         Write-Success "Set HERMES_HOME=$HermesHome"
     }
     $env:HERMES_HOME = $HermesHome
-    
-    # Update current session
-    $env:Path = "$hermesBin;$env:Path"
+
+    # Verify hermes.exe resolves to the expected location
+    $resolvedHermes = Get-Command hermes -ErrorAction SilentlyContinue
+    if (-not $resolvedHermes) {
+        Write-Warn "hermes.exe was not found on PATH after setup. You may need to open a new terminal."
+        Write-Info "  Expected location: $hermesBin\hermes.exe"
+    } elseif ($resolvedHermes.Source -and (Split-Path $resolvedHermes.Source -Parent) -ne $hermesBin) {
+        Write-Warn "hermes resolves to $($resolvedHermes.Source) instead of $hermesBin\hermes.exe"
+    }
     
     Write-Success "hermes command ready"
 }

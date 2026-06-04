@@ -449,6 +449,30 @@ class TestHermesConfigWriteProtection:
         )
         assert dangerous is True
 
+    def test_perl_in_place_separate_flag_token(self):
+        # The -i flag does not have to be the first token. `perl -p -i -e`
+        # splits the in-place flag out as its own token after -p; the pattern
+        # must catch it the same as `perl -i -pe`.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -p -i -e 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_backup_suffix(self):
+        # `perl -i.bak` keeps a backup but still mutates the file in place.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i.bak -pe 's/x/y/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_eval_no_inplace_safe(self):
+        # `perl -e` with no -i flag is code evaluation, not file mutation —
+        # the perl/ruby -i pattern must not fire on it.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -wne 'print' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+
     def test_read_is_safe(self):
         # Reading config is not a write — must not trip.
         dangerous, key, desc = detect_dangerous_command("cat ~/.hermes/config.yaml")

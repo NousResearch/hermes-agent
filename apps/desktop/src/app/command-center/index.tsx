@@ -156,7 +156,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     }
 
     return sorted.filter(session => {
-      const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
+      const haystack = `${sessionTitle(session)} ${session.id} ${session._lineage_root_id ?? ''}`.toLowerCase()
 
       return haystack.includes(needle)
     })

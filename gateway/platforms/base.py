@@ -967,14 +967,35 @@ def _media_delivery_denied_paths() -> List[Path]:
 
 
 def _path_under_denied_prefix(resolved: Path) -> bool:
-    """Return True if ``resolved`` lives under a deny-listed system path."""
+    """Return True if ``resolved`` lives under a deny-listed system path.
+
+    One narrow exception: when a denied prefix IS the running user's own home,
+    the home itself is not treated as denied. ``/root`` is on the system-path
+    denylist so that a non-root gateway can't deliver another user's home, but
+    on a root-run gateway ``$HOME=/root`` and the operator's own deliverables
+    (``/root/work/proposal.docx``) live directly under it. The credential
+    sub-directories inside home (``~/.ssh``, ``~/.aws``, ...) and Hermes
+    secrets (``~/.hermes/.env``, ``auth.json``) are *separate, more-specific*
+    denied paths, so they stay blocked regardless of this exception — it can
+    only un-block a plain file sitting in the running user's home tree, never a
+    credential location or another user's home.
+    """
+    try:
+        home = Path(os.path.expanduser("~")).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        home = None
     for denied in _media_delivery_denied_paths():
         try:
             resolved_denied = denied.expanduser().resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
-        if _path_is_within(resolved, resolved_denied) or resolved == resolved_denied:
-            return True
+        if not (_path_is_within(resolved, resolved_denied) or resolved == resolved_denied):
+            continue
+        # Allow the running user's own home tree; its credential sub-dirs are
+        # caught by their own (more-specific) denylist entries above.
+        if home is not None and resolved_denied == home:
+            continue
+        return True
     return False
 
 

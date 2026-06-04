@@ -35,7 +35,18 @@ export interface ToolView {
   previewTarget?: string
   rawArgs: string
   rawResult: string
+  /** Set for tools whose output naturally contains ANSI escape codes
+   *  (terminal/execute_code) so the renderer knows to run them through
+   *  the ANSI parser instead of printing them as literals. */
+  rendersAnsi?: boolean
   searchHits?: SearchResultRow[]
+  /** When the backend reports stderr as a separate stream (terminal /
+   *  execute_code), the renderer shows it as its own labeled, neutrally
+   *  tinted block under stdout — distinct from an error tone. */
+  stderr?: string
+  /** When set, the renderer uses stdout+stderr as separate sections and
+   *  ignores the merged `detail`. */
+  stdout?: string
   status: ToolStatus
   subtitle: string
   title: string
@@ -1002,6 +1013,10 @@ function toolDetailText(
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
+    // Streams are split out into ToolView.stdout / ToolView.stderr by
+    // buildToolView so the renderer can label them separately. The merged
+    // fallback here is only used when the backend doesn't expose either
+    // stream individually.
     const output = firstStringField(resultRecord, ['output', 'stdout', 'stderr'])
 
     const lines = Array.isArray(resultRecord.lines)
@@ -1209,6 +1224,18 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
 
   const resultCount = status === 'error' ? null : toolResultCount(part, argsRecord, resultRecord)
 
+  // For shell/code tools we surface stdout and stderr as separate labeled
+  // streams in the renderer. Many CLIs use stderr for informational
+  // messages (npm progress, git hints), so we deliberately don't paint
+  // stderr destructively even though it's tagged.
+  const rendersAnsi = part.toolName === 'terminal' || part.toolName === 'execute_code'
+  const stdout = rendersAnsi ? firstStringField(resultRecord, ['stdout']) : ''
+  const stderrRaw = rendersAnsi ? firstStringField(resultRecord, ['stderr']) : ''
+  // Only attach stderr when the backend actually returned it as its own
+  // field — otherwise the merged `detail` already covers it and double-
+  // rendering would duplicate output.
+  const hasSplitStreams = rendersAnsi && (Boolean(stdout) || Boolean(stderrRaw))
+
   return {
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
     detail,
@@ -1220,7 +1247,10 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
     rawArgs: prettyJson(part.args),
     rawResult: prettyJson(part.result),
+    rendersAnsi: rendersAnsi || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,
+    stderr: hasSplitStreams ? stderrRaw || undefined : undefined,
+    stdout: hasSplitStreams ? stdout || undefined : undefined,
     status,
     subtitle,
     title,

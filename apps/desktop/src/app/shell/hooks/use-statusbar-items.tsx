@@ -1,23 +1,42 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import type { ReactNode } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { Activity, AlertCircle, Clock, Command, Cpu, Hash, Loader2, Sparkles } from '@/lib/icons'
+import {
+  Activity,
+  AlertCircle,
+  ChevronDown,
+  Clock,
+  Command,
+  Hash,
+  Loader2,
+  Sparkles,
+  Zap,
+  ZapFilled
+} from '@/lib/icons'
+import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
+import { setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
+  $activeSessionId,
   $busy,
+  $currentFastMode,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffort,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
   $workingSessionIds,
-  setModelPickerOpen
+  $yoloActive,
+  setModelPickerOpen,
+  setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
@@ -34,8 +53,11 @@ interface StatusbarItemsOptions {
   gatewayLogLines: readonly string[]
   gatewayState: string
   inferenceStatus: RuntimeReadinessResult | null
+  modelMenuContent?: ReactNode
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
+  freshDraftReady: boolean
+  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
 }
@@ -48,14 +70,21 @@ export function useStatusbarItems({
   gatewayLogLines,
   gatewayState,
   inferenceStatus,
+  modelMenuContent,
   openAgents,
   openCommandCenterSection,
+  freshDraftReady,
+  requestGateway,
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
+  const activeSessionId = useStore($activeSessionId)
+  const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
+  const currentFastMode = useStore($currentFastMode)
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
+  const currentReasoningEffort = useStore($currentReasoningEffort)
   const currentUsage = useStore($currentUsage)
   const desktopActionTasks = useStore($desktopActionTasks)
   const previewServerRestartStatus = useStore($previewServerRestartStatus)
@@ -69,6 +98,28 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+
+  // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
+  // new-chat draft (no runtime session yet) we arm locally; the session-create
+  // path applies it once the backend session exists.
+  const toggleYolo = useCallback(async () => {
+    const next = !$yoloActive.get()
+    const sid = $activeSessionId.get()
+
+    setYoloActive(next)
+
+    if (!sid) {
+      return
+    }
+
+    try {
+      await setSessionYolo(requestGateway, sid, next)
+    } catch {
+      setYoloActive(!next)
+    }
+  }, [requestGateway])
+
+  const showYoloToggle = gatewayState === 'open' && (!!activeSessionId || freshDraftReady)
 
   const gatewayMenuContent = useMemo(
     () => (
@@ -269,17 +320,65 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: currentProvider || '',
-        icon: <Cpu className="size-3" />,
-        id: 'model-summary',
-        label: currentModel || 'No model selected',
-        onSelect: () => setModelPickerOpen(true),
-        title: currentProvider ? `Switch model · ${currentProvider}: ${currentModel || ''}` : 'Open model picker',
+        className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
+        hidden: !showYoloToggle,
+        icon: yoloActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
+        id: 'yolo',
+        onSelect: () => void toggleYolo(),
+        title: yoloActive
+          ? 'YOLO on — auto-approving dangerous commands. Click to turn off.'
+          : 'YOLO off — click to auto-approve dangerous commands.',
         variant: 'action'
+      },
+      {
+        id: 'model-summary',
+        label: (
+          <span className="inline-flex min-w-0 items-center gap-0.5">
+            <span className="truncate">
+              {formatModelStatusLabel(currentModel, {
+                fastMode: currentFastMode,
+                reasoningEffort: currentReasoningEffort
+              })}
+            </span>
+            <ChevronDown className="size-2.5 shrink-0 opacity-50" />
+          </span>
+        ),
+        ...(modelMenuContent
+          ? {
+              menuAlign: 'end' as const,
+              menuClassName: 'w-64',
+              menuContent: modelMenuContent,
+              title: currentProvider ? `Model · ${currentProvider}: ${currentModel || 'none'}` : 'Switch model',
+              variant: 'menu' as const
+            }
+          : {
+              onSelect: () => setModelPickerOpen(true),
+              title: currentProvider ? `${currentProvider} · ${currentModel || 'no model'}` : 'Open model picker',
+              variant: 'action' as const
+            })
       },
       versionItem
     ],
-    [busy, contextBar, contextUsage, currentModel, currentProvider, sessionStartedAt, turnStartedAt, versionItem]
+    [
+      busy,
+      contextBar,
+      contextUsage,
+      currentFastMode,
+      currentModel,
+      currentProvider,
+      currentReasoningEffort,
+      modelMenuContent,
+      sessionStartedAt,
+      showYoloToggle,
+      toggleYolo,
+      turnStartedAt,
+      versionItem,
+      yoloActive
+    ]
   )
 
   const leftStatusbarItems = useMemo(

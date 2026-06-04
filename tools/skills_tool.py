@@ -159,6 +159,18 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     return _impl(frontmatter)
 
 
+def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
+    """Check if a skill is relevant to the current runtime environment.
+
+    Delegates to ``agent.skill_utils.skill_matches_environment`` — kept here
+    as a public re-export so existing callers don't need updating. This is an
+    offer-time relevance gate (kanban/docker/s6), NOT a hard-compatibility gate;
+    explicit skill loads bypass it.
+    """
+    from agent.skill_utils import skill_matches_environment as _impl
+    return _impl(frontmatter)
+
+
 def _normalize_prerequisite_values(value: Any) -> List[str]:
     if not value:
         return []
@@ -305,7 +317,13 @@ def _capture_required_environment_variables(
         }
 
     missing_names = [entry["name"] for entry in missing_entries]
-    if _is_gateway_surface():
+    # Most gateway surfaces (messaging platforms) can't prompt for a secret, so
+    # they short-circuit to the "unsupported" hint. Interactive gateway surfaces
+    # — the desktop app / TUI — set HERMES_INTERACTIVE and register a
+    # secret-capture callback that routes to a secure secret.request overlay, so
+    # they fall through and actually prompt. (HERMES_INTERACTIVE is the same flag
+    # tools/approval.py uses to tell an interactive surface from a messaging one.)
+    if _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
         return {
             "missing_names": missing_names,
             "setup_skipped": False,
@@ -584,6 +602,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 frontmatter, body = _parse_frontmatter(content)
 
                 if not skill_matches_platform(frontmatter):
+                    continue
+
+                if not skill_matches_environment(frontmatter):
                     continue
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]

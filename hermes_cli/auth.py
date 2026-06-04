@@ -1322,10 +1322,38 @@ def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     return _load_provider_state(auth_store, provider_id)
 
 
+def _active_provider_from_store(auth_store: Dict[str, Any]) -> Optional[str]:
+    """Return the active provider for a loaded auth store.
+
+    In profile mode, falls back to the global-root ``auth.json`` when the
+    profile store has no ``active_provider`` set. This mirrors the per-provider
+    shadowing already used by ``_load_provider_state`` and
+    ``read_credential_pool``: a named profile that never selected its own
+    provider still resolves the provider the user authenticated at the global
+    root (e.g. a Nous OAuth login), so ``model.provider: auto`` works under a
+    profile. A profile that has its own ``active_provider`` always wins; the
+    fallback only fires when the profile has none. Returns ``None`` when
+    neither scope has one. In classic mode ``_load_global_auth_store`` returns
+    an empty dict, so this is a no-op. See issue #18594 follow-up.
+    """
+    active = auth_store.get("active_provider")
+    if active:
+        return active
+    global_store = _load_global_auth_store()
+    if global_store:
+        return global_store.get("active_provider")
+    return None
+
+
 def get_active_provider() -> Optional[str]:
-    """Return the currently active provider ID from auth store."""
+    """Return the currently active provider ID from auth store.
+
+    In profile mode this falls back to the global-root ``active_provider``
+    when the profile has not selected one of its own — see
+    ``_active_provider_from_store``.
+    """
     auth_store = _load_auth_store()
-    return auth_store.get("active_provider")
+    return _active_provider_from_store(auth_store)
 
 
 def is_provider_explicitly_configured(provider_id: str) -> bool:
@@ -1547,10 +1575,14 @@ def resolve_provider(
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # Check auth store for an active OAuth provider
+    # Check auth store for an active OAuth provider. In profile mode this
+    # honors the global-root active_provider when the profile has none of its
+    # own, mirroring the credential-pool / provider-state fallbacks so a
+    # named profile running model.provider: auto can use a globally
+    # authenticated provider. See issue #18594 follow-up.
     try:
         auth_store = _load_auth_store()
-        active = auth_store.get("active_provider")
+        active = _active_provider_from_store(auth_store)
         if active and active in PROVIDER_REGISTRY:
             status = get_auth_status(active)
             if status.get("logged_in"):
@@ -2037,6 +2069,25 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     return refreshed
 
 
+def _mark_qwen_oauth_active(creds: Dict[str, Any]) -> None:
+    """Set active_provider to qwen-oauth in auth.json.
+
+    Qwen OAuth tokens live in the Qwen CLI credential file managed by
+    _save_qwen_cli_tokens / resolve_qwen_runtime_credentials. This function
+    only writes a minimal provider-state entry (base_url for display) and
+    sets active_provider so that get_active_provider() and
+    _model_section_has_credentials() detect the provider for the setup wizard
+    and status commands.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state: Dict[str, Any] = {}
+        if creds.get("base_url"):
+            state["base_url"] = str(creds["base_url"])
+        _save_provider_state(auth_store, "qwen-oauth", state)
+        _save_auth_store(auth_store)
+
+
 def resolve_qwen_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -2099,6 +2150,24 @@ def get_qwen_auth_status() -> Dict[str, Any]:
 # uses to construct a GeminiCloudCodeClient instead of the default OpenAI SDK.
 # Actual HTTP traffic goes to https://cloudcode-pa.googleapis.com/v1internal:*.
 # =============================================================================
+
+def _mark_google_gemini_cli_active(creds: Dict[str, Any]) -> None:
+    """Set active_provider to google-gemini-cli in auth.json.
+
+    The actual OAuth tokens live in the Google credential file managed by
+    agent.google_oauth. This function only writes a minimal provider-state
+    entry (email for display) and sets active_provider so that
+    get_active_provider() and _model_section_has_credentials() detect the
+    provider for the setup wizard and status commands.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state: Dict[str, Any] = {}
+        if creds.get("email"):
+            state["email"] = str(creds["email"])
+        _save_provider_state(auth_store, "google-gemini-cli", state)
+        _save_auth_store(auth_store)
+
 
 def resolve_gemini_oauth_runtime_credentials(
     *,

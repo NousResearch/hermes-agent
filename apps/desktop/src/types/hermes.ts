@@ -48,7 +48,7 @@ export interface OAuthProviderStatus {
 export interface OAuthProvider {
   cli_command: string
   docs_url: string
-  flow: 'device_code' | 'external' | 'pkce'
+  flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string
   name: string
   status: OAuthProviderStatus
@@ -73,6 +73,12 @@ export type OAuthStartResponse =
       user_code: string
       verification_url: string
     }
+  | {
+      auth_url: string
+      expires_in: number
+      flow: 'loopback'
+      session_id: string
+    }
 
 export interface OAuthSubmitResponse {
   message?: string
@@ -90,6 +96,10 @@ export interface OAuthPollResponse {
 export interface EnvVarInfo {
   advanced: boolean
   category: string
+  // True when this var is a messaging-platform credential owned by a card on
+  // the dedicated Messaging page. The Keys page hides these to avoid
+  // duplicating the richer channel-configuration UI.
+  channel_managed?: boolean
   description: string
   is_password: boolean
   is_set: boolean
@@ -210,6 +220,14 @@ export interface ModelOptionProvider {
   free_tier?: boolean
   /** Nous only: paid models a free-tier user cannot select (shown disabled). */
   unavailable_models?: string[]
+  /** Per-model option support, keyed by model id (present when the picker
+   *  requested capabilities). Lets the UI gate fast/reasoning controls. */
+  capabilities?: Record<string, ModelCapabilities>
+}
+
+export interface ModelCapabilities {
+  fast: boolean
+  reasoning: boolean
 }
 
 export interface ModelOptionsResponse {
@@ -307,6 +325,7 @@ export interface SessionRuntimeInfo {
   tools?: Record<string, string[]>
   usage?: Partial<UsageStats>
   version?: string
+  yolo?: boolean
 }
 
 export interface UsageStats {
@@ -489,8 +508,12 @@ export interface ToolsetConfig {
 }
 
 export interface SessionSearchResult {
+  /** Lineage root of the matched conversation. Stable across compression and
+   *  used as the durable pin id; falls back to session_id when absent. */
+  lineage_root?: string | null
   model: string | null
   role: string | null
+  /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string
   session_started: number | null
   snippet: string
@@ -558,6 +581,9 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
+   *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
+  base_url?: string
   model: string
   provider: string
   scope: 'main' | 'auxiliary'
@@ -565,6 +591,8 @@ export interface ModelAssignmentRequest {
 }
 
 export interface ModelAssignmentResponse {
+  /** Persisted endpoint URL for custom/local providers (echoed back). */
+  base_url?: string
   /** Toolset keys auto-routed through the Nous Tool Gateway as a result of
    *  switching the main provider to Nous. Empty unless provider === 'nous'
    *  and the user is a paid subscriber with unconfigured tools. */

@@ -108,38 +108,80 @@ class TestEnsureUv:
 # ---------------------------------------------------------------------------
 
 class TestRebuildVenv:
-    def test_removes_old_venv_and_creates_new(self, tmp_path):
+    def test_moves_old_venv_aside_and_creates_new(self, tmp_path):
         venv_dir = tmp_path / "venv"
         venv_dir.mkdir()
         (venv_dir / "old_file").write_text("stale")
 
         uv_bin = str(tmp_path / "bin" / "uv")
+        seen_cmds = []
 
         def fake_run(cmd, **kwargs):
+            seen_cmds.append(cmd)
             m = MagicMock(returncode=0)
             if cmd[1] == "venv":
-                # Simulate uv creating the venv dir
                 venv_dir.mkdir(exist_ok=True)
-                bin_dir = venv_dir / "bin"
-                bin_dir.mkdir(parents=True, exist_ok=True)
-                (bin_dir / "python").write_text("#!/bin/sh\necho Python 3.11.0")
+                for sub in ("bin", "Scripts"):
+                    bin_dir = venv_dir / sub
+                    bin_dir.mkdir(parents=True, exist_ok=True)
+                    (bin_dir / "python").write_text("#!/bin/sh\necho Python 3.11.0")
             elif "--version" in cmd:
                 m.stdout = "Python 3.11.0"
             return m
 
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.managed_uv.shutil.rmtree") as mock_rmtree:
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run):
             from hermes_cli.managed_uv import rebuild_venv
             result = rebuild_venv(uv_bin, venv_dir)
             assert result is True
-            mock_rmtree.assert_called_once_with(venv_dir, ignore_errors=True)
+            assert venv_dir.exists()
+            assert not (venv_dir / "old_file").exists()
+            # backup cleaned up after success
+            assert not (tmp_path / "venv.old").exists()
+            # uv venv called with --clear
+            venv_cmd = next(c for c in seen_cmds if c[1] == "venv")
+            assert "--clear" in venv_cmd
+
+    def test_aborts_without_deleting_when_venv_in_use(self, tmp_path):
+        """Regression: venv in use (Windows file lock) must be left intact.
+
+        Previously shutil.rmtree(ignore_errors=True) deleted what it could
+        and left a gutted venv.  Now os.replace fails fast and the venv is
+        untouched, with no uv venv attempted.
+        """
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        marker = venv_dir / "site-packages-marker"
+        marker.write_text("do not delete me")
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        with patch("hermes_cli.managed_uv.os.replace", side_effect=OSError("in use")), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+            assert result is False
+            mock_run.assert_not_called()
+            assert marker.exists()
+
+    def test_restores_backup_on_rebuild_failure(self, tmp_path):
+        """If uv venv fails, the moved-aside venv is restored."""
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        (venv_dir / "good_site_packages").write_text("intact")
+        uv_bin = str(tmp_path / "bin" / "uv")
+
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="uv error")
+            from hermes_cli.managed_uv import rebuild_venv
+            result = rebuild_venv(uv_bin, venv_dir)
+            assert result is False
+            assert venv_dir.exists()
+            assert (venv_dir / "good_site_packages").exists()
 
     def test_rebuild_failure_returns_false(self, tmp_path):
         venv_dir = tmp_path / "venv"
         uv_bin = str(tmp_path / "bin" / "uv")
 
-        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
-             patch("hermes_cli.managed_uv.shutil.rmtree"):
+        with patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stderr="nope")
             from hermes_cli.managed_uv import rebuild_venv
             result = rebuild_venv(uv_bin, venv_dir)

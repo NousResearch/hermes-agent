@@ -1598,13 +1598,23 @@ class SessionDB:
         params = []
 
         if not include_children:
-            # Show root sessions and branch sessions (whose parent ended with
-            # end_reason='branched' before the child was created), while still
-            # hiding sub-agent runs and compression continuations (which also
-            # carry a parent_session_id but were spawned while the parent was
-            # still live — i.e., started_at < parent.ended_at).
+            # Show root sessions and branch sessions, while still hiding
+            # sub-agent runs and compression continuations (which also carry a
+            # parent_session_id but were spawned while the parent was still
+            # live — i.e., started_at < parent.ended_at).
+            #
+            # Branch sessions are identified two ways, OR'd for robustness:
+            #   1. A stable ``_branched_from`` marker in model_config, written
+            #      by /branch at creation time. This survives the parent being
+            #      reopened and re-ended with a different end_reason (e.g.
+            #      tui_shutdown overwriting 'branched'), which otherwise hides
+            #      the branch — see issue #20856.
+            #   2. The legacy heuristic (parent ended with 'branched' before the
+            #      child started), covering branch sessions created before the
+            #      marker existed.
             where_clauses.append(
                 "(s.parent_session_id IS NULL"
+                " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
                 " OR EXISTS (SELECT 1 FROM sessions p"
                 "            WHERE p.id = s.parent_session_id"
                 "            AND p.end_reason = 'branched'"

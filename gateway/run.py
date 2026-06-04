@@ -13956,12 +13956,17 @@ class GatewayRunner:
 
         parent_session_id = current_entry.session_id
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Persist a stable ``_branched_from`` marker in model_config so
+        # list_sessions_rich() keeps the branch visible in /resume and
+        # /sessions even after the parent is reopened and re-ended with a
+        # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
             )
         except Exception as e:

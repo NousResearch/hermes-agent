@@ -3702,6 +3702,12 @@ def _(rid, params: dict) -> dict:
             new_key,
             source="tui",
             model=_resolve_model(),
+            # Stable _branched_from marker so list_sessions_rich() keeps the
+            # branch visible in /resume and /sessions. The TUI branch leaves
+            # the parent live (no end_reason='branched'), so the legacy
+            # end_reason heuristic never matches it — the marker is the only
+            # thing that surfaces TUI branches. See issue #20856.
+            model_config={"_branched_from": old_key},
             parent_session_id=old_key,
             cwd=_session_cwd(session),
         )

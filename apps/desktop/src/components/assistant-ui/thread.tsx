@@ -438,7 +438,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
       s.message.parts
-        .slice(Math.max(0, startIndex), Math.min(s.message.parts.length, endIndex))
+        .slice(Math.max(0, startIndex))
         .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 

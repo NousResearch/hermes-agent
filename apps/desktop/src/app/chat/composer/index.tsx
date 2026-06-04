@@ -35,7 +35,7 @@ import {
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
-import { $messages } from '@/store/session'
+import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '../hooks/use-composer-actions'
@@ -158,7 +158,16 @@ export function ChatBar({
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   const showHelpHint = draft === '?'
 
-  const placeholder = disabled ? 'Starting Hermes...' : 'Send follow-up'
+  const gatewayState = useStore($gatewayState)
+
+  // When the bar is disabled it's because the gateway isn't open. Distinguish a
+  // cold start ("Starting Hermes...") from a dropped connection we're trying to
+  // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
+  const placeholder = disabled
+    ? gatewayState === 'closed' || gatewayState === 'error'
+      ? 'Reconnecting to Hermes…'
+      : 'Starting Hermes...'
+    : 'Send follow-up'
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -569,6 +578,13 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // IME composition: Enter confirms composed text, not a message submission.
+    // Without this guard, pressing Enter to finalise a Korean/Japanese/Chinese
+    // IME preedit fires submitDraft() and splits the message mid-word.
+    if (event.nativeEvent.isComposing) {
+      return
+    }
+
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
       event.preventDefault()
 
@@ -1125,7 +1141,7 @@ export function ChatBar({
 
         `asChild` swaps TextareaAutosize for a Radix Slot wrapping our
         plain <textarea>, which carries the binding but skips autosize. */}
-      <ComposerPrimitive.Input asChild tabIndex={-1} unstable_focusOnScrollToBottom={false}>
+      <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
         <textarea aria-hidden className="sr-only" tabIndex={-1} />
       </ComposerPrimitive.Input>
     </div>

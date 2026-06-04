@@ -31,7 +31,7 @@ import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions } from '@/store/session'
+import { $sessions, sessionPinId } from '@/store/session'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayActionButton, OverlayCard, overlayCardClass, OverlayIconButton } from '../overlays/overlay-chrome'
@@ -107,6 +107,8 @@ const SECTION_SEARCH_ENTRIES: readonly SectionSearchEntry[] = [
 interface SessionSearchHit {
   detail?: string
   kind: 'session'
+  /** Durable lineage-root id used for pinning so the pin survives compression. */
+  pinId: string
   sessionId: string
   snippet: string
   title: string
@@ -276,6 +278,7 @@ export function CommandCenterView({
             return {
               detail,
               kind: 'session',
+              pinId: result.lineage_root || result.session_id,
               sessionId: result.session_id,
               snippet: result.snippet || '',
               title
@@ -507,7 +510,7 @@ export function CommandCenterView({
                       </h3>
                       {group.results.map(result => {
                         if (result.kind === 'session') {
-                          const pinned = pinnedSessionIds.includes(result.sessionId)
+                          const pinned = pinnedSessionIds.includes(result.pinId)
 
                           return (
                             <OverlayCard className="p-2.5" key={`${group.id}:${result.sessionId}:${result.snippet}`}>
@@ -531,7 +534,7 @@ export function CommandCenterView({
                                   onClick={event => {
                                     event.preventDefault()
                                     event.stopPropagation()
-                                    pinned ? unpinSession(result.sessionId) : pinSession(result.sessionId)
+                                    pinned ? unpinSession(result.pinId) : pinSession(result.pinId)
                                   }}
                                   title={pinned ? t('chat.sessionActions.unpin') : t('chat.sessionActions.pin')}
                                 >
@@ -596,7 +599,8 @@ export function CommandCenterView({
               ) : (
                 <div className="grid gap-1.5">
                   {filteredSessions.map(session => {
-                    const pinned = pinnedSessionIds.includes(session.id)
+                    const pinId = sessionPinId(session)
+                    const pinned = pinnedSessionIds.includes(pinId)
 
                     return (
                       <OverlayCard className="flex items-center gap-2 px-2.5 py-2" key={session.id}>
@@ -611,7 +615,7 @@ export function CommandCenterView({
                           </div>
                         </button>
                         <OverlayIconButton
-                          onClick={() => (pinned ? unpinSession(session.id) : pinSession(session.id))}
+                          onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
                           title={pinned ? t('chat.sessionActions.unpin') : t('chat.sessionActions.pin')}
                         >
                           {pinned ? <IconBookmarkFilled className="size-3.5" /> : <IconBookmark className="size-3.5" />}

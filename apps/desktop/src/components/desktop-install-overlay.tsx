@@ -197,7 +197,7 @@ function applyEvent(state: DesktopBootstrapState, ev: DesktopBootstrapEvent): De
   }
 
   if (ev.type === 'log') {
-    const next = state.log.concat({ ts: Date.now(), stage: ev.stage ?? null, line: ev.line })
+    const next = state.log.concat({ ts: Date.now(), stage: ev.stage ?? null, line: ev.line, stream: ev.stream })
 
     while (next.length > 500) {next.shift()}
 
@@ -467,7 +467,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 ) : (
                   <>
                     {state.log.map((entry, i) => (
-                      <div className="whitespace-pre-wrap break-words" key={i}>
+                      <div
+                        className={cn('whitespace-pre-wrap break-words', entry.stream === 'stderr' && 'text-muted-foreground')}
+                        key={i}
+                      >
                         {entry.stage ? <span className="text-muted-foreground/70">[{entry.stage}] </span> : null}
                         <span>{entry.line}</span>
                       </div>

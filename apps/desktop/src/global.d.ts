@@ -49,6 +49,7 @@ declare global {
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
+      onPowerResume?: (callback: () => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       resetBootstrap: () => Promise<{ ok: boolean }>
@@ -222,7 +223,7 @@ export interface DesktopBootstrapState {
   manifest: { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null } | null
   stages: Record<string, DesktopBootstrapStageResult>
   error: string | null
-  log: Array<{ ts: number; stage: string | null; line: string }>
+  log: Array<{ ts: number; stage: string | null; line: string; stream?: 'stdout' | 'stderr' }>
   startedAt: number | null
   completedAt: number | null
   unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
@@ -238,7 +239,7 @@ export type DesktopBootstrapEvent =
       json?: DesktopBootstrapStageResult['json']
       error?: string | null
     }
-  | { type: 'log'; stage?: string | null; line: string }
+  | { type: 'log'; stage?: string | null; line: string; stream?: 'stdout' | 'stderr' }
   | { type: 'complete'; marker: Record<string, unknown> }
   | { type: 'failed'; stage?: string | null; error: string }
   | {

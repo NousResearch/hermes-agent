@@ -55,8 +55,17 @@ export function RightSidebarPane({
         .pop() ?? currentCwd)
     : t('rightSidebar.noFolderSelected')
 
-  const { collapseAll, collapseNonce, data, loadChildren, openState, refreshRoot, rootError, rootLoading, setNodeOpen } =
-    useProjectTree(currentCwd)
+  const {
+    collapseAll,
+    collapseNonce,
+    data,
+    loadChildren,
+    openState,
+    refreshRoot,
+    rootError,
+    rootLoading,
+    setNodeOpen
+  } = useProjectTree(currentCwd)
 
   const canCollapse = Object.values(openState).some(Boolean)
   const effectiveTab: RightSidebarTabId = terminalTakeover ? 'files' : activeTab
@@ -88,9 +97,7 @@ export function RightSidebarPane({
     }
   }
 
-  const tabs = terminalTakeover
-    ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal')
-    : RIGHT_SIDEBAR_TABS
+  const tabs = terminalTakeover ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal') : RIGHT_SIDEBAR_TABS
 
   return (
     <aside

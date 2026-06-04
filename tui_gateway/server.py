@@ -1582,11 +1582,31 @@ def _session_info(agent, session: dict | None = None) -> dict:
     ):
         reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
+    # Effective approval-bypass state — the same three sources that
+    # check_all_command_guards() ORs together: persistent config
+    # (approvals.mode=off), the process-scoped --yolo env, and the
+    # per-session flag. Reporting only the per-session flag here would lie to
+    # the desktop status bar (it would show YOLO "off" while approvals.mode=off
+    # silently auto-approves every dangerous command).
+    yolo = False
+    try:
+        from tools.approval import (
+            _YOLO_MODE_FROZEN,
+            _get_approval_mode,
+            is_session_yolo_enabled,
+        )
+
+        session_key = (session or {}).get("session_key")
+        session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
+        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
+    except Exception:
+        yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
+        "yolo": yolo,
         "tools": {},
         "skills": {},
         "cwd": cwd,
@@ -1657,8 +1677,15 @@ def _tool_ctx(name: str, args: dict) -> str:
         return ""
 
 
-_TUI_VERBOSE_TEXT_MAX_CHARS = 16_000
-_TUI_VERBOSE_TEXT_MAX_LINES = 240
+# Tool Args/Result text shipped to the TUI for the verbose trail line. The TUI
+# renders only a small persisted preview (ui-tui VERBOSE_TRAIL_MAX_CHARS), kept
+# all session and expanded by default — so shipping more than that is pure pipe
+# waste AND feeds the Ink render-tree blowup that silently OOM-killed the TUI
+# parent (#34095). Cap here to match the render budget (a hair more, so the
+# "[omitted …]" label is still informative when output is genuinely large).
+# Full output stays in the agent context and the SQLite session, untouched.
+_TUI_VERBOSE_TEXT_MAX_CHARS = 1_000
+_TUI_VERBOSE_TEXT_MAX_LINES = 16
 
 
 def _cap_tui_verbose_text(text: str) -> str:
@@ -3478,23 +3505,52 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    import time as _time
 
-    filename = os.path.abspath(
-        f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json"
-    )
+    agent = session["agent"]
+    # Mirror the classic CLI /save: snapshot under the Hermes profile home
+    # (~/.hermes/sessions/saved/) rather than the project/workspace CWD, and
+    # include the system prompt so the export matches the dashboard save.
+    saved_dir = get_hermes_home() / "sessions" / "saved"
     try:
-        with open(filename, "w", encoding="utf-8") as f:
+        saved_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = saved_dir / f"hermes_conversation_{timestamp}.json"
+
+    with session["history_lock"]:
+        messages = list(session.get("history", []))
+
+    session_id = getattr(agent, "session_id", None) or session.get("session_key") or ""
+    # Prefer the agent's session_start datetime (matches the classic CLI export);
+    # fall back to the gateway session's created_at timestamp.
+    agent_start = getattr(agent, "session_start", None)
+    if isinstance(agent_start, datetime):
+        session_start = agent_start.isoformat()
+    else:
+        created_at = session.get("created_at")
+        session_start = (
+            datetime.fromtimestamp(created_at).isoformat()
+            if isinstance(created_at, (int, float))
+            else ""
+        )
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(
                 {
-                    "model": getattr(session["agent"], "model", ""),
-                    "messages": session.get("history", []),
+                    "model": getattr(agent, "model", ""),
+                    "session_id": session_id,
+                    "session_start": session_start,
+                    "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                    "messages": messages,
                 },
                 f,
                 indent=2,
                 ensure_ascii=False,
             )
-        return _ok(rid, {"file": filename})
+        return _ok(rid, {"file": str(path)})
     except Exception as e:
         return _err(rid, 5011, str(e))
 
@@ -4098,6 +4154,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             approval_token = set_current_session_key(session["session_key"])
             session_tokens = _set_session_context(session["session_key"])
+            # The sudo password callback is thread-local (tools.terminal_tool
+            # _callback_tls), so wiring it on the build thread doesn't reach this
+            # turn thread — terminal sudo prompts would fall through to /dev/tty
+            # and hang the headless gateway. Re-wire here so the prompt routes to
+            # the sudo.request overlay. (secret capture is a module global, so
+            # re-running is a harmless no-op.)
+            _wire_callbacks(sid)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)
@@ -4986,6 +5049,9 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "yolo":
+        # Per-session approval bypass — same scope as the TUI's Shift+Tab. This
+        # toggles ONLY this session's _session_yolo flag; it never writes the
+        # global approvals.mode, so it cannot change CLI / TUI / cron behavior.
         try:
             if session:
                 from tools.approval import (
@@ -4994,13 +5060,28 @@ def _(rid, params: dict) -> dict:
                     is_session_yolo_enabled,
                 )
 
-                current = is_session_yolo_enabled(session["session_key"])
-                if current:
+                raw = str(value or "").strip().lower()
+                if raw in {"1", "on", "true", "yes"}:
+                    enable_session_yolo(session["session_key"])
+                    nv = "1"
+                elif raw in {"0", "off", "false", "no"}:
                     disable_session_yolo(session["session_key"])
                     nv = "0"
                 else:
-                    enable_session_yolo(session["session_key"])
-                    nv = "1"
+                    current = is_session_yolo_enabled(session["session_key"])
+                    if current:
+                        disable_session_yolo(session["session_key"])
+                        nv = "0"
+                    else:
+                        enable_session_yolo(session["session_key"])
+                        nv = "1"
+                agent = session.get("agent")
+                if agent is not None:
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(agent, session),
+                    )
             else:
                 current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
                 if current:

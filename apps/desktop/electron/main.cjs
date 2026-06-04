@@ -9,6 +9,7 @@ const {
   nativeImage,
   nativeTheme,
   net: electronNet,
+  powerMonitor,
   protocol,
   safeStorage,
   session,
@@ -722,7 +723,7 @@ function broadcastBootstrapEvent(ev) {
       error: ev.error ?? null
     }
   } else if (ev.type === 'log') {
-    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line })
+    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line, stream: ev.stream || 'stdout' })
     if (bootstrapState.log.length > BOOTSTRAP_LOG_RING_MAX) {
       bootstrapState.log.splice(0, bootstrapState.log.length - BOOTSTRAP_LOG_RING_MAX)
     }
@@ -1319,16 +1320,34 @@ async function applyUpdates(opts = {}) {
 
     emitUpdateProgress({ stage: 'restart', message: 'Handing off to the Hermes updater…', percent: 100 })
 
+    const updateRoot = resolveUpdateRoot()
+    const { branch: configuredBranch } = readDesktopUpdateConfig()
+    const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+    const updaterArgs = ['--update', '--branch', branch]
+    const targetApp = IS_MAC ? runningAppBundle() : null
+    if (targetApp) {
+      updaterArgs.push('--target-app', targetApp)
+    }
+    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawn(updater, ['--update'], {
+    const child = spawn(updater, updaterArgs, {
+      cwd: HERMES_HOME,
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH]
+          .filter(Boolean)
+          .join(path.delimiter)
+      },
       detached: true,
       stdio: 'ignore',
       windowsHide: false
     })
     child.unref()
 
-    rememberLog(`[updates] launched updater: ${updater} --update; exiting desktop to release venv shim`)
+    rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
     // Give the OS a beat to register the new process, then quit. The updater
     // rebuilds and relaunches us when it's done.
@@ -2673,6 +2692,32 @@ function sendClosePreviewRequested() {
   const { webContents } = mainWindow
   if (!webContents || webContents.isDestroyed()) return
   webContents.send('hermes:close-preview-requested')
+}
+
+// Tell the renderer the machine just woke. Sleep silently drops the
+// renderer's WebSocket to the local backend; the renderer reconnects on this
+// signal so the chat composer doesn't stay stuck on "Starting Hermes...".
+function sendPowerResume() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const { webContents } = mainWindow
+  if (!webContents || webContents.isDestroyed()) return
+  webContents.send('hermes:power-resume')
+}
+
+let powerResumeRegistered = false
+
+function registerPowerResumeListeners() {
+  if (powerResumeRegistered) return
+  powerResumeRegistered = true
+  try {
+    // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
+    // full suspend. Either can drop an idle socket.
+    powerMonitor.on('resume', sendPowerResume)
+    powerMonitor.on('unlock-screen', sendPowerResume)
+  } catch {
+    // powerMonitor is unavailable before app 'ready' on some platforms; the
+    // caller registers after 'ready', so this should not normally throw.
+  }
 }
 
 function getAppIconPath() {
@@ -4187,6 +4232,7 @@ app.whenReady().then(() => {
   registerMediaProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()
+  registerPowerResumeListeners()
   createWindow()
 
   app.on('activate', () => {

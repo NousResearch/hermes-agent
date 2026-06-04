@@ -132,12 +132,12 @@ function assistantErrorMessage(error: string): ThreadMessage {
   } as ThreadMessage
 }
 
-function assistantReasoningMessage(text: string): ThreadMessage {
+function assistantReasoningMessage(text: string, running = false): ThreadMessage {
   return {
     id: 'assistant-reasoning-1',
     role: 'assistant',
     content: [{ type: 'reasoning', text }],
-    status: { type: 'complete', reason: 'stop' },
+    status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -267,6 +267,22 @@ function StreamingHarness() {
   )
 }
 
+function StaticThreadHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [userMessage(), assistantMessage('complete response', false)],
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
+  )
+}
+
 function TodoHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -299,10 +315,42 @@ function MessageHarness({ message }: { message: ThreadMessage }) {
   )
 }
 
+function RunningMessageHarness({ message }: { message: ThreadMessage }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [message],
+    isRunning: true,
+    onNew: async () => {}
+  })
+
+  return (
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
+  )
+}
+
 function ReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantReasoningMessage(' The user is asking what this file is.')],
     isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <I18nProvider configClient={null}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    </I18nProvider>
+  )
+}
+
+function RunningReasoningHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [assistantReasoningMessage('```ts\nconst answer = 42\n', true)],
+    isRunning: true,
     onNew: async () => {}
   })
 
@@ -429,10 +477,207 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
+  it('does not auto-follow idle layout shifts', async () => {
+    const { container } = render(<StaticThreadHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    scrollHeight = 1_200
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_200)
+      }
+    })
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
+  it('keeps sticky-bottom armed through viewport height changes during streaming', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let clientHeight = 200
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight
+    })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+
+    clientHeight = 240
+
+    await act(async () => {
+      viewport.scrollTop = 760
+      fireEvent.scroll(viewport)
+    })
+
+    scrollHeight = 1_200
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_200)
+      }
+    })
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(1_200)
+  })
+
+  it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+    await wait(0)
+
+    await act(async () => {
+      fireEvent.wheel(viewport, { deltaY: -120 })
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    scrollHeight = 1_200
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_200)
+      }
+    })
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
+  it('keeps following final code-highlight growth when a run completes at bottom', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+
+    await wait(650)
+
+    scrollHeight = 1_700
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(1_700)
+  })
+
+  it('does not restart bottom-follow after completion when the user scrolled up', async () => {
+    const { container } = render(<StreamingHarness />)
+
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    let scrollHeight = 1_000
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight
+    })
+
+    await wait(80)
+
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+
+    await act(async () => {
+      fireEvent.wheel(viewport, { deltaY: -120 })
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    await wait(650)
+
+    scrollHeight = 1_700
+    await wait(0)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
+  it('renders an incomplete streaming fenced code block as a code card', async () => {
+    const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
+    })
+
+    expect(container.textContent).toContain('const answer = 42')
+    expect(container.textContent).not.toContain('```ts')
+  })
+
+  it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
+    const { container } = render(<RunningReasoningHarness />)
+    const ui = within(container)
+
+    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
+    })
+
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    expect(container.textContent).not.toContain('```ts')
+  })
+
   it('renders reasoning text without a leading token space', () => {
     const { container } = render(<ReasoningHarness />)
+    const ui = within(container)
 
-    fireEvent.click(screen.getByRole('button', { name: /thinking/i }))
+    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
 
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
       'The user is asking what this file is.'

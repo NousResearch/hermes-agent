@@ -3804,6 +3804,7 @@ class GatewayRunner:
                     "on_session_finalize",
                     session_id=getattr(agent, "session_id", None),
                     platform="gateway",
+                    reason="shutdown",
                 )
             except Exception:
                 pass
@@ -5036,6 +5037,7 @@ class GatewayRunner:
                                 "on_session_finalize",
                                 session_id=entry.session_id,
                                 platform=_platform,
+                                reason="session_expired",
                             )
                         except Exception:
                             pass
@@ -9995,12 +9997,19 @@ class GatewayRunner:
         # previous conversation must not survive the reset.
         self._clear_session_boundary_security_state(session_key)
 
+        _old_sid = old_entry.session_id if old_entry else None
+
         # Fire plugin on_session_finalize hook (session boundary)
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _old_sid = old_entry.session_id if old_entry else None
-            _invoke_hook("on_session_finalize", session_id=_old_sid,
-                         platform=source.platform.value if source.platform else "")
+            _invoke_hook(
+                "on_session_finalize",
+                session_id=_old_sid,
+                platform=source.platform.value if source.platform else "",
+                reason="new_session",
+                old_session_id=_old_sid,
+                new_session_id=new_entry.session_id if new_entry else None,
+            )
         except Exception:
             pass
 
@@ -10069,8 +10078,14 @@ class GatewayRunner:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
-            _invoke_hook("on_session_reset", session_id=_new_sid,
-                         platform=source.platform.value if source.platform else "")
+            _invoke_hook(
+                "on_session_reset",
+                session_id=_new_sid,
+                platform=source.platform.value if source.platform else "",
+                reason="new_session",
+                old_session_id=_old_sid,
+                new_session_id=_new_sid,
+            )
         except Exception:
             pass
 

@@ -15,9 +15,11 @@ Tests cover:
 import asyncio
 import json
 import os
+import queue
 import stat
 import time
 import uuid
+from contextvars import ContextVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -662,6 +664,138 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_preserves_contextvars(self, adapter, monkeypatch):
+        """Executor work must inherit session contextvars used by tool routing."""
+        from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
+
+        for name in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_USER_ID",
+            "HERMES_SESSION_KEY",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        test_var = ContextVar("api_server_executor_test_var")
+        observed = {}
+
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        def _run_conversation(**kwargs):
+            observed["custom"] = test_var.get(None)
+            observed["session"] = {
+                "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+                "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
+                "user_id": get_session_env("HERMES_SESSION_USER_ID"),
+                "session_key": get_session_env("HERMES_SESSION_KEY"),
+            }
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = _run_conversation
+        custom_token = test_var.set("executor-context")
+        session_tokens = set_session_vars(
+            platform="api_server",
+            chat_id="chat-123",
+            user_id="user-456",
+            session_key="agent:main:api_server:chat-123",
+        )
+
+        try:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                result, usage = await adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    session_id="session-123",
+                )
+        finally:
+            clear_session_vars(session_tokens)
+            test_var.reset(custom_token)
+
+        assert result["final_response"] == "ok"
+        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        assert observed["custom"] == "executor-context"
+        assert observed["session"] == {
+            "platform": "api_server",
+            "chat_id": "chat-123",
+            "user_id": "user-456",
+            "session_key": "agent:main:api_server:chat-123",
+        }
+
+    @pytest.mark.asyncio
+    async def test_run_agent_streams_still_work(self, adapter):
+        """Queue-backed streaming paths should still drain and emit SSE chunks."""
+        import gateway.platforms.api_server as api_mod
+
+        fake_request = MagicMock()
+        fake_request.headers = {}
+
+        class _FakeStreamResponse:
+            def __init__(self):
+                self.payloads = []
+
+            async def prepare(self, request):
+                pass
+
+            async def write(self, payload):
+                self.payloads.append(payload)
+
+        async def _agent_result(final_response):
+            return (
+                {"final_response": final_response, "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            )
+
+        chat_q = queue.Queue()
+        chat_q.put("chat chunk")
+        chat_q.put(None)
+        chat_response = _FakeStreamResponse()
+        chat_task = asyncio.create_task(_agent_result("chat chunk"))
+
+        with patch.object(api_mod.web, "StreamResponse", return_value=chat_response):
+            await adapter._write_sse_chat_completion(
+                fake_request,
+                "cmpl-test",
+                "hermes-agent",
+                int(time.time()),
+                chat_q,
+                chat_task,
+            )
+
+        chat_body = b"".join(chat_response.payloads).decode()
+        assert "chat chunk" in chat_body
+        assert "data: [DONE]" in chat_body
+
+        responses_q = queue.Queue()
+        responses_q.put("responses chunk")
+        responses_q.put(None)
+        responses_response = _FakeStreamResponse()
+        responses_task = asyncio.create_task(_agent_result("responses chunk"))
+
+        with patch.object(api_mod.web, "StreamResponse", return_value=responses_response):
+            await adapter._write_sse_responses(
+                request=fake_request,
+                response_id=f"resp_{uuid.uuid4().hex[:28]}",
+                model="hermes-agent",
+                created_at=int(time.time()),
+                stream_q=responses_q,
+                agent_task=responses_task,
+                agent_ref=[None],
+                conversation_history=[],
+                user_message="hello",
+                instructions=None,
+                conversation=None,
+                store=False,
+                session_id=None,
+            )
+
+        responses_body = b"".join(responses_response.payloads).decode()
+        assert "responses chunk" in responses_body
+        assert "response.completed" in responses_body
 
 
 # ---------------------------------------------------------------------------

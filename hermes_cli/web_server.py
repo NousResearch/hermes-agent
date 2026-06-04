@@ -16,6 +16,7 @@ import base64
 import binascii
 import hmac
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -214,6 +215,26 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True if *host* is a loopback address.
+
+    Covers the standard trio (``localhost``, ``127.0.0.1``, ``::1``) plus
+    the entire ``127.0.0.0/8`` range used by container runtimes (Docker
+    commonly binds internal services to ``127.0.0.11`` etc.).  See #39280.
+
+    Uses ``ipaddress.ip_address()`` to avoid false positives on attacker
+    hostnames like ``127.0.0.1.evil.test`` that merely *start* with ``127.``
+    but are not valid IP addresses.
+    """
+    if host in _LOOPBACK_HOST_VALUES:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+        return addr.is_loopback
+    except ValueError:
+        return False
+
+
 def should_require_auth(host: str, allow_public: bool) -> bool:
     """Return True iff the dashboard OAuth auth gate must be active.
 
@@ -223,11 +244,13 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
       host != loopback AND NOT allow_public         → True  (gate engages)
 
     "Loopback" matches the same set used by ``--insecure`` enforcement in
-    ``start_server``: 127.0.0.1, localhost, ::1. RFC1918 / CGNAT / link-local
-    are deliberately treated as PUBLIC — a hostile device on the same LAN is
-    exactly the threat model the gate is designed for.
+    ``start_server``: 127.0.0.1, localhost, ::1, and the full 127.0.0.0/8
+    range (container runtimes commonly bind to 127.0.0.11 etc.).
+    RFC1918 / CGNAT / link-local are deliberately treated as PUBLIC — a
+    hostile device on the same LAN is exactly the threat model the gate is
+    designed for.
     """
-    return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
+    return (not _is_loopback_host(host)) and (not allow_public)
 
 
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
@@ -265,10 +288,13 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept any loopback host (RFC 1122 127.0.0.0/8 + IPv6).
+    # Container runtimes commonly bind to non-standard loopback addresses
+    # like 127.0.0.11; subagents running in sibling containers use
+    # "localhost" as their Host header, which must be accepted.  See #39280.
     bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+    if _is_loopback_host(bound_lc):
+        return _is_loopback_host(host_only)
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -7115,12 +7141,12 @@ def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     if getattr(app.state, "auth_required", False):
         return None
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    if bound_host and not _is_loopback_host(bound_host):
         return None
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return None
-    if client_host in _LOOPBACK_HOSTS:
+    if _is_loopback_host(client_host) or client_host == "testclient":
         return None
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
 
@@ -7157,12 +7183,12 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     # an actual loopback bind; otherwise the WS handshake is rejected even
     # though same-bind HTTP requests pass _is_accepted_host.
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    if bound_host and not _is_loopback_host(bound_host):
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    return _is_loopback_host(client_host) or client_host == "testclient"
 
 
 def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
@@ -7226,7 +7252,7 @@ def _ws_auth_mode() -> str:
     if getattr(app.state, "auth_required", False):
         return "gated"
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    if bound_host and not _is_loopback_host(bound_host):
         return "insecure"
     return "loopback"
 
@@ -8827,7 +8853,7 @@ def start_server(
             host,
             ", ".join(p.name for p in list_providers()),
         )
-    elif host not in _LOOPBACK_HOST_VALUES and allow_public:
+    elif not _is_loopback_host(host) and allow_public:
         # --insecure path — no auth, loud warning.
         _log.warning(
             "Binding to %s with --insecure — the dashboard has no robust "

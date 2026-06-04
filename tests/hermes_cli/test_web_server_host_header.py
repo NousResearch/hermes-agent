@@ -83,6 +83,74 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_non_standard_loopback_bind_accepts_loopback_names(self):
+        """Container runtimes (Docker) bind to non-standard loopback
+        addresses like 127.0.0.11.  Subagents use 'localhost' as their
+        Host header — must be accepted.  See #39280."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        for bound in ("127.0.0.11", "127.0.0.2", "127.1.2.3"):
+            for host_header in (
+                "localhost", "localhost:9119",
+                "127.0.0.1", "127.0.0.1:9119",
+                "127.0.0.11", "127.0.0.11:9119",
+                "[::1]", "[::1]:9119",
+            ):
+                assert _is_accepted_host(host_header, bound), (
+                    f"bound={bound} must accept host={host_header}"
+                )
+
+    def test_non_standard_loopback_rejects_attacker_hostnames(self):
+        """Even with non-standard loopback bind, attacker hostnames
+        must still be rejected.  See #39280."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        for bound in ("127.0.0.11", "127.0.0.2"):
+            for attacker in (
+                "evil.example",
+                "evil.example:9119",
+                "127.0.0.1.evil.test",  # lookalike IP prefix
+                "localhost.attacker.test",  # subdomain trick
+            ):
+                assert not _is_accepted_host(attacker, bound), (
+                    f"bound={bound} must reject attacker host={attacker!r}"
+                )
+
+
+class TestIsLoopbackHost:
+    """Unit test the _is_loopback_host helper."""
+
+    def test_standard_loopback(self):
+        from hermes_cli.web_server import _is_loopback_host
+
+        assert _is_loopback_host("localhost")
+        assert _is_loopback_host("127.0.0.1")
+        assert _is_loopback_host("::1")
+
+    def test_non_standard_ipv4_loopback(self):
+        """The full 127.0.0.0/8 range is loopback per RFC 1122."""
+        from hermes_cli.web_server import _is_loopback_host
+
+        assert _is_loopback_host("127.0.0.2")
+        assert _is_loopback_host("127.0.0.11")
+        assert _is_loopback_host("127.255.255.255")
+
+    def test_non_loopback_rejected(self):
+        from hermes_cli.web_server import _is_loopback_host
+
+        assert not _is_loopback_host("10.0.0.1")
+        assert not _is_loopback_host("192.168.1.1")
+        assert not _is_loopback_host("8.8.8.8")
+        assert not _is_loopback_host("evil.example")
+
+    def test_lookalike_hostname_rejected(self):
+        """Attacker hostnames that merely start with '127.' must not
+        be treated as loopback."""
+        from hermes_cli.web_server import _is_loopback_host
+
+        assert not _is_loopback_host("127.0.0.1.evil.test")
+        assert not _is_loopback_host("127.0.0.1.attacker.com")
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware

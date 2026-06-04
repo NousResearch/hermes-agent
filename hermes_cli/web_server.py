@@ -616,6 +616,33 @@ class ModelAssignment(BaseModel):
     base_url: str = ""
 
 
+def _apply_main_model_assignment(
+    model_cfg: "Any", provider: str, model: str, base_url: str = ""
+) -> dict:
+    """Apply a main-slot model assignment to a ``model`` config dict in place.
+
+    Sets ``provider``/``default``, then reconciles ``base_url``: custom/local
+    providers persist the supplied endpoint URL (the runtime resolver reads
+    ``model.base_url`` from config and ignores ``OPENAI_BASE_URL``), while every
+    other provider clears any stale URL so the resolver picks that provider's
+    own default endpoint. The hardcoded ``context_length`` override is always
+    dropped since the new model may have a different context window.
+
+    Returns the same dict (coerced to a fresh dict if the input wasn't one) so
+    callers can assign it straight back onto ``cfg["model"]``.
+    """
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    model_cfg["provider"] = provider
+    model_cfg["default"] = model
+    if provider.strip().lower() == "custom" and base_url.strip():
+        model_cfg["base_url"] = base_url.strip()
+    elif model_cfg.get("base_url"):
+        model_cfg["base_url"] = ""
+    model_cfg.pop("context_length", None)
+    return model_cfg
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -2016,24 +2043,9 @@ async def set_model_assignment(body: ModelAssignment):
         if scope == "main":
             if not provider or not model:
                 raise HTTPException(status_code=400, detail="provider and model required for main")
-            model_cfg = cfg.get("model", {})
-            if not isinstance(model_cfg, dict):
-                model_cfg = {}
-            model_cfg["provider"] = provider
-            model_cfg["default"] = model
-            # Custom/local providers are defined by their endpoint URL, so a
-            # base_url must be persisted here — the runtime resolver reads
-            # model.base_url from config and no longer consults OPENAI_BASE_URL.
-            # For every other provider, clear any stale base_url so the
-            # resolver picks the provider's own default endpoint.
-            if provider.strip().lower() == "custom" and base_url:
-                model_cfg["base_url"] = base_url
-            elif "base_url" in model_cfg and model_cfg.get("base_url"):
-                model_cfg["base_url"] = ""
-            # Also clear hardcoded context_length override — new model may have
-            # a different context window.
-            if "context_length" in model_cfg:
-                model_cfg.pop("context_length", None)
+            model_cfg = _apply_main_model_assignment(
+                cfg.get("model", {}), provider, model, base_url
+            )
             cfg["model"] = model_cfg
 
             # When switching the main provider to Nous, mirror the CLI's
@@ -6281,15 +6293,7 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
     token = set_hermes_home_override(str(profile_dir))
     try:
         cfg = load_config()
-        model_cfg = cfg.get("model", {})
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-        model_cfg["provider"] = provider
-        model_cfg["default"] = model
-        if model_cfg.get("base_url"):
-            model_cfg["base_url"] = ""
-        model_cfg.pop("context_length", None)
-        cfg["model"] = model_cfg
+        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
         save_config(cfg)
     finally:
         reset_hermes_home_override(token)

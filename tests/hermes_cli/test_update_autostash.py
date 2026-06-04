@@ -423,6 +423,41 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
+def test_cmd_update_aborts_when_fresh_managed_uv_rebuild_fails(monkeypatch, tmp_path):
+    """A failed fresh managed-uv venv rebuild must not continue into pip install
+    (guard adapted from #38511)."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        # Tolerant matching: the update flow's exact git invocations vary by
+        # checkout, so key off the verb. Branch detection must return a real name
+        # and rev-list a parseable count, or the flow aborts early before it ever
+        # reaches the venv rebuild this test exercises.
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
+            if "rev-parse" in cmd:
+                return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+            if "rev-list" in cmd:
+                return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+            if "pull" in cmd:
+                return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    with patch("hermes_cli.managed_uv.ensure_uv", return_value=("/usr/bin/uv", True)), \
+         patch("hermes_cli.managed_uv.rebuild_venv", return_value=False), \
+         pytest.raises(RuntimeError, match="venv rebuild failed"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    assert install_cmds == []
+
+
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     """Termux update path should target .[termux-all] when requested."""
     calls = []

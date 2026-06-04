@@ -1261,6 +1261,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     if is_t2a_v2:
         # t2a_v2 returns JSON with hex-encoded audio
+        response.raise_for_status()
         result = response.json()
         base_resp = result.get("base_resp", {})
         status_code = base_resp.get("status_code", -1)

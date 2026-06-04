@@ -19,9 +19,30 @@ export const withoutKey = <T>(record: Record<string, T>, key: string) => {
 
 export const redactedValue = (v: string) => (v.length <= 8 ? '••••' : `${v.slice(0, 4)}...${v.slice(-4)}`)
 
-export const providerGroup = (key: string) => PROVIDER_GROUPS.find(g => key.startsWith(g.prefix))?.name ?? 'Other'
+// Longest-prefix match so a more specific group like ``MINIMAX_CN_`` is
+// chosen over its shorter parent ``MINIMAX_``. Falls back to the bucket
+// "Other" used by the Keys settings view for un-grouped env vars.
+export const providerGroup = (key: string) => {
+  let best: (typeof PROVIDER_GROUPS)[number] | undefined
 
-export const providerPriority = (name: string) => PROVIDER_GROUPS.find(g => g.name === name)?.priority ?? 99
+  for (const candidate of PROVIDER_GROUPS) {
+    if (!key.startsWith(candidate.prefix)) {
+      continue
+    }
+
+    if (!best || candidate.prefix.length > best.prefix.length) {
+      best = candidate
+    }
+  }
+
+  return best?.name ?? 'Other'
+}
+
+export const providerMeta = (name: string) =>
+  PROVIDER_GROUPS.find(g => g.name === name && (g.description || g.docsUrl)) ??
+  PROVIDER_GROUPS.find(g => g.name === name)
+
+export const providerPriority = (name: string) => providerMeta(name)?.priority ?? 99
 
 const POLLUTING_PATH_PARTS = new Set(['__proto__', 'constructor', 'prototype'])
 

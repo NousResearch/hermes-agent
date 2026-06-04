@@ -83,7 +83,7 @@ function PreviewLoadError({
       body={
         <>
           <a
-            className="pointer-events-auto block cursor-pointer font-mono text-muted-foreground/90 underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
+            className="pointer-events-auto block font-mono text-muted-foreground/90 underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
             href={error.url}
             onClick={event => {
               event.preventDefault()
@@ -608,7 +608,7 @@ export function PreviewPane({
           <div className="pointer-events-none flex min-h-(--titlebar-height) items-center gap-1.5 border-b border-border/60 bg-background px-2 py-1">
             <div className="min-w-0 flex-1">
               <a
-                className="pointer-events-auto inline max-w-full cursor-pointer truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
+                className="pointer-events-auto inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
                 href={currentUrl}
                 rel="noreferrer"
                 target="_blank"

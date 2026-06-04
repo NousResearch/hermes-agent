@@ -982,7 +982,7 @@ def run_conversation(
             # Uses new dicts so the internal messages list retains the fields
             # for Codex Responses compatibility.
             if agent._should_sanitize_tool_calls():
-                agent._sanitize_tool_calls_for_strict_api(api_msg)
+                agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)

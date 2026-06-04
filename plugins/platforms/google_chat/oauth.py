@@ -50,8 +50,10 @@ Token storage layout
     ``${HERMES_HOME}/google_chat_user_oauth_pending/<sanitized_email>.json``
 - Legacy pending state:
     ``${HERMES_HOME}/google_chat_user_oauth_pending.json``
-- Shared OAuth client (one per host):
-    ``${HERMES_HOME}/google_chat_user_client_secret.json``
+- Shared OAuth client (one per host, anchored at the default Hermes root so
+  every profile sees it; a profile-local copy under ``${HERMES_HOME}`` wins
+  when present):
+    ``<default-root>/google_chat_user_client_secret.json`` (default ``~/.hermes``)
 """
 
 from __future__ import annotations
@@ -75,7 +77,11 @@ logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 # Use the project's HERMES_HOME helper so the token follows the user's
 # profile (e.g. tests can override via HERMES_HOME=/tmp/...).
 try:
-    from hermes_constants import display_hermes_home, get_hermes_home
+    from hermes_constants import (
+        display_hermes_home,
+        get_default_hermes_root,
+        get_hermes_home,
+    )
 except (ModuleNotFoundError, ImportError):
     # Fallback for environments where hermes_constants isn't importable
     # (mirrors the same fallback used by the google-workspace skill's
@@ -83,6 +89,24 @@ except (ModuleNotFoundError, ImportError):
     def get_hermes_home() -> Path:
         val = os.environ.get("HERMES_HOME", "").strip()
         return Path(val) if val else Path.home() / ".hermes"
+
+    def get_default_hermes_root() -> Path:
+        # Mirror hermes_constants.get_default_hermes_root(): resolve the
+        # profile root so host-wide files (the shared client secret) are
+        # found regardless of which profile is active.
+        native_home = Path.home() / ".hermes"
+        env_home = os.environ.get("HERMES_HOME", "").strip()
+        if not env_home:
+            return native_home
+        env_path = Path(env_home)
+        try:
+            env_path.resolve().relative_to(native_home.resolve())
+            return native_home
+        except ValueError:
+            pass
+        if env_path.parent.name == "profiles":
+            return env_path.parent.parent
+        return env_path
 
     def display_hermes_home() -> str:
         home = get_hermes_home()
@@ -140,7 +164,24 @@ def _token_path(email: Optional[str] = None) -> Path:
 
 
 def _client_secret_path() -> Path:
-    return _hermes_home() / "google_chat_user_client_secret.json"
+    """Path to the shared OAuth client secret (one per host).
+
+    The client secret identifies the OAuth *app*, not a user or a profile,
+    so it is anchored at the default Hermes root (``~/.hermes`` — or the
+    Docker root) rather than the active profile's ``HERMES_HOME``. That way
+    the one-time ``--client-secret`` host setup is visible to gateways
+    running under any named profile, exactly as the docs describe ("one
+    file per host is enough no matter how many users authorize later").
+
+    A profile-local secret (``$HERMES_HOME/google_chat_user_client_secret.json``)
+    still takes precedence when present, for installs that seeded one under
+    the previous profile-scoped behavior or that deliberately run a separate
+    OAuth app per profile.
+    """
+    profile_local = _hermes_home() / "google_chat_user_client_secret.json"
+    if profile_local.exists():
+        return profile_local
+    return get_default_hermes_root() / "google_chat_user_client_secret.json"
 
 
 def _pending_auth_path(email: Optional[str] = None) -> Path:

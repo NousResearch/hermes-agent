@@ -62,6 +62,7 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+
   const survivors = previous.filter(
     session =>
       !incomingIds.has(session.id) &&
@@ -88,6 +89,10 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
+// Effective approval-bypass state mirrored from the gateway (session.info).
+// Persistence lives in the backend config (approvals.mode), so this is a plain
+// reflection of the truth the gateway reports rather than its own store.
+export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
@@ -122,6 +127,7 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)
@@ -159,6 +165,7 @@ function armSessionWatchdog(sessionId: string) {
 
   const timer = setTimeout(() => {
     sessionWatchdogTimers.delete(sessionId)
+
     // Re-check the latest state at fire-time. If the user already navigated
     // away or the session genuinely finished, the timer is a no-op.
     if ($workingSessionIds.get().includes(sessionId)) {
@@ -188,24 +195,41 @@ export function noteSessionActivity(sessionId: string | null | undefined) {
   armSessionWatchdog(sessionId)
 }
 
+// Toggle an id's membership in a string-set atom, no-op when unchanged (keeps
+// the same array reference so subscribers don't churn).
+const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on: boolean) =>
+  set(current => {
+    const present = current.includes(id)
+
+    if (on) {
+      return present ? current : [...current, id]
+    }
+
+    return present ? current.filter(x => x !== id) : current
+  })
+
+// Stored session ids with a blocking prompt (clarify) waiting on the user.
+// Separate from $workingSessionIds: a session can be "working" (turn running)
+// AND need input. The sidebar row reads this for a persistent indicator that,
+// unlike a toast, survives window blur / alt-tab.
+export const $attentionSessionIds = atom<string[]>([])
+export const setAttentionSessionIds = (next: Updater<string[]>) => updateAtom($attentionSessionIds, next)
+
+export function setSessionAttention(sessionId: string | null | undefined, needsInput: boolean) {
+  if (sessionId) {
+    toggleMembership(setAttentionSessionIds, sessionId, needsInput)
+  }
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
     return
   }
 
-  setWorkingSessionIds(current => {
-    const alreadyWorking = current.includes(sessionId)
+  toggleMembership(setWorkingSessionIds, sessionId, working)
 
-    if (working) {
-      return alreadyWorking ? current : [...current, sessionId]
-    }
-
-    return alreadyWorking ? current.filter(id => id !== sessionId) : current
-  })
-
-  // Bookend the watchdog: arm it whenever a session enters "working",
-  // disarm it whenever it leaves. A subsequent noteSessionActivity() from
-  // a streaming event will refresh the timer.
+  // Bookend the watchdog: arm on enter, disarm on leave. A later
+  // noteSessionActivity() from a streaming event refreshes the timer.
   if (working) {
     armSessionWatchdog(sessionId)
   } else {

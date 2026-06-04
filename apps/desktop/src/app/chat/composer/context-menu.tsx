@@ -2,13 +2,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -104,8 +98,8 @@ export function ContextMenu({
           <DropdownMenuSeparator />
 
           <div className="px-2 py-1 text-[0.7rem] text-muted-foreground/80">
-            Tip: type <kbd className="rounded bg-muted/70 px-1 py-px font-mono text-[0.65rem]">@</kbd> to reference files
-            inline.
+            Tip: type <kbd className="rounded bg-muted/70 px-1 py-px font-mono text-[0.65rem]">@</kbd> to reference
+            files inline.
           </div>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -120,12 +114,7 @@ export function ContextMenu({
   )
 }
 
-function PromptSnippetsDialog({
-  onInsertText,
-  onOpenChange,
-  open,
-  snippets
-}: PromptSnippetsDialogProps) {
+function PromptSnippetsDialog({ onInsertText, onOpenChange, open, snippets }: PromptSnippetsDialogProps) {
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md gap-3">
@@ -137,7 +126,7 @@ function PromptSnippetsDialog({
           {snippets.map(snippet => (
             <li key={snippet.label}>
               <button
-                className="group/snippet flex w-full cursor-pointer items-start gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) focus-visible:border-(--ui-stroke-tertiary) focus-visible:bg-(--ui-control-hover-background) focus-visible:outline-none"
+                className="group/snippet flex w-full items-start gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left transition-colors hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) focus-visible:border-(--ui-stroke-tertiary) focus-visible:bg-(--ui-control-hover-background) focus-visible:outline-none"
                 onClick={() => {
                   onInsertText(snippet.text)
                   onOpenChange(false)
@@ -160,12 +149,7 @@ function PromptSnippetsDialog({
   )
 }
 
-export function ContextMenuItem({
-  children,
-  disabled,
-  icon: Icon,
-  onSelect
-}: ContextMenuItemProps) {
+export function ContextMenuItem({ children, disabled, icon: Icon, onSelect }: ContextMenuItemProps) {
   return (
     <DropdownMenuItem disabled={disabled} onSelect={onSelect}>
       <Icon />

@@ -44,6 +44,19 @@ _nb_is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
+# Where to symlink node/npm/npx so they land on PATH.
+# Mirrors get_command_link_dir() from install.sh: root FHS → /usr/local/bin,
+# Termux → $PREFIX/bin, otherwise ~/.local/bin.
+_nb_get_link_dir() {
+    if _nb_is_termux && [ -n "${PREFIX:-}" ]; then
+        echo "$PREFIX/bin"
+    elif [ "$(id -u)" = 0 ] && [ "$(uname -s)" = "Linux" ]; then
+        echo "/usr/local/bin"
+    else
+        echo "$HOME/.local/bin"
+    fi
+}
+
 _nb_node_major() {
     local v
     v=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
@@ -187,10 +200,12 @@ _nb_install_bundled_node() {
     mv "$extracted" "$HERMES_HOME/node"
     rm -rf "$tmp"
 
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
+    local _link_dir
+    _link_dir="$(_nb_get_link_dir)"
+    mkdir -p "$_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
     _nb_have_modern_node || return 1

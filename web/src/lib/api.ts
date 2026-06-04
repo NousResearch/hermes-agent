@@ -192,6 +192,63 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
   return ["token", token];
 }
 
+/**
+ * Authenticated ``fetch`` for dashboard ``/api/...`` requests that aren't
+ * plain JSON — file uploads (``FormData``), binary downloads (blobs), etc.
+ * Mirrors ``fetchJSON``'s auth handling but returns the raw ``Response`` so
+ * the caller can read ``.blob()`` / ``.formData()`` / stream it.
+ *
+ * Auth, in both modes, exactly as ``fetchJSON`` does it:
+ *  - loopback / ``--insecure``: attach the ``X-Hermes-Session-Token`` header.
+ *  - gated OAuth: no token header (it's absent by design); the
+ *    ``hermes_session_at`` cookie rides along via ``credentials: 'include'``.
+ *
+ * Unlike ``fetchJSON`` this does NOT parse the body, does NOT throw on
+ * non-2xx (the caller decides — a 404 on a download is meaningful), and
+ * does NOT run the global 401 → /login redirect (binary endpoints aren't
+ * navigation targets). Callers that want the redirect behaviour should use
+ * ``fetchJSON``.
+ */
+export async function authedFetch(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token) {
+    setSessionHeader(headers, token);
+  }
+  return fetch(`${BASE}${url}`, {
+    ...init,
+    headers,
+    credentials: init?.credentials ?? "include",
+  });
+}
+
+/**
+ * Build an absolute ``ws(s)://`` URL for a dashboard WebSocket endpoint,
+ * with the correct auth query param appended for the active mode (fresh
+ * single-use ``ticket`` in gated mode, ``token`` in loopback). Plugins and
+ * the SPA should use this instead of hand-assembling a WS URL + reading
+ * ``window.__HERMES_SESSION_TOKEN__`` directly, so the gated-mode ticket
+ * path can never be forgotten.
+ *
+ * ``path`` is the dashboard-relative path (e.g.
+ * ``"/api/plugins/kanban/events"``); the base-path prefix and host are
+ * applied here. Extra query params can be supplied via ``params`` and are
+ * merged before the auth param.
+ */
+export async function buildWsUrl(
+  path: string,
+  params?: Record<string, string>,
+): Promise<string> {
+  const [authName, authValue] = await buildWsAuthParam();
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const qs = new URLSearchParams(params ?? {});
+  qs.set(authName, authValue);
+  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -796,6 +853,15 @@ export const api = {
   runDump: () => fetchJSON<ActionResponse>("/api/ops/dump", { method: "POST" }),
   runConfigMigrate: () =>
     fetchJSON<ActionResponse>("/api/ops/config-migrate", { method: "POST" }),
+  runDebugShare: (opts?: { redact?: boolean; lines?: number }) =>
+    fetchJSON<DebugShareResponse>("/api/ops/debug-share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redact: opts?.redact ?? true,
+        lines: opts?.lines ?? 200,
+      }),
+    }),
 
 
   getCheckpoints: () => fetchJSON<CheckpointsResponse>("/api/ops/checkpoints"),
@@ -847,6 +913,16 @@ export interface ActionResponse {
   error?: string;
   message?: string;
   update_command?: string;
+}
+
+export interface DebugShareResponse {
+  ok: boolean;
+  // label -> paste URL, e.g. { Report: "https://paste.rs/abc", "agent.log": "..." }
+  urls: Record<string, string>;
+  // "label: error" strings for optional full-log uploads that failed.
+  failures: string[];
+  redacted: boolean;
+  auto_delete_seconds: number;
 }
 
 export interface SessionStoreStats {

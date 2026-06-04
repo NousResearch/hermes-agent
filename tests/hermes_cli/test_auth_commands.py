@@ -97,6 +97,100 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["expires_at_ms"] == 1711234567000
 
 
+def test_auth_add_google_gemini_cli_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add google-gemini-cli must set active_provider in auth.json.
+
+    Tokens are managed by agent.google_oauth (written to the Google credential
+    file by start_oauth_flow). The auth.json entry must record active_provider
+    so get_active_provider() and _model_section_has_credentials() detect the
+    provider — without storing tokens that would become stale.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr(
+        "agent.google_oauth.run_gemini_oauth_login_pure",
+        lambda: {
+            "access_token": "ya29.test-token",
+            "refresh_token": "google-refresh",
+            "email": "user@example.com",
+            "expires_at_ms": 9999999999000,
+            "project_id": "my-project",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "google-gemini-cli"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "google-gemini-cli"
+    state = payload["providers"]["google-gemini-cli"]
+    # Only email stored — no access_token/refresh_token (those live in
+    # the Google OAuth credential file managed by agent.google_oauth).
+    assert state.get("email") == "user@example.com"
+    assert "access_token" not in state
+    assert "refresh_token" not in state
+    # pool entry from pool.add_entry() still present for hermes auth list
+    entries = payload["credential_pool"]["google-gemini-cli"]
+    entry = next(item for item in entries if item["source"] == "manual:google_pkce")
+    assert entry["access_token"] == "ya29.test-token"
+
+
+def test_auth_add_qwen_oauth_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add qwen-oauth must set active_provider in auth.json.
+
+    Tokens are managed by the Qwen CLI credential file via
+    resolve_qwen_runtime_credentials(). The auth.json entry must record
+    active_provider — without storing tokens that would become stale.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    _fake_creds = {
+        "provider": "qwen-oauth",
+        "base_url": "https://portal.qwen.ai/v1",
+        "api_key": "qwen-test-token",
+        "source": "qwen-cli",
+        "expires_at_ms": None,
+        "auth_file": "/home/user/.qwen/oauth_creds.json",
+    }
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kw: _fake_creds,
+    )
+    # Prevent _seed_from_singletons from calling the real Qwen CLI file path
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "qwen-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert payload["active_provider"] == "qwen-oauth"
+    state = payload["providers"]["qwen-oauth"]
+    # Only base_url stored — no api_key (that lives in the Qwen CLI file).
+    assert state.get("base_url") == "https://portal.qwen.ai/v1"
+    assert "api_key" not in state
+    # pool entry from pool.add_entry() still present for hermes auth list
+    entries = payload["credential_pool"]["qwen-oauth"]
+    entry = next(item for item in entries if item["source"] == "manual:qwen_cli")
+    assert entry["access_token"] == "qwen-test-token"
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
@@ -310,6 +404,58 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+
+def test_auth_add_xai_oauth_sets_active_provider(tmp_path, monkeypatch):
+    """hermes auth add xai-oauth must write providers singleton and set active_provider.
+
+    Previously pool.add_entry() was called directly, which wrote only the
+    credential-pool entry without setting active_provider. _model_section_has_credentials()
+    checks get_active_provider() first; with it unset, the setup wizard would
+    report "No inference provider configured" after a successful OAuth login.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    access_token = "xai-test-access-token"
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_oauth_loopback_login",
+        lambda **kwargs: {
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": "xai-refresh-token",
+                "id_token": "",
+                "token_type": "Bearer",
+            },
+            "discovery": {"token_endpoint": "https://auth.x.ai/token"},
+            "redirect_uri": "http://127.0.0.1:7777/callback",
+            "base_url": "https://api.x.ai/v1",
+            "last_refresh": "2026-06-02T10:00:00Z",
+            "source": "oauth-loopback",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "xai-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        timeout = None
+        no_browser = False
+        manual_paste = False
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    # active_provider must be set — the core of this regression
+    assert payload["active_provider"] == "xai-oauth"
+    # providers singleton written by _save_xai_oauth_tokens
+    assert payload["providers"]["xai-oauth"]["tokens"]["access_token"] == access_token
+    # pool seeded from singleton by _seed_from_singletons("xai-oauth")
+    entries = payload["credential_pool"]["xai-oauth"]
+    entry = next(item for item in entries if item["source"] == "loopback_pkce")
+    assert entry["refresh_token"] == "xai-refresh-token"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):

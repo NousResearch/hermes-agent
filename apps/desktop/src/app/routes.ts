@@ -52,6 +52,21 @@ export const APP_ROUTES = [
 const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route.path, route.view]))
 const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => route.path))
 
+// Views that render as a full-screen modal card (OverlayView) over the shell.
+// While one is open the app's titlebar control clusters must hide so they don't
+// bleed over the overlay (they sit at a higher z-index than the overlay card).
+export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
+  'agents',
+  'command-center',
+  'cron',
+  'profiles',
+  'settings'
+])
+
+export function isOverlayView(view: AppView): boolean {
+  return OVERLAY_VIEWS.has(view)
+}
+
 export function isNewChatRoute(pathname: string): boolean {
   return pathname === NEW_CHAT_ROUTE
 }

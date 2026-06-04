@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -282,16 +283,8 @@ function ProfileDetail({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-xl font-semibold tracking-tight">{profile.name}</h3>
-                  {profile.is_default && (
-                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.65rem] font-medium text-primary">
-                      Default
-                    </span>
-                  )}
-                  {profile.has_env && (
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
-                      .env
-                    </span>
-                  )}
+                  {profile.is_default && <Badge>Default</Badge>}
+                  {profile.has_env && <Badge variant="muted">.env</Badge>}
                 </div>
                 <p className="mt-1 font-mono text-[0.7rem] text-muted-foreground" title={profile.path}>
                   {profile.path}
@@ -358,7 +351,7 @@ function DetailRow({ children, label }: { children: React.ReactNode; label: stri
   return (
     <div className="flex flex-wrap items-baseline gap-2">
       <dt className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</dt>
-      <dd className="text-sm text-foreground">{children}</dd>
+      <dd className="text-xs text-foreground">{children}</dd>
     </div>
   )
 }

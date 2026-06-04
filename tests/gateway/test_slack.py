@@ -2636,10 +2636,96 @@ class TestThreadReplyHandling:
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_bot_message_in_mentioned_thread_processed_allow_bots_all(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Bot message in a thread where bot was @mentioned should be processed
+        when allow_bots=all, even without a user-owned session (issue #30091).
 
-# ---------------------------------------------------------------------------
-# TestAssistantThreadLifecycle
-# ---------------------------------------------------------------------------
+        Bot messages don't create user-scoped sessions, so
+        _has_active_session_for_thread() always returns False for them.
+        The fix: skip the session check for bot messages and rely on
+        _mentioned_threads / _bot_message_ts membership instead.
+        """
+        adapter_with_session_store.config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"allow_bots": "all"},
+        )
+        # Simulate that the bot was previously mentioned in this thread
+        adapter_with_session_store._mentioned_threads.add("123.000")
+
+        event = {
+            "text": "Hello from Clo!",
+            "bot_id": "B_CLO",
+            "user": "U_CLO_BOT",
+            "channel": "C123",
+            "ts": "123.789",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_bot_message_in_bot_started_thread_processed_allow_bots_all(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Bot message in a thread the bot started should be processed
+        when allow_bots=all (issue #30091).
+        """
+        adapter_with_session_store.config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"allow_bots": "all"},
+        )
+        # Bot started this thread
+        adapter_with_session_store._bot_message_ts.add("123.000")
+
+        event = {
+            "text": "Replying in the bot-started thread",
+            "bot_id": "B_CLO",
+            "user": "U_CLO_BOT",
+            "channel": "C123",
+            "ts": "123.789",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_bot_message_without_thread_membership_ignored(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Bot message in a thread with no membership signals should be
+        ignored even with allow_bots=all (prevents unwanted bot-bot loops).
+        """
+        adapter_with_session_store.config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"allow_bots": "all"},
+        )
+        # No _mentioned_threads, no _bot_message_ts, no session
+
+        event = {
+            "text": "Random bot noise",
+            "bot_id": "B_RANDOM",
+            "user": "U_RANDOM_BOT",
+            "channel": "C123",
+            "ts": "123.789",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_not_called()
+
+
+
 
 
 class TestAssistantThreadLifecycle:

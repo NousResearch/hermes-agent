@@ -2304,6 +2304,11 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        # Track whether this is a bot-authored message (e.g. another Hermes instance,
+        # Clo, or any other Slack bot).  Bot messages don't create user-scoped sessions,
+        # so _has_active_session_for_thread() will always return False for them — we
+        # need to fall back to thread-membership signals instead.
+        is_bot_message = bool(event.get("bot_id") or event.get("subtype") == "bot_message")
 
         if not is_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
@@ -2328,10 +2333,18 @@ class SlackAdapter(BasePlatformAdapter):
                     event_thread_ts is not None
                     and event_thread_ts in self._mentioned_threads
                 )
-                has_session = is_thread_reply and self._has_active_session_for_thread(
-                    channel_id=channel_id,
-                    thread_ts=event_thread_ts,
-                    user_id=user_id,
+                # For bot-authored messages (e.g. Clo, another Hermes instance),
+                # _has_active_session_for_thread() will always return False because
+                # bots don't own user-scoped sessions.  Skip the session check for
+                # them and rely on thread-membership signals only.
+                has_session = (
+                    not is_bot_message
+                    and is_thread_reply
+                    and self._has_active_session_for_thread(
+                        channel_id=channel_id,
+                        thread_ts=event_thread_ts,
+                        user_id=user_id,
+                    )
                 )
                 if (
                     not reply_to_bot_thread
@@ -2358,6 +2371,9 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
+        # Also re-fetch when a bot posts in an *active* session thread and the
+        # cache has expired — bot messages don't go through the normal session
+        # history pipeline, so without a re-fetch we'd miss them entirely.
         if is_thread_reply and not self._has_active_session_for_thread(
             channel_id=channel_id,
             thread_ts=event_thread_ts,
@@ -2371,6 +2387,25 @@ class SlackAdapter(BasePlatformAdapter):
             )
             if thread_context:
                 text = thread_context + text
+        elif is_thread_reply and is_bot_message:
+            # Active session, but the triggering message is from another bot.
+            # The cache TTL acts as a natural debounce: only re-fetch (and
+            # prepend incremental context) when the cache has gone stale,
+            # avoiding redundant conversations.replies calls on every bot turn.
+            cache_key = f"{channel_id}:{event_thread_ts}:{team_id}"
+            cached = self._thread_context_cache.get(cache_key)
+            cache_stale = cached is None or (
+                time.monotonic() - cached.fetched_at >= self._THREAD_CACHE_TTL
+            )
+            if cache_stale:
+                thread_context = await self._fetch_thread_context(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    current_ts=ts,
+                    team_id=team_id,
+                )
+                if thread_context:
+                    text = thread_context + text
 
         # Determine message type
         msg_type = MessageType.TEXT

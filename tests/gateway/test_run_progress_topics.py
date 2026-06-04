@@ -1017,17 +1017,19 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
 
 
 @pytest.mark.asyncio
-async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
-    adapter, result = await _run_with_agent(
-        monkeypatch,
-        tmp_path,
-        BackgroundReviewAgent,
-        session_id="sess-bg-review-order",
-        config_data={"display": {"interim_assistant_messages": True}},
-    )
+async def test_run_agent_suppresses_background_review_notification_on_chat_platforms(monkeypatch, tmp_path):
+    for platform in (Platform.TELEGRAM, Platform.DISCORD):
+        adapter, result = await _run_with_agent(
+            monkeypatch,
+            tmp_path,
+            BackgroundReviewAgent,
+            session_id=f"sess-bg-review-order-{platform.value}",
+            config_data={"display": {"interim_assistant_messages": True}},
+            platform=platform,
+        )
 
-    assert result["final_response"] == "done"
-    assert adapter.sent == []
+        assert result["final_response"] == "done"
+        assert adapter.sent == []
 
 
 @pytest.mark.asyncio

@@ -7,8 +7,8 @@ from gateway.run import (
 )
 
 
-def test_telegram_status_suppresses_auxiliary_and_retry_noise():
-    """Auxiliary failures and retry backoff chatter should not hit Telegram."""
+def test_gateway_status_suppresses_auxiliary_and_retry_noise_for_chat_platforms():
+    """Auxiliary failures and retry backoff chatter should not hit Telegram/Discord."""
     noisy_messages = [
         "⚠ Auxiliary title generation failed: HTTP 400: Operation contains cybersecurity risk",
         "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
@@ -17,15 +17,18 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         "⏳ Retrying in 4.2s (attempt 1/3)...",
         "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
         "⚠️ Max retries (3) exhausted — trying fallback...",
+        "💾 Self-improvement review: User profile updated",
+        "💾 Self-improvement review: Skill 'prospect-scanner' patched",
     ]
 
     for message in noisy_messages:
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
+        assert _prepare_gateway_status_message(Platform.DISCORD, "warn", message) is None
 
 
-def test_non_telegram_status_is_unchanged():
-    """The Telegram quieting policy must not hide CLI/Discord diagnostics."""
-    message = "⏳ Retrying in 4.2s (attempt 1/3)..."
+def test_non_noisy_status_is_unchanged_on_discord_and_local():
+    """The chat quieting policy must not hide normal Discord/local diagnostics."""
+    message = "Indexing repository before answering..."
 
     assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
@@ -74,6 +77,16 @@ def test_telegram_final_response_redacts_auth_secrets():
     assert "authentication failed" in sanitized.lower()
     assert "check the configured credentials" in sanitized.lower()
     assert "sk-live" not in sanitized
+
+
+def test_chat_final_response_suppresses_pseudo_tool_call_text():
+    """Pseudo tool-call text must not leak to public chat platforms."""
+    raw = "call:default_api:terminal{command:git -C tools/hermes-agent diff}"
+
+    for platform in (Platform.TELEGRAM, Platform.DISCORD):
+        sanitized = _sanitize_gateway_final_response(platform, raw)
+        assert "call:default_api" not in sanitized
+        assert "internal tool-call marker" in sanitized
 
 
 def test_telegram_final_response_keeps_normal_answers():

@@ -67,8 +67,12 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
-_TELEGRAM_NOISY_STATUS_RE = re.compile(
-    r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
+_GATEWAY_PSEUDO_TOOL_CALL_RE = re.compile(
+    r"^\s*call:[A-Za-z0-9_:-]+:[A-Za-z0-9_]+\s*\{[\s\S]*\}\s*$"
+)
+
+_GATEWAY_NOISY_STATUS_RE = re.compile(
+    r"("  # transient/auxiliary status that should stay in logs, not chat
     r"auxiliary\s+.+\s+failed"
     r"|compression\s+summary\s+failed"
     r"|fallback\s+context\s+marker"
@@ -82,6 +86,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    r"|self-improvement\s+review"
     r")",
     re.IGNORECASE | re.DOTALL,
 )
@@ -297,10 +302,21 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
-        return text
-
+    platform_value = _gateway_platform_value(platform)
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    if platform_value in {"telegram", "discord"} and _GATEWAY_PSEUDO_TOOL_CALL_RE.match(redacted):
+        logger.warning(
+            "Suppressed leaked pseudo tool-call final response before %s delivery: %r",
+            platform_value,
+            redacted[:500],
+        )
+        return (
+            "⚠️ The model returned an internal tool-call marker as plain text, so I blocked it "
+            "instead of showing it in chat. Please retry; raw details are in gateway logs."
+        )
+    if platform_value != "telegram":
+        return redacted
+
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
@@ -311,12 +327,18 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
-        return text
-
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
-        return None
+    platform_value = _gateway_platform_value(platform)
+    if platform_value in {"telegram", "discord"}:
+        # Background self-improvement summaries (memory/skill/profile writes)
+        # are useful in the CLI/TUI, but confusing and leaky in public chat
+        # channels where ordinary users see the bot's internals.
+        if str(event_type or "").lower() == "background_review":
+            return None
+        if _GATEWAY_NOISY_STATUS_RE.search(text):
+            return None
+    if platform_value != "telegram":
+        return text
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
@@ -17939,10 +17961,21 @@ class GatewayRunner:
             def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter or not _run_still_current():
                     return
+                prepared_message = _prepare_gateway_status_message(
+                    source.platform,
+                    "background_review",
+                    message,
+                )
+                if prepared_message is None:
+                    logger.debug(
+                        "Suppressed noisy background review message for %s",
+                        source.platform,
+                    )
+                    return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
-                        message,
+                        prepared_message,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,

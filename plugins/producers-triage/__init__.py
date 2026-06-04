@@ -74,6 +74,31 @@ def pre_dispatch_handler(event: MessageEvent, gateway: GatewayRunner, **kwargs) 
 
     # 2. Custom ack messages based on channel or keywords (fast-path for other queries)
     ack_text = None
+    
+    # 2.1 Fast-path execute prompt doctor directly without model calling if structured
+    if ("prompt doctor" in text or "разбери prompt" in text or "почини промпт" in text or "разбери промпт" in text) and source.chat_id in ["1509389604279554108", "1509389598923559053"]: # #💻〢воркфлоу or #🆘〢помощь
+        # Try to parse fields using the router library directly
+        try:
+            import discord_interactive_router
+            extracted = discord_interactive_router._extract_key_values(event.text or "")
+            req_fields = ["prompt", "goal_or_genre", "failure_mode"]
+            # Map aliases / alternative keys to extract values
+            p_val = extracted.get("prompt")
+            g_val = extracted.get("goal_or_genre") or extracted.get("goal")
+            f_val = extracted.get("failure_mode") or extracted.get("rough_problem")
+            
+            if p_val and g_val and f_val:
+                import prompt_doctor
+                res_output = prompt_doctor.run_doctor(p_val, g_val, f_val)
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(send_ack(gateway, source.chat_id, res_output, event))
+                except Exception as e:
+                    logger.warning(f"[producers-triage] failed to schedule prompt doctor execution: {e}")
+                return {"action": "skip", "reason": "prompt-doctor-executed"}
+        except Exception as ex:
+            logger.warning(f"[producers-triage] offline prompt doctor execution failed: {ex}")
+
     if "prompt doctor" in text or "разбери prompt" in text or "почини промпт" in text or source.chat_id == "1509389604279554108": # #💻〢воркфлоу
         ack_text = "гляну твой промпт — сверяюсь со спеками суно — через минуту выкачу разбор"
     elif event.message_type.value == "audio" or "audio triage" in text or source.chat_id == "1509389602410365029": # #💡〢аудио-наработки

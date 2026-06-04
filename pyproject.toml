@@ -127,6 +127,14 @@ pty = [
   # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.0.1"]
+# Image resize recovery for the vision tools.  Pillow is a soft dependency:
+# vision_tools / conversation_compression degrade gracefully without it (they
+# log and skip the resize), but without it the byte AND pixel-dimension shrink
+# paths silently no-op, so an oversized image (>5 MB or >8000px) bakes into
+# immutable history and bricks the session on Anthropic's non-retryable 400.
+# Declared here so packagers (Nix, Homebrew) ship it with [all] and so
+# `pip install hermes-agent[vision]` / the lazy-install path can resolve it.
+vision = ["Pillow==12.2.0"]
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
 # 1.0.1, a malformed Host header makes `request.url.path` desync from the path

@@ -326,6 +326,15 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # whether we resize proactively or reactively.
 _EMBED_TARGET_BYTES = 4 * 1024 * 1024
 
+# Proactive embed dimension cap (px, longest side).  Anthropic enforces an
+# 8000px per-side ceiling INDEPENDENTLY of the 5 MB byte cap — a tall full-page
+# screenshot can be well under 5 MB yet far over 8000px (e.g. 1200×12000 at
+# 0.06 MB), so the byte-only embed check above lets it slip into immutable
+# history un-resized and the session bricks on a non-retryable 400.  We cap at
+# 7900 (headroom under 8000) so the proactive resize shrinks tall small-byte
+# images before they are embedded.
+_EMBED_MAX_DIMENSION = 7900
+
 # Target size when auto-resizing on API failure (5 MB).  After a provider
 # rejects an image, we downscale to this target and retry once.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
@@ -339,6 +348,24 @@ def _is_image_size_error(error: Exception) -> bool:
         "request_too_large", "image_url", "invalid_request",
         "exceeds", "size limit",
     ))
+
+
+def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
+    """True if the image's longest side exceeds ``max_dimension`` px.
+
+    Anthropic enforces an 8000px per-side cap independently of the 5 MB byte
+    cap, so a tall small-byte screenshot can pass every byte check yet trip a
+    non-retryable 400.  Returns False (don't force a resize) when Pillow is
+    unavailable or the file can't be read as an image — the byte-based checks
+    still apply, and we never want a missing soft dependency to break the
+    embed path.
+    """
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            return max(_img.size) > max_dimension
+    except Exception:
+        return False
 
 
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
@@ -388,10 +415,20 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         from PIL import Image
         import io as _io
     except ImportError:
-        logger.info("Pillow not installed — cannot auto-resize oversized image")
-        if data_url is None:
-            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
-        return data_url  # caller will raise the size error
+        # Pillow is a lazy-installable soft dependency. Try a best-effort
+        # install (respects security.allow_lazy_installs; no-op if disabled or
+        # offline), then re-import. If it still isn't importable, fall back to
+        # the raw bytes and let the caller raise the size error.
+        try:
+            from tools.lazy_deps import ensure as _ensure_dep
+            _ensure_dep("tool.vision")
+            from PIL import Image
+            import io as _io
+        except Exception:
+            logger.info("Pillow not installed — cannot auto-resize oversized image")
+            if data_url is None:
+                data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+            return data_url  # caller will raise the size error
 
     logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
@@ -696,15 +733,19 @@ async def _vision_analyze_native(
 
         # Proactive embed cap: this image gets baked into conversation
         # history and re-sent on every subsequent turn.  Anthropic rejects
-        # any single base64 image over 5 MB with a 400, and because history
-        # is immutable, an oversized embed permanently wedges the session —
-        # retries can't clear bytes that are already in the request.  Resize
-        # DOWN to the embed target (4 MB, headroom under 5 MB) whenever the
-        # payload exceeds it, not just at the 20 MB hard ceiling.
-        if len(image_data_url) > _EMBED_TARGET_BYTES:
+        # any single base64 image over 5 MB OR over 8000px per side with a
+        # 400, and because history is immutable, an oversized embed
+        # permanently wedges the session — retries can't clear bytes (or
+        # pixels) that are already in the request.  Resize DOWN to the embed
+        # target (4 MB / 7900px, headroom under both ceilings) whenever the
+        # payload exceeds either limit, not just at the 20 MB hard ceiling.
+        _over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
+        _over_dims = _image_exceeds_dimension(temp_image_path, _EMBED_MAX_DIMENSION)
+        if _over_bytes or _over_dims:
             image_data_url = _resize_image_for_vision(
                 temp_image_path, mime_type=detected_mime_type,
                 max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
             )
             # If even resizing can't get under the absolute hard ceiling,
             # there's nothing more we can do — reject rather than embed a

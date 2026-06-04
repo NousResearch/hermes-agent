@@ -4156,7 +4156,7 @@ class GatewayRunner:
         {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
     )
 
-    def _schedule_resume_pending_sessions(self) -> int:
+    def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
 
         ``resume_pending`` already preserves the transcript AND the existing
@@ -4169,7 +4169,15 @@ class GatewayRunner:
         Adapters that are not yet ready (adapter missing from
         ``self.adapters``) are skipped silently; their sessions stay
         ``resume_pending`` and will auto-resume on the next real user
-        message, or on the next gateway startup.
+        message, or when the platform reconnects — the reconnect watcher
+        calls this again scoped to that ``platform``.
+
+        ``platform`` (a ``Platform``) restricts the pass to sessions that
+        originated on that platform.  The reconnect path passes it so a
+        platform coming back online retries only its own sessions and never
+        re-touches another platform's in-flight recoveries.  Sessions whose
+        agent is already running are skipped regardless, so a session
+        scheduled at startup is never resumed a second time.
         """
         window = _auto_continue_freshness_window()
         try:
@@ -4181,6 +4189,7 @@ class GatewayRunner:
                     and not entry.suspended
                     and entry.origin is not None
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
+                    and (platform is None or entry.origin.platform == platform)
                 ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
@@ -4191,6 +4200,11 @@ class GatewayRunner:
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
+                continue
+
+            # Already being resumed (e.g. scheduled at startup and still
+            # in-flight) — don't synthesize a second continuation turn.
+            if entry.session_key in self._running_agents:
                 continue
 
             source = entry.origin
@@ -5388,10 +5402,12 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
+                                lines = payload_summary.strip().splitlines()
+                                h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
                             elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
+                                lines = task.result.strip().splitlines()
+                                r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
                             msg = (
                                 f"✔ {tag}Kanban {sub['task_id']} done"
@@ -5739,7 +5755,14 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
-        interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
+        try:
+            interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
+        except (ValueError, TypeError):
+            logger.warning(
+                "kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 60",
+                kanban_cfg.get("dispatch_interval_seconds"),
+            )
+            interval = 60.0
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
         # Read max_spawn config to limit concurrent kanban tasks
@@ -6272,6 +6295,21 @@ class GatewayRunner:
                             await build_channel_directory(self.adapters)
                         except Exception:
                             pass
+
+                        # A platform that was offline at gateway startup never
+                        # got its restart-interrupted sessions auto-resumed —
+                        # the startup pass skips sessions whose adapter isn't
+                        # connected yet. Now that it's back, retry the
+                        # auto-resume scoped to this platform so recovery
+                        # doesn't silently wait for a manual user message.
+                        try:
+                            self._schedule_resume_pending_sessions(platform=platform)
+                        except Exception:
+                            logger.debug(
+                                "resume-pending reschedule after %s reconnect failed",
+                                platform.value,
+                                exc_info=True,
+                            )
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
                         self._update_platform_runtime_status(
@@ -6949,6 +6987,38 @@ class GatewayRunner:
             return False
         return bool(getattr(adapter, "enforces_own_access_policy", False))
 
+    def _adapter_dm_policy(self, platform: Optional[Platform]) -> str:
+        """Best-effort read of an own-policy adapter's effective DM policy.
+
+        Returns the lowercased ``dm_policy`` (``"open"`` / ``"allowlist"`` /
+        ``"disabled"`` / ``"pairing"``) for *platform*, or ``""`` when unknown.
+        Prefers the live adapter's resolved ``_dm_policy`` — which already folds
+        in both ``config.extra`` and the ``<PLATFORM>_DM_POLICY`` env var (the
+        env var is not always bridged back into ``config.extra``) — and falls
+        back to ``config.extra`` for bare runners built without a live adapter.
+
+        Used by ``_is_user_authorized`` to carve ``dm_policy: pairing`` out of
+        the adapter-trust shortcut: in pairing mode the adapter forwards the DM
+        so the gateway can run its pairing handshake, so "reached the gateway"
+        must not be read as "authorized".
+        """
+        if not platform:
+            return ""
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        policy = getattr(adapter, "_dm_policy", None) if adapter is not None else None
+        if policy is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                policy = extra.get("dm_policy")
+        return str(policy or "").strip().lower()
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -7096,7 +7166,20 @@ class GatewayRunner:
             # env-only default-deny below, which would silently break
             # `dm_policy: open` and config-only allowlists. (#34515)
             if self._adapter_enforces_own_access_policy(source.platform):
-                return True
+                # Exception: `dm_policy: pairing` does NOT authorize at intake.
+                # The adapter forwards the DM precisely so the gateway can run
+                # its pairing handshake (issue a code, consult the pairing
+                # store). The pairing-store approval check above already ran and
+                # returned False for this sender, so blanket-trusting the
+                # adapter here would silently turn pairing mode into open
+                # access. Fall through to default-deny so the unpaired sender is
+                # offered a pairing code instead. (Pairing is DM-only; group
+                # traffic keeps the adapter-trust path.)
+                if not (
+                    source.chat_type == "dm"
+                    and self._adapter_dm_policy(source.platform) == "pairing"
+                ):
+                    return True
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
@@ -19215,7 +19298,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop)
+            cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 

@@ -105,17 +105,40 @@ def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> b
     old venv may point to a Python without FTS5, so we rebuild it with a
     fresh interpreter from the current managed uv.  Returns ``True`` on
     success.
+
+    On Windows, ``shutil.rmtree(..., ignore_errors=True)`` can silently leave
+    the venv directory partially intact when another process is holding an
+    open handle to a file inside it (typical culprits: a running
+    ``hermes.exe`` REPL, the gateway, AV scanners). If we don't notice that
+    and just call ``uv venv``, uv refuses with
+    ``Caused by: A directory already exists at: venv`` and the *whole
+    update* falls back to installing on top of the stale venv — which has
+    historically produced partial installs where a freshly added dependency
+    (e.g. ``pathspec``) silently fails to land. Retry with ``--clear`` to
+    force uv past that condition before giving up.
     """
     if venv_dir.exists():
         print(f"  → Rebuilding venv (old Python may lack FTS5)...")
         shutil.rmtree(venv_dir, ignore_errors=True)
 
-    result = subprocess.run(
-        [uv_bin, "venv", str(venv_dir), "--python", python_version],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    def _run_uv_venv(extra_args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [uv_bin, "venv", str(venv_dir), "--python", python_version, *extra_args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    result = _run_uv_venv([])
+
+    # If uv refused because the directory still exists (rmtree above was
+    # blocked by an open file handle, common on Windows), retry with
+    # --clear so uv overwrites it. Match on stderr because uv's exit code
+    # alone doesn't distinguish "dir exists" from real failures.
+    if result.returncode != 0 and "already exists" in (result.stderr or "").lower():
+        print("  → venv dir not fully removed (likely an open file handle); retrying with --clear...")
+        result = _run_uv_venv(["--clear"])
+
     if result.returncode == 0:
         venv_python = venv_dir / ("Scripts" if platform.system() == "Windows" else "bin") / "python"
         py_ver = subprocess.run(

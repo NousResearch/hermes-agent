@@ -376,6 +376,29 @@ _NVIDIA_NIM_CLOUD_HEADERS = {
 }
 
 
+def _openai_api_attribution_headers() -> Dict[str, str]:
+    """Headers that let OpenAI attribute direct API traffic to Hermes Agent."""
+    from hermes_cli import __version__ as _HERMES_VERSION
+
+    return {
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+        "originator": "hermes-agent",
+    }
+
+
+def _apply_openai_api_attribution_headers(
+    client_kwargs: Dict[str, Any],
+    base_url: str | None,
+) -> None:
+    """Attach Hermes attribution headers for the public OpenAI API only."""
+    if not base_url_host_matches(str(base_url or ""), "api.openai.com"):
+        return
+    existing = client_kwargs.get("default_headers")
+    headers = dict(existing) if isinstance(existing, dict) else {}
+    headers.update(_openai_api_attribution_headers())
+    client_kwargs["default_headers"] = headers
+
+
 def build_nvidia_nim_headers(base_url: str | None) -> dict:
     """Return NVIDIA NIM cloud attribution headers for build.nvidia.com traffic."""
     if base_url_host_matches(str(base_url or ""), "integrate.api.nvidia.com"):
@@ -1447,6 +1470,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 extra["default_headers"] = copilot_default_headers()
             elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
                 extra["default_headers"] = build_nvidia_nim_headers(base_url)
+            elif base_url_host_matches(base_url, "api.openai.com"):
+                extra["default_headers"] = _openai_api_attribution_headers()
             else:
                 try:
                     from providers import get_provider_profile as _gpf_aux
@@ -1484,6 +1509,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             extra["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             extra["default_headers"] = build_nvidia_nim_headers(base_url)
+        elif base_url_host_matches(base_url, "api.openai.com"):
+            extra["default_headers"] = _openai_api_attribution_headers()
         else:
             try:
                 from providers import get_provider_profile as _gpf_aux2
@@ -1882,6 +1909,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
+    _apply_openai_api_attribution_headers(_extra, _clean_base)
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
@@ -3237,6 +3265,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
         async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+    elif base_url_host_matches(sync_base_url, "api.openai.com"):
+        async_kwargs["default_headers"] = _openai_api_attribution_headers()
     else:
         # Fall back to profile.default_headers for providers that declare
         # client-level headers on their ProviderProfile (e.g. attribution
@@ -3528,6 +3558,8 @@ def resolve_provider_client(
                 )
             elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
                 extra["default_headers"] = build_nvidia_nim_headers(custom_base)
+            elif base_url_host_matches(custom_base, "api.openai.com"):
+                extra["default_headers"] = _openai_api_attribution_headers()
             else:
                 # Fall back to profile.default_headers for providers that
                 # declare client-level attribution headers on their profile.
@@ -3614,6 +3646,7 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _apply_openai_api_attribution_headers(_extra2, _clean_base2)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -3636,6 +3669,7 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        _apply_openai_api_attribution_headers(_fb_extra, _fb_clean)
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
@@ -3773,6 +3807,8 @@ def resolve_provider_client(
             ))
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers.update(build_nvidia_nim_headers(base_url))
+        elif base_url_host_matches(base_url, "api.openai.com"):
+            headers.update(_openai_api_attribution_headers())
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI

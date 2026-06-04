@@ -6,6 +6,71 @@ from run_agent import AIAgent
 
 
 @patch("run_agent.OpenAI")
+def test_openai_api_base_url_applies_hermes_originator_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.openai.com/v1",
+        provider="openai-api",
+        model="gpt-5",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["originator"] == "hermes-agent"
+    assert headers["User-Agent"].startswith("HermesAgent/")
+
+    init_headers = mock_openai.call_args.kwargs["default_headers"]
+    assert init_headers["originator"] == "hermes-agent"
+    assert init_headers["User-Agent"].startswith("HermesAgent/")
+
+    agent._apply_client_headers_for_base_url("https://api.openai.com/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["originator"] == "hermes-agent"
+    assert headers["User-Agent"].startswith("HermesAgent/")
+
+
+@patch("run_agent.OpenAI")
+def test_openai_api_provider_default_applies_hermes_originator_headers(
+    mock_openai,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    mock_openai.return_value = MagicMock()
+
+    def _fake_routed_client(**kwargs):
+        return SimpleNamespace(
+            api_key=kwargs["api_key"],
+            base_url=kwargs["base_url"],
+            _custom_headers=kwargs.get("default_headers"),
+        )
+
+    with patch("agent.auxiliary_client.OpenAI", side_effect=_fake_routed_client) as routed_openai:
+        agent = AIAgent(
+            provider="openai-api",
+            model="gpt-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    routed_headers = routed_openai.call_args.kwargs["default_headers"]
+    assert routed_headers["originator"] == "hermes-agent"
+    assert routed_headers["User-Agent"].startswith("HermesAgent/")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["originator"] == "hermes-agent"
+    assert headers["User-Agent"].startswith("HermesAgent/")
+
+    init_headers = mock_openai.call_args.kwargs["default_headers"]
+    assert init_headers["originator"] == "hermes-agent"
+    assert init_headers["User-Agent"].startswith("HermesAgent/")
+
+
+@patch("run_agent.OpenAI")
 def test_openrouter_base_url_applies_or_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

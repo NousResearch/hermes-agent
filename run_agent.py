@@ -3628,10 +3628,13 @@ class AIAgent:
         from agent.auxiliary_client import (
             build_nvidia_nim_headers,
             build_or_headers,
+            _openai_api_attribution_headers,
         )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
+        elif base_url_host_matches(base_url, "api.openai.com"):
+            self._client_kwargs["default_headers"] = _openai_api_attribution_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):

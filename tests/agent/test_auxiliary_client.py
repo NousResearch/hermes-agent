@@ -917,6 +917,9 @@ class TestGetTextAuxiliaryClient:
         assert model == "gpt-5.3-codex"
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        assert headers["originator"] == "hermes-agent"
+        assert headers["User-Agent"].startswith("HermesAgent/")
 
 
 class TestVisionClientFallback:
@@ -3253,6 +3256,29 @@ class TestNvidiaBillingHeaders:
         call_kwargs = mock_openai.call_args[1]
         headers = call_kwargs.get("default_headers", {})
         assert "X-BILLING-INVOKE-ORIGIN" not in headers
+
+
+class TestOpenAIAPIAttributionHeaders:
+    def test_resolve_provider_client_openai_api_adds_hermes_originator(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="openai-api-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="openai-api",
+                model="gpt-5",
+            )
+
+        assert client is not None
+        assert model == "gpt-5"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["base_url"] == "https://api.openai.com/v1"
+        headers = call_kwargs["default_headers"]
+        assert headers["originator"] == "hermes-agent"
+        assert headers["User-Agent"].startswith("HermesAgent/")
 
 
 class TestOpenRouterExplicitApiKey:

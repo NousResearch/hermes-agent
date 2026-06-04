@@ -71,16 +71,19 @@ export function OverlayView({
 
           <Button
             aria-label={closeLabel}
-            className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] h-7 w-7 -translate-y-1/2 rounded-md text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
+            className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
             onClick={closeOverlay}
-            size="icon"
+            size="icon-titlebar"
             variant="ghost"
           >
             <Codicon name="close" size="1rem" />
           </Button>
         </div>
 
-        <div className={cn('min-h-0 flex flex-1 flex-col pt-(--titlebar-height)', contentClassName)}>{children}</div>
+        {/* No top padding here: the split-layout columns own their own
+            titlebar clearance so their backgrounds run flush to the card top
+            (otherwise the card surface shows as a gap above the sidebar). */}
+        <div className={cn('min-h-0 flex flex-1 flex-col', contentClassName)}>{children}</div>
       </div>
     </div>
   )

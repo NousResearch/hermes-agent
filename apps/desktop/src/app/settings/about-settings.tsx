@@ -145,7 +145,7 @@ export function AboutSettings() {
 
             <Button
               asChild
-              className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+              className="ml-auto text-muted-foreground hover:text-foreground"
               size="sm"
               variant="ghost"
             >

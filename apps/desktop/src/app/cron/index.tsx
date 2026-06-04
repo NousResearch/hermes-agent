@@ -604,8 +604,8 @@ function CronJobRow({
 function IconAction({ children, className, ...props }: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
   return (
     <Button
-      className={cn('size-7 text-muted-foreground hover:text-foreground', className)}
-      size="icon"
+      className={cn('text-muted-foreground hover:text-foreground', className)}
+      size="icon-sm"
       variant="ghost"
       {...props}
     >

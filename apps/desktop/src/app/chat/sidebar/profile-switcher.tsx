@@ -2,6 +2,8 @@ import {
   closestCenter,
   DndContext,
   type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
   KeyboardSensor,
   type Modifier,
   PointerSensor,
@@ -17,12 +19,13 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
+import { triggerHaptic } from '@/lib/haptics'
 import { profileColor, profileColorSoft } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
@@ -43,6 +46,13 @@ import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
+
+// easeOutBack — a little overshoot so squares spring into their new slot rather
+// than sliding in flat. Neighbors reflow on RAIL_TRANSITION; the dragged square
+// glides between snapped cells on the snappier DRAG_TRANSITION.
+const SPRING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
+const RAIL_TRANSITION = { duration: 300, easing: SPRING }
+const DRAG_TRANSITION = `transform 200ms ${SPRING}`
 
 // The rail is a single horizontal strip of fixed cells. Pin drags to the x-axis
 // (no cross-axis scrollbar), snap to whole cells so a square steps slot-to-slot
@@ -73,6 +83,32 @@ export function ProfileRail() {
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // A plain mouse wheel only emits deltaY; map it to horizontal scroll so the
+  // rail is navigable without a trackpad. Trackpad x-scroll (deltaX) passes
+  // through. Native + non-passive so we can preventDefault and not bleed the
+  // gesture into the sessions list above.
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    const onWheel = (event: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+        return
+      }
+
+      el.scrollLeft += event.deltaY
+      event.preventDefault()
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false })
+
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
 
   const isAll = scope === ALL_PROFILES
   const activeKey = normalizeProfileKey(gatewayProfile)
@@ -87,7 +123,26 @@ export function ProfileRail() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
+  // Tick a haptic each time the drag crosses into a new cell, and a satisfying
+  // confirm on a committed reorder.
+  const lastOverRef = useRef<string | null>(null)
+
+  const handleDragStart = ({ active }: DragStartEvent) => {
+    lastOverRef.current = String(active.id)
+  }
+
+  const handleDragOver = ({ over }: DragOverEvent) => {
+    const id = over ? String(over.id) : null
+
+    if (id && id !== lastOverRef.current) {
+      lastOverRef.current = id
+      triggerHaptic('selection')
+    }
+  }
+
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    lastOverRef.current = null
+
     if (!over || active.id === over.id) {
       return
     }
@@ -98,6 +153,7 @@ export function ProfileRail() {
 
     if (from >= 0 && to >= 0) {
       setProfileOrder(arrayMove(ids, from, to))
+      triggerHaptic('success')
     }
   }
 
@@ -124,11 +180,16 @@ export function ProfileRail() {
         <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
       )}
 
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        ref={scrollRef}
+      >
         <DndContext
           collisionDetection={closestCenter}
           modifiers={[stepThroughCells]}
           onDragEnd={handleDragEnd}
+          onDragOver={handleDragOver}
+          onDragStart={handleDragStart}
           sensors={sensors}
         >
           <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
@@ -209,7 +270,15 @@ interface ProfileSquareProps {
 // and drag-sort to reorder (a tap below the drag threshold still selects).
 function ProfileSquare({ active, color, label, onSelect }: ProfileSquareProps) {
   const hue = color ?? 'var(--ui-text-quaternary)'
-  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: label })
+
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
+    id: label,
+    transition: RAIL_TRANSITION
+  })
+
+  const base = CSS.Transform.toString(transform)
+  const ring = active ? `inset 0 0 0 1.5px ${hue}` : ''
+  const lift = isDragging ? '0 6px 16px -4px rgb(0 0 0 / 0.4)' : ''
 
   return (
     <Tip label={label}>
@@ -217,16 +286,18 @@ function ProfileSquare({ active, color, label, onSelect }: ProfileSquareProps) {
         className={cn(
           'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
           active ? 'opacity-100' : 'opacity-55',
-          isDragging && 'cursor-grabbing opacity-90'
+          isDragging && 'z-10 cursor-grabbing opacity-100'
         )}
         onClick={onSelect}
         ref={setNodeRef}
         style={{
           backgroundColor: profileColorSoft(hue, active ? 30 : 22),
-          boxShadow: active ? `inset 0 0 0 1.5px ${hue}` : undefined,
+          boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
           color: color ?? undefined,
-          transform: CSS.Transform.toString(transform),
-          transition
+          // Glide the dragged square between snapped cells with a little overshoot
+          // (no scale — the overflow-x strip would clip it).
+          transform: base,
+          transition: isDragging ? DRAG_TRANSITION : transition
         }}
         type="button"
         {...attributes}

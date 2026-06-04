@@ -2263,6 +2263,7 @@ _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
 _RUNTIME_MAIN_API_KEY: str = ""
 _RUNTIME_MAIN_API_MODE: str = ""
+_session_route_logged: bool = False
 
 
 def set_runtime_main(
@@ -2292,16 +2293,27 @@ def set_runtime_main(
     _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
 
+    global _session_route_logged
+    if not _session_route_logged:
+        _session_route_logged = True
+        _info = f" at {_RUNTIME_MAIN_BASE_URL}" if _RUNTIME_MAIN_BASE_URL else ""
+        logger.info(
+            "Runtime: main route set to %s/%s%s [session routing configured]",
+            _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _info,
+        )
+
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
+    global _session_route_logged
     _RUNTIME_MAIN_PROVIDER = ""
     _RUNTIME_MAIN_MODEL = ""
     _RUNTIME_MAIN_BASE_URL = ""
     _RUNTIME_MAIN_API_KEY = ""
     _RUNTIME_MAIN_API_MODE = ""
+    _session_route_logged = False
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -5475,6 +5487,10 @@ def resolve_vision_provider_client(
                 continue  # already tried above
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
+                logger.info(
+                    "Vision auto-detect: using %s (%s) [aggregator fallback]",
+                    candidate, default_model or resolved_model,
+                )
                 return _finalize(candidate, sync_client, default_model)
 
         logger.debug("Auxiliary vision client: none available")
@@ -6029,25 +6045,39 @@ def _resolve_task_provider_model(
     if base_url and _preserve_provider_with_base_url(provider):
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if base_url:
+        logger.info("Auxiliary %s: route resolved — custom/%s [explicit base_url override]",
+                     task or "call", resolved_model or "default")
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
+        logger.info("Auxiliary %s: route resolved — %s/%s [explicit provider arg]",
+                     task or "call", provider, resolved_model or "default")
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url and cfg_api_key:
             # Both base_url and api_key explicitly set → custom endpoint.
+            logger.info("Auxiliary %s: route resolved — custom/%s [config: base_url + api_key]",
+                         task, resolved_model or "default")
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_base_url and cfg_provider and cfg_provider != "auto":
             # base_url set without api_key but with a known provider — use
             # the provider so it can resolve credentials from env vars
             # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
+            logger.info("Auxiliary %s: route resolved — %s/%s [config: base_url with provider]",
+                         task, cfg_provider, resolved_model or "default")
             return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
+            logger.info("Auxiliary %s: route resolved — %s/%s [config: per-task provider]",
+                         task, cfg_provider, resolved_model or "default")
             return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
+        logger.info("Auxiliary %s: route resolved — auto/%s [no override — using auto-detection]",
+                     task, resolved_model or "default")
         return "auto", resolved_model, None, None, resolved_api_mode
 
+    logger.info("Auxiliary: route resolved — auto/%s [no task, no override — using auto-detection]",
+                 resolved_model or "default")
     return "auto", resolved_model, None, None, resolved_api_mode
 
 

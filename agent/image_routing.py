@@ -434,8 +434,10 @@ def decide_image_input_mode(
             mode_cfg = _coerce_mode(agent_cfg.get("image_input_mode"))
 
     if mode_cfg == "native":
+        logger.info("Image routing: mode=native [agent.image_input_mode config override]")
         return "native"
     if mode_cfg == "text":
+        logger.info("Image routing: mode=text [agent.image_input_mode config override]")
         return "text"
 
     # auto: prefer native vision when the main model supports it. An
@@ -444,9 +446,16 @@ def decide_image_input_mode(
     # can natively inspect the pixels (issue #29135).
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
+        logger.debug("Image routing: mode=native [model %s reports vision capability]", model)
         return "native"
-    if _explicit_aux_vision_override(cfg):
+    if supports is False:
+        logger.debug("Image routing: mode=text [model %s does not support vision]", model)
         return "text"
+    # supports is None: capability could not be determined.
+    if _explicit_aux_vision_override(cfg):
+        logger.info("Image routing: mode=text [auxiliary.vision provider explicitly configured]")
+        return "text"
+    logger.debug("Image routing: mode=text [model %s vision capability unknown]", model)
     return "text"
 
 

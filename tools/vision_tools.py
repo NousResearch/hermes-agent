@@ -850,10 +850,17 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        return (
+        fast_path = (
             _supports_media_in_tool_results(provider, model)
             or _lookup_supports_vision(provider, model, cfg) is True
         )
+        if fast_path:
+            logger.info(
+                "Vision: native fast path selected for %s/%s — "
+                "skipping aux vision backend",
+                provider, model,
+            )
+        return fast_path
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

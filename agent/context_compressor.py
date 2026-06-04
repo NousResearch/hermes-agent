@@ -1990,6 +1990,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
+        elif self._previous_summary:
+            # No handoff summary found in the current messages, but
+            # _previous_summary is non-empty — it was set by a different
+            # (now-ended) session (e.g., a cron job, a prior /new).  Discard
+            # it so _generate_summary() does not inject cross-session content
+            # into the summarizer prompt via the iterative-update path.
+            self._previous_summary = None
 
         if not self.quiet_mode:
             logger.info(

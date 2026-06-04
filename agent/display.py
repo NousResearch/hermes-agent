@@ -262,6 +262,91 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     return preview
 
 
+def format_todo_result_for_progress(result: str, *, max_items: int = 12, max_content_len: int = 88) -> str | None:
+    """Render a todo tool JSON result as a compact gateway progress block."""
+    data = safe_json_loads(result, default={})
+    if not isinstance(data, dict):
+        return None
+
+    todos = data.get("todos")
+    if not isinstance(todos, list):
+        return None
+
+    summary_raw = data.get("summary")
+    summary = summary_raw if isinstance(summary_raw, dict) else {}
+
+    def _count(key: str, default: int = 0) -> int:
+        try:
+            return int(summary.get(key, default) or 0)
+        except (TypeError, ValueError):
+            return default
+
+    def _truncate(text: str, max_len: int) -> str:
+        if max_len <= 0 or len(text) <= max_len:
+            return text
+        if max_len <= 3:
+            return text[:max_len]
+        return text[:max_len - 3] + "..."
+
+    def _code_text(text: str) -> str:
+        # Keep user-controlled task text from terminating the markdown fence.
+        return _truncate(_oneline(text).replace("```", "`\u200b``"), max_content_len)
+
+    total = _count("total", len(todos))
+    pending = _count("pending")
+    in_progress = _count("in_progress")
+    completed = _count("completed")
+    cancelled = _count("cancelled")
+
+    summary_parts = [f"{total} total"]
+    if in_progress:
+        summary_parts.append(f"{in_progress} doing")
+    if pending:
+        summary_parts.append(f"{pending} todo")
+    if completed:
+        summary_parts.append(f"{completed} done")
+    if cancelled:
+        summary_parts.append(f"{cancelled} cancelled")
+
+    header = f"📋 tasks: {' · '.join(summary_parts)}"
+    if not todos:
+        return header
+
+    markers = {
+        "in_progress": "▸",
+        "pending": "○",
+        "completed": "✓",
+        "cancelled": "✕",
+    }
+    labels = {
+        "in_progress": "doing",
+        "pending": "todo",
+        "completed": "done",
+        "cancelled": "cancelled",
+    }
+
+    code_lines: list[str] = []
+    shown = 0
+    valid_items = [item for item in todos if isinstance(item, dict)]
+    for item in valid_items:
+        if shown >= max_items:
+            break
+        content = _code_text(str(item.get("content") or "(no description)"))
+        status = str(item.get("status") or "pending").strip().lower()
+        marker = markers.get(status, "?")
+        label = labels.get(status, status or "unknown")
+        code_lines.append(f"{marker} {label:<9} {content}")
+        shown += 1
+
+    remaining = len(valid_items) - shown
+    if remaining > 0:
+        code_lines.append(f"… +{remaining} more")
+
+    if not code_lines:
+        return header
+    return f"{header}\n```text\n" + "\n".join(code_lines) + "\n```"
+
+
 # =========================================================================
 # Inline diff previews for write actions
 # =========================================================================

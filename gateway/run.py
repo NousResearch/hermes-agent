@@ -17057,31 +17057,46 @@ class GatewayRunner:
             # /verbose.  We only fire when (a) the user hasn't seen the hint
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
-                try:
-                    duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
-                        from agent.onboarding import (
-                            TOOL_PROGRESS_FLAG,
-                            is_seen,
-                            mark_seen,
-                            tool_progress_hint_gateway,
-                        )
-                        _cfg = _load_gateway_config()
-                        gate_on = is_truthy_value(
-                            cfg_get(_cfg, "display", "tool_progress_command"),
-                            default=False,
-                        )
-                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                            long_tool_hint_fired[0] = True
-                            progress_queue.put(tool_progress_hint_gateway())
-                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
-                except Exception as _hint_err:
-                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+            if event_type == "tool.completed":
+                if not long_tool_hint_fired[0]:
+                    try:
+                        duration = kwargs.get("duration") or 0
+                        if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                            from agent.onboarding import (
+                                TOOL_PROGRESS_FLAG,
+                                is_seen,
+                                mark_seen,
+                                tool_progress_hint_gateway,
+                            )
+                            _cfg = _load_gateway_config()
+                            gate_on = is_truthy_value(
+                                cfg_get(_cfg, "display", "tool_progress_command"),
+                                default=False,
+                            )
+                            if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                                long_tool_hint_fired[0] = True
+                                progress_queue.put(tool_progress_hint_gateway())
+                                mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                    except Exception as _hint_err:
+                        logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+
+                if tool_name == "todo" and not kwargs.get("is_error"):
+                    try:
+                        from agent.display import format_todo_result_for_progress
+                        todo_progress = format_todo_result_for_progress(kwargs.get("result") or "")
+                        if todo_progress:
+                            # Replace the transient todo started preview (for
+                            # example `📋 todo: "updating 2 task(s)"`) with the
+                            # final status block in the same editable progress
+                            # bubble. Match by prefix so parallel tool-start
+                            # lines queued after todo are not overwritten.
+                            progress_queue.put(("__replace_last_matching__", "📋 todo", todo_progress))
+                    except Exception as _todo_err:
+                        logger.debug("todo progress formatting failed: %s", _todo_err)
                 return
 
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            # Only act on tool.started events (ignore reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return
 
@@ -17354,6 +17369,20 @@ class GatewayRunner:
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__replace_last_matching__":
+                        _, prefix, replacement = raw
+                        msg = str(replacement)
+                        replace_idx = None
+                        for idx in range(len(progress_lines) - 1, -1, -1):
+                            if str(progress_lines[idx]).startswith(str(prefix)):
+                                replace_idx = idx
+                                break
+                        if replace_idx is not None:
+                            progress_lines[replace_idx] = msg
+                        else:
+                            progress_lines.append(msg)
+                        last_progress_msg[0] = msg
+                        repeat_count[0] = 0
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -17369,7 +17398,7 @@ class GatewayRunner:
                         repeat_count[0] = 0
                         continue
                     else:
-                        msg = raw
+                        msg = str(raw)
                         progress_lines.append(msg)
 
                     if await _roll_progress_overflow_if_needed():
@@ -17386,11 +17415,11 @@ class GatewayRunner:
                     _now = time.monotonic()
                     _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
                     if _remaining > 0:
-                        # Wait out the throttle interval, then loop back to
-                        # drain any additional queued messages before sending
-                        # a single batched edit.
+                        # Wait out the throttle interval, then deliver the
+                        # latest accumulated lines.  Do not loop back here:
+                        # if this was the final tool event, there may be no
+                        # later queue item to trigger the edit.
                         await asyncio.sleep(_remaining)
-                        continue
 
                     if not _run_still_current():
                         return
@@ -17476,6 +17505,18 @@ class GatewayRunner:
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                     await _roll_progress_overflow_if_needed()
+                            elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__replace_last_matching__":
+                                _, prefix, replacement = raw
+                                replace_idx = None
+                                for idx in range(len(progress_lines) - 1, -1, -1):
+                                    if str(progress_lines[idx]).startswith(str(prefix)):
+                                        replace_idx = idx
+                                        break
+                                if replace_idx is not None:
+                                    progress_lines[replace_idx] = str(replacement)
+                                else:
+                                    progress_lines.append(str(replacement))
+                                await _roll_progress_overflow_if_needed()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
@@ -17492,7 +17533,7 @@ class GatewayRunner:
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
                             else:
-                                progress_lines.append(raw)
+                                progress_lines.append(str(raw))
                                 await _roll_progress_overflow_if_needed()
                         except Exception:
                             break

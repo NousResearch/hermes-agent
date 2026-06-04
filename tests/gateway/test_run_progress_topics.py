@@ -144,6 +144,43 @@ class FakeAgent:
         }
 
 
+class TodoProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb("tool.started", "todo", "planning 2 task(s)", {
+            "todos": [
+                {"id": "1", "content": "Inspect code", "status": "in_progress"},
+                {"id": "2", "content": "Run tests", "status": "pending"},
+            ],
+        })
+        cb("tool.started", "terminal", "pytest focused suite", {})
+        time.sleep(0.35)
+        cb(
+            "tool.completed",
+            "todo",
+            None,
+            None,
+            duration=0.1,
+            is_error=False,
+            result=(
+                '{"todos":[{"id":"1","content":"Inspect code","status":"in_progress"},'
+                '{"id":"2","content":"Run tests","status":"pending"}],'
+                '"summary":{"total":2,"pending":1,"in_progress":1,"completed":0,"cancelled":0}}'
+            ),
+        )
+        time.sleep(1.7)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -243,6 +280,60 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_renders_todo_completed_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TodoProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.todo_tool  # noqa: F401 - register todo emoji for this fake-agent test
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-todo",
+        session_key="agent:main:telegram:group:-1001:17585",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert '📋 todo: "planning 2 task(s)"' in adapter.sent[0]["content"]
+    assert adapter.edits
+    final_progress = adapter.edits[-1]["content"]
+    assert '📋 todo: "planning 2 task(s)"' not in final_progress
+    assert final_progress.startswith("📋 tasks: 2 total")
+    assert "1 doing" in final_progress
+    assert "1 todo" in final_progress
+    assert "```text" in final_progress
+    assert "\n```\n💻 terminal" in final_progress
+    assert "▸ doing" in final_progress
+    assert "Inspect code" in final_progress
+    assert "○ todo" in final_progress
+    assert "Run tests" in final_progress
+    assert '💻 terminal: "pytest focused suite"' in final_progress
+    assert final_progress.index("📋 tasks:") < final_progress.index('💻 terminal: "pytest focused suite"')
 
 
 @pytest.mark.asyncio

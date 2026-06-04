@@ -8,6 +8,7 @@ from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    format_todo_result_for_progress,
     get_cute_tool_message,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
@@ -109,6 +110,81 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestFormatTodoResultForProgress:
+    def test_formats_summary_and_status_lines(self):
+        result = json.dumps({
+            "todos": [
+                {"id": "1", "content": "Inspect gateway todo progress", "status": "in_progress"},
+                {"id": "2", "content": "Add formatter tests", "status": "pending"},
+                {"id": "3", "content": "Verify focused suite", "status": "completed"},
+                {"id": "4", "content": "Discard stale approach", "status": "cancelled"},
+            ],
+            "summary": {
+                "total": 4,
+                "pending": 1,
+                "in_progress": 1,
+                "completed": 1,
+                "cancelled": 1,
+            },
+        })
+
+        line = format_todo_result_for_progress(result)
+
+        assert line is not None
+        assert line.startswith("📋 tasks: 4 total")
+        assert "1 doing" in line
+        assert "1 todo" in line
+        assert "1 done" in line
+        assert "1 cancelled" in line
+        assert "```text" in line
+        assert line.endswith("\n```")
+        assert "▸ doing" in line
+        assert "Inspect gateway todo progress" in line
+        assert "○ todo" in line
+        assert "Add formatter tests" in line
+        assert "✓ done" in line
+        assert "Verify focused suite" in line
+        assert "✕ cancelled" in line
+        assert "Discard stale approach" in line
+
+    def test_returns_none_for_non_todo_json(self):
+        assert format_todo_result_for_progress('{"ok": true}') is None
+        assert format_todo_result_for_progress('not json') is None
+
+    def test_truncates_long_lists(self):
+        result = json.dumps({
+            "todos": [
+                {"id": str(i), "content": f"Task {i}", "status": "pending"}
+                for i in range(3)
+            ],
+            "summary": {"total": 3, "pending": 3, "in_progress": 0, "completed": 0, "cancelled": 0},
+        })
+
+        line = format_todo_result_for_progress(result, max_items=2)
+
+        assert line is not None
+        assert "○ todo" in line
+        assert "Task 0" in line
+        assert "Task 1" in line
+        assert "Task 2" not in line
+        assert "… +1 more" in line
+
+    def test_escapes_task_code_fences_inside_markdown_block(self):
+        result = json.dumps({
+            "todos": [
+                {"id": "1", "content": "Do not break ``` fences", "status": "pending"},
+            ],
+            "summary": {"total": "bad", "pending": 1},
+        })
+
+        line = format_todo_result_for_progress(result)
+
+        assert line is not None
+        assert line.count("```") == 2
+        assert "`\u200b`` fences" in line
+        assert "1 todo" in line
 
 
 class TestCuteToolMessagePreviewLength:

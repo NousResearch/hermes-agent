@@ -16,6 +16,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.protected_checkout_policy import check_path_mutation
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -963,6 +964,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
             return tool_error(cross_warning)
+    # Check protected checkout policy before writing
+    checkout_decision = check_path_mutation(path)
+    if not checkout_decision.allowed:
+        return tool_error(
+            f"[{checkout_decision.reason_code}] {checkout_decision.reason_detail}"
+        )
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -1065,6 +1072,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
+        # Check protected checkout policy before patching
+        checkout_decision = check_path_mutation(_p)
+        if not checkout_decision.allowed:
+            return tool_error(
+                f"[{checkout_decision.reason_code}] {checkout_decision.reason_detail}"
+            )
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping

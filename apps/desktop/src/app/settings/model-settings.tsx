@@ -244,10 +244,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         <div className="mb-2.5 flex items-center justify-between">
           <SectionHeading icon={Cpu} title="Auxiliary models" />
           <Button
+            className="font-semibold underline"
             disabled={!mainModel || applying}
             onClick={() => void resetAuxiliaryModels()}
             size="sm"
-            variant="outline"
+            variant="text"
           >
             Reset all to main
           </Button>
@@ -270,15 +271,16 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         disabled={!mainModel || applying}
                         onClick={() => void setAuxiliaryToMain(meta.key)}
                         size="sm"
-                        variant="ghost"
+                        variant="text"
                       >
                         Set to main
                       </Button>
                       <Button
+                        className="font-semibold underline"
                         disabled={!providers.length || applying}
                         onClick={() => beginAuxiliaryEdit(meta.key)}
                         size="sm"
-                        variant="outline"
+                        variant="text"
                       >
                         Change
                       </Button>

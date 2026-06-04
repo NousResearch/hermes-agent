@@ -19,7 +19,11 @@ const buttonVariants = cva(
           'border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50',
         secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50',
-        link: 'text-primary underline-offset-4 decoration-current/20 hover:underline'
+        link: 'text-primary underline-offset-4 decoration-current/20 hover:underline',
+        // Boxless inline-text action (no bg/border). Reads as label text; add
+        // `font-semibold` and/or `underline` at the call site to emphasize the
+        // actionable word (e.g. a "Change" affordance next to muted copy).
+        text: 'text-muted-foreground underline-offset-4 hover:text-foreground hover:underline'
       },
       size: {
         default: 'px-3 py-1 has-[>svg]:px-2.5',

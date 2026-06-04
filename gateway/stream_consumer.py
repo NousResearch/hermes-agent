@@ -288,13 +288,7 @@ class GatewayStreamConsumer:
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
-        if (
-            len(self._preview_message_ids) > 1
-            and self._preview_message_text
-            and not self._pending_preview_cleanup_ids
-        ):
-            self._pending_preview_cleanup_ids = list(self._preview_message_ids)
-            self._pending_preview_cleanup_text = self._preview_message_text
+        self._stage_current_preview_for_replay_cleanup()
         self._message_id = None
         self._message_created_ts = None
         self._preview_message_ids = []
@@ -852,6 +846,16 @@ class GatewayStreamConsumer:
             if message_id == "__no_edit__" or message_id in self._preview_message_ids:
                 continue
             self._preview_message_ids.append(message_id)
+
+    def _stage_current_preview_for_replay_cleanup(self) -> None:
+        """Preserve the visible preview group across a tool-boundary reset."""
+        if (
+            self._preview_message_ids
+            and self._preview_message_text
+            and not self._pending_preview_cleanup_ids
+        ):
+            self._pending_preview_cleanup_ids = list(self._preview_message_ids)
+            self._pending_preview_cleanup_text = self._preview_message_text
 
     def _stale_preview_cleanup_ids(self, current_message_id: Optional[str]) -> list[str]:
         """Return stale preview ids to delete after a replacement final send."""

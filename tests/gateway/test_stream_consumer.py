@@ -949,6 +949,62 @@ class TestSegmentBreakOnToolBoundary:
         )
 
     @pytest.mark.asyncio
+    async def test_single_preview_cleanup_id_survives_for_base_final_replay(self):
+        """A one-message preview before a tool boundary can still be stale.
+
+        Live Telegram can show one long edited preview, hit a tool boundary,
+        then have the model replay that same final answer from the beginning.
+        If the stream task is later cancelled or flood-controlled, the base
+        final-send path must still know the old preview id to delete after the
+        replacement final lands.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_old_preview"),
+            SimpleNamespace(success=True, message_id="msg_new_partial"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        preview_text = (
+            "## Telegram duplicate cleanup check\n\n"
+            + "".join(
+                f"{idx}. Preview row {idx} - status: streaming\n"
+                for idx in range(1, 12)
+            )
+        )
+        final_replay = preview_text + "\nFinal status: tool boundary reached"
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(preview_text)
+        consumer.on_delta(None)
+        for _ in range(20):
+            if consumer._pending_preview_cleanup_ids:
+                break
+            await asyncio.sleep(0.02)
+
+        consumer.on_delta(final_replay[:120])
+        for _ in range(20):
+            if consumer._preview_message_ids == ["msg_new_partial"]:
+                break
+            await asyncio.sleep(0.02)
+
+        assert consumer.preview_cleanup_ids_for_final(final_replay) == (
+            "msg_old_preview",
+            "msg_new_partial",
+        )
+        assert consumer.preview_cleanup_ids_for_final("Different final") == ()
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
     async def test_segment_tail_flush_ids_survive_for_base_final_replay(self):
         send_count = 0
 

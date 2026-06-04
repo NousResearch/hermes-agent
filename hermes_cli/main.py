@@ -8068,6 +8068,39 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
+def _npm_lockfile_changed(hermes_root: Path) -> bool:
+    lockfile = PROJECT_ROOT / "package-lock.json"
+    if not lockfile.exists():
+        return True
+    # Also check that node_modules exists; a matching hash with missing
+    # node_modules means the cache was recorded by another checkout.
+    if not (PROJECT_ROOT / "node_modules").is_dir():
+        return True
+    try:
+        current = hashlib.sha256(lockfile.read_bytes()).hexdigest()
+        # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        if not cache_file.exists():
+            return True
+        return cache_file.read_text(encoding="utf-8").strip() != current
+    except OSError:
+        return True
+
+
+def _record_npm_lockfile_hash(hermes_root: Path) -> None:
+    lockfile = PROJECT_ROOT / "package-lock.json"
+    if not lockfile.exists():
+        return
+    try:
+        digest = hashlib.sha256(lockfile.read_bytes()).hexdigest()
+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        cache_file.write_text(digest, encoding="utf-8")
+    except OSError:
+        logger.debug("Could not write npm lockfile hash cache")
+
+
 def _update_node_dependencies() -> None:
     from hermes_constants import find_node_executable, with_hermes_node_path
 
@@ -8076,6 +8109,13 @@ def _update_node_dependencies() -> None:
         return
 
     if not (PROJECT_ROOT / "package.json").exists():
+        return
+
+    from hermes_constants import get_default_hermes_root
+
+    hermes_root = get_default_hermes_root()
+    if not _npm_lockfile_changed(hermes_root):
+        logger.info("npm lockfile unchanged, skipping npm install")
         return
 
     # With a single workspace lockfile the root install would cover ALL
@@ -8122,6 +8162,7 @@ def _update_node_dependencies() -> None:
         env=nixos_env,
     )
     if ws_result.returncode == 0:
+        _record_npm_lockfile_hash(hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
     else:
         print("  ⚠ npm workspace install failed")

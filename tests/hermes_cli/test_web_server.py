@@ -3528,7 +3528,7 @@ class TestPtyWebSocket:
         with pytest.raises(WebSocketDisconnect) as exc:
             with self.client.websocket_connect(self._url()):
                 pass
-        assert exc.value.code == 4403
+        assert exc.value.code == 4404
 
     def test_rejects_missing_token(self, monkeypatch):
         monkeypatch.setattr(

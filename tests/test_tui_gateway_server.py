@@ -109,6 +109,24 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_status_update_token_usage_emits_structured_event(monkeypatch):
+    events: list[tuple[str, str, dict | None]] = []
+    payload = {
+        "context_length": 131072,
+        "context_pct": 49.9,
+        "context_tokens": 65432,
+        "input_tokens": 1200,
+        "output_tokens": 34,
+        "total_tokens": 1234,
+    }
+
+    monkeypatch.setattr(server, "_emit", lambda event, sid, body=None: events.append((event, sid, body)))
+
+    server._status_update("sid", "token_usage", json.dumps(payload))
+
+    assert events == [("token.usage", "sid", payload)]
+
+
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     redact_module = types.ModuleType("agent.redact")
 

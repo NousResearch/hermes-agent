@@ -1,6 +1,7 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { mergeTokenUsagePayload } from '../domain/usage.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -397,6 +398,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }))
 
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
+
+        return
+      }
+
+      case 'token.usage': {
+        patchUiState(state => {
+          const usage = mergeTokenUsagePayload(state.usage, ev.payload)
+
+          return usage === state.usage ? state : { ...state, usage }
+        })
 
         return
       }

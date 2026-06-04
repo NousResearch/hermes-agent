@@ -191,6 +191,11 @@ export interface DesktopConnectionTestResult {
 export interface DesktopAuthProvider {
   name: string
   displayName: string
+  // True when this provider authenticates with a username + password
+  // (the gateway's /login page renders a credential form) rather than an
+  // OAuth redirect. The session/cookie/ws-ticket machinery is identical;
+  // only the login-page form and the desktop's button copy differ.
+  supportsPassword?: boolean
 }
 
 export interface DesktopConnectionProbeResult {

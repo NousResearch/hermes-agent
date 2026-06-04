@@ -140,8 +140,10 @@ def get_task_detail(task_id):
 # ── Notification (file-locked JSON) ─────────────────────────────────
 
 def notify(message, chain_id):
-    """Append notification with file locking to prevent concurrent corruption."""
+    """Append notification with file locking + push to connected platforms."""
     NOTIFY_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── File notification (backup) ──
     notifications = []
     try:
         with open(NOTIFY_FILE, "a+", encoding="utf-8") as f:
@@ -158,7 +160,6 @@ def notify(message, chain_id):
                 "chain": chain_id,
                 "msg": message,
             })
-            # Cap at 100 entries
             if len(notifications) > 100:
                 notifications = notifications[-100:]
             f.seek(0)
@@ -166,7 +167,20 @@ def notify(message, chain_id):
             json.dump(notifications, f, indent=2, ensure_ascii=False)
             fcntl.flock(f, fcntl.LOCK_UN)
     except OSError:
-        pass  # Best-effort notification
+        pass
+
+    # ── Push to messaging platforms (real-time) ──
+    try:
+        env = dict(os.environ)
+        for v in ("HERMES_CRON_SESSION", "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+                   "HERMES_CRON_AUTO_DELIVER_PLATFORM"):
+            env.pop(v, None)
+        subprocess.run(
+            [HERMES_BIN, "send", message, "-t", "feishu"],
+            capture_output=True, text=True, timeout=15, env=env,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass  # Best-effort; file backup already persisted
 
 
 def read_notifications(clear=False):

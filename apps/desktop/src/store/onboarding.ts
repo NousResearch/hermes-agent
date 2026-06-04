@@ -253,12 +253,16 @@ async function completeWithModelConfirm(
   ctx: OnboardingContext,
   providerLabel: string,
   preferredSlugs: string[],
-  onFail: (reason: null | string) => void
+  onFail: (reason: null | string) => void,
+  // When true, a failing runtime check no longer blocks progression — the
+  // user is allowed through onboarding regardless. Used by the API-key path,
+  // where we intentionally don't validate the key (it blocked too many users).
+  ignoreRuntimeGate = false
 ) {
   await ctx.requestGateway('reload.env').catch(() => undefined)
   const runtime = await checkRuntime(ctx)
 
-  if (!runtime.ready) {
+  if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
     return
@@ -616,23 +620,20 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
     return { ok: false, message: 'Enter a value first.' }
   }
 
-  // Live-probe the credential BEFORE persisting so a mistyped key never lands
-  // in .env. A rejected key (reachable && !ok) hard-blocks; an unreachable
-  // probe (offline / provider down) falls through and saves with the usual
-  // runtime check, so we don't strand offline users.
-  try {
-    const probe = await validateProviderCredential(envKey, trimmed)
-    if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || `That ${label} key was rejected.` }
-    }
-  } catch {
-    // Validation endpoint unavailable — don't block; fall through to save.
+  // The "Local / custom endpoint" option carries a base URL, not an API key.
+  // It must be wired into config (provider=custom + base_url + model), not
+  // dropped into .env — runtime resolution ignores OPENAI_BASE_URL.
+  if (envKey === 'OPENAI_BASE_URL') {
+    return saveOnboardingLocalEndpoint(trimmed, ctx)
   }
 
+  // No key validation here on purpose: we previously live-probed the key and
+  // hard-blocked on a runtime check after saving, which rejected too many
+  // legitimate users (corporate proxies, regional blocks, flaky/rate-limited
+  // provider probes, self-hosted endpoints). We now save the value as-is and
+  // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
     await setEnvVar(envKey, trimmed)
-    let stillFailing = false
-    let runtimeFailure: null | string = null
     // For API-key flows we don't have a definitive provider id (the
     // user picked which API key they're entering, but the corresponding
     // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
@@ -640,23 +641,79 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
     // fetchProviderDefaultModel falls back to the first authenticated
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
-    await completeWithModelConfirm(ctx, label, slugCandidates, reason => {
-      stillFailing = true
-      runtimeFailure = reason
-    })
-
-    if (stillFailing) {
-      const failureDetail = (runtimeFailure ?? '').trim()
-
-      return {
-        ok: false,
-        message: failureDetail || `Saved, but Hermes still cannot reach ${label}. Double-check the value.`
-      }
-    }
+    // ignoreRuntimeGate=true: never block onboarding on the runtime check.
+    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
 
     return { ok: true }
   } catch (error) {
     notifyError(error, `Could not save ${label}`)
+
+    return { ok: false, message: errMessage(error) }
+  }
+}
+
+// Configure a local / self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp,
+// Ollama, …). Unlike API-key providers, a local endpoint is defined by its URL
+// and usually needs NO key. The runtime resolver reads model.base_url from
+// config (it ignores the OPENAI_BASE_URL env var), so we persist
+// provider=custom + base_url + model via /api/model/set rather than dropping an
+// env var that resolution never consults.
+//
+// The model is auto-discovered from the endpoint's /v1/models (surfaced by the
+// validate probe) so the user only has to paste a URL — no extra UI field.
+//
+// We deliberately don't route through completeWithModelConfirm: that path
+// re-assigns the model from /api/model/options WITHOUT a base_url, which would
+// wipe the base_url we just wrote. We have a concrete model already, so we
+// verify the runtime directly and finish.
+export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: OnboardingContext) {
+  const url = baseUrl.trim()
+
+  if (!url) {
+    return { ok: false, message: 'Enter the endpoint URL first.' }
+  }
+
+  // Probe connectivity + discover the served models. Any HTTP response proves
+  // the endpoint is up; an unreachable probe hard-blocks because we can't
+  // resolve a model to route to.
+  let model = ''
+  try {
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url)
+    if (!probe.ok && probe.reachable) {
+      return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
+    }
+    if (!probe.reachable) {
+      return { ok: false, message: probe.message || `Could not reach ${url}.` }
+    }
+    model = (probe.models?.[0] ?? '').trim()
+  } catch {
+    return { ok: false, message: `Could not reach ${url}.` }
+  }
+
+  if (!model) {
+    return {
+      ok: false,
+      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+    }
+  }
+
+  try {
+    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url })
+    await ctx.requestGateway('reload.env').catch(() => undefined)
+
+    const runtime = await checkRuntime(ctx)
+    if (!runtime.ready) {
+      const detail = (runtime.reason ?? '').trim()
+      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
+    }
+
+    notifyReady('Local / custom endpoint')
+    completeDesktopOnboarding()
+    ctx.onCompleted?.()
+
+    return { ok: true }
+  } catch (error) {
+    notifyError(error, 'Could not save local endpoint')
 
     return { ok: false, message: errMessage(error) }
   }

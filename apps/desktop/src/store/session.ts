@@ -27,6 +27,50 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+/** Merge a fresh server session page into the in-memory list, keeping any
+ *  row the server omitted that we still want visible — both still-"working"
+ *  sessions and pinned sessions.
+ *
+ *  Two reasons the server drops a row we must keep:
+ *
+ *  1. A brand-new session's first user message isn't flushed to the SessionDB
+ *     until its turn is persisted, so `listSessions(min_messages=1)` skips
+ *     sessions that are mid-first-response. Because every `message.complete`
+ *     triggers a full refresh, a hard replace makes concurrent new chats vanish
+ *     the instant any one of them finishes.
+ *  2. The sidebar lists only the most-recent page (`SIDEBAR_SESSIONS_PAGE_SIZE`)
+ *     ordered by activity. A pinned conversation that hasn't been touched in a
+ *     while falls off that page, so a hard replace silently evicts it from the
+ *     in-memory list — and because the Pinned section resolves pins against
+ *     that list, the pin "disappears until you refresh".
+ *
+ *  `keepIds` carries both the working set and the pinned set. Pins are stored
+ *  on the durable lineage-root id (see {@link sessionPinId}), while the loaded
+ *  row surfaces under its live compression tip, so we match a survivor by
+ *  either its live `id` or its `_lineage_root_id`. Optimistic deletes/archives
+ *  drop the row from `previous` (and unpin it), so a removed session can't be
+ *  resurrected here. */
+export function mergeSessionPage(
+  previous: SessionInfo[],
+  incoming: SessionInfo[],
+  keepIds: Iterable<string>
+): SessionInfo[] {
+  const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
+
+  if (keep.size === 0) {
+    return incoming
+  }
+
+  const incomingIds = new Set(incoming.map(session => session.id))
+  const survivors = previous.filter(
+    session =>
+      !incomingIds.has(session.id) &&
+      (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
+  )
+
+  return survivors.length ? [...survivors, ...incoming] : incoming
+}
+
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
@@ -44,6 +88,10 @@ export const $currentProvider = atom('')
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
+// Effective approval-bypass state mirrored from the gateway (session.info).
+// Persistence lives in the backend config (approvals.mode), so this is a plain
+// reflection of the truth the gateway reports rather than its own store.
+export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
@@ -78,6 +126,7 @@ export const setCurrentProvider = (next: Updater<string>) => updateAtom($current
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
+export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)

@@ -33,6 +33,8 @@ import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessions,
+  $workingSessionIds,
+  mergeSessionPage,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -206,7 +208,13 @@ export function DesktopController() {
       const result = await listSessions(limit, 1)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(result.sessions)
+        // Don't hard-replace. Two kinds of rows must survive a refresh the
+        // server didn't return: (1) sessions whose first turn is still in
+        // flight (message_count 0, so min_messages=1 omits them) and (2)
+        // pinned sessions that have aged off the most-recent page — otherwise
+        // the pin "disappears until you refresh". mergeSessionPage keeps both.
+        const keepIds = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
+        setSessions(prev => mergeSessionPage(prev, result.sessions, keepIds))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
       }
     } finally {
@@ -517,7 +525,9 @@ export function DesktopController() {
     inferenceStatus,
     modelMenuContent,
     openAgents,
+    freshDraftReady,
     openCommandCenterSection,
+    requestGateway,
     statusSnapshot,
     toggleCommandCenter
   })
@@ -604,7 +614,7 @@ export function DesktopController() {
       onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
       onAttachDroppedItems={composer.attachDroppedItems}
       onAttachImageBlob={composer.attachImageBlob}
-      onBranchInNewChat={messageId => void branchInNewChat(messageId)}
+      onBranchInNewChat={branchInNewChat}
       onCancel={cancelRun}
       onDeleteSelectedSession={() => {
         if (selectedStoredSessionId) {

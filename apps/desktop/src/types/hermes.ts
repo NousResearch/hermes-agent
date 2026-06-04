@@ -321,6 +321,7 @@ export interface SessionRuntimeInfo {
   tools?: Record<string, string[]>
   usage?: Partial<UsageStats>
   version?: string
+  yolo?: boolean
 }
 
 export interface UsageStats {
@@ -503,8 +504,12 @@ export interface ToolsetConfig {
 }
 
 export interface SessionSearchResult {
+  /** Lineage root of the matched conversation. Stable across compression and
+   *  used as the durable pin id; falls back to session_id when absent. */
+  lineage_root?: string | null
   model: string | null
   role: string | null
+  /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string
   session_started: number | null
   snippet: string
@@ -572,6 +577,9 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
+   *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
+  base_url?: string
   model: string
   provider: string
   scope: 'main' | 'auxiliary'
@@ -579,6 +587,8 @@ export interface ModelAssignmentRequest {
 }
 
 export interface ModelAssignmentResponse {
+  /** Persisted endpoint URL for custom/local providers (echoed back). */
+  base_url?: string
   /** Toolset keys auto-routed through the Nous Tool Gateway as a result of
    *  switching the main provider to Nous. Empty unless provider === 'nous'
    *  and the user is a paid subscriber with unconfigured tools. */

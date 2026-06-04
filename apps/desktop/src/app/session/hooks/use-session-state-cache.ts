@@ -95,6 +95,19 @@ export function useSessionStateCache({
 
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
+      // Only the currently-viewed session may stage into the shared `$messages`
+      // view. A background session (e.g. one still busy and emitting stream /
+      // error updates after the user toggled away) must update its own cache
+      // entry but never the view — otherwise its messages clobber the
+      // foreground transcript and appear to "bleed" into every other session.
+      // The flush below also re-checks the active id, but staging here is what
+      // prevents a background write from overwriting an already-pending
+      // foreground write within the same animation frame (only one RAF is
+      // scheduled, so the last `pendingViewStateRef` writer would otherwise win).
+      if (sessionId !== activeSessionIdRef.current) {
+        return
+      }
+
       pendingViewStateRef.current = { sessionId, state }
 
       if (viewSyncRafRef.current !== null) {

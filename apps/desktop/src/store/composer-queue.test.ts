@@ -8,6 +8,7 @@ import {
   enqueueQueuedPrompt,
   getQueuedPrompts,
   removeQueuedPrompt,
+  shouldAutoDrainOnSettle,
   updateQueuedPrompt,
   updateQueuedPromptText
 } from './composer-queue'
@@ -98,5 +99,39 @@ describe('composer queue store', () => {
 
     const parsed = JSON.parse(String(raw)) as Record<string, { text: string }[]>
     expect(parsed[SESSION_KEY]?.[0]?.text).toBe('persist me')
+  })
+})
+
+describe('shouldAutoDrainOnSettle', () => {
+  const base = { isBusy: false, queueLength: 1, userInterrupted: false, wasBusy: true }
+
+  it('drains the next queued prompt when a turn completes naturally', () => {
+    expect(shouldAutoDrainOnSettle(base)).toBe(true)
+  })
+
+  it('does NOT drain when the user explicitly interrupted (Stop button)', () => {
+    // Regression: previously the Stop button "never worked" because cancelling
+    // a turn flipped busy → false and the queue immediately re-fired its head.
+    expect(shouldAutoDrainOnSettle({ ...base, userInterrupted: true })).toBe(false)
+  })
+
+  it('does not drain when the queue is empty', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, queueLength: 0 })).toBe(false)
+  })
+
+  it('does not drain when interrupted even if the queue is also empty', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, queueLength: 0, userInterrupted: true })).toBe(false)
+  })
+
+  it('ignores steady busy state (no true → false transition)', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true })).toBe(false)
+  })
+
+  it('ignores busy entry (false → true, not a settle)', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true, wasBusy: false })).toBe(false)
+  })
+
+  it('ignores steady idle state (was not busy)', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, wasBusy: false })).toBe(false)
   })
 })

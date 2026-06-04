@@ -8,7 +8,11 @@ Three calling shapes:
 All run zero LLM calls.
 """
 import json
+import sys
 import time
+import types
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,6 +21,11 @@ from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _HIDDEN_SESSION_SOURCES,
     _format_timestamp,
+    _list_recent_sessions,
+    _resolve_to_parent,
+    _scroll,
+    _shape_message,
+    check_session_search_requirements,
     session_search,
 )
 
@@ -638,3 +647,187 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+
+# Additional helper and guard coverage
+# =========================================================================
+
+class TestFormatTimestampAdditional:
+    def test_format_timestamp_float(self):
+        ts = 1700000000.5
+        expected = datetime.fromtimestamp(ts).strftime("%B %d, %Y at %I:%M %p")
+        assert _format_timestamp(ts) == expected
+
+    def test_format_timestamp_numeric_string(self):
+        ts = "1700000000"
+        expected = datetime.fromtimestamp(float(ts)).strftime("%B %d, %Y at %I:%M %p")
+        assert _format_timestamp(ts) == expected
+
+    def test_format_timestamp_iso_passthrough(self):
+        ts = "2024-01-01T00:00:00"
+        assert _format_timestamp(ts) == ts
+
+    def test_format_timestamp_invalid_string(self):
+        ts = "not-a-timestamp"
+        assert _format_timestamp(ts) == ts
+
+    def test_format_timestamp_overflow(self):
+        ts = 99999999999999
+        assert _format_timestamp(ts) == str(ts)
+
+
+class TestResolveToParent:
+    def test_resolve_to_parent_empty_id(self, db):
+        assert _resolve_to_parent(db, "") == ""
+
+    def test_resolve_to_parent_no_parent(self, db):
+        db.create_session("solo", source="cli")
+        assert _resolve_to_parent(db, "solo") == "solo"
+
+    def test_resolve_to_parent_chain(self, db):
+        db.create_session("C", source="cli")
+        db.create_session("B", source="cli", parent_session_id="C")
+        db.create_session("A", source="cli", parent_session_id="B")
+
+        assert _resolve_to_parent(db, "A") == "C"
+
+    def test_resolve_to_parent_cycle(self, db):
+        db.create_session("A", source="cli")
+        db.create_session("B", source="cli")
+        db._conn.execute("UPDATE sessions SET parent_session_id = ? WHERE id = ?", ("B", "A"))
+        db._conn.execute("UPDATE sessions SET parent_session_id = ? WHERE id = ?", ("A", "B"))
+        db._conn.commit()
+
+        assert _resolve_to_parent(db, "A") in {"A", "B"}
+
+
+class TestShapeMessage:
+    def test_shape_message_basic(self):
+        shaped = _shape_message({"role": "user", "content": "hello"})
+
+        assert shaped["role"] == "user"
+        assert shaped["content"] == "hello"
+
+    def test_shape_message_tool_fields(self):
+        tool_calls = [{"id": "call_1", "type": "function"}]
+        shaped = _shape_message({
+            "role": "assistant",
+            "content": None,
+            "tool_name": "search",
+            "tool_calls": tool_calls,
+            "tool_call_id": "call_1",
+        })
+
+        assert shaped["tool_name"] == "search"
+        assert shaped["tool_calls"] == tool_calls
+        assert shaped["tool_call_id"] == "call_1"
+
+    def test_shape_message_anchor_match(self):
+        shaped = _shape_message({"id": 7, "role": "user", "content": "anchor"}, anchor_id=7)
+
+        assert shaped["anchor"] is True
+
+    def test_shape_message_none_stripped(self):
+        shaped = _shape_message({
+            "id": None,
+            "role": None,
+            "content": None,
+            "timestamp": None,
+            "tool_name": None,
+            "tool_calls": None,
+            "tool_call_id": None,
+        })
+
+        assert shaped == {"content": None}
+
+
+class TestListRecentSessionsExceptions:
+    def test_list_recent_sessions_db_error(self):
+        fake_db = MagicMock()
+        fake_db.list_sessions_rich.side_effect = RuntimeError("db exploded")
+
+        result = json.loads(_list_recent_sessions(fake_db, limit=3))
+
+        assert result["success"] is False
+        assert "Failed to list recent sessions: db exploded" in result["error"]
+
+
+class TestScrollGuardClauses:
+    def test_scroll_empty_session_id(self, db):
+        result = json.loads(_scroll(db, "", around_message_id=1))
+
+        assert result["success"] is False
+        assert result["error"] == "scroll requires session_id"
+
+    def test_scroll_non_string_session_id(self, db):
+        result = json.loads(_scroll(db, 123, around_message_id=1))  # type: ignore[arg-type]
+
+        assert result["success"] is False
+        assert result["error"] == "scroll requires session_id"
+
+    def test_scroll_non_int_around_message_id(self, db):
+        result = json.loads(_scroll(db, "s1", around_message_id="not-an-int"))  # type: ignore[arg-type]
+
+        assert result["success"] is False
+        assert result["error"] == "scroll requires integer around_message_id"
+
+    def test_scroll_string_window_coerces(self, db):
+        db.create_session("s1", source="cli")
+        db.append_message("s1", role="user", content="hello")
+        db._conn.commit()
+
+        result = json.loads(_scroll(db, "s1", around_message_id=1, window="3"))
+
+        assert result["success"] is True
+
+
+class TestSessionSearchDispatcherAdditional:
+    def test_session_search_db_unavailable(self):
+        fake_hermes_state = types.ModuleType("hermes_state")
+        fake_hermes_state.SessionDB = MagicMock(side_effect=ImportError("missing db"))
+        fake_hermes_state.format_session_db_unavailable = (
+            lambda: "Session database not available."
+        )
+
+        with patch.dict(sys.modules, {"hermes_state": fake_hermes_state}):
+            result = json.loads(session_search())
+
+        assert result["success"] is False
+        assert result["error"] == "Session database not available."
+
+    def test_session_search_limit_coercion(self, db):
+        for i in range(8):
+            db.create_session(f"s{i}", source="cli")
+
+        result = json.loads(session_search(limit="5", db=db))  # type: ignore[arg-type]
+
+        assert result["success"] is True
+        assert result["count"] == 5
+
+    def test_session_search_limit_invalid_string(self, db):
+        for i in range(5):
+            db.create_session(f"s{i}", source="cli")
+
+        result = json.loads(session_search(limit="bogus", db=db))  # type: ignore[arg-type]
+
+        assert result["success"] is True
+        assert result["count"] <= 3  # falls back to default limit=3
+
+
+class TestCheckSessionSearchRequirementsAdditional:
+    def test_check_requirements_import_error(self):
+        fake_hermes_state = types.ModuleType("hermes_state")
+
+        with patch.dict(sys.modules, {"hermes_state": fake_hermes_state}):
+            assert check_session_search_requirements() is False
+
+    def test_check_requirements_no_db_file(self, monkeypatch, tmp_path):
+        import hermes_state
+
+        monkeypatch.setattr(
+            hermes_state,
+            "DEFAULT_DB_PATH",
+            tmp_path / "missing-parent" / "state.db",
+        )
+
+        assert check_session_search_requirements() is False

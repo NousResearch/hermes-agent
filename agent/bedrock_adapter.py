@@ -900,10 +900,18 @@ def build_converse_kwargs(
     if system_prompt:
         kwargs["system"] = system_prompt
 
-    if temperature is not None:
+    # Guard: some models (Opus 4.7+, 4.8+) reject non-default sampling
+    # parameters with ValidationException ("temperature is deprecated").
+    # Re-use the same guard that the Anthropic-native adapter applies.
+    try:
+        from agent.anthropic_adapter import _forbids_sampling_params as _no_sampling
+    except ImportError:
+        _no_sampling = lambda _m: False  # noqa: E731 — fallback if SDK not installed
+
+    if temperature is not None and not _no_sampling(model):
         kwargs["inferenceConfig"]["temperature"] = temperature
 
-    if top_p is not None:
+    if top_p is not None and not _no_sampling(model):
         kwargs["inferenceConfig"]["topP"] = top_p
 
     if stop_sequences:

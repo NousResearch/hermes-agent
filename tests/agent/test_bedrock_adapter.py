@@ -605,6 +605,68 @@ class TestBuildConverseKwargs:
         assert kwargs["inferenceConfig"]["temperature"] == 0.7
         assert kwargs["inferenceConfig"]["topP"] == 0.9
 
+    def test_omits_temperature_and_top_p_for_opus_4_7(self):
+        """Opus 4.7+ rejects temperature/top_p — guard must strip them on Bedrock path."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        for model_id in [
+            "anthropic.claude-opus-4-7-20260101-v1:0",
+            "us.anthropic.claude-opus-4-7",
+        ]:
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+            assert "temperature" not in kwargs["inferenceConfig"], (
+                f"temperature should be stripped for {model_id}"
+            )
+            assert "topP" not in kwargs["inferenceConfig"], (
+                f"topP should be stripped for {model_id}"
+            )
+
+    def test_omits_temperature_and_top_p_for_opus_4_8(self):
+        """Opus 4.8 also rejects temperature/top_p — guard must cover 4-8/4.8 variants."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        for model_id in [
+            "anthropic.claude-opus-4-8-20270101-v1:0",
+            "us.anthropic.claude-opus-4-8",
+            "anthropic.claude-opus-4.8",
+        ]:
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.5,
+                top_p=0.95,
+            )
+            assert "temperature" not in kwargs["inferenceConfig"], (
+                f"temperature should be stripped for {model_id}"
+            )
+            assert "topP" not in kwargs["inferenceConfig"], (
+                f"topP should be stripped for {model_id}"
+            )
+
+    def test_includes_temperature_and_top_p_for_non_restricted_models(self):
+        """Non-restricted models (Sonnet 4.6, Haiku 4.5, etc.) should keep sampling params."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        for model_id in [
+            "anthropic.claude-sonnet-4-6-20250514-v1:0",
+            "anthropic.claude-haiku-4-5",
+            "test-model",
+        ]:
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+            assert kwargs["inferenceConfig"].get("temperature") == 0.7, (
+                f"temperature should be included for {model_id}"
+            )
+            assert kwargs["inferenceConfig"].get("topP") == 0.9, (
+                f"topP should be included for {model_id}"
+            )
+
     def test_includes_guardrail_config(self):
         from agent.bedrock_adapter import build_converse_kwargs
         guardrail = {

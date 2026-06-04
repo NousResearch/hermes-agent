@@ -451,6 +451,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "code_execution": "agent",
     "prompt_caching": "agent",
     "goals": "agent",
+    # Desktop YOLO is an approval-bypass preference, so keep it with the
+    # existing security/approval controls instead of creating a one-field tab.
+    "desktop": "security",
     # Only `telegram.reactions` currently lives under telegram — fold it in
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.

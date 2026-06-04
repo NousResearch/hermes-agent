@@ -11978,6 +11978,13 @@ def cmd_dashboard(args):
     )
 
 
+def cmd_dashboard_register(args):
+    """Register a self-hosted dashboard OAuth client with Nous Portal."""
+    from hermes_cli.dashboard_register import cmd_dashboard_register as _impl
+
+    _impl(args)
+
+
 def cmd_completion(args, parser=None):
     """Print shell completion script."""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
@@ -15287,6 +15294,39 @@ Examples:
         help="List running hermes dashboard processes and exit",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    # `hermes dashboard register` — register a self-hosted dashboard OAuth
+    # client with Nous Portal and write the client_id into ~/.hermes/.env.
+    # Nested subparser so bare `hermes dashboard` keeps launching the server
+    # (set_defaults(func=cmd_dashboard) above remains the default).
+    dashboard_subparsers = dashboard_parser.add_subparsers(
+        dest="dashboard_subcommand"
+    )
+    dashboard_register_parser = dashboard_subparsers.add_parser(
+        "register",
+        help="Register a self-hosted dashboard with Nous Portal (writes the OAuth client ID to .env)",
+        description=(
+            "Register this install as a self-hosted dashboard with your Nous "
+            "Portal account. Creates an OAuth client, writes "
+            "HERMES_DASHBOARD_OAUTH_CLIENT_ID into ~/.hermes/.env, and prints "
+            "how to engage the login gate. Requires being logged in (hermes setup)."
+        ),
+    )
+    dashboard_register_parser.add_argument(
+        "--name",
+        default=None,
+        help="Human-readable label for the dashboard (default: an auto-generated name)",
+    )
+    dashboard_register_parser.add_argument(
+        "--redirect-uri",
+        dest="redirect_uri",
+        default=None,
+        help=(
+            "Optional public HTTPS OAuth redirect URI for the dashboard, e.g. "
+            "https://hermes.example.com/auth/callback. Omit for localhost-only use."
+        ),
+    )
+    dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
 
     # =========================================================================
     # desktop (a.k.a. gui) command

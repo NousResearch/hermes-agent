@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [MCP, Tools, Integrations]
-    related_skills: [mcporter]
+    related_skills: []
 ---
 
 # Native MCP Client

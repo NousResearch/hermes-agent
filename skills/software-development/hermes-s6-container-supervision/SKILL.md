@@ -7,7 +7,7 @@ license: MIT
 metadata:
   hermes:
     tags: [docker, s6, supervision, gateway, profiles]
-    related_skills: [hermes-agent, hermes-agent-dev]
+    related_skills: [hermes-agent]
 ---
 
 # Hermes s6-overlay Container Supervision

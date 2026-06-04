@@ -849,7 +849,47 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
+            try:
+                response_data = provider.search(query, limit)
+            except Exception as search_exc:
+                # Catch any unexpected exceptions from provider.search()
+                logger.warning(
+                    "Provider %s raised exception: %s",
+                    provider.name, search_exc,
+                )
+                response_data = {
+                    "success": False,
+                    "error": f"{provider.name} search failed: {search_exc}",
+                }
+
+            # Debug: print response_data
+            
+            # Fallback logic: if primary backend failed, try alternatives
+            if not response_data.get("success", False) and backend in ("searxng",):
+                fallback_backends = ["brave-free", "ddgs"]
+                for fallback_backend in fallback_backends:
+                    fallback_provider = _wsp_get_provider(fallback_backend)
+                    if fallback_provider and fallback_provider.supports_search():
+                        logger.info(
+                            "Primary backend %s failed, trying fallback: %s",
+                            backend, fallback_backend,
+                        )
+                        try:
+                            fallback_response = fallback_provider.search(query, limit)
+                            if fallback_response.get("success", False):
+                                logger.info(
+                                    "Fallback %s succeeded with %d results",
+                                    fallback_backend,
+                                    len(fallback_response.get("data", {}).get("web", [])),
+                                )
+                                response_data = fallback_response
+                                break
+                        except Exception as fallback_exc:
+                            logger.debug(
+                                "Fallback %s also failed: %s",
+                                fallback_backend, str(fallback_exc),
+                            )
+                            continue
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

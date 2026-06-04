@@ -652,8 +652,8 @@ def check_memory_requirements() -> bool:
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "[CRITICAL] DO NOT save procedural workflows, code formatting rules, troubleshooting steps, or multi-step procedures here. Use 'skill_manage' for those. ONLY use for STATIC DECLARATIVE facts (e.g., user is on macOS).\n\n"\n        "Save durable information to persistent memory that survives across sessions. "
-        "Memory is injected into future turns, so keep it compact and focused on facts "
+        "[CRITICAL] DO NOT save procedural workflows, code formatting rules, troubleshooting steps, or multi-step procedures here. Use 'skill_manage' for those. ONLY use for STATIC DECLARATIVE facts (e.g., user is on macOS).\n\n"
+                "Save durable information to persistent memory that survives across sessions. "
         "that will still matter later.\n\n"
         "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
         "- User corrects you or says 'remember this' / 'don't do that again'\n"

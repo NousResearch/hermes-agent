@@ -256,7 +256,10 @@ class CuaDriverBackend(ComputerUseBackend):
 
     def _app_catalog(self, ttl: float = 5.0) -> List[Dict[str, Any]]:
         now = time.monotonic()
-        if self._app_cache and now - self._app_cache_at < ttl:
+        # Cache emptiness is still a valid cached result. Without this, an empty
+        # app catalog immediately falls through to a live cua-driver call, which
+        # is slow/flaky and breaks tests that intentionally seed an empty cache.
+        if now - self._app_cache_at < ttl:
             return self._app_cache
         out = self._call("list_apps", {})
         data = out["data"]

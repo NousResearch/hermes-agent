@@ -267,6 +267,25 @@ class TestPlatformDefaults:
         assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 
+    def test_telegram_compact_spacing_defaults_off(self):
+        """Telegram does not collapse final-answer blank lines unless opted in."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "compact_spacing") is False
+
+    def test_telegram_compact_spacing_can_opt_in(self):
+        """display.platforms.telegram.compact_spacing enables dense Telegram output."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {"compact_spacing": "yes"},
+                }
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "compact_spacing") is True
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

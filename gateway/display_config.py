@@ -46,6 +46,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Gateway text postprocessing.  When true, platform adapters may collapse
+    # markdown blank-line runs into single newlines for denser mobile chat
+    # output.  Off by default to preserve exact historical output.
+    "compact_spacing": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -229,6 +233,10 @@ def _normalise(setting: str, value: Any) -> Any:
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "cleanup_progress":
+        if isinstance(value, str):
+            return value.lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+    if setting == "compact_spacing":
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)

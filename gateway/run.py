@@ -6762,6 +6762,24 @@ class GatewayRunner:
             if not check_telegram_requirements():
                 logger.warning("Telegram: python-telegram-bot not installed")
                 return None
+            # Bridge display.platforms.telegram.compact_spacing into the
+            # adapter's platform extra config.  The adapter owns MarkdownV2
+            # formatting, while the gateway owns user config resolution.
+            try:
+                if hasattr(config, "extra") and isinstance(config.extra, dict):
+                    _compact_spacing = os.getenv("HERMES_TELEGRAM_COMPACT_SPACING", "")
+                    if _compact_spacing in {"", None}:
+                        from gateway.display_config import resolve_display_setting
+
+                        _compact_spacing = resolve_display_setting(
+                            _load_gateway_config(),
+                            "telegram",
+                            "compact_spacing",
+                            False,
+                        )
+                    config.extra["compact_spacing"] = _compact_spacing
+            except Exception:
+                logger.debug("Telegram compact_spacing resolution failed", exc_info=True)
             adapter = TelegramAdapter(config)
             # Apply Telegram notification mode from config.  Controls whether
             # intermediate messages (tool progress, streaming, status) trigger

@@ -331,6 +331,31 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+_FENCED_CODE_BLOCK_RE = re.compile(r'(```(?:[^\n]*\n)?[\s\S]*?```)')
+_BLANK_LINE_RUN_RE = re.compile(r'\n[ \t]*(?:\n[ \t]*)+')
+
+
+def _compact_markdown_spacing_for_telegram(text: str) -> str:
+    """Collapse blank-line runs outside fenced code blocks for Telegram.
+
+    Telegram clients render every markdown blank line as a large vertical gap.
+    This opt-in postprocessor turns paragraph-separating blank lines into
+    single newlines while preserving fenced code blocks byte-for-byte so code,
+    logs, and preformatted examples keep their original spacing.
+    """
+    if not text or '\n\n' not in text:
+        return text
+
+    parts = _FENCED_CODE_BLOCK_RE.split(text)
+    compacted: list[str] = []
+    for idx, part in enumerate(parts):
+        if idx % 2 == 1:
+            compacted.append(part)
+        else:
+            compacted.append(_BLANK_LINE_RUN_RE.sub('\n', part))
+    return ''.join(compacted)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -409,6 +434,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        self._compact_spacing: bool = self._coerce_bool_extra("compact_spacing", False)
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -4360,6 +4386,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
         #    before the normal MarkdownV2 conversions run.
         text = _wrap_markdown_tables(text)
+
+        # 0b) Optional Telegram-specific compact spacing.  Apply this before
+        #     MarkdownV2 escaping so the raw markdown structure is still visible
+        #     to the fenced-code protector.
+        if getattr(self, "_compact_spacing", False):
+            text = _compact_markdown_spacing_for_telegram(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.

@@ -37,6 +37,7 @@ _ensure_telegram_mock()
 
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
+    _compact_markdown_spacing_for_telegram,
     _escape_mdv2,
     _strip_mdv2,
     _wrap_markdown_tables,
@@ -109,6 +110,81 @@ class TestFormatMessageBasic:
     def test_plain_text_no_markdown(self, adapter):
         result = adapter.format_message("Hello world")
         assert result == "Hello world"
+
+
+# =========================================================================
+# format_message - compact spacing opt-in
+# =========================================================================
+
+
+class TestTelegramCompactSpacing:
+    def test_default_preserves_markdown_blank_lines(self, adapter):
+        text = "Intro\n\n## Heading\n\nSentence one.\n\nSentence two."
+
+        result = adapter.format_message(text)
+
+        assert "Intro\n\n*Heading*\n\nSentence one\\.\n\nSentence two\\." in result
+
+    def test_compact_spacing_collapses_blank_lines_outside_code_blocks(self):
+        adapter = TelegramAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="fake-token",
+                extra={"compact_spacing": True},
+            )
+        )
+        text = (
+            "Intro\n\n"
+            "## Heading\n\n"
+            "Sentence one.\n\n"
+            "```\n"
+            "line 1\n\n"
+            "line 2\n"
+            "```\n\n"
+            "Sentence two."
+        )
+
+        result = adapter.format_message(text)
+
+        assert "Intro\n*Heading*\nSentence one\\.\n```\nline 1\n\nline 2\n```\nSentence two\\." in result
+        assert "Sentence one\\.\n\n```" not in result
+        assert "```\n\nSentence two" not in result
+
+    def test_compact_spacing_helper_preserves_fenced_code_verbatim(self):
+        text = "A\n\n```python\nprint('a')\n\nprint('b')\n```\n\nB"
+
+        result = _compact_markdown_spacing_for_telegram(text)
+
+        assert result == "A\n```python\nprint('a')\n\nprint('b')\n```\nB"
+
+    def test_gateway_create_adapter_applies_display_compact_spacing(self, monkeypatch):
+        import gateway.platforms.telegram as telegram_mod
+        import gateway.run as gateway_run
+        from gateway.config import GatewayConfig, Platform
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+        )
+        platform_config = PlatformConfig(enabled=True, token="fake-token")
+        monkeypatch.setattr(telegram_mod, "check_telegram_requirements", lambda: True)
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "platforms": {
+                        "telegram": {"compact_spacing": True},
+                    }
+                }
+            },
+        )
+
+        created = runner._create_adapter(Platform.TELEGRAM, platform_config)
+
+        assert isinstance(created, TelegramAdapter)
+        assert created._compact_spacing is True
 
 
 # =========================================================================

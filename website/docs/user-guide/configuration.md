@@ -1209,6 +1209,7 @@ display:
   show_cost: false        # Show estimated $ cost in the CLI status bar
   timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+  compact_spacing: false  # Gateway: collapse blank markdown lines in text output (opt-in; per-platform overrideable)
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
@@ -1286,11 +1287,14 @@ display:
       tool_progress: 'off'    # silence progress on Signal
     telegram:
       tool_progress: verbose  # detailed progress on Telegram
+      compact_spacing: true   # collapse Markdown blank lines for denser mobile replies
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+
+`compact_spacing` is gateway-only and currently implemented by the Telegram adapter. When enabled, it collapses markdown blank-line runs (`\n\n`) into single newlines outside fenced code blocks before Telegram MarkdownV2 formatting. Use it when mobile chat replies feel too vertically spaced; leave it off when you want document-style Markdown spacing preserved.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 

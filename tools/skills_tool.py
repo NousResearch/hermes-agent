@@ -935,6 +935,20 @@ def skill_view(
         skill_dir = None
         skill_md = None
 
+        # Reject traversal in the skill name before any filesystem join.
+        # has_traversal_component catches '../' patterns; the validate_within_dir
+        # check inside the loop catches absolute paths that would also escape.
+        from tools.path_security import has_traversal_component, validate_within_dir
+        if has_traversal_component(name):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Skill name must not contain path traversal components.",
+                    "hint": "Use a plain skill name like 'axolotl' or 'category/skill-name'",
+                },
+                ensure_ascii=False,
+            )
+
         # Collision detection: collect ALL candidates across every dir using
         # every lookup strategy (direct path, recursive by parent dir name,
         # legacy flat <name>.md). If more than one matches, refuse and tell
@@ -960,10 +974,11 @@ def skill_view(
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
             direct_path = search_dir / name
-            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
-                _record(direct_path, direct_path / "SKILL.md")
-            elif direct_path.with_suffix(".md").exists():
-                _record(None, direct_path.with_suffix(".md"))
+            if validate_within_dir(direct_path, search_dir) is None:
+                if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                    _record(direct_path, direct_path / "SKILL.md")
+                elif direct_path.with_suffix(".md").exists():
+                    _record(None, direct_path.with_suffix(".md"))
 
             # Strategy 1b: categorized form for plugin namespace fall-through
             # (e.g., a "myplugin:explore" name with no plugin registered also
@@ -1037,34 +1052,47 @@ def skill_view(
                 ensure_ascii=False,
             )
 
-        # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
+        # Security: block if skill is loaded from outside trusted directories.
+        # Use abspath (not resolve) so that symlinks placed *inside* a trusted
+        # dir are allowed while real path-traversal escapes are still caught.
+        import os as _os
         _outside_skills_dir = True
-        _trusted_dirs = [SKILLS_DIR.resolve()]
+        _trusted_abs = [
+            _os.path.normpath(_os.path.abspath(str(SKILLS_DIR)))
+        ]
         try:
-            _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
+            _trusted_abs.extend(
+                _os.path.normpath(_os.path.abspath(str(d))) for d in all_dirs[1:]
+            )
         except Exception:
             pass
-        for _td in _trusted_dirs:
-            try:
-                skill_md.resolve().relative_to(_td)
+        _skill_md_abs = _os.path.normpath(_os.path.abspath(str(skill_md)))
+        for _ta in _trusted_abs:
+            if _skill_md_abs == _ta or _skill_md_abs.startswith(_ta + _os.sep):
                 _outside_skills_dir = False
                 break
-            except ValueError:
-                continue
 
         # Security: detect common prompt injection patterns
         # (pattern list at module level as _INJECTION_PATTERNS)
         _content_lower = content.lower()
         _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
 
-        if _outside_skills_dir or _injection_detected:
-            _warnings = []
-            if _outside_skills_dir:
-                _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
-            if _injection_detected:
-                _warnings.append("skill content contains patterns that may indicate prompt injection")
-            logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
+        if _outside_skills_dir:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Security: skill '{name}' resolves outside the trusted skills directory. "
+                        "Only skills under ~/.hermes/skills/ or configured external_dirs are permitted."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if _injection_detected:
+            logging.getLogger(__name__).warning(
+                "Skill security warning for '%s': content contains patterns that may indicate prompt injection", name
+            )
 
         parsed_frontmatter: Dict[str, Any] = {}
         try:
@@ -1098,8 +1126,6 @@ def skill_view(
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            from tools.path_security import validate_within_dir, has_traversal_component
-
             # Security: Prevent path traversal attacks
             if has_traversal_component(file_path):
                 return json.dumps(

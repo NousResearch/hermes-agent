@@ -19,6 +19,7 @@ Users with SuperGrok or X Premium+ can now drive Hermes with Grok 4.3 + native X
 - Expanded Best-of-N section with concrete subagent dispatch example directly ported from Grok Build's best-of-n skill patterns.
 - As a demonstration of the documented "Grok Build Synergy", also improved the author's grok-concierge (lib/hermes.ts) to better detect the xAI OAuth + new skill (proper fs imports, grokOAuthActive flag).
 - Bonus on the same branch: added a starter for a second skill `grok-build-patterns` that explicitly ports the best Grok Build disciplines (best-of-n tournaments, review gates, check-work verification, CLI ↔ Hermes handoff) for use when the agent brain is the xAI Grok provider.
+- Third skill added in the same effort: `grok-x-research` – advanced persistent X research workflows that shine with Grok's native server-side search + citations, combined with Hermes memory/cron/subagents. Includes real-world community examples.
 
 ## Testing done (by author)
 - Official Hermes validators (_validate_frontmatter, _validate_content_size) pass cleanly.

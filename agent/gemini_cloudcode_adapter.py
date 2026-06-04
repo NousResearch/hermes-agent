@@ -855,6 +855,8 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
         code = "code_assist_rate_limited"
         if error_reason == "MODEL_CAPACITY_EXHAUSTED":
             code = "code_assist_capacity_exhausted"
+        elif error_reason == "RATE_LIMIT_EXCEEDED":
+            code = "code_assist_rate_limit_exceeded"
 
     # Build a human-readable message.  Keep the status + a raw-body tail for
     # debugging, but lead with a friendlier summary when we recognize the
@@ -863,12 +865,36 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
     if isinstance(error_metadata, dict):
         model_hint = str(error_metadata.get("model") or error_metadata.get("modelId") or "").strip()
 
+    # Transient per-minute rate limit (RPM/TPM).  Google returns the SAME
+    # 429 RESOURCE_EXHAUSTED envelope as a true daily-quota exhaustion, so
+    # disambiguate on the ErrorInfo reason (or a per-window message) to avoid
+    # telling the user their daily quota is gone when it actually resets in
+    # seconds.  Only the explicit RATE_LIMIT_EXCEEDED reason re-tags the code
+    # (see classify block above); the message-based signal refines the
+    # human-readable text only.
+    _msg_lower = err_message.lower()
+    _is_transient_rate = error_reason == "RATE_LIMIT_EXCEEDED" or (
+        err_status == "RESOURCE_EXHAUSTED"
+        and any(
+            token in _msg_lower
+            for token in ("per minute", "per-minute", "requests per", "per second")
+        )
+    )
+
     if status == 429 and error_reason == "MODEL_CAPACITY_EXHAUSTED":
         target = model_hint or "this Gemini model"
         message = (
             f"Gemini capacity exhausted for {target} (Google-side throttle, "
             f"not a Hermes issue). Try a different Gemini model or set a "
             f"fallback_providers entry to a non-Gemini provider."
+        )
+        if retry_delay_seconds is not None:
+            message += f" Google suggests retrying in {retry_delay_seconds:g}s."
+    elif status == 429 and _is_transient_rate:
+        message = (
+            f"Gemini rate limited ({err_message or 'RATE_LIMIT_EXCEEDED'}) — "
+            f"short-term per-minute throttle, not daily-quota exhaustion. "
+            f"Hermes will back off and retry automatically."
         )
         if retry_delay_seconds is not None:
             message += f" Google suggests retrying in {retry_delay_seconds:g}s."

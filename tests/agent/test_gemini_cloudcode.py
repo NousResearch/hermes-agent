@@ -1013,6 +1013,11 @@ class TestGeminiHttpErrorParsing:
     def test_resource_exhausted_without_reason(self):
         from agent.gemini_cloudcode_adapter import _gemini_http_error
 
+        # NOTE: this fixture's message ("...requests per minute.") is literally
+        # the misreported case from issue #38804 — a transient per-minute
+        # throttle, NOT daily-quota exhaustion.  With no explicit ErrorInfo
+        # reason the code tag stays code_assist_rate_limited, but the
+        # message-based detection now surfaces it as a rate limit.
         body = {
             "error": {
                 "code": 429,
@@ -1024,7 +1029,81 @@ class TestGeminiHttpErrorParsing:
         assert err.status_code == 429
         assert err.code == "code_assist_rate_limited"
         message = str(err)
+        assert "rate limited" in message.lower()
+        assert "/gquota" not in message
+
+    def test_rate_limit_exceeded_reason_is_not_daily_quota(self):
+        """Explicit RATE_LIMIT_EXCEEDED reason -> distinct code + rate message."""
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": "Resource has been exhausted (e.g. check quota).",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "RATE_LIMIT_EXCEEDED",
+                        "domain": "googleapis.com",
+                    },
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "49s",
+                    },
+                ],
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        assert err.code == "code_assist_rate_limit_exceeded"
+        assert err.retry_after == 49.0
+        message = str(err)
+        assert "rate limited" in message.lower()
+        # Must NOT surface the misleading daily-quota exhaustion message.
+        assert "/gquota" not in message
+        assert "remaining daily requests" not in message.lower()
+        assert "49s" in message
+
+    def test_per_minute_message_treated_as_rate_limit(self):
+        """No ErrorInfo reason, but a per-minute message -> rate-limit text only."""
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": "Quota exceeded for requests per minute.",
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        # No explicit reason -> code stays the generic rate-limited tag.
+        assert err.code == "code_assist_rate_limited"
+        message = str(err)
+        assert "rate limited" in message.lower()
+
+    def test_true_daily_quota_still_reads_as_quota(self):
+        """Negative case: a real daily-quota body keeps the /gquota message."""
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": (
+                    "Quota exceeded for quota metric "
+                    "'GenerateContentPaidTier' (daily)."
+                ),
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        assert err.code == "code_assist_rate_limited"
+        message = str(err)
         assert "quota" in message.lower()
+        assert "/gquota" in message
+        assert "rate limited" not in message.lower()
 
     def test_404_model_not_found_produces_model_retired_message(self):
         from agent.gemini_cloudcode_adapter import _gemini_http_error

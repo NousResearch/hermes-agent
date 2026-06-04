@@ -57,7 +57,7 @@ The center of the app. You get:
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
 
-Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the `/api/ws` chat socket, session-token pinning, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
+Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
 ### File browser
 
@@ -108,35 +108,39 @@ The packaged app ships only the Electron shell. On first launch it installs the 
 
 ## Connecting to a remote backend
 
-By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale — under **Settings → Gateway → Remote gateway**. It asks for two things:
+By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
 
-- **Remote URL** — the backend's dashboard URL, e.g. `http://<host>:9119`
-- **Session token** — the backend's dashboard session token
-
-The session token is the part that trips people up. **Hermes does not print it for you to copy** — by default the backend mints a fresh random token on every boot and injects it straight into the served HTML, so there is nothing in `config.yaml`, in `/gateway`, or in the logs to grab. For a remote connection you pin the token yourself on the backend, then paste that same value into the app.
+The connection has two halves: on the backend you protect the dashboard with a **username and password**, and in the app you enter the backend's URL and sign in with those credentials. Binding the dashboard to a non-loopback address automatically engages its auth gate, so the username/password provider is what lets the desktop app through.
 
 ### On the backend (the remote machine)
 
-```bash
-# 1. Mint a stable token and store it in ~/.hermes/.env (secrets file, 0600).
-#    Without HERMES_DASHBOARD_SESSION_TOKEN the token is random per boot and
-#    uncopyable; setting it pins the value the desktop app will use.
-TOKEN=$(openssl rand -base64 32)
-echo "HERMES_DASHBOARD_SESSION_TOKEN=$TOKEN" >> ~/.hermes/.env
-chmod 600 ~/.hermes/.env
-echo "$TOKEN"   # copy this value into the desktop app
+Set a username and password, then start the dashboard bound to a reachable address. The credentials live in `~/.hermes/.env` (the secrets file, mode 0600):
 
-# 2. Run the dashboard bound to a reachable address.
-#    --insecure is required for any non-loopback bind and keeps the legacy
-#    session-token auth path (a non-loopback bind WITHOUT --insecure engages
-#    the OAuth gate, which ignores the session token).
-hermes dashboard --no-open --insecure --host 0.0.0.0 --port 9119
+```bash
+# 1. Set the dashboard login credentials.
+cat >> ~/.hermes/.env <<'EOF'
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
+# Recommended: a stable signing secret so sessions survive restarts.
+# Without it a random key is generated per boot and you'll be logged out
+# on every restart.
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
+EOF
+chmod 600 ~/.hermes/.env
+
+# 2. Run the dashboard bound to a reachable address. The non-loopback bind
+#    engages the auth gate; the username/password provider handles login.
+hermes dashboard --no-open --host 0.0.0.0 --port 9119
 ```
 
-Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the token is in the environment at boot.
+Make sure the **gateway is running** on the remote host as well if you rely on messaging channels — the desktop app drives the agent, but your gateway sessions are managed separately. See [Messaging](./messaging/index.md) for gateway setup.
+
+Prefer not to keep a plaintext password at rest? Set `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` to a scrypt hash instead — compute it with `python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"`. Full configuration surface (config.yaml keys, every env var, the rate limiter): [Web Dashboard → Username/password provider](./features/web-dashboard.md#usernamepassword-provider-no-oauth-idp).
+
+Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the credentials are in the environment at boot.
 
 :::warning
-`--insecure` exposes a port that reads/writes your `.env` (API keys, secrets) and can run agent commands. Never expose it to the open internet — put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL so only your tailnet can reach it.
+The dashboard reads and writes your `.env` (API keys, secrets) and can run agent commands. Even behind a username and password, never expose it directly to the open internet — put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL so only your tailnet can reach it.
 :::
 
 ### In the app
@@ -144,17 +148,17 @@ Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.h
 **Settings → Gateway → Remote gateway:**
 
 1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
-2. **Session token** — paste the `$TOKEN` value from step 1
-3. **Test remote** — confirms the backend is reachable and the token is accepted
-4. **Save and reconnect** — switches the desktop shell onto the remote backend
+2. **Sign in** — the app detects that the backend requires a username and password and shows a **Sign in** button. Click it, enter the credentials from step 1, and the app authenticates against the backend's login page.
+3. **Save and reconnect** — switches the desktop shell onto the remote backend. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
 
-The token is stored encrypted in the app's local config; leave the field blank on a later edit to keep the saved one. You can also set it without the UI via the `HERMES_DESKTOP_REMOTE_URL` + `HERMES_DESKTOP_REMOTE_TOKEN` environment variables before launching the app (both must be set together; they override the in-app settings).
+You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in with your username and password from the Gateway settings panel.
 
 ### Troubleshooting
 
-- **Test fails with 401** — the token doesn't match the backend's `HERMES_DASHBOARD_SESSION_TOKEN`, or the backend is bound non-loopback *without* `--insecure` (OAuth gate is on, ignoring the token). Verify with `curl -s -H "X-Hermes-Session-Token: $TOKEN" http://<host>:9119/api/status` — that should return JSON, not a 401.
+- **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
+- **No "Sign in" button — it asks for a session token instead** — the backend's username/password provider isn't active. `/api/status` won't list `"basic"` in `auth_providers`. Make sure both the username and a password (or password hash) are set in `~/.hermes/.env` and that the dashboard process actually loaded them.
+- **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value. Without it the token-signing key is regenerated per boot, invalidating all sessions.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
-- **No token to copy** — expected. You mint it yourself; Hermes never surfaces the default ephemeral one.
 
 For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend); the env vars are catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](../reference/environment-variables.md#web-dashboard--hermes-desktop).
 

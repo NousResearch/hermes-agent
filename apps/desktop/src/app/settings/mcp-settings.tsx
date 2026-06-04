@@ -5,13 +5,13 @@ import { OverlayActionButton, OverlayCard } from '@/app/overlays/overlay-chrome'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getHermesConfigRecord, type HermesGateway, saveHermesConfig } from '@/hermes'
-import { Package, Wrench } from '@/lib/icons'
+import { Wrench } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId } from '@/store/session'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { includesQuery } from './helpers'
-import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, LoadingState, Pill, SettingsContent } from './primitives'
 import type { SearchProps } from './types'
 
 interface McpSettingsProps extends SearchProps {
@@ -188,8 +188,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
 
   return (
     <SettingsContent>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <SectionHeading icon={Package} meta={`${names.length} configured`} title="MCP servers" />
+      <div className="mb-4 flex items-center justify-end gap-3">
         <div className="flex items-center gap-2">
           <OverlayActionButton onClick={() => setSelected(null)}>New server</OverlayActionButton>
           <OverlayActionButton disabled={reloading} onClick={() => void reloadMcp()}>

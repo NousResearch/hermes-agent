@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
@@ -9,7 +9,7 @@ import { BUILTIN_THEMES } from '@/themes/presets'
 
 import { MODE_OPTIONS } from './constants'
 import { prettyName } from './helpers'
-import { Pill, SectionHeading, SettingsContent } from './primitives'
+import { Pill, SettingsContent } from './primitives'
 
 function ThemePreview({ name }: { name: string }) {
   const t = BUILTIN_THEMES[name]
@@ -60,7 +60,6 @@ export function AppearanceSettings() {
     <SettingsContent>
       <div className="space-y-5">
         <div>
-          <SectionHeading icon={Palette} title="Appearance" />
           <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
             chat surface styling.

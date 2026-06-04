@@ -112,9 +112,23 @@ def test_parse_callback_url_https_and_extra_params():
     assert out["state"] == "xyz"
 
 
+def test_parse_callback_url_with_fragment_params():
+    out = auth_mod._parse_pasted_callback(
+        "http://127.0.0.1:56121/callback#code=frag-code&state=frag-state"
+    )
+    assert out["code"] == "frag-code"
+    assert out["state"] == "frag-state"
+
+
 def test_parse_bare_query_string_with_leading_question_mark():
     out = auth_mod._parse_pasted_callback("?code=p1&state=s1")
     assert out["code"] == "p1"
+    assert out["state"] == "s1"
+
+
+def test_parse_bare_fragment_with_leading_hash():
+    out = auth_mod._parse_pasted_callback("#code=f1&state=s1")
+    assert out["code"] == "f1"
     assert out["state"] == "s1"
 
 

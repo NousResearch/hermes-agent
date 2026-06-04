@@ -3136,7 +3136,9 @@ def _parse_pasted_callback(raw: str) -> dict:
             parsed = urlparse(stripped)
         except Exception:
             return result
-        query = parsed.query or ""
+        query = parsed.query or parsed.fragment or ""
+    elif stripped.startswith("#"):
+        query = stripped[1:]
     elif stripped.startswith("?"):
         query = stripped[1:]
     elif "=" in stripped:

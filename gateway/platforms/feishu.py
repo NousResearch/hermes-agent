@@ -3189,11 +3189,15 @@ class FeishuAdapter(BasePlatformAdapter):
     def _media_batch_key(self, event: MessageEvent) -> str:
         from gateway.session import build_session_key
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        if isinstance(self.config, list):
+            logger.error("[Feishu] _media_batch_key: self.config is a list (len=%d)", len(self.config))
+            session_key = build_session_key(event.source)
+        else:
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
         return f"{session_key}:media:{event.message_type.value}"
 
     @staticmethod
@@ -3476,6 +3480,9 @@ class FeishuAdapter(BasePlatformAdapter):
         """Return the session-scoped key used for Feishu text aggregation."""
         from gateway.session import build_session_key
 
+        if isinstance(self.config, list):
+            logger.error("[Feishu] _text_batch_key: self.config is a list (len=%d)", len(self.config))
+            return build_session_key(event.source)
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),

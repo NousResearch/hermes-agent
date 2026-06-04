@@ -3,7 +3,7 @@ import { atom, computed } from 'nanostores'
 import { getProfiles, setApiRequestProfile } from '@/hermes'
 import { resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { queryClient } from '@/lib/query-client'
-import { persistBoolean, storedBoolean } from '@/lib/storage'
+import { arraysEqual, persistBoolean, persistStringArray, storedBoolean, storedStringArray } from '@/lib/storage'
 import { $gateway } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
@@ -28,6 +28,38 @@ export const $profiles = atom<ProfileInfo[]>([])
 
 export function setActiveProfile(name: string): void {
   $activeProfile.set(name || 'default')
+}
+
+// ── Rail order ─────────────────────────────────────────────────────────────
+// User-defined order for the named (non-default) profile squares in the rail.
+// Names absent from the list fall back to alphabetical, appended at the tail —
+// so a freshly created profile lands at the end until the user drags it.
+const PROFILE_ORDER_STORAGE_KEY = 'hermes.desktop.profileOrder'
+
+export const $profileOrder = atom<string[]>(storedStringArray(PROFILE_ORDER_STORAGE_KEY))
+
+$profileOrder.subscribe(value => persistStringArray(PROFILE_ORDER_STORAGE_KEY, [...value]))
+
+export function setProfileOrder(names: string[]): void {
+  if (!arraysEqual($profileOrder.get(), names)) {
+    $profileOrder.set(names)
+  }
+}
+
+// Sort items by the stored order; unordered names alphabetise at the tail.
+export function sortByProfileOrder<T extends { name: string }>(items: T[], order: string[]): T[] {
+  const rank = new Map(order.map((name, index) => [name, index]))
+
+  return [...items].sort((a, b) => {
+    const ra = rank.get(a.name)
+    const rb = rank.get(b.name)
+
+    if (ra != null && rb != null) {
+      return ra - rb
+    }
+
+    return ra != null ? -1 : rb != null ? 1 : a.name.localeCompare(b.name)
+  })
 }
 
 interface ActiveProfileResponse {

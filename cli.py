@@ -15909,6 +15909,43 @@ def main(
     # Handle single query mode
     if query or image:
         query, single_query_images = _collect_query_images(query, image)
+
+        # ── Pre-LLM deterministic intent fast-path (CLI parity) ───────
+        # Mirrors the gateway/API-server fast-path: a small set of
+        # deterministic intents (weather, time/date) are answered directly
+        # from a cheap HTTP API in ~1-3s, BYPASSING the agent/LLM entirely.
+        # Only fires for a plain text query with no image attachment; on ANY
+        # doubt the handler returns None and we fall through to the agent.
+        # Skipped for slash commands, kanban workers, and goal-loop runs so
+        # it never short-circuits structured tasks.
+        try:
+            _fp_q = (query or "").strip() if isinstance(query, str) else ""
+            _fp_eligible = (
+                bool(_fp_q)
+                and not single_query_images
+                and not _fp_q.startswith("/")
+                and not os.environ.get("HERMES_KANBAN_TASK", "").strip()
+                and os.environ.get("HERMES_KANBAN_GOAL_MODE") != "1"
+                and os.environ.get("HERMES_DISABLE_INTENT_FASTPATH") != "1"
+            )
+            if _fp_eligible:
+                import asyncio as _fp_asyncio
+                from intent_fast_path import _intent_fast_path as _fp_dispatch
+                _fp_result = _fp_asyncio.run(_fp_dispatch(_fp_q))
+                if _fp_result:
+                    print(_fp_result)
+                    sys.stdout.flush()
+                    logger.info(
+                        "intent fast-path served CLI query without an agent run "
+                        "(0 api_calls, 0 tool_turns)"
+                    )
+                    sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception as _fp_exc:
+            # Never let a fast-path failure break the normal CLI path;
+            # fall through to the agent.
+            logger.debug("intent fast-path skipped (non-fatal): %s", _fp_exc)
         # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
         # the actual task description lives in the task body. Mirror the
         # gateway/CLI behaviour for inbound images by scanning the body for

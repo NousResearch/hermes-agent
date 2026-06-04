@@ -227,10 +227,15 @@ class TestSessionTokenInjection:
         import importlib
         import hermes_cli.web_server as ws
 
+        original_app = ws.app
+        original_token = ws._SESSION_TOKEN
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        importlib.reload(ws)
-
-        assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
+        try:
+            importlib.reload(ws)
+            assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
+        finally:
+            ws.app = original_app
+            ws._SESSION_TOKEN = original_token
 
 
 # ---------------------------------------------------------------------------

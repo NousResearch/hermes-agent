@@ -158,7 +158,12 @@ def _cmd_verify(args) -> int:
 
     if not ledger_path.exists():
         print(
-            f"delegation: no ledger found for task {args.task_id!r} at {ledger_path}",
+            f"error: cannot read ledger {ledger_path}: no such file",
+            file=sys.stderr,
+        )
+        print(
+            "hint: run `/delegation status` to check if the daemon is running, "
+            f"or run `hermes-delegation verify {args.task_id}` for a full traceback.",
             file=sys.stderr,
         )
         return 1
@@ -167,7 +172,12 @@ def _cmd_verify(args) -> int:
         snapshot = compute_snapshot(ledger_path)
     except Exception as exc:  # empty/malformed ledger, validation error, ...
         print(
-            f"delegation: could not compute snapshot for {args.task_id!r}: {exc}",
+            f"error: cannot read ledger {ledger_path}: {exc}",
+            file=sys.stderr,
+        )
+        print(
+            "hint: run `/delegation status` to check if the daemon is running, "
+            f"or run `hermes-delegation verify {args.task_id}` for a full traceback.",
             file=sys.stderr,
         )
         return 1
@@ -193,7 +203,12 @@ def _cmd_report(args) -> int:
 
     if not ledger_path.exists():
         print(
-            f"delegation: no ledger found for task {args.task_id!r} at {ledger_path}",
+            f"error: cannot read ledger {ledger_path}: no such file",
+            file=sys.stderr,
+        )
+        print(
+            "hint: run `/delegation status` to check if the daemon is running, "
+            f"or run `hermes-delegation verify {args.task_id}` for a full traceback.",
             file=sys.stderr,
         )
         return 1
@@ -202,7 +217,12 @@ def _cmd_report(args) -> int:
         snapshot = compute_snapshot(ledger_path)
     except Exception as exc:
         print(
-            f"delegation: could not compute snapshot for {args.task_id!r}: {exc}",
+            f"error: cannot read ledger {ledger_path}: {exc}",
+            file=sys.stderr,
+        )
+        print(
+            "hint: run `/delegation status` to check if the daemon is running, "
+            f"or run `hermes-delegation verify {args.task_id}` for a full traceback.",
             file=sys.stderr,
         )
         return 1

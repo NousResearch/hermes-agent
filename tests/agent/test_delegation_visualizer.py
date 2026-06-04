@@ -173,6 +173,83 @@ def test_cli_main_report_to_stdout(ledger_dir, capsys):
 
 
 # ---------------------------------------------------------------------------
+# error message context (path + hint) for verify/report  (Task 4)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def malformed_ledger_dir(tmp_path):
+    """A base dir whose ledger file exists but has a tampered/garbage line."""
+    base = tmp_path / "ledgers"
+    base.mkdir(parents=True)
+    led = base / "task-id.jsonl"
+    led.write_text("this is not valid jsonl\n", encoding="utf-8")
+    return base
+
+
+def test_cli_main_verify_missing_ledger_includes_path(tmp_path, capsys):
+    rc = dv.cli_main(["verify", "nope", "--base-dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    # The failing ledger path must appear in the error so the user can find it.
+    assert str(tmp_path) in err
+    assert "nope.jsonl" in err
+
+
+def test_cli_main_verify_missing_ledger_includes_hint(tmp_path, capsys):
+    rc = dv.cli_main(["verify", "nope", "--base-dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "hint:" in err or "hermes-delegation" in err
+
+
+def test_cli_main_verify_malformed_ledger_includes_hint(malformed_ledger_dir, capsys):
+    rc = dv.cli_main(["verify", "task-id", "--base-dir", str(malformed_ledger_dir)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "hint:" in err
+    assert "hermes-delegation" in err
+
+
+def test_cli_main_report_missing_ledger_includes_path(tmp_path, capsys):
+    rc = dv.cli_main(["report", "nope", "--base-dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert str(tmp_path) in err
+    assert "nope.jsonl" in err
+
+
+def test_cli_main_report_missing_ledger_includes_hint(tmp_path, capsys):
+    rc = dv.cli_main(["report", "nope", "--base-dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "hint:" in err or "hermes-delegation" in err
+
+
+def test_cli_main_report_malformed_ledger_includes_hint(malformed_ledger_dir, capsys):
+    rc = dv.cli_main(["report", "task-id", "--base-dir", str(malformed_ledger_dir)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "hint:" in err
+    assert "hermes-delegation" in err
+
+
+def test_cli_main_verify_exits_1_on_error(tmp_path, capsys):
+    # regression: errors keep exit code 1 and stdout stays clean (JSON only).
+    rc = dv.cli_main(["verify", "nope", "--base-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert out == ""
+
+
+def test_cli_main_report_exits_1_on_error(tmp_path, capsys):
+    # regression: errors keep exit code 1 and stdout stays clean (Markdown only).
+    rc = dv.cli_main(["report", "nope", "--base-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert out == ""
+
+
+# ---------------------------------------------------------------------------
 # no args / passthrough
 # ---------------------------------------------------------------------------
 

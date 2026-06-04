@@ -234,6 +234,29 @@ def _skill_file_list(skill_dir: Path) -> List[str]:
     return files
 
 
+def _find_active_skill_dir_by_name(skill_name: str) -> Path | None:
+    """Find an installed skill directory by frontmatter name.
+
+    Manifest entries are keyed by skill name, not install path. When upstream
+    removes a bundled skill we may still have an on-disk copy in the user's
+    skills tree; this helper lets sync classify that leftover without deleting
+    it or pretending it was agent-created.
+    """
+    if not skill_name or not SKILLS_DIR.exists():
+        return None
+    for skill_md in sorted(SKILLS_DIR.rglob("SKILL.md")):
+        if is_excluded_skill_path(skill_md):
+            continue
+        try:
+            skill_md.relative_to(SKILLS_DIR)
+        except ValueError:
+            continue
+        candidate = skill_md.parent
+        if _read_skill_name(skill_md, candidate.name) == skill_name:
+            return candidate
+    return None
+
+
 def _content_hash(directory: Path) -> str:
     """Return the same hash style the skills hub lock uses, falling back locally."""
     try:
@@ -457,7 +480,10 @@ def sync_skills(quiet: bool = False) -> dict:
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
-                        user_modified (list), cleaned (list), total_bundled (int)
+                        user_modified (list), cleaned (list),
+                        retired_official (list),
+                        user_modified_retired_official (list),
+                        total_bundled (int)
     """
     # Opt-out: a profile (named or the default ~/.hermes) that wrote the
     # .no-bundled-skills marker gets zero bundled-skill seeding. Returning the
@@ -469,7 +495,8 @@ def sync_skills(quiet: bool = False) -> dict:
             print("  (skipped — profile opted out of bundled skills via .no-bundled-skills)")
         return {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "total_bundled": 0,
+            "user_modified": [], "cleaned": [], "retired_official": [],
+            "user_modified_retired_official": [], "total_bundled": 0,
             "optional_provenance_backfilled": [], "skipped_opt_out": True,
         }
 
@@ -477,7 +504,8 @@ def sync_skills(quiet: bool = False) -> dict:
     if not bundled_dir.exists():
         return {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
+            "user_modified": [], "cleaned": [], "retired_official": [],
+            "user_modified_retired_official": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
 
@@ -596,9 +624,22 @@ def sync_skills(quiet: bool = False) -> dict:
             # ── In manifest but not on disk — user deleted it ──
             skipped += 1
 
-    # Clean stale manifest entries (skills removed from bundled dir)
+    # Clean stale manifest entries (skills removed from bundled dir). Keep any
+    # leftover on-disk skill directory intact, but classify it before dropping
+    # the origin hash so callers can distinguish an unchanged retired official
+    # skill from one the user modified. Do not mark either bucket as
+    # agent-created; curator management remains opt-in via usage provenance.
     cleaned = sorted(set(manifest.keys()) - bundled_names)
+    retired_official: List[str] = []
+    user_modified_retired_official: List[str] = []
     for name in cleaned:
+        origin_hash = manifest.get(name, "")
+        active_dir = _find_active_skill_dir_by_name(name)
+        if active_dir is not None and origin_hash:
+            if _dir_hash(active_dir) == origin_hash:
+                retired_official.append(name)
+            else:
+                user_modified_retired_official.append(name)
         del manifest[name]
 
     # Also copy DESCRIPTION.md files for categories (if not already present)
@@ -621,6 +662,8 @@ def sync_skills(quiet: bool = False) -> dict:
         "skipped": skipped,
         "user_modified": user_modified,
         "cleaned": cleaned,
+        "retired_official": retired_official,
+        "user_modified_retired_official": user_modified_retired_official,
         "suppressed": suppressed_skipped,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": optional_provenance_backfilled,

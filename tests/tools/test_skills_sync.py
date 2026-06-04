@@ -404,9 +404,63 @@ class TestSyncSkills:
             result = sync_skills(quiet=True)
 
         assert "removed-skill" in result["cleaned"]
+        assert result["retired_official"] == []
+        assert result["user_modified_retired_official"] == []
         with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
             manifest = _read_manifest()
         assert "removed-skill" not in manifest
+
+    def test_removed_bundled_skill_left_on_disk_is_reported_retired_when_unmodified(self, tmp_path):
+        """A bundled skill removed upstream but unchanged locally becomes a retired local orphan.
+
+        Sync must remove it from the active bundled manifest without deleting the
+        on-disk copy. Reporting it separately lets callers distinguish an
+        unmodified retired upstream skill from a user-authored/agent-authored
+        skill without promoting it to agent-created provenance.
+        """
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        retired = skills_dir / "retired-skill"
+        retired.mkdir(parents=True)
+        (retired / "SKILL.md").write_text("---\nname: retired-skill\n---\n# Retired\n")
+        origin_hash = _dir_hash(retired)
+        manifest_file.write_text(f"retired-skill:{origin_hash}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["cleaned"] == ["retired-skill"]
+        assert result["retired_official"] == ["retired-skill"]
+        assert result["user_modified_retired_official"] == []
+        assert (retired / "SKILL.md").exists()
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            assert "retired-skill" not in _read_manifest()
+
+    def test_removed_bundled_skill_left_on_disk_is_reported_user_modified_when_changed(self, tmp_path):
+        """Modified retired official skills are preserved and reported separately."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        retired = skills_dir / "retired-skill"
+        retired.mkdir(parents=True)
+        (retired / "SKILL.md").write_text("---\nname: retired-skill\n---\n# Original\n")
+        origin_hash = _dir_hash(retired)
+        manifest_file.write_text(f"retired-skill:{origin_hash}\n")
+        (retired / "SKILL.md").write_text("---\nname: retired-skill\n---\n# User custom\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["cleaned"] == ["retired-skill"]
+        assert result["retired_official"] == []
+        assert result["user_modified_retired_official"] == ["retired-skill"]
+        actual = (retired / "SKILL.md").read_text()
+        assert actual == "---\nname: retired-skill\n---\n# User custom\n"
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            assert "retired-skill" not in _read_manifest()
 
     def test_does_not_overwrite_existing_unmanifested_skill(self, tmp_path):
         """New skill whose name collides with user-created skill = skipped."""
@@ -618,7 +672,8 @@ class TestSyncSkills:
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
-            "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
+            "user_modified": [], "cleaned": [], "retired_official": [],
+            "user_modified_retired_official": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
 

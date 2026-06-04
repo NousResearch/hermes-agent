@@ -113,6 +113,15 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
+// Bumped whenever the profile context actually changes (switch or create). The
+// chat controller subscribes and drops to a fresh new-session draft, so the
+// session you were in doesn't stay sticky across a profile switch.
+export const $freshSessionRequest = atom(0)
+
+function requestFreshSession(): void {
+  $freshSessionRequest.set($freshSessionRequest.get() + 1)
+}
+
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
 // profile the live gateway is currently on, and drop cached settings from the
 // previous profile so pages refetch against the right backend. Fires once
@@ -229,8 +238,16 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // $activeGatewayProfile → name, so $profileScope follows).
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
+  // Switching profiles (or coming back from the all-profiles browse view) starts
+  // fresh; re-tapping the profile you're already in leaves your session be.
+  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
+
+  if (switching) {
+    requestFreshSession()
+  }
+
   void ensureGatewayProfile(target)
 }
 

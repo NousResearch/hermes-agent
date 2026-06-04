@@ -197,6 +197,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         ) : undefined
       }
       onSearchChange={setQuery}
+      searchHidden={mode === 'skills' ? (skills?.length ?? 0) === 0 : (toolsets?.length ?? 0) === 0}
       searchPlaceholder={mode === 'skills' ? 'Search skills...' : 'Search toolsets...'}
       searchValue={query}
       tabs={

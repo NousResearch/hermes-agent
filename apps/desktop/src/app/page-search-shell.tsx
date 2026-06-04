@@ -12,6 +12,8 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   onSearchChange: (value: string) => void
   searchPlaceholder: string
   searchValue: string
+  /** Hide the search field when there's nothing to search (empty dataset). */
+  searchHidden?: boolean
 }
 
 export function PageSearchShell({
@@ -22,6 +24,7 @@ export function PageSearchShell({
   onSearchChange,
   searchPlaceholder,
   searchValue,
+  searchHidden = false,
   ...props
 }: PageSearchShellProps) {
   return (
@@ -46,19 +49,23 @@ export function PageSearchShell({
         (see app-shell.tsx), so window dragging still works here.
       */}
       <div className="shrink-0">
-        <div className="flex items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
-          {tabs ? (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">{tabs}</div>
-          ) : null}
-          <div className={cn('flex shrink-0 items-center', !tabs && 'flex-1')}>
-            <SearchField
-              containerClassName="max-w-[45vw]"
-              onChange={onSearchChange}
-              placeholder={searchPlaceholder}
-              value={searchValue}
-            />
+        {(tabs || !searchHidden) && (
+          <div className="flex items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
+            {tabs ? (
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">{tabs}</div>
+            ) : null}
+            {!searchHidden && (
+              <div className={cn('flex shrink-0 items-center', !tabs && 'flex-1')}>
+                <SearchField
+                  containerClassName="max-w-[45vw]"
+                  onChange={onSearchChange}
+                  placeholder={searchPlaceholder}
+                  value={searchValue}
+                />
+              </div>
+            )}
           </div>
-        </div>
+        )}
         {filters ? (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div>
         ) : null}

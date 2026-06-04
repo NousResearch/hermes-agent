@@ -211,6 +211,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
       providers.find(p => providerConfigured(p, envState)) ??
       providers[0]
+
     setActiveProvider(selected.name)
   }, [activeProvider, providers, envState, cfg])
 

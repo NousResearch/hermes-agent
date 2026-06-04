@@ -71,6 +71,7 @@ export function AppShell({
   // window's left edge. Default layout: the sessions sidebar sits there.
   // Flipped layout: the file browser does instead.
   const leftEdgePaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+
   const titlebarContentInset = leftEdgePaneOpen
     ? 0
     : titlebarControls.left + TITLEBAR_HEIGHT + Math.round(TITLEBAR_HEIGHT / 2)

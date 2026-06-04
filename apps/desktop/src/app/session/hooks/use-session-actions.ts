@@ -14,6 +14,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import {
   $currentCwd,
+  $desktopYoloDefault,
   $messages,
   $sessions,
   $yoloActive,
@@ -36,8 +37,8 @@ import {
   setMessages,
   setSelectedStoredSessionId,
   setSessions,
-  setSessionsTotal,
   setSessionStartedAt,
+  setSessionsTotal,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -304,6 +305,7 @@ export function useSessionActions({
       // New chats inherit the current workspace.
       setCurrentCwd(getRememberedWorkspaceCwd())
       setCurrentBranch('')
+      setYoloActive($desktopYoloDefault.get())
       clearComposerDraft()
       clearComposerAttachments()
       setFreshDraftReady(true)

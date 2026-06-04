@@ -2,6 +2,7 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { desktopYoloDefaultFromConfig } from '@/lib/yolo-session'
 import {
   $currentCwd,
   setAvailablePersonalities,
@@ -10,7 +11,9 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setIntroPersonality
+  setDesktopYoloDefaultActive,
+  setIntroPersonality,
+  setYoloActive
 } from '@/store/session'
 
 const DEFAULT_VOICE_SECONDS = 120
@@ -58,10 +61,13 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       const reasoning = (config.agent?.reasoning_effort ?? '').trim()
       const tier = (config.agent?.service_tier ?? '').trim()
+      const yoloDefault = desktopYoloDefaultFromConfig(config)
 
       setCurrentReasoningEffort(prev => (activeSessionIdRef.current ? prev : reasoning))
       setCurrentServiceTier(prev => (activeSessionIdRef.current ? prev : tier))
       setCurrentFastMode(prev => (activeSessionIdRef.current ? prev : FAST_TIERS.has(tier.toLowerCase())))
+      setDesktopYoloDefaultActive(yoloDefault)
+      setYoloActive(prev => (activeSessionIdRef.current ? prev : yoloDefault))
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)

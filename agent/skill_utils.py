@@ -564,3 +564,79 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     if not candidate:
         return False
     return bool(_NAMESPACE_RE.match(candidate))
+
+
+def get_skill_readiness_status(skill_name: str) -> str:
+    """Return the readiness status of a skill: 'available', 'setup_needed', or 'unsupported'.
+
+    Checks required_environment_variables and required_credential_files
+    from the skill's frontmatter against the current .env and filesystem.
+    """
+    from hermes_constants import get_hermes_home
+    from tools.skills_tool import (
+        SkillReadinessStatus,
+        _get_required_environment_variables,
+        _parse_frontmatter,
+        load_env,
+    )
+
+    skills_dir = get_hermes_home() / "skills"
+    env_snapshot = load_env()
+
+    # Search all skill directories for the skill's SKILL.md
+    dirs_to_scan = [skills_dir]
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        dirs_to_scan.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+
+    skill_md = None
+    for scan_dir in dirs_to_scan:
+        candidate = scan_dir / skill_name
+        if candidate.is_dir() and (candidate / "SKILL.md").exists():
+            skill_md = candidate / "SKILL.md"
+            break
+        # Also try category/skill_name
+        parts = skill_name.split("/")
+        if len(parts) == 2:
+            candidate = scan_dir / skill_name
+            if candidate.is_dir() and (candidate / "SKILL.md").exists():
+                skill_md = candidate / "SKILL.md"
+                break
+
+    if skill_md is None:
+        return "setup_needed"
+
+    try:
+        content = skill_md.read_text(encoding="utf-8")[:4000]
+        frontmatter, _ = _parse_frontmatter(content)
+    except Exception:
+        return "setup_needed"
+
+    required_env_vars = _get_required_environment_variables(frontmatter)
+    if not required_env_vars:
+        return "available"
+
+    # Check which required env vars are missing
+    missing_entries = []
+    for entry in required_env_vars:
+        name = entry.get("name") or entry.get("env_var") or ""
+        if name and not _is_env_var_persisted(name, env_snapshot):
+            missing_entries.append(entry)
+
+    if missing_entries:
+        return "setup_needed"
+    return "available"
+
+
+def _is_env_var_persisted(
+    var_name: str, env_snapshot: Dict[str, str] | None = None
+) -> bool:
+    """Check if an environment variable is set (from env_snapshot or os.environ)."""
+    if env_snapshot is None:
+        from tools.skills_tool import load_env
+        env_snapshot = load_env()
+    if var_name in env_snapshot:
+        return bool(env_snapshot.get(var_name))
+    return bool(os.getenv(var_name))

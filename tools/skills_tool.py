@@ -624,9 +624,26 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     return skills
 
 
+def _get_skill_readiness(skill_name: str) -> str:
+    """Determine if a skill is configured (available) or needs setup."""
+    try:
+        from agent.skill_utils import get_skill_readiness_status
+        return get_skill_readiness_status(skill_name)
+    except Exception:
+        return "setup_needed"
+
+
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Keep every skill listing path ordered the same way."""
-    return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
+    """Sort by readiness (available first), then by category, then name."""
+    readiness_order = {"available": 0, "setup_needed": 1, "unsupported": 2}
+    return sorted(
+        skills,
+        key=lambda s: (
+            readiness_order.get(_get_skill_readiness(s["name"]), 1),
+            s.get("category") or "",
+            s["name"],
+        ),
+    )
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -674,8 +691,12 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
-        # Sort by category then name
+        # Sort by readiness (available first), then by category, then name
         all_skills = _sort_skills(all_skills)
+
+        # Add readiness_status to each skill for the agent
+        for skill in all_skills:
+            skill["readiness_status"] = _get_skill_readiness(skill["name"])
 
         # Extract unique categories
         categories = sorted(

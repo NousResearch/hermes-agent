@@ -45,6 +45,8 @@ validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
+_LineClient = _line._LineClient
+_LineAuthError = _line._LineAuthError
 
 
 # ---------------------------------------------------------------------------
@@ -641,3 +643,225 @@ class TestAdapterInit:
         assert asyncio.run(ad.get_chat_info("U123"))["type"] == "dm"
         assert asyncio.run(ad.get_chat_info("C123"))["type"] == "group"
         assert asyncio.run(ad.get_chat_info("R123"))["type"] == "channel"
+
+
+# ---------------------------------------------------------------------------
+# 9. Scoped-lock conflict detection (acquire_scoped_lock returns a 2-tuple)
+# ---------------------------------------------------------------------------
+
+class TestScopedLockConflict:
+    """connect() must refuse to start when another profile already holds the
+    lock for the same channel access token. The pre-fix code called
+    acquire_scoped_lock as a bare bool — a non-empty tuple is always truthy, so
+    the conflict guard never fired and two gateways ran on one channel."""
+
+    def _adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        return LineAdapter(cfg)
+
+    def test_connect_refuses_when_lock_held(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+        import gateway.status as _status
+        # Another profile owns the lock: acquire returns (False, owner_record).
+        monkeypatch.setattr(
+            _status, "acquire_scoped_lock",
+            lambda *a, **kw: (False, {"pid": 4242}),
+        )
+        # If the conflict guard is dead code the adapter proceeds to bind a real
+        # webhook server; assert it short-circuits before that instead.
+        connected = asyncio.run(ad.connect())
+        assert connected is False
+        assert ad.has_fatal_error
+        assert ad.fatal_error_code == "line-channel-token_lock"
+        assert ad.fatal_error_retryable is False
+        # Never created the client / bound the server.
+        assert ad._client is None
+        assert ad._site is None
+
+    def test_connect_acquires_lock_under_channel_token_scope(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+        import gateway.status as _status
+        seen = {}
+
+        def _acquire(scope, identity, metadata=None):
+            seen["scope"] = scope
+            seen["identity"] = identity
+            return (False, None)  # decline so we don't reach server bind
+
+        monkeypatch.setattr(_status, "acquire_scoped_lock", _acquire)
+        asyncio.run(ad.connect())
+        # Distinct scope per resource (acquire_scoped_lock hashes the identity
+        # internally before persisting, so the raw token never hits disk).
+        assert seen["scope"] == "line-channel-token"
+        assert seen["identity"] == "tok"
+
+
+# ---------------------------------------------------------------------------
+# 10. Invalid/revoked token escalates to a non-retryable fatal
+# ---------------------------------------------------------------------------
+
+class TestAuthEscalation:
+    """A 401/403 from the bot-info probe is a permanent credential failure.
+    connect() must escalate to a non-retryable fatal rather than reporting
+    'connected' while every outbound send 401s forever."""
+
+    def _adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        import gateway.status as _status
+        # Grant the lock so connect() reaches the bot-info probe.
+        monkeypatch.setattr(
+            _status, "acquire_scoped_lock", lambda *a, **kw: (True, None)
+        )
+        return ad
+
+    def test_401_escalates_to_non_retryable_fatal(self, monkeypatch):
+        ad = self._adapter(monkeypatch)
+
+        async def _raise_auth(self):
+            raise _LineAuthError(401)
+
+        monkeypatch.setattr(_LineClient, "get_bot_user_id", _raise_auth)
+        connected = asyncio.run(ad.connect())
+        assert connected is False
+        assert ad.has_fatal_error
+        assert ad.fatal_error_code == "auth_failed"
+        assert ad.fatal_error_retryable is False
+        # Server must NOT have been bound on a permanently-broken credential.
+        assert ad._site is None
+
+    def test_transient_failure_stays_best_effort(self, monkeypatch):
+        # A None return (transient 5xx / offline) must NOT escalate — the
+        # adapter proceeds and self-filtering is simply skipped. We stub the
+        # aiohttp server startup so no socket is bound by the test.
+        ad = self._adapter(monkeypatch)
+
+        async def _return_none(self):
+            return None
+
+        monkeypatch.setattr(_LineClient, "get_bot_user_id", _return_none)
+
+        from aiohttp import web
+
+        class _FakeRunner:
+            def __init__(self, *a, **kw): pass
+            async def setup(self): pass
+            async def cleanup(self): pass
+
+        class _FakeSite:
+            def __init__(self, *a, **kw): pass
+            async def start(self): pass
+            async def stop(self): pass
+
+        monkeypatch.setattr(web, "AppRunner", _FakeRunner)
+        monkeypatch.setattr(web, "TCPSite", _FakeSite)
+
+        connected = asyncio.run(ad.connect())
+        try:
+            assert connected is True
+            assert not ad.has_fatal_error
+            # Transient failure → self-filtering disabled, but no fatal.
+            assert ad._bot_user_id is None
+        finally:
+            asyncio.run(ad.disconnect())
+
+    def test_get_bot_user_id_raises_on_401(self):
+        # Unit-level: a 401 response surfaces as _LineAuthError, not None.
+        client = _LineClient("tok")
+
+        class _Resp:
+            status = 401
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def json(self): return {}
+
+        class _Sess:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            def get(self, *a, **kw): return _Resp()
+
+        import aiohttp
+        orig = aiohttp.ClientSession
+        aiohttp.ClientSession = _Sess
+        try:
+            with pytest.raises(_LineAuthError) as ei:
+                asyncio.run(client.get_bot_user_id())
+            assert ei.value.status == 401
+        finally:
+            aiohttp.ClientSession = orig
+
+
+# ---------------------------------------------------------------------------
+# 11. Postback cache is pruned on inbound events
+# ---------------------------------------------------------------------------
+
+class TestCachePruneOnDispatch:
+    """RequestCache.prune() had no callsite, so the postback cache grew
+    unbounded. _dispatch_event must reclaim expired entries on each event."""
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        return LineAdapter(cfg)
+
+    def test_dispatch_prunes_expired_entries(self, adapter):
+        import time as _time
+        # A READY entry whose 1h TTL has elapsed.
+        rid = adapter._cache.register_pending("Uold")
+        adapter._cache.set_ready(rid, "stale answer")
+        entry = adapter._cache.get(rid)
+        entry.updated_at = _time.time() - adapter._cache._ttl - 100
+        # Dispatch an unrelated (unauthorized) event — it is rejected by the
+        # allowlist, but prune() at the top of _dispatch_event still runs.
+        asyncio.run(adapter._dispatch_event(
+            {"type": "message", "source": {"type": "user", "userId": "Unobody"}}
+        ))
+        assert adapter._cache.get(rid) is None
+
+    def test_dispatch_keeps_fresh_entries(self, adapter):
+        rid = adapter._cache.register_pending("Ufresh")
+        adapter._cache.set_ready(rid, "recent")
+        asyncio.run(adapter._dispatch_event(
+            {"type": "message", "source": {"type": "user", "userId": "Unobody"}}
+        ))
+        assert adapter._cache.get(rid) is not None
+
+
+# ---------------------------------------------------------------------------
+# 12. SUPPORTS_MESSAGE_EDITING declared False (no LINE edit API)
+# ---------------------------------------------------------------------------
+
+class TestMessageEditingFlag:
+    """LINE has no edit primitive. The attribute must be present and False so
+    the gateway disables the streaming cursor and routes fresh sends instead
+    of failed edit_message calls (which would leave a stuck █ cursor)."""
+
+    def test_class_attribute_is_false(self):
+        assert LineAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_gateway_getattr_resolves_false(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        from gateway.config import PlatformConfig
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        # This is exactly how gateway/run.py reads it.
+        assert getattr(ad, "SUPPORTS_MESSAGE_EDITING", True) is False

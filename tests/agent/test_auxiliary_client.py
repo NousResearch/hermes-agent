@@ -2178,6 +2178,61 @@ class TestAnthropicCompatImageConversion:
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
 
+    def test_base64_video_converted_to_video_block(self):
+        # MiniMax M3's Anthropic-compatible endpoint expects type="video"
+        # (not OpenAI's "video_url", not "input_video").
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What happens in this clip?"},
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        vid_block = result[0]["content"][1]
+        assert vid_block["type"] == "video"
+        assert vid_block["source"]["type"] == "base64"
+        assert vid_block["source"]["media_type"] == "video/mp4"
+        assert vid_block["source"]["data"] == "AAAA"
+
+    def test_video_media_type_parsed_from_data_uri(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": "data:video/quicktime;base64,QQ=="}}
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["source"]["media_type"] == "video/quicktime"
+
+    def test_url_video_converted_to_video_block(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": "https://example.com/clip.mp4"}}
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        vid_block = result[0]["content"][0]
+        assert vid_block["type"] == "video"
+        assert vid_block["source"] == {"type": "url", "url": "https://example.com/clip.mp4"}
+
+    def test_mixed_image_and_video_both_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}},
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+            ],
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["type"] == "image"
+        assert result[0]["content"][1]["type"] == "video"
+
 
 class _AuxAuth401(Exception):
     status_code = 401

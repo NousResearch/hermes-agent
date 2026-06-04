@@ -17,10 +17,12 @@ If you prefer a real POSIX environment (for the dashboard's embedded terminal, `
 
 ## Quick install
 
-Open **PowerShell** (or Windows Terminal) and run:
+[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+
+Or, for a command-line only install, open **PowerShell** (or Windows Terminal) and run:
 
 ```powershell
-iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and adds `hermes` to your **User PATH** — open a new terminal after it finishes.
@@ -28,38 +30,32 @@ No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and add
 **Installer options** (requires the scriptblock form to pass parameters):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1))) -NoVenv -SkipSetup -Branch main
+& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NoVenv -SkipSetup -Branch main
 ```
 
-| Parameter | Default | Purpose |
-|---|---|---|
-| `-Branch` | `main` | Clone a specific branch (useful for testing PRs) |
-| `-Commit` | unset | Pin install to a specific commit SHA (overrides `-Branch`) |
-| `-Tag` | unset | Pin install to a specific git tag (e.g. `v0.14.0`) |
-| `-NoVenv` | off | Skip venv creation (advanced — you manage Python yourself) |
-| `-SkipSetup` | off | Skip the post-install `hermes setup` wizard |
-| `-HermesHome` | `%LOCALAPPDATA%\hermes` | Override data directory |
-| `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | Override code location |
+| Parameter     | Default                              | Purpose                                                    |
+| ------------- | ------------------------------------ | ---------------------------------------------------------- |
+| `-Branch`     | `main`                               | Clone a specific branch (useful for testing PRs)           |
+| `-Commit`     | unset                                | Pin install to a specific commit SHA (overrides `-Branch`) |
+| `-Tag`        | unset                                | Pin install to a specific git tag (e.g. `v0.14.0`)         |
+| `-NoVenv`     | off                                  | Skip venv creation (advanced — you manage Python yourself) |
+| `-SkipSetup`  | off                                  | Skip the post-install `hermes setup` wizard                |
+| `-HermesHome` | `%LOCALAPPDATA%\hermes`              | Override data directory                                    |
+| `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | Override code location                                     |
 
 The installer auto-retries flaky git fetches and strips BOM from any downloaded `install.ps1` payload, so a UTF-8 BOM picked up during HTTP transit no longer breaks the `[scriptblock]::Create((irm ...))` form.
-
-### Desktop installer (alternative)
-
-A thin GUI installer is also available — useful if you'd rather double-click an `.exe` than open PowerShell. Download Hermes Desktop, run the installer, and on first launch the GUI calls `install.ps1` under the hood to provision Python (via `uv`), Node, PortableGit, and the rest of the dependency bootstrap described below. After the first run, the desktop app and the PowerShell-installed `hermes` CLI share the same `%LOCALAPPDATA%\hermes\hermes-agent` install and `%USERPROFILE%\.hermes` data directory — switch between the GUI and the CLI freely.
-
-Use the desktop installer when you want a familiar Windows install experience or you're handing Hermes to a non-developer; use the PowerShell one-liner when you're already in a terminal.
 
 ### Dependency bootstrap (`dep_ensure`)
 
 On first launch (and on demand when a missing tool is detected), Hermes runs a small Python bootstrapper — `hermes_cli/dep_ensure.py` — that checks for and lazily installs the non-Python dependencies it needs. On Windows, the relevant ones are:
 
-| Dependency | Why Hermes needs it |
-|---|---|
-| **PortableGit** | Provides `bash.exe` for the terminal tool and `git` for in-session clones. Provisioned at install time, not by `dep_ensure`. |
-| **Node.js 22** | Required for the browser tool (`agent-browser`), the TUI's web bridge, and the WhatsApp bridge. |
-| **ffmpeg** | Audio format conversion for TTS / voice messages. |
-| **ripgrep** | Fast file search — falls back to `grep` if unavailable. |
-| **npm packages** | `agent-browser`, Playwright Chromium, and any per-toolset Node deps are installed once at first browser-tool use. |
+| Dependency       | Why Hermes needs it                                                                                                          |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **PortableGit**  | Provides `bash.exe` for the terminal tool and `git` for in-session clones. Provisioned at install time, not by `dep_ensure`. |
+| **Node.js 22**   | Required for the browser tool (`agent-browser`), the TUI's web bridge, and the WhatsApp bridge.                              |
+| **ffmpeg**       | Audio format conversion for TTS / voice messages.                                                                            |
+| **ripgrep**      | Fast file search — falls back to `grep` if unavailable.                                                                      |
+| **npm packages** | `agent-browser`, Playwright Chromium, and any per-toolset Node deps are installed once at first browser-tool use.            |
 
 Each dep has a `shutil.which(...)`-style check; if a binary is missing and the run is interactive, `dep_ensure` offers to install it (deferring to `scripts\install.ps1 -ensure <dep>` for the actual install logic). Non-interactive runs (gateway, cron, headless desktop launches) skip the prompt and surface a clear `this feature needs <dep>` error instead.
 
@@ -86,18 +82,18 @@ On Windows, per-tool API key setup (Firecrawl, FAL, Browser Use, OpenAI TTS) is 
 
 Everything except the dashboard's embedded terminal pane runs natively on Windows.
 
-| Feature | Native Windows | WSL2 |
-|---|---|---|
-| CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …) | ✓ | ✓ |
-| Interactive TUI (`hermes --tui`) | ✓ | ✓ |
-| Messaging gateway (Telegram, Discord, Slack, WhatsApp, 15+ platforms) | ✓ | ✓ |
-| Cron scheduler | ✓ | ✓ |
-| Browser tool (Chromium via Node) | ✓ | ✓ |
-| MCP servers (stdio and HTTP) | ✓ | ✓ |
-| Local Ollama / LM Studio / llama-server | ✓ | ✓ (via WSL networking) |
-| Web dashboard (sessions, jobs, metrics, config) | ✓ | ✓ |
-| Dashboard `/chat` embedded terminal pane | ✗ (needs POSIX PTY) | ✓ |
-| Auto-start at login | ✓ (schtasks) | ✓ (systemd) |
+| Feature                                                               | Native Windows      | WSL2                   |
+| --------------------------------------------------------------------- | ------------------- | ---------------------- |
+| CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …)              | ✓                   | ✓                      |
+| Interactive TUI (`hermes --tui`)                                      | ✓                   | ✓                      |
+| Messaging gateway (Telegram, Discord, Slack, WhatsApp, 15+ platforms) | ✓                   | ✓                      |
+| Cron scheduler                                                        | ✓                   | ✓                      |
+| Browser tool (Chromium via Node)                                      | ✓                   | ✓                      |
+| MCP servers (stdio and HTTP)                                          | ✓                   | ✓                      |
+| Local Ollama / LM Studio / llama-server                               | ✓                   | ✓ (via WSL networking) |
+| Web dashboard (sessions, jobs, metrics, config)                       | ✓                   | ✓                      |
+| Dashboard `/chat` embedded terminal pane                              | ✗ (needs POSIX PTY) | ✓                      |
+| Auto-start at login                                                   | ✓ (schtasks)        | ✓ (systemd)            |
 
 The dashboard's `/chat` tab embeds a real terminal via a POSIX PTY (`ptyprocess`). Native Windows has no equivalent primitive; Python's `pywinpty` / Windows ConPTY would work but is a separate implementation — treat as future work. **The rest of the dashboard works natively** — only that one tab shows a "use WSL2 for this" banner.
 
@@ -140,12 +136,12 @@ Hermes's Windows stdio shim now sets `EDITOR=notepad` as a default. Notepad ship
 
 **User overrides still win** (they're checked before the setdefault):
 
-| Editor | PowerShell command |
-|---|---|
-| VS Code | `$env:EDITOR = "code --wait"` |
+| Editor    | PowerShell command                                                                 |
+| --------- | ---------------------------------------------------------------------------------- |
+| VS Code   | `$env:EDITOR = "code --wait"`                                                      |
 | Notepad++ | `$env:EDITOR = "'C:\Program Files\Notepad++\notepad++.exe' -multiInst -nosession"` |
-| Neovim | `$env:EDITOR = "nvim"` |
-| Helix | `$env:EDITOR = "hx"` |
+| Neovim    | `$env:EDITOR = "nvim"`                                                             |
+| Helix     | `$env:EDITOR = "hx"`                                                               |
 
 The `--wait` flag on VS Code is critical — without it the editor returns immediately and Hermes gets a blank buffer back.
 
@@ -200,13 +196,13 @@ Services require admin rights to install and tie the gateway's lifecycle to mach
 
 ## Data layout
 
-| Path | Contents |
-|---|---|
-| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. Safe to `Remove-Item -Recurse` and reinstall. |
-| `%LOCALAPPDATA%\hermes\git\` | PortableGit (only if the installer provisioned it). |
-| `%LOCALAPPDATA%\hermes\node\` | Portable Node.js (only if the installer provisioned it). |
-| `%LOCALAPPDATA%\hermes\bin\` | `hermes.cmd` shim, added to User PATH. |
-| `%USERPROFILE%\.hermes\` | Your config, auth, skills, sessions, logs. **Survives reinstalls.** |
+| Path                                  | Contents                                                            |
+| ------------------------------------- | ------------------------------------------------------------------- |
+| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. Safe to `Remove-Item -Recurse` and reinstall.  |
+| `%LOCALAPPDATA%\hermes\git\`          | PortableGit (only if the installer provisioned it).                 |
+| `%LOCALAPPDATA%\hermes\node\`         | Portable Node.js (only if the installer provisioned it).            |
+| `%LOCALAPPDATA%\hermes\bin\`          | `hermes.cmd` shim, added to User PATH.                              |
+| `%USERPROFILE%\.hermes\`              | Your config, auth, skills, sessions, logs. **Survives reinstalls.** |
 
 The split is deliberate: `%LOCALAPPDATA%\hermes` is disposable infrastructure (you can blow it away and the one-liner restores it). `%USERPROFILE%\.hermes` is your data — config, memory, skills, session history — and is identical in shape to a Linux install. Mirror it between machines and your Hermes moves with you.
 
@@ -248,11 +244,11 @@ Don't put secrets in User environment variables unless you specifically want eve
 
 These only affect native Windows installs:
 
-| Variable | Effect |
-|---|---|
-| `HERMES_GIT_BASH_PATH` | Override bash.exe discovery. Point at any bash — full Git-for-Windows, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically. |
-| `HERMES_DISABLE_WINDOWS_UTF8` | Set to `1` to disable the UTF-8 stdio shim and fall back to the locale code page. Useful for bisecting an encoding bug. |
-| `EDITOR` / `VISUAL` | Your editor for `/edit` and `Ctrl-X Ctrl-E`. Hermes defaults to `notepad` if both are unset. |
+| Variable                      | Effect                                                                                                                                             |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HERMES_GIT_BASH_PATH`        | Override bash.exe discovery. Point at any bash — full Git-for-Windows, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically. |
+| `HERMES_DISABLE_WINDOWS_UTF8` | Set to `1` to disable the UTF-8 stdio shim and fall back to the locale code page. Useful for bisecting an encoding bug.                            |
+| `EDITOR` / `VISUAL`           | Your editor for `/edit` and `Ctrl-X Ctrl-E`. Hermes defaults to `notepad` if both are unset.                                                       |
 
 ## Uninstall
 
@@ -287,7 +283,7 @@ Consequence: any codepath that said "check if this PID is alive" via `os.kill(pi
 ## Common pitfalls
 
 **`hermes: command not found` right after install.**
-Open a new PowerShell window. The installer added `%LOCALAPPDATA%\hermes\bin` to User PATH, but existing shells need to be restarted to pick it up. In the meantime you can run `& "$env:LOCALAPPDATA\hermes\bin\hermes.cmd"`.
+Open a new PowerShell window. The installer added `%LOCALAPPDATA%\hermes\bin` to User PATH, but existing shells need to be restarted to pick it up.
 
 **`WinError 193: %1 is not a valid Win32 application` when running a tool.**
 You hit a shebang-script invocation that bypassed the `.cmd` shim. Hermes resolves commands through `shutil.which(cmd, path=local_bin)` so PATHEXT picks up `.CMD` — if you're invoking the tool via a hardcoded path instead, switch to the `.cmd` variant (e.g., `npx.cmd`, not `npx`).

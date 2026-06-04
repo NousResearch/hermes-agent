@@ -22,19 +22,7 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-### With the Hermes Desktop installer on MacOS or Windows (recommended)
-
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
-
-### With the CLI installer on Linux, MacOS, or Windows
-
-Add `--include-desktop` to the regular install script.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
-```
-
-### With an existing Hermes installation
+Follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
 
 If you already have Hermes installed, simply run
 

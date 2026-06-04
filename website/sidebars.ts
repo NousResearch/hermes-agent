@@ -149,7 +149,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-kanban-codex-lane',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
                   ],
                 },
@@ -162,18 +161,14 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/creative/creative-architecture-diagram',
                     'user-guide/skills/bundled/creative/creative-ascii-art',
                     'user-guide/skills/bundled/creative/creative-ascii-video',
-                    'user-guide/skills/bundled/creative/creative-baoyu-article-illustrator',
-                    'user-guide/skills/bundled/creative/creative-baoyu-comic',
                     'user-guide/skills/bundled/creative/creative-baoyu-infographic',
                     'user-guide/skills/bundled/creative/creative-claude-design',
                     'user-guide/skills/bundled/creative/creative-comfyui',
-                    'user-guide/skills/bundled/creative/creative-creative-ideation',
                     'user-guide/skills/bundled/creative/creative-design-md',
                     'user-guide/skills/bundled/creative/creative-excalidraw',
                     'user-guide/skills/bundled/creative/creative-humanizer',
                     'user-guide/skills/bundled/creative/creative-manim-video',
                     'user-guide/skills/bundled/creative/creative-p5js',
-                    'user-guide/skills/bundled/creative/creative-pixel-art',
                     'user-guide/skills/bundled/creative/creative-popular-web-designs',
                     'user-guide/skills/bundled/creative/creative-pretext',
                     'user-guide/skills/bundled/creative/creative-sketch',
@@ -198,7 +193,6 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
                     'user-guide/skills/bundled/devops/devops-kanban-worker',
-                    'user-guide/skills/bundled/devops/devops-webhook-subscriptions',
                   ],
                 },
                 {
@@ -221,16 +215,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'gaming',
-                  key: 'skills-bundled-gaming',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/gaming/gaming-minecraft-modpack-server',
-                    'user-guide/skills/bundled/gaming/gaming-pokemon-player',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'github',
                   key: 'skills-bundled-github',
                   collapsed: true,
@@ -245,15 +229,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'mcp',
-                  key: 'skills-bundled-mcp',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/mcp/mcp-native-mcp',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'media',
                   key: 'skills-bundled-media',
                   collapsed: true,
@@ -261,7 +236,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/media/media-gif-search',
                     'user-guide/skills/bundled/media/media-heartmula',
                     'user-guide/skills/bundled/media/media-songsee',
-                    'user-guide/skills/bundled/media/media-spotify',
                     'user-guide/skills/bundled/media/media-youtube-content',
                   ],
                 },
@@ -272,7 +246,6 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/mlops/mlops-models-audiocraft',
-                    'user-guide/skills/bundled/mlops/mlops-research-dspy',
                     'user-guide/skills/bundled/mlops/mlops-huggingface-hub',
                     'user-guide/skills/bundled/mlops/mlops-inference-llama-cpp',
                     'user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness',
@@ -299,7 +272,6 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/productivity/productivity-airtable',
                     'user-guide/skills/bundled/productivity/productivity-google-workspace',
-                    'user-guide/skills/bundled/productivity/productivity-linear',
                     'user-guide/skills/bundled/productivity/productivity-maps',
                     'user-guide/skills/bundled/productivity/productivity-nano-pdf',
                     'user-guide/skills/bundled/productivity/productivity-notion',
@@ -354,18 +326,14 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-software-development',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands',
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
-                    'user-guide/skills/bundled/software-development/software-development-hermes-s6-container-supervision',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
                     'user-guide/skills/bundled/software-development/software-development-plan',
                     'user-guide/skills/bundled/software-development/software-development-python-debugpy',
                     'user-guide/skills/bundled/software-development/software-development-requesting-code-review',
                     'user-guide/skills/bundled/software-development/software-development-spike',
-                    'user-guide/skills/bundled/software-development/software-development-subagent-driven-development',
                     'user-guide/skills/bundled/software-development/software-development-systematic-debugging',
                     'user-guide/skills/bundled/software-development/software-development-test-driven-development',
-                    'user-guide/skills/bundled/software-development/software-development-writing-plans',
                   ],
                 },
                 {
@@ -423,11 +391,15 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-creative',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
+                    'user-guide/skills/optional/creative/creative-baoyu-comic',
                     'user-guide/skills/optional/creative/creative-blender-mcp',
                     'user-guide/skills/optional/creative/creative-concept-diagrams',
+                    'user-guide/skills/optional/creative/creative-creative-ideation',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',
+                    'user-guide/skills/optional/creative/creative-pixel-art',
                   ],
                 },
                 {
@@ -438,6 +410,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/devops/devops-cli',
                     'user-guide/skills/optional/devops/devops-docker-management',
+                    'user-guide/skills/optional/devops/devops-hermes-s6-container-supervision',
                     'user-guide/skills/optional/devops/devops-pinggy-tunnel',
                     'user-guide/skills/optional/devops/devops-watchers',
                   ],
@@ -474,6 +447,16 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/finance/finance-merger-model',
                     'user-guide/skills/optional/finance/finance-pptx-author',
                     'user-guide/skills/optional/finance/finance-stocks',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'gaming',
+                  key: 'skills-optional-gaming',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/gaming/gaming-minecraft-modpack-server',
+                    'user-guide/skills/optional/gaming/gaming-pokemon-player',
                   ],
                 },
                 {
@@ -515,6 +498,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mlops/mlops-training-axolotl',
                     'user-guide/skills/optional/mlops/mlops-chroma',
                     'user-guide/skills/optional/mlops/mlops-clip',
+                    'user-guide/skills/optional/mlops/mlops-research-dspy',
                     'user-guide/skills/optional/mlops/mlops-faiss',
                     'user-guide/skills/optional/mlops/mlops-flash-attention',
                     'user-guide/skills/optional/mlops/mlops-guidance',
@@ -595,6 +579,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/software-development/software-development-code-wiki',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
+                    'user-guide/skills/optional/software-development/software-development-subagent-driven-development',
                   ],
                 },
                 {

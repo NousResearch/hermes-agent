@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -25,7 +26,7 @@ import {
   triggerCronJob,
   updateCronJob
 } from '@/hermes'
-import { AlertTriangle, Clock, Pause, Pencil, Play, Trash2, Zap } from '@/lib/icons'
+import { AlertTriangle, Clock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -86,21 +87,14 @@ const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   }
 ]
 
-const STATE_TONE: Record<string, 'good' | 'muted' | 'warn' | 'bad'> = {
-  enabled: 'good',
-  scheduled: 'good',
-  running: 'good',
+const STATE_VARIANT: Record<string, BadgeProps['variant']> = {
+  enabled: 'default',
+  scheduled: 'default',
+  running: 'default',
   paused: 'warn',
   disabled: 'muted',
-  error: 'bad',
+  error: 'destructive',
   completed: 'muted'
-}
-
-const PILL_TONE: Record<'good' | 'muted' | 'warn' | 'bad', string> = {
-  good: 'bg-primary/10 text-primary',
-  muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
 }
 
 const asText = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -541,8 +535,14 @@ function CronJobRow({
       >
         <div className="flex flex-wrap items-center gap-2">
           <span className="truncate text-sm font-medium">{jobTitle(job)}</span>
-          <StatePill tone={STATE_TONE[state] ?? 'muted'}>{state}</StatePill>
-          {deliver && deliver !== DEFAULT_DELIVER && <StatePill tone="muted">{deliver}</StatePill>}
+          <Badge className="capitalize" variant={STATE_VARIANT[state] ?? 'muted'}>
+            {state}
+          </Badge>
+          {deliver && deliver !== DEFAULT_DELIVER && (
+            <Badge className="capitalize" variant="muted">
+              {deliver}
+            </Badge>
+          )}
         </div>
         {hasName && prompt && <p className="mt-1 truncate text-xs text-muted-foreground">{truncate(prompt, 120)}</p>}
         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.68rem] text-muted-foreground">
@@ -568,13 +568,13 @@ function CronJobRow({
           onClick={onPauseResume}
           title={isPaused ? 'Resume' : 'Pause'}
         >
-          {isPaused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+          <Codicon name={isPaused ? 'play' : 'debug-pause'} size="0.875rem" />
         </IconAction>
         <IconAction aria-label="Trigger now" disabled={busy} onClick={onTrigger} title="Trigger now">
-          <Zap className="size-3.5" />
+          <Codicon name="zap" size="0.875rem" />
         </IconAction>
         <IconAction aria-label="Edit cron" onClick={onEdit} title="Edit">
-          <Pencil className="size-3.5" />
+          <Codicon name="edit" size="0.875rem" />
         </IconAction>
         <IconAction
           aria-label="Delete cron"
@@ -582,7 +582,7 @@ function CronJobRow({
           onClick={onDelete}
           title="Delete"
         >
-          <Trash2 className="size-3.5" />
+          <Codicon name="trash" size="0.875rem" />
         </IconAction>
       </div>
     </div>
@@ -599,16 +599,6 @@ function IconAction({ children, className, ...props }: Omit<React.ComponentProps
     >
       {children}
     </Button>
-  )
-}
-
-function StatePill({ children, tone }: { children: string; tone: keyof typeof PILL_TONE }) {
-  return (
-    <span
-      className={cn('inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.64rem] capitalize', PILL_TONE[tone])}
-    >
-      {children}
-    </span>
   )
 }
 

@@ -73,17 +73,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   // Each titlebar button controls the pane physically on its side, so a flip
   // swaps which pane each one toggles. Default: sessions left, file browser
-  // right. Flipped: file browser left, sessions right.
-  // `active` stays tied to the file browser (the toggleable extra pane) rather
-  // than the sessions sidebar, which has never shown a highlight.
-  const fileBrowserEdge = { active: fileBrowserOpen, open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
-  const sessionsEdge = { active: undefined, open: sidebarOpen, toggle: toggleSidebarOpen }
+  // right. Flipped: file browser left, sessions right. Sidebar toggles never
+  // carry an active highlight — they're plain show/hide affordances.
+  const fileBrowserEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
+  const sessionsEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
   const leftEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
   const rightEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
 
   const leftToolbarTools: TitlebarTool[] = [
     {
-      active: leftEdge.active,
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
       label: `${leftEdge.open ? 'Hide' : 'Show'} left sidebar`,
@@ -106,7 +104,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   ]
 
   const rightSidebarTool: TitlebarTool = {
-    active: rightEdge.active,
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
     label: `${rightEdge.open ? 'Hide' : 'Show'} right sidebar`,

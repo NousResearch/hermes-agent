@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { Badge, type BadgeProps } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
@@ -42,11 +43,11 @@ const STATE_LABELS: Record<string, string> = {
   startup_failed: 'Startup failed'
 }
 
-const PILL_TONE: Record<StatusTone, string> = {
-  good: 'bg-primary/10 text-primary',
-  muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
+const TONE_VARIANT: Record<StatusTone, BadgeProps['variant']> = {
+  good: 'default',
+  muted: 'muted',
+  warn: 'warn',
+  bad: 'destructive'
 }
 
 const HINT_BY_STATE: Record<string, string> = {
@@ -696,27 +697,13 @@ function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
 
 function StatePill({ children, tone }: { children: string; tone: StatusTone }) {
   return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[tone]
-      )}
-    >
+    <Badge variant={TONE_VARIANT[tone]}>
       <StatusDot tone={tone} />
       {children}
-    </span>
+    </Badge>
   )
 }
 
 function SetupPill({ active, children }: { active: boolean; children: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.66rem] font-medium',
-        PILL_TONE[active ? 'good' : 'muted']
-      )}
-    >
-      {children}
-    </span>
-  )
+  return <Badge variant={active ? 'default' : 'muted'}>{children}</Badge>
 }

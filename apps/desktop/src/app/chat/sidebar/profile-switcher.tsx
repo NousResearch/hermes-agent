@@ -184,6 +184,11 @@ export function ProfileRail() {
           <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
         ))}
 
+      {/* Single-profile: the active default's home icon next to the create +. */}
+      {!multiProfile && defaultProfile && (
+        <ProfilePill active glyph="home" label={defaultProfile.name} onSelect={() => selectProfile(defaultProfile.name)} />
+      )}
+
       <div
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         ref={scrollRef}

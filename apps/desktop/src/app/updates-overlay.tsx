@@ -222,7 +222,7 @@ function IdleView({
       </div>
 
       <div className="grid gap-2">
-        <Button className="h-10 text-sm font-semibold" onClick={onInstall} size="default">
+        <Button className="font-semibold" onClick={onInstall} size="lg">
           Update now
         </Button>
         <button
@@ -267,9 +267,9 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
       </div>
 
       <button
-        type="button"
-        onClick={handleCopy}
         className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-left transition-colors hover:border-border hover:bg-muted/50"
+        onClick={handleCopy}
+        type="button"
       >
         <code className="select-all font-mono text-sm text-foreground">
           <span className="text-muted-foreground">$ </span>
@@ -294,7 +294,7 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
         Hermes will pick up the new version next time you launch it.
       </p>
 
-      <Button className="h-10 text-sm font-semibold" onClick={onDone} variant="outline">
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="outline">
         Done
       </Button>
     </div>
@@ -352,7 +352,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
       </div>
 
       <div className="grid gap-2">
-        <Button className="h-10 text-sm font-semibold" onClick={onRetry}>
+        <Button className="font-semibold" onClick={onRetry} size="lg">
           Try again
         </Button>
         <button

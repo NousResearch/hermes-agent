@@ -70,7 +70,6 @@ export function SidebarSessionRow({
 
   return (
     <SessionContextMenu
-      icon={session.icon}
       onArchive={onArchive}
       onDelete={onDelete}
       onPin={onPin}
@@ -159,11 +158,6 @@ export function SidebarSessionRow({
             <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
           </span>
           )}
-          {session.icon ? (
-            <span aria-hidden="true" className="shrink-0 text-xs leading-none">
-              {session.icon}
-            </span>
-          ) : null}
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>
@@ -175,7 +169,6 @@ export function SidebarSessionRow({
             </span>
           )}
           <SessionActionsMenu
-            icon={session.icon}
             onArchive={onArchive}
             onDelete={onDelete}
             onPin={onPin}

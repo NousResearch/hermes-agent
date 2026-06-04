@@ -291,9 +291,6 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
-  /** Optional per-session glyph the user picked so sessions from different
-   *  profiles are visually distinguishable in the unified list. */
-  icon?: null | string
 }
 
 export interface SessionMessage {

@@ -265,7 +265,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
-    icon TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -397,15 +396,35 @@ class SessionDB:
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
 
-    def __init__(self, db_path: Path = None):
+    def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
 
         self._lock = threading.Lock()
         self._write_count = 0
         self._fts_enabled = False
         self._fts_unavailable_warned = False
         try:
+            if read_only:
+                # Read-only attach for cross-profile aggregation: SELECT-only,
+                # so we skip schema init entirely (no DDL, no FTS probe, no
+                # column reconcile). Crucially this takes NO write lock, so
+                # polling another profile's live DB on every sidebar refresh
+                # never contends with that profile's running backend. The DB
+                # must already exist + be initialised (callers guard on
+                # db_path.exists()); a SELECT against an empty file raises and
+                # the caller degrades per-profile.
+                self._conn = sqlite3.connect(
+                    f"file:{self.db_path}?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                )
+                self._conn.row_factory = sqlite3.Row
+                return
+
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(
                 str(self.db_path),
                 check_same_thread=False,
@@ -1440,23 +1459,6 @@ class SessionDB:
             cursor = conn.execute(
                 "UPDATE sessions SET archived = ? WHERE id = ?",
                 (1 if archived else 0, session_id),
-            )
-            return cursor.rowcount
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
-
-    def set_session_icon(self, session_id: str, icon: Optional[str]) -> bool:
-        """Set or clear a session's user-chosen icon glyph.
-
-        ``icon`` is a short display string (an emoji or a couple of chars);
-        passing None/"" clears it. Returns True when a row was updated.
-        """
-        cleaned = (icon or "").strip()[:16] or None
-
-        def _do(conn):
-            cursor = conn.execute(
-                "UPDATE sessions SET icon = ? WHERE id = ?",
-                (cleaned, session_id),
             )
             return cursor.rowcount
         rowcount = self._execute_write(_do)

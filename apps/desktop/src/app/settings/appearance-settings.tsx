@@ -66,37 +66,39 @@ function SectionHead({ title, description, pill }: { title: string; description:
   )
 }
 
-function OptionRow({
-  icon: Icon,
-  label,
-  description,
-  active,
-  onClick
+function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange
 }: {
-  icon?: IconComponent
-  label: string
-  description: string
-  active: boolean
-  onClick: () => void
+  options: readonly { id: T; label: string; icon?: IconComponent }[]
+  value: T
+  onChange: (id: T) => void
 }) {
   return (
-    <button
-      className={cn(
-        'group flex items-center gap-3 rounded-md px-3 py-2 text-left transition hover:bg-(--chrome-action-hover)',
-        active && 'bg-(--ui-bg-tertiary)'
-      )}
-      onClick={onClick}
-      type="button"
-    >
-      {Icon && <Icon className={cn('size-4 shrink-0', active ? 'text-foreground' : 'text-muted-foreground')} />}
-      <div className="min-w-0 flex-1">
-        <div className="text-[length:var(--conversation-text-font-size)] font-medium">{label}</div>
-        <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {description}
-        </div>
-      </div>
-      <Check className={cn('size-4 shrink-0 text-primary transition-opacity', active ? 'opacity-100' : 'opacity-0')} />
-    </button>
+    <div className="inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-md bg-(--ui-bg-tertiary) p-0.5">
+      {options.map(({ id, label, icon: Icon }) => {
+        const active = value === id
+
+        return (
+          <button
+            aria-pressed={active}
+            className={cn(
+              'flex items-center justify-center gap-1.5 rounded-[3px] px-3.5 py-1.5 text-xs font-medium transition-colors',
+              active
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+            key={id}
+            onClick={() => onChange(id)}
+            type="button"
+          >
+            {Icon && <Icon className="size-3.5" />}
+            {label}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -119,21 +121,14 @@ export function AppearanceSettings() {
             pill={<Pill>{prettyName(mode)}</Pill>}
             title="Color Mode"
           />
-          <div className="grid gap-0.5">
-            {MODE_OPTIONS.map(({ id, label, description, icon }) => (
-              <OptionRow
-                active={mode === id}
-                description={description}
-                icon={icon}
-                key={id}
-                label={label}
-                onClick={() => {
-                  triggerHaptic('crisp')
-                  setMode(id)
-                }}
-              />
-            ))}
-          </div>
+          <SegmentedControl
+            onChange={id => {
+              triggerHaptic('crisp')
+              setMode(id)
+            }}
+            options={MODE_OPTIONS}
+            value={mode}
+          />
         </section>
 
         <section className="grid gap-3">
@@ -142,33 +137,19 @@ export function AppearanceSettings() {
             pill={<Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>}
             title="Tool Call Display"
           />
-          <div className="grid gap-0.5">
-            {(
+          <SegmentedControl
+            onChange={id => {
+              triggerHaptic('selection')
+              setToolViewMode(id)
+            }}
+            options={
               [
-                {
-                  id: 'product',
-                  label: 'Product',
-                  description: 'Human-friendly tool activity with concise summaries.'
-                },
-                {
-                  id: 'technical',
-                  label: 'Technical',
-                  description: 'Include raw tool args/results and low-level details.'
-                }
+                { id: 'product', label: 'Product' },
+                { id: 'technical', label: 'Technical' }
               ] as const
-            ).map(option => (
-              <OptionRow
-                active={toolViewMode === option.id}
-                description={option.description}
-                key={option.id}
-                label={option.label}
-                onClick={() => {
-                  triggerHaptic('selection')
-                  setToolViewMode(option.id)
-                }}
-              />
-            ))}
-          </div>
+            }
+            value={toolViewMode}
+          />
         </section>
 
         <section className="grid gap-3">

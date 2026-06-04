@@ -6,12 +6,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-# 确保项目根目录在 sys.path 中，支持独立运行
 _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from scripts.base_checker import BaseChecker, CheckResult, ExitCode, InspectionReport
+from scripts.ssh_executor import create_executor, SSHExecutor, LocalExecutor
 
 
 class NginxChecker(BaseChecker):
@@ -22,16 +22,29 @@ class NginxChecker(BaseChecker):
         return "nginx"
 
     def check(self) -> InspectionReport:
+        return self.check_all_targets()
+
+    def check_node(self, target: Dict[str, Any]) -> InspectionReport:
+        """对单个节点执行 Nginx 巡检。
+
+        Args:
+            target: 节点配置字典，包含 host, name, status_url 等字段。
+
+        Returns:
+            该节点的巡检报告。
+        """
+        executor = create_executor(target)
         checks: List[CheckResult] = []
 
-        checks.append(self._check_process())
-        checks.append(self._check_5xx_error_rate())
-        checks.append(self._check_active_connections())
-        checks.append(self._check_upstream())
-        checks.append(self._check_response_time())
+        checks.append(self._check_process(target, executor))
+        checks.append(self._check_5xx_error_rate(target, executor))
+        checks.append(self._check_active_connections(target, executor))
+        checks.append(self._check_upstream(target, executor))
+        checks.append(self._check_response_time(target, executor))
 
         status = self.overall_status(checks)
-        summary = f"Nginx 巡检完成，共 {len(checks)} 项，状态: {status.name}"
+        node_name = target.get("name", target.get("host", "default"))
+        summary = f"Nginx 巡检完成，节点 {node_name}，共 {len(checks)} 项，状态: {status.name}"
         return InspectionReport(
             component=self.component_name,
             timestamp=self._now_iso(),
@@ -44,10 +57,10 @@ class NginxChecker(BaseChecker):
     # 检查项
     # ------------------------------------------------------------------
 
-    def _check_process(self) -> CheckResult:
+    def _check_process(self, target: Dict[str, Any], executor) -> CheckResult:
         """检查 Nginx 进程是否存活。"""
         try:
-            result = self.run_command("ps aux | grep nginx | grep -v grep", timeout=10)
+            result = executor.run("ps aux | grep nginx | grep -v grep", timeout=10)
             alive = bool(result.stdout.strip())
             if alive:
                 return self.make_check(
@@ -66,14 +79,16 @@ class NginxChecker(BaseChecker):
                 value=None, message=f"进程检查异常: {e}",
             )
 
-    def _check_5xx_error_rate(self) -> CheckResult:
+    def _check_5xx_error_rate(self, target: Dict[str, Any], executor) -> CheckResult:
         """解析 access.log 最近 10000 行，计算 5xx 错误率。"""
         warn = self.config.get("error_5xx_threshold_warn", 1.0)
         crit = self.config.get("error_5xx_threshold_critical", 5.0)
-        log_path = self.config.get("access_log_path", "/var/log/nginx/access.log")
+        log_path = target.get("access_log_path") or self.config.get(
+            "access_log_path", "/var/log/nginx/access.log"
+        )
         try:
             cmd = f"tail -n 10000 {log_path}"
-            result = self.run_command(cmd, timeout=30)
+            result = executor.run(cmd, timeout=30)
             lines = result.stdout.strip().splitlines()
             if not lines:
                 return self.make_check(
@@ -100,12 +115,14 @@ class NginxChecker(BaseChecker):
                 value=None, message=f"5xx 错误率检查异常: {e}",
             )
 
-    def _check_active_connections(self) -> CheckResult:
+    def _check_active_connections(self, target: Dict[str, Any], executor) -> CheckResult:
         """从 stub_status 页面解析活跃连接数。"""
         warn = self.config.get("active_connections_warn", 10000)
-        status_url = self.config.get("status_url", "http://localhost/nginx_status")
+        status_url = target.get("status_url") or self.config.get(
+            "status_url", "http://localhost/nginx_status"
+        )
         try:
-            result = self.run_command(f"curl -s {status_url}", timeout=10)
+            result = executor.run(f"curl -s {status_url}", timeout=10)
             match = re.search(r"Active connections:\s*(\d+)", result.stdout)
             if not match:
                 return self.make_check(
@@ -129,12 +146,14 @@ class NginxChecker(BaseChecker):
                 value=None, message=f"连接数检查异常: {e}",
             )
 
-    def _check_upstream(self) -> CheckResult:
+    def _check_upstream(self, target: Dict[str, Any], executor) -> CheckResult:
         """检查上游服务可达性。"""
-        health_url = self.config.get("health_check_url", "http://localhost:8080/health")
+        health_url = target.get("health_check_url") or self.config.get(
+            "health_check_url", "http://localhost:8080/health"
+        )
         try:
             cmd = f'curl -s -o /dev/null -w "%{{http_code}}" {health_url}'
-            result = self.run_command(cmd, timeout=10)
+            result = executor.run(cmd, timeout=10)
             code = result.stdout.strip()
             if code.startswith("2"):
                 return self.make_check(
@@ -160,14 +179,16 @@ class NginxChecker(BaseChecker):
                 value=None, message=f"上游检查异常: {e}",
             )
 
-    def _check_response_time(self) -> CheckResult:
+    def _check_response_time(self, target: Dict[str, Any], executor) -> CheckResult:
         """测量上游平均响应时间。"""
         warn = self.config.get("response_time_warn", 2.0)
         crit = self.config.get("response_time_critical", 5.0)
-        health_url = self.config.get("health_check_url", "http://localhost:8080/health")
+        health_url = target.get("health_check_url") or self.config.get(
+            "health_check_url", "http://localhost:8080/health"
+        )
         try:
             cmd = f'curl -s -o /dev/null -w "%{{time_total}}" {health_url}'
-            result = self.run_command(cmd, timeout=30)
+            result = executor.run(cmd, timeout=30)
             elapsed = float(result.stdout.strip())
             if elapsed >= crit:
                 status = ExitCode.CRITICAL

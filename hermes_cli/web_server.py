@@ -1611,14 +1611,15 @@ async def get_sessions(
 
 @app.get("/api/sessions/search")
 async def search_sessions(q: str = "", limit: int = 20):
-    """Full-text search across session message content using FTS5.
+    """Search sessions by ID plus full-text message content using FTS5.
 
-    Results are deduped by compression lineage, not by raw ``session_id``.
-    Auto-compression rotates a conversation onto a fresh session id (and leaves
-    the old segment's messages in the FTS index), so one logical chat can own
-    many ``sessions`` rows that all match the same query. Branches also use
-    ``parent_session_id``, but they are real alternate conversations; don't
-    collapse branch-specific hits back into the parent.
+    Direct session-id matches are surfaced first, then FTS message-content
+    matches. Results are deduped by compression lineage, not by raw
+    ``session_id``. Auto-compression rotates a conversation onto a fresh
+    session id (and leaves the old segment's messages in the FTS index), so one
+    logical chat can own many ``sessions`` rows that all match the same query.
+    Branches also use ``parent_session_id``, but they are real alternate
+    conversations; don't collapse branch-specific hits back into the parent.
     """
     if not q or not q.strip():
         return {"results": []}
@@ -1626,21 +1627,7 @@ async def search_sessions(q: str = "", limit: int = 20):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
-            import re
-            terms = []
-            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
-                if token.startswith('"') or token.endswith("*"):
-                    terms.append(token)
-                else:
-                    terms.append(token + "*")
-            prefix_query = " ".join(terms)
-            # Over-fetch so lineage dedup can still surface `limit` distinct
-            # conversations even when several hits collapse onto one root.
-            fetch_limit = max(limit * 5, 50)
-            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+            safe_limit = max(1, min(int(limit or 20), 100))
 
             # Walk parent_session_id to the compression root, memoized so a
             # chain of compression segments only costs one walk. We deliberately
@@ -1712,24 +1699,71 @@ async def search_sessions(q: str = "", limit: int = 20):
                 tip_cache[root_id] = tip
                 return tip
 
-            # Keep the best (first / most relevant) hit per compression root.
+            # Both ID matches and content matches share one keyspace, keyed by
+            # compression lineage root, so an id-hit and a content-hit on the
+            # same logical conversation collapse to a single result. The first
+            # hit for a lineage wins; ID matches run first and take priority.
             seen: dict = {}
-            for m in matches:
-                raw_sid = m["session_id"]
+
+            def add_lineage_result(raw_sid: str, payload: dict) -> None:
+                if not raw_sid:
+                    return
                 root = compression_root(raw_sid)
-                if root in seen:
-                    continue
-                seen[root] = {
-                    "session_id": lineage_tip(root),
-                    "lineage_root": root,
-                    "snippet": m.get("snippet", ""),
-                    "role": m.get("role"),
-                    "source": m.get("source"),
-                    "model": m.get("model"),
-                    "session_started": m.get("session_started"),
-                }
-                if len(seen) >= limit:
+                if root in seen or len(seen) >= safe_limit:
+                    return
+                payload = dict(payload)
+                payload["session_id"] = lineage_tip(root)
+                payload["lineage_root"] = root
+                seen[root] = payload
+
+            # Direct ID matches first: users often paste a session id from CLI,
+            # logs, or another Hermes surface. FTS can't find those unless the
+            # id happens to appear in message text. search_sessions_by_id is
+            # SQL-bounded, so this stays cheap even with thousands of sessions.
+            for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
+                sid = row.get("id")
+                preview = (row.get("preview") or "").strip()
+                snippet = preview or f"Session ID: {sid}"
+                add_lineage_result(
+                    sid,
+                    {
+                        "snippet": snippet,
+                        "role": None,
+                        "source": row.get("source"),
+                        "model": row.get("model"),
+                        "session_started": row.get("started_at"),
+                    },
+                )
+
+            # Auto-add prefix wildcards so partial words match
+            # e.g. "nimb" → "nimb*" matches "nimby"
+            # Preserve quoted phrases and existing wildcards as-is
+            import re
+            terms = []
+            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+                if token.startswith('"') or token.endswith("*"):
+                    terms.append(token)
+                else:
+                    terms.append(token + "*")
+            prefix_query = " ".join(terms)
+            # Over-fetch so lineage dedup can still surface `limit` distinct
+            # conversations even when several hits collapse onto one root.
+            fetch_limit = max(safe_limit * 5, 50)
+            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+
+            for m in matches:
+                if len(seen) >= safe_limit:
                     break
+                add_lineage_result(
+                    m["session_id"],
+                    {
+                        "snippet": m.get("snippet", ""),
+                        "role": m.get("role"),
+                        "source": m.get("source"),
+                        "model": m.get("model"),
+                        "session_started": m.get("session_started"),
+                    },
+                )
             return {"results": list(seen.values())}
         finally:
             db.close()
@@ -2799,18 +2833,66 @@ def _channel_managed_env_keys() -> frozenset[str]:
         return frozenset()
 
 
+# Cross-cutting gateway / relay knobs stay on the Keys → Settings tab even though
+# they use the ``messaging`` category in OPTIONAL_ENV_VARS. Platform-scoped vars
+# (``DISCORD_*``, ``MATRIX_*``, …) are owned by the Messaging UI instead.
+_MESSAGING_KEYS_PAGE_KEYS = frozenset({
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_PROXY_KEY",
+    "GATEWAY_PROXY_URL",
+})
+
+
+def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
+    """Env-var prefixes owned by a messaging platform card."""
+    aliases: dict[str, tuple[str, ...]] = {
+        "email": ("EMAIL_",),
+        "homeassistant": ("HASS_",),
+        "qqbot": ("QQ_", "QQBOT_"),
+        "sms": ("TWILIO_",),
+        "wecom": ("WECOM_BOT_", "WECOM_SECRET"),
+        "wecom_callback": ("WECOM_CALLBACK_",),
+    }
+    if platform_id in aliases:
+        return aliases[platform_id]
+    return (platform_id.upper().replace("-", "_") + "_",)
+
+
+def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
+    """All messaging-category env vars for a platform (override + plugin + prefix)."""
+    prefixes = _platform_env_prefixes(platform_id)
+    keys: list[str] = []
+    for name, info in OPTIONAL_ENV_VARS.items():
+        if info.get("category") != "messaging":
+            continue
+        if name in _MESSAGING_KEYS_PAGE_KEYS:
+            continue
+        if not any(name.startswith(prefix) for prefix in prefixes):
+            continue
+        keys.append(name)
+    return tuple(sorted(set(keys)))
+
+
+def _merge_platform_env_vars(
+    platform_id: str,
+    override: dict[str, Any],
+    plugin_entry: Any | None,
+) -> tuple[str, ...]:
+    """Canonical env-var list for a messaging platform card."""
+    discovered = _discover_platform_env_vars(platform_id)
+    if "env_vars" in override:
+        return tuple(dict.fromkeys((*override["env_vars"], *discovered)))
+    if plugin_entry is not None and plugin_entry.required_env:
+        return tuple(dict.fromkeys((*tuple(plugin_entry.required_env), *discovered)))
+    return discovered
+
+
 def _build_catalog_entry(
     platform_id: str, plugin_entry: Any | None = None
 ) -> dict[str, Any]:
     override = _PLATFORM_OVERRIDES.get(platform_id, {})
 
-    if "env_vars" in override:
-        env_vars: tuple[str, ...] = tuple(override["env_vars"])
-    elif plugin_entry is not None and plugin_entry.required_env:
-        env_vars = tuple(plugin_entry.required_env)
-    else:
-        prefix = platform_id.upper() + "_"
-        env_vars = tuple(k for k in OPTIONAL_ENV_VARS if k.startswith(prefix))
+    env_vars = _merge_platform_env_vars(platform_id, override, plugin_entry)
 
     if "required_env" in override:
         required_env = tuple(override["required_env"])
@@ -6629,6 +6711,7 @@ async def get_toolsets():
         _get_effective_configurable_toolsets,
         _get_platform_tools,
         _toolset_has_keys,
+        gui_toolset_label,
     )
     from toolsets import resolve_toolset
 
@@ -6646,7 +6729,9 @@ async def get_toolsets():
             tools = []
         is_enabled = name in enabled_toolsets
         result.append({
-            "name": name, "label": label, "description": desc,
+            "name": name,
+            "label": gui_toolset_label(label),
+            "description": desc,
             "enabled": is_enabled,
             "available": is_enabled,
             "configured": _toolset_has_keys(name, config),

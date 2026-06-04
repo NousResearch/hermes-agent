@@ -8537,18 +8537,14 @@ class GatewayRunner:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # If _run_agent replaced the sentinel with a real agent and
-            # then cleaned it up, this is a no-op.  If we exited early
-            # (exception, command fallthrough, etc.) the sentinel must
-            # not linger or the session would be permanently locked out.
-            if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
-                self._release_running_agent_state(_quick_key)
-            else:
-                # Agent path already cleaned _running_agents; make sure
-                # the paired metadata dicts are gone too.
-                self._running_agents_ts.pop(_quick_key, None)
-                if hasattr(self, "_busy_ack_ts"):
-                    self._busy_ack_ts.pop(_quick_key, None)
+            # Unconditional release covers every exit path. _release_running_agent_state
+            # is idempotent (pop-on-absent is harmless) and, called without a
+            # run_generation guard, always clears the slot regardless of which
+            # generation it holds. This evicts the zombie left when session_reset
+            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
+            # inside _run_agent returns False, and the old sentinel-only check here
+            # missed the leftover real agent — locking the session out forever (#28686).
+            self._release_running_agent_state(_quick_key)
 
     async def _prepare_inbound_message_text(
         self,
@@ -10059,6 +10055,12 @@ class GatewayRunner:
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
+        # Evict the running-agent slot now that the generation is bumped. The
+        # in-flight run's own guarded release (run_generation=old) will return
+        # False and leave its dead agent behind; clearing here keeps the slot
+        # from becoming a zombie that silently drops all later messages (#28686).
+        # Idempotent, so the run's finally calling it again is harmless.
+        self._release_running_agent_state(session_key)
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
@@ -14210,12 +14212,17 @@ class GatewayRunner:
 
         parent_session_id = current_entry.session_id
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Persist a stable ``_branched_from`` marker in model_config so
+        # list_sessions_rich() keeps the branch visible in /resume and
+        # /sessions even after the parent is reopened and re-ended with a
+        # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
             )
         except Exception as e:
@@ -15398,10 +15405,15 @@ class GatewayRunner:
 
         if not adapter or not chat_id:
             logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
-            # Fall back to old behavior: wait for exit code and send final notification
+            # Fall back to completion-only: wait for the exit code and send the
+            # final notification. _send_update_notification re-resolves the
+            # adapter on every call, so when the target platform is still
+            # reconnecting it returns False and keeps the markers. Keep polling
+            # until it actually delivers (returns True) instead of giving up
+            # after the first completion check — otherwise a platform that
+            # reconnects a few seconds after completion never gets notified.
             while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
-                if exit_code_path.exists():
-                    await self._send_update_notification()
+                if exit_code_path.exists() and await self._send_update_notification():
                     return
                 await asyncio.sleep(poll_interval)
             if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
@@ -15614,6 +15626,24 @@ class GatewayRunner:
             # Resolve adapter
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
+
+            if not adapter and chat_id:
+                # The update finished, but the target platform has not
+                # reconnected yet (common right after the restart that
+                # `hermes update` triggers). Treating "adapter missing" as a
+                # definitive skip would delete the markers and silently lose the
+                # completion notification — the user never learns whether the
+                # update succeeded or timed out. Preserve the markers instead so
+                # a later retry (the watcher poll loop, or the next gateway
+                # startup) can deliver the result once the adapter is back.
+                logger.info(
+                    "Update notification deferred: %s adapter not connected yet",
+                    platform_str,
+                )
+                cleanup = False
+                active_pending_path = pending_path
+                claimed_path.replace(pending_path)
+                return False
 
             if adapter and chat_id:
                 metadata = self._thread_metadata_for_target(

@@ -194,6 +194,7 @@ export function useGatewayBoot({
         scheduleReconnect()
       }
     })
+
     const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent(event))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
@@ -201,6 +202,7 @@ export function useGatewayBoot({
     const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
 
     const onOnline = () => reconnectNow()
+
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         reconnectNow()

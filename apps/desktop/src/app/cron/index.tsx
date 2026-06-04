@@ -27,11 +27,12 @@ import {
   updateCronJob
 } from '@/hermes'
 import { AlertTriangle, Clock } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayView } from '../overlays/overlay-view'
+
+import { CronJobActionsMenu, CronJobActionsTrigger } from './cron-job-actions-menu'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -432,20 +433,20 @@ export function CronView({ onClose }: CronViewProps) {
         {!jobs ? (
           <PageLoader label="Loading cron jobs..." />
         ) : visibleJobs.length === 0 ? (
-        // Empty state owns the primary "create" CTA — we used to also have
-        // one in the filters bar but it was redundant. Only show the button
-        // when there are zero jobs total; the search-empty case ("No
-        // matches") just asks the user to broaden their query.
-        <EmptyState
-          actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
-          description={
-            totalCount === 0
-              ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
-              : 'Try a broader search query.'
-          }
-          onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
-          title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
-        />
+          // Empty state owns the primary "create" CTA — we used to also have
+          // one in the filters bar but it was redundant. Only show the button
+          // when there are zero jobs total; the search-empty case ("No
+          // matches") just asks the user to broaden their query.
+          <EmptyState
+            actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
+            description={
+              totalCount === 0
+                ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
+                : 'Try a broader search query.'
+            }
+            onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
+            title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
+          />
         ) : (
           <div className="mx-auto w-full max-w-4xl min-h-0 flex-1 overflow-y-auto px-4 py-3">
             {/* Inline header replaces the old top-bar "New cron" button. We
@@ -563,44 +564,24 @@ function CronJobRow({
         )}
       </button>
 
-      <div className="flex shrink-0 items-center gap-0.5">
-        <IconAction
-          aria-label={isPaused ? 'Resume cron' : 'Pause cron'}
-          disabled={busy}
-          onClick={onPauseResume}
-          title={isPaused ? 'Resume' : 'Pause'}
+      <div className="flex shrink-0 items-center">
+        <CronJobActionsMenu
+          busy={busy}
+          isPaused={isPaused}
+          onDelete={onDelete}
+          onEdit={onEdit}
+          onPauseResume={onPauseResume}
+          onTrigger={onTrigger}
+          title={jobTitle(job)}
         >
-          <Codicon name={isPaused ? 'play' : 'debug-pause'} size="0.875rem" />
-        </IconAction>
-        <IconAction aria-label="Trigger now" disabled={busy} onClick={onTrigger} title="Trigger now">
-          <Codicon name="zap" size="0.875rem" />
-        </IconAction>
-        <IconAction aria-label="Edit cron" onClick={onEdit} title="Edit">
-          <Codicon name="edit" size="0.875rem" />
-        </IconAction>
-        <IconAction
-          aria-label="Delete cron"
-          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-          onClick={onDelete}
-          title="Delete"
-        >
-          <Codicon name="trash" size="0.875rem" />
-        </IconAction>
+          <CronJobActionsTrigger
+            className="text-muted-foreground hover:text-foreground"
+            onClick={event => event.stopPropagation()}
+            title={jobTitle(job)}
+          />
+        </CronJobActionsMenu>
       </div>
     </div>
-  )
-}
-
-function IconAction({ children, className, ...props }: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
-  return (
-    <Button
-      className={cn('text-muted-foreground hover:text-foreground', className)}
-      size="icon-sm"
-      variant="ghost"
-      {...props}
-    >
-      {children}
-    </Button>
   )
 }
 

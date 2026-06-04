@@ -3,7 +3,7 @@ import { useRef } from 'react'
 
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Sparkles, Wrench, Zap } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Settings2, Sparkles, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -16,7 +16,7 @@ import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
-import { KeysSettings } from './keys-settings'
+import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { McpSettings } from './mcp-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
@@ -37,10 +37,16 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
   // Providers subnav (Accounts vs API keys) lives in its own param so each
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
+  const [keysView, setKeysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
 
   const openProviderView = (view: ProviderView) => {
     setActiveView('providers')
     setProviderView(view)
+  }
+
+  const openKeysView = (view: KeysView) => {
+    setActiveView('keys')
+    setKeysView(view)
   }
 
   const importInputRef = useRef<HTMLInputElement | null>(null)
@@ -129,6 +135,24 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             label="Tools & Keys"
             onClick={() => setActiveView('keys')}
           />
+          {activeView === 'keys' && (
+            <div className="ml-3.5 flex flex-col gap-0.5 pl-1.5">
+              <OverlayNavItem
+                active={keysView === 'tools'}
+                icon={Wrench}
+                label="Tools"
+                nested
+                onClick={() => openKeysView('tools')}
+              />
+              <OverlayNavItem
+                active={keysView === 'settings'}
+                icon={Settings2}
+                label="Settings"
+                nested
+                onClick={() => openKeysView('settings')}
+              />
+            </div>
+          )}
           <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
@@ -191,7 +215,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           ) : activeView === 'providers' ? (
             <ProvidersSettings onViewChange={setProviderView} view={providerView} />
           ) : activeView === 'keys' ? (
-            <KeysSettings />
+            <KeysSettings view={keysView} />
           ) : activeView === 'mcp' ? (
             <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
           ) : (

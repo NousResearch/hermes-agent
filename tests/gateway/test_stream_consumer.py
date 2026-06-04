@@ -892,6 +892,157 @@ class TestSegmentBreakOnToolBoundary:
         assert consumer._preview_message_ids == ["msg_final"]
 
     @pytest.mark.asyncio
+    async def test_overflow_preview_cleanup_ids_survive_for_base_final_replay(self):
+        """Base final send can clean previews if stream finalization times out."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_pre_1"),
+            SimpleNamespace(success=True, message_id="msg_pre_2"),
+            SimpleNamespace(success=True, message_id="msg_final_partial"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit, **kw: [text[:limit], text[limit:]],
+        )
+        adapter.MAX_MESSAGE_LENGTH = 610
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        pre_tool_preview = "".join(
+            f"Preview row {idx:02d} - status: _streaming_\n"
+            for idx in range(1, 19)
+        )
+        final_replay = pre_tool_preview + "\nFinal answer tail"
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(pre_tool_preview)
+        consumer.on_delta(None)
+        for _ in range(20):
+            if consumer._pending_preview_cleanup_ids:
+                break
+            await asyncio.sleep(0.02)
+
+        consumer.on_delta(final_replay[:80])
+        for _ in range(20):
+            if consumer._preview_message_ids == ["msg_final_partial"]:
+                break
+            await asyncio.sleep(0.02)
+
+        assert consumer.preview_cleanup_ids_for_final(final_replay) == (
+            "msg_pre_1",
+            "msg_pre_2",
+            "msg_final_partial",
+        )
+        assert consumer.preview_cleanup_ids_for_final("Different final") == ()
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert consumer.preview_cleanup_ids_for_final(final_replay) == (
+            "msg_pre_1",
+            "msg_pre_2",
+            "msg_final_partial",
+        )
+
+    @pytest.mark.asyncio
+    async def test_segment_tail_flush_ids_survive_for_base_final_replay(self):
+        send_count = 0
+
+        async def send_tail_chunk(**_kwargs):
+            nonlocal send_count
+            send_count += 1
+            return SimpleNamespace(success=True, message_id=f"msg_tail_{send_count}")
+
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.send = AsyncMock(side_effect=send_tail_chunk)
+        adapter.MAX_MESSAGE_LENGTH = 610
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        visible_prefix = "\n".join(
+            f"{idx}. Preview row {idx} - status: streaming"
+            for idx in range(1, 47)
+        )
+        unsent_tail = "\n".join(
+            f"{idx}. Preview row {idx} - status: streaming"
+            for idx in range(47, 91)
+        )
+        preview_text = f"{visible_prefix}\n{unsent_tail}"
+        final_replay = preview_text + "\nFinal status: tool boundary reached"
+
+        consumer._message_id = "msg_prefix"
+        consumer._preview_message_ids = ["msg_prefix"]
+        consumer._last_sent_text = visible_prefix + config.cursor
+        consumer._preview_message_text = visible_prefix
+        consumer._accumulated = preview_text
+
+        await consumer._flush_segment_tail_on_edit_failure()
+        consumer._reset_segment_state()
+
+        expected_ids = ("msg_prefix",) + tuple(
+            f"msg_tail_{idx}" for idx in range(1, send_count + 1)
+        )
+        assert consumer.preview_cleanup_ids_for_final(final_replay) == expected_ids
+        assert consumer.preview_cleanup_ids_for_final("Different final") == ()
+
+    @pytest.mark.asyncio
+    async def test_segment_tail_flush_keeps_landed_ids_when_cancelled_mid_flush(self):
+        send_count = 0
+
+        async def send_tail_chunk(**_kwargs):
+            nonlocal send_count
+            send_count += 1
+            if send_count == 1:
+                return SimpleNamespace(success=True, message_id="msg_tail_1")
+            await asyncio.sleep(60)
+
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.send = AsyncMock(side_effect=send_tail_chunk)
+        adapter.MAX_MESSAGE_LENGTH = 610
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        visible_prefix = "Preview row 1 - status: streaming"
+        unsent_tail = "\n".join(
+            f"Preview row {idx} - status: streaming"
+            for idx in range(2, 40)
+        )
+        preview_text = f"{visible_prefix}\n{unsent_tail}"
+        final_replay = preview_text + "\nFinal status: tool boundary reached"
+
+        consumer._message_id = "msg_prefix"
+        consumer._preview_message_ids = ["msg_prefix"]
+        consumer._last_sent_text = visible_prefix + config.cursor
+        consumer._preview_message_text = visible_prefix
+        consumer._accumulated = preview_text
+
+        task = asyncio.create_task(consumer._flush_segment_tail_on_edit_failure())
+        for _ in range(20):
+            if "msg_tail_1" in consumer._preview_message_ids:
+                break
+            await asyncio.sleep(0.02)
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        consumer._reset_segment_state()
+
+        assert consumer.preview_cleanup_ids_for_final(final_replay) == (
+            "msg_prefix",
+            "msg_tail_1",
+        )
+
+    @pytest.mark.asyncio
     async def test_fallback_final_does_not_delete_when_no_chunks_reach_user(self):
         """If every fallback send fails, the partial is the only thing the
         user has — must NOT be deleted."""
@@ -1190,6 +1341,44 @@ class TestEditOverflowSplitAndDeliver:
         # on_new_message fired so the tool-progress bubble breaks below
         # the new continuation (per the openclaw #32535 lesson).
         assert new_msg_count[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_split_and_deliver_cleanup_ids_survive_segment_boundary(self):
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="msg_continuation_2",
+            continuation_message_ids=("msg_continuation_1", "msg_continuation_2"),
+        ))
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_initial"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_999", config)
+        consumer._message_id = "msg_initial"
+        consumer._already_sent = True
+
+        preview_text = (
+            "## Telegram duplicate cleanup check\n\n"
+            "1. Preview row 1 - status: streaming\n"
+            "2. Preview row 2 - status: streaming\n"
+        )
+        final_replay = preview_text + "\nFinal status: tool boundary reached"
+
+        assert await consumer._send_or_edit(preview_text) is True
+
+        consumer._reset_segment_state()
+
+        assert consumer.preview_cleanup_ids_for_final(final_replay) == (
+            "msg_initial",
+            "msg_continuation_1",
+            "msg_continuation_2",
+        )
+        assert consumer.preview_cleanup_ids_for_final("Different final") == ()
 
 
 class TestInterimCommentaryMessages:

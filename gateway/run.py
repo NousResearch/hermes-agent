@@ -1133,6 +1133,7 @@ from gateway.session import (
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    DeliveryCleanupReply,
     EphemeralReply,
     MessageEvent,
     MessageType,
@@ -9421,6 +9422,15 @@ class GatewayRunner:
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
+
+            _stream_cleanup_ids = tuple(
+                agent_result.get("stream_preview_cleanup_ids") or ()
+            )
+            if response and _stream_cleanup_ids and not agent_result.get("already_sent"):
+                response = DeliveryCleanupReply(
+                    response,
+                    cleanup_message_ids=_stream_cleanup_ids,
+                )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -18924,6 +18934,15 @@ class GatewayRunner:
                             "Failed to edit streamed message for session %s: %s",
                             session_key or "?", _edit_err,
                         )
+            elif not _is_empty_sentinel and _sc is not None:
+                cleanup_ids_fn = getattr(_sc, "preview_cleanup_ids_for_final", None)
+                if callable(cleanup_ids_fn):
+                    try:
+                        cleanup_ids = cleanup_ids_fn(_final)
+                    except Exception:
+                        cleanup_ids = ()
+                    if cleanup_ids:
+                        response["stream_preview_cleanup_ids"] = tuple(cleanup_ids)
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as

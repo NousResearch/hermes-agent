@@ -1572,6 +1572,19 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+class DeliveryCleanupReply(str):
+    """Reply text with stale message ids to delete after successful delivery."""
+
+    cleanup_message_ids: tuple[str, ...]
+
+    def __new__(cls, text: str, cleanup_message_ids=()):
+        instance = super().__new__(cls, text)
+        instance.cleanup_message_ids = tuple(
+            str(message_id) for message_id in cleanup_message_ids if message_id
+        )
+        return instance
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -3266,6 +3279,38 @@ class BasePlatformAdapter(ABC):
             return response.text, int(ttl or 0)
         return response, 0
 
+    @staticmethod
+    def _send_result_message_ids(result: Any) -> list[str]:
+        raw_response = getattr(result, "raw_response", None)
+        raw_ids = (
+            raw_response.get("message_ids")
+            if isinstance(raw_response, dict)
+            else None
+        )
+        if isinstance(raw_ids, (list, tuple)):
+            message_ids = [str(message_id) for message_id in raw_ids if message_id]
+            if message_ids:
+                return message_ids
+        message_id = getattr(result, "message_id", None)
+        return [str(message_id)] if message_id else []
+
+    async def _cleanup_messages_after_delivery(
+        self,
+        chat_id: str,
+        message_ids: tuple[str, ...],
+        *,
+        current_message_ids: set[str],
+    ) -> None:
+        if not message_ids:
+            return
+        for message_id in message_ids:
+            if message_id in current_message_ids:
+                continue
+            try:
+                await self.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -4049,6 +4094,9 @@ class BasePlatformAdapter(ABC):
             # string, and remember the TTL + platform capability so the
             # post-send block can schedule the deletion.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            _delivery_cleanup_ids = tuple(
+                getattr(response, "cleanup_message_ids", ()) or ()
+            )
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
@@ -4198,6 +4246,14 @@ class BasePlatformAdapter(ABC):
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+                    if result.success and _delivery_cleanup_ids:
+                        await self._cleanup_messages_after_delivery(
+                            event.source.chat_id,
+                            _delivery_cleanup_ids,
+                            current_message_ids=set(
+                                self._send_result_message_ids(result)
+                            ),
+                        )
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

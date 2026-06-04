@@ -3,6 +3,7 @@ import {
   DndContext,
   type DragEndEvent,
   KeyboardSensor,
+  type Modifier,
   PointerSensor,
   useSensor,
   useSensors
@@ -40,6 +41,10 @@ import {
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
+
+// The rail is a single horizontal strip; pin drags to the x-axis so a vertical
+// nudge can't translate a square down and fault in a cross-axis scrollbar.
+const lockToXAxis: Modifier = ({ transform }) => ({ ...transform, y: 0 })
 
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
@@ -105,7 +110,12 @@ export function ProfileRail() {
       )}
 
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd} sensors={sensors}>
+        <DndContext
+          collisionDetection={closestCenter}
+          modifiers={[lockToXAxis]}
+          onDragEnd={handleDragEnd}
+          sensors={sensors}
+        >
           <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
             {named.map(profile => (
               <ProfileSquare

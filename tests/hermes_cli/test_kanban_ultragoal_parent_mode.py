@@ -21,6 +21,39 @@ def _authority(task_id="BO-203", *, snapshot_hash="sha256:a", children=None, dep
     }
 
 
+def _quality_gate():
+    return {
+        "architect_review": {
+            "architecture_status": "CLEAR",
+            "product_status": "CLEAR",
+            "code_status": "CLEAR",
+            "recommendation": "APPROVE",
+            "evidence": ["reviews/final.json"],
+            "blockers": [],
+        },
+        "verifier_qa": {
+            "status": "passed",
+            "contract_coverage": [
+                {"done_criterion": "ship reviewed PR", "status": "covered", "evidence_refs": ["pytest"]}
+            ],
+            "surface_evidence": [
+                {"surface": "cli", "invocation": "pytest", "verdict": "passed", "artifact_refs": ["pytest"]}
+            ],
+            "adversarial_cases": [
+                {"scenario": "missing evidence", "expected_behavior": "block", "verdict": "passed", "artifact_refs": ["pytest"]}
+            ],
+        },
+        "iteration": {"full_rerun": True, "rerun_commands": ["pytest"], "blockers": []},
+    }
+
+
+def _reviewer_approve(*, quality_gate=None):
+    result = {"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []}
+    if quality_gate is not None:
+        result["quality_gate"] = quality_gate
+    return result
+
+
 def test_parent_ultragoal_never_calls_kanban_dispatcher(tmp_path, monkeypatch):
     from hermes_cli import kanban_ultragoal
     from hermes_cli.kanban_ultragoal import KanbanUltragoalStore
@@ -96,7 +129,7 @@ def test_parent_ultragoal_terminal_report_summarizes_child_evidence(tmp_path):
     store.start("BO-203", authority=authority, root_objective="Complete parent", target_mode="parent")
     store.record_worker_done("BO-203", authority=authority, evidence={"commandsRun": ["pytest"], "childEvidence": {"BO-204": "ok"}})
     store.record_verifier_result("BO-203", authority=authority, result={"passed": True, "doneCriteriaEvidence": [{"criterionId": "DC-1", "evidence": "pytest"}]})
-    store.record_reviewer_result("BO-203", authority=authority, result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []})
+    store.record_reviewer_result("BO-203", authority=authority, result=_reviewer_approve(quality_gate=_quality_gate()))
     store.record_pr_created("BO-203", authority=authority, pr={"url": "https://github.com/chriskim12/hermes-agent/pull/1", "number": 1, "headSha": "abc"})
     store.record_ci_result("BO-203", authority=authority, ci={"state": "success", "headSha": "abc"})
     store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": [], "childCleanup": {"BO-204": {"status": "clean"}}})
@@ -155,10 +188,10 @@ def test_build_closeout_evidence_materializes_governed_schema(tmp_path, monkeypa
     store.start("BO-203", authority=authority, root_objective="Complete parent", target_mode="parent")
     store.record_worker_done("BO-203", authority=authority, evidence={"summary": "implemented", "childEvidence": {"BO-204": {"summary": "ok"}}})
     store.record_verifier_result("BO-203", authority=authority, result={"passed": True, "perCriterion": {"dc-1": "ok"}})
-    store.record_reviewer_result("BO-203", authority=authority, result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []})
+    store.record_reviewer_result("BO-203", authority=authority, result=_reviewer_approve(quality_gate=_quality_gate()))
     store.record_pr_created("BO-203", authority=authority, pr={"url": "https://github.com/o/r/pull/1", "number": 1, "headSha": "abc"})
     store.record_ci_result("BO-203", authority=authority, ci={"state": "success", "headSha": "abc", "checks": [{"name": "ci", "status": "completed", "conclusion": "success"}]})
-    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": []})
+    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": [], "childCleanup": {"BO-204": {"status": "clean"}, "BO-205": {"status": "clean"}}})
 
     evidence = store.build_closeout_evidence("BO-203", authority=authority)
 
@@ -171,6 +204,72 @@ def test_build_closeout_evidence_materializes_governed_schema(tmp_path, monkeypa
     assert evidence["git"]["status_short"] == ""
     assert evidence["residue"]["items"][0]["disposition"] == "retained"
     assert evidence["review_package"]["kind"] == "pr_required"
+
+
+def test_build_closeout_evidence_blocks_missing_quality_gate_matrix(tmp_path, monkeypatch):
+    from hermes_cli.kanban_ultragoal import KanbanUltragoalStore
+
+    hermes_home = tmp_path / "hermes-home"
+    target_repo = tmp_path / "product-repo"
+    hermes_home.mkdir()
+    target_repo.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    authority = _authority(children=[{"id": "BO-204", "relationType": "hierarchy", "title": "child"}])
+    store = KanbanUltragoalStore(target_repo)
+    store.start("BO-203", authority=authority, root_objective="Complete parent", target_mode="parent")
+    store.record_worker_done("BO-203", authority=authority, evidence={"summary": "implemented", "childEvidence": {"BO-204": {"summary": "ok"}}})
+    store.record_verifier_result("BO-203", authority=authority, result={"passed": True, "perCriterion": {"dc-1": "ok"}})
+    store.record_reviewer_result("BO-203", authority=authority, result=_reviewer_approve())
+    store.record_pr_created("BO-203", authority=authority, pr={"url": "https://github.com/o/r/pull/1", "number": 1, "headSha": "abc"})
+    store.record_ci_result("BO-203", authority=authority, ci={"state": "success", "headSha": "abc", "checks": [{"name": "ci", "status": "completed", "conclusion": "success"}]})
+    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": [], "childCleanup": {"BO-204": {"status": "clean"}}})
+
+    with pytest.raises(ValueError, match="quality_gate"):
+        store.build_closeout_evidence("BO-203", authority=authority)
+
+
+def test_parent_closeout_blocks_missing_child_evidence_matrix(tmp_path, monkeypatch):
+    from hermes_cli.kanban_ultragoal import KanbanUltragoalStore
+
+    hermes_home = tmp_path / "hermes-home"
+    target_repo = tmp_path / "product-repo"
+    hermes_home.mkdir()
+    target_repo.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    authority = _authority(children=[{"id": "BO-204", "relationType": "hierarchy", "title": "child"}])
+    store = KanbanUltragoalStore(target_repo)
+    store.start("BO-203", authority=authority, root_objective="Complete parent", target_mode="parent")
+    store.record_worker_done("BO-203", authority=authority, evidence={"summary": "implemented", "childEvidence": {}})
+    store.record_verifier_result("BO-203", authority=authority, result={"passed": True, "perCriterion": {"dc-1": "ok"}})
+    store.record_reviewer_result("BO-203", authority=authority, result=_reviewer_approve(quality_gate=_quality_gate()))
+    store.record_pr_created("BO-203", authority=authority, pr={"url": "https://github.com/o/r/pull/1", "number": 1, "headSha": "abc"})
+    store.record_ci_result("BO-203", authority=authority, ci={"state": "success", "headSha": "abc", "checks": [{"name": "ci", "status": "completed", "conclusion": "success"}]})
+    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": [], "childCleanup": {"BO-204": {"status": "clean"}}})
+
+    with pytest.raises(ValueError, match="childEvidence"):
+        store.build_closeout_evidence("BO-203", authority=authority)
+
+
+def test_parent_closeout_blocks_missing_child_cleanup_matrix(tmp_path, monkeypatch):
+    from hermes_cli.kanban_ultragoal import KanbanUltragoalStore
+
+    hermes_home = tmp_path / "hermes-home"
+    target_repo = tmp_path / "product-repo"
+    hermes_home.mkdir()
+    target_repo.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    authority = _authority(children=[{"id": "BO-204", "relationType": "hierarchy", "title": "child"}])
+    store = KanbanUltragoalStore(target_repo)
+    store.start("BO-203", authority=authority, root_objective="Complete parent", target_mode="parent")
+    store.record_worker_done("BO-203", authority=authority, evidence={"summary": "implemented", "childEvidence": {"BO-204": {"summary": "ok"}}})
+    store.record_verifier_result("BO-203", authority=authority, result={"passed": True, "perCriterion": {"dc-1": "ok"}})
+    store.record_reviewer_result("BO-203", authority=authority, result=_reviewer_approve(quality_gate=_quality_gate()))
+    store.record_pr_created("BO-203", authority=authority, pr={"url": "https://github.com/o/r/pull/1", "number": 1, "headSha": "abc"})
+    store.record_ci_result("BO-203", authority=authority, ci={"state": "success", "headSha": "abc", "checks": [{"name": "ci", "status": "completed", "conclusion": "success"}]})
+    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": []})
+
+    with pytest.raises(ValueError, match="childCleanup"):
+        store.build_closeout_evidence("BO-203", authority=authority)
 
 
 def test_closeout_review_ready_applies_children_before_parent(tmp_path, monkeypatch):
@@ -186,10 +285,10 @@ def test_closeout_review_ready_applies_children_before_parent(tmp_path, monkeypa
     store.start("BO-203", authority=authority, root_objective="Complete parent", target_mode="parent")
     store.record_worker_done("BO-203", authority=authority, evidence={"summary": "implemented", "childEvidence": {"BO-204": "ok", "BO-205": "ok"}})
     store.record_verifier_result("BO-203", authority=authority, result={"passed": True})
-    store.record_reviewer_result("BO-203", authority=authority, result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []})
+    store.record_reviewer_result("BO-203", authority=authority, result=_reviewer_approve(quality_gate=_quality_gate()))
     store.record_pr_created("BO-203", authority=authority, pr={"url": "https://github.com/o/r/pull/1", "number": 1, "headSha": "abc"})
     store.record_ci_result("BO-203", authority=authority, ci={"state": "success", "headSha": "abc", "checks": [{"name": "ci", "status": "completed", "conclusion": "success"}]})
-    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": []})
+    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": [], "childCleanup": {"BO-204": {"status": "clean"}, "BO-205": {"status": "clean"}}})
 
     calls = []
 
@@ -224,12 +323,12 @@ def test_cli_build_closeout_evidence_json(tmp_path, monkeypatch, capsys):
     authority = _authority(children=[{"id": "BO-204", "relationType": "hierarchy"}])
     store = KanbanUltragoalStore(target_repo)
     store.start("BO-203", authority=authority, root_objective="Complete parent", target_mode="parent")
-    store.record_worker_done("BO-203", authority=authority, evidence={"summary": "implemented"})
+    store.record_worker_done("BO-203", authority=authority, evidence={"summary": "implemented", "childEvidence": {"BO-204": {"summary": "ok"}}})
     store.record_verifier_result("BO-203", authority=authority, result={"passed": True})
-    store.record_reviewer_result("BO-203", authority=authority, result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []})
+    store.record_reviewer_result("BO-203", authority=authority, result=_reviewer_approve(quality_gate=_quality_gate()))
     store.record_pr_created("BO-203", authority=authority, pr={"url": "https://github.com/o/r/pull/1", "number": 1, "headSha": "abc"})
     store.record_ci_result("BO-203", authority=authority, ci={"state": "success", "headSha": "abc"})
-    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": []})
+    store.record_cleanup_proof("BO-203", authority=authority, proof={"status": "passed", "retained": [], "childCleanup": {"BO-204": {"status": "clean"}}})
 
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd")

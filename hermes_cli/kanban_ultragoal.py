@@ -572,6 +572,9 @@ class KanbanUltragoalStore:
         if cleanup.get("status") != "passed" or cleanup.get("readOnlyProof") is not True:
             raise ValueError("cleanup proof must be a recorded read-only passing artifact before review_ready")
         worker = json.loads((root / "evidence" / "worker.json").read_text(encoding="utf-8")) if (root / "evidence" / "worker.json").exists() else {}
+        reviewer = json.loads((root / "reviews" / "final.json").read_text(encoding="utf-8"))
+        self._require_quality_gate(reviewer)
+        parent_child_matrix = self._require_parent_child_closeout_matrix(run, worker, cleanup)
         child_evidence = []
         for child_id in (run.scope or {}).get("childTaskIds", []):
             child_evidence.append({"taskId": child_id, "evidence": (worker.get("childEvidence") or {}).get(child_id)})
@@ -583,6 +586,7 @@ class KanbanUltragoalStore:
             "dispatcherUsed": run.dispatcher_used,
             "childEvidence": child_evidence,
             "childCleanup": cleanup.get("childCleanup") or {},
+            "childCloseoutMatrix": parent_child_matrix,
         }
         self._append_ledger(run_id, "review_ready", run.last_terminal_report)
         return self.save_run(run)
@@ -593,6 +597,101 @@ class KanbanUltragoalStore:
             return {}
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
+
+    def _quality_gate_blockers(self, quality_gate: Any) -> list[str]:
+        if not isinstance(quality_gate, dict):
+            return ["missing_quality_gate"]
+        blockers: list[str] = []
+        architect = quality_gate.get("architect_review")
+        if not isinstance(architect, dict):
+            blockers.append("missing_quality_gate.architect_review")
+        else:
+            for key in ("architecture_status", "product_status", "code_status"):
+                if str(architect.get(key) or "").upper() != "CLEAR":
+                    blockers.append(f"quality_gate.architect_review.{key}")
+            if str(architect.get("recommendation") or "").upper() != "APPROVE":
+                blockers.append("quality_gate.architect_review.recommendation")
+            if not architect.get("evidence"):
+                blockers.append("quality_gate.architect_review.evidence")
+            if architect.get("blockers"):
+                blockers.append("quality_gate.architect_review.blockers")
+        verifier = quality_gate.get("verifier_qa")
+        if not isinstance(verifier, dict):
+            blockers.append("missing_quality_gate.verifier_qa")
+        else:
+            if str(verifier.get("status") or "").lower() != "passed":
+                blockers.append("quality_gate.verifier_qa.status")
+            coverage = verifier.get("contract_coverage")
+            if not isinstance(coverage, list) or not coverage:
+                blockers.append("quality_gate.verifier_qa.contract_coverage")
+            else:
+                for row in coverage:
+                    if not isinstance(row, dict) or str(row.get("status") or "").lower() not in {"covered", "not_applicable"} or not row.get("evidence_refs"):
+                        blockers.append("quality_gate.verifier_qa.contract_coverage")
+                        break
+            surfaces = verifier.get("surface_evidence")
+            if not isinstance(surfaces, list) or not surfaces:
+                blockers.append("quality_gate.verifier_qa.surface_evidence")
+            else:
+                for row in surfaces:
+                    if not isinstance(row, dict) or str(row.get("verdict") or "").lower() != "passed" or not row.get("invocation") or not row.get("artifact_refs"):
+                        blockers.append("quality_gate.verifier_qa.surface_evidence")
+                        break
+            adversarial = verifier.get("adversarial_cases")
+            if not isinstance(adversarial, list) or not adversarial:
+                blockers.append("quality_gate.verifier_qa.adversarial_cases")
+            else:
+                for row in adversarial:
+                    if not isinstance(row, dict) or str(row.get("verdict") or "").lower() != "passed" or not row.get("artifact_refs"):
+                        blockers.append("quality_gate.verifier_qa.adversarial_cases")
+                        break
+        iteration = quality_gate.get("iteration")
+        if not isinstance(iteration, dict):
+            blockers.append("missing_quality_gate.iteration")
+        else:
+            if iteration.get("full_rerun") is not True:
+                blockers.append("quality_gate.iteration.full_rerun")
+            if not iteration.get("rerun_commands"):
+                blockers.append("quality_gate.iteration.rerun_commands")
+            if iteration.get("blockers"):
+                blockers.append("quality_gate.iteration.blockers")
+        return list(dict.fromkeys(blockers))
+
+    def _require_quality_gate(self, reviewer_raw: dict[str, Any]) -> dict[str, Any]:
+        quality_gate = reviewer_raw.get("quality_gate") or reviewer_raw.get("qualityGate")
+        blockers = self._quality_gate_blockers(quality_gate)
+        if blockers:
+            raise ValueError("quality_gate blocked review_ready: " + ", ".join(blockers))
+        return dict(quality_gate)
+
+    def _require_parent_child_closeout_matrix(self, run: KanbanUltragoalRun, worker_raw: dict[str, Any], cleanup_raw: dict[str, Any]) -> dict[str, Any]:
+        child_ids = [str(c) for c in (run.scope or {}).get("childTaskIds", [])]
+        if run.target_mode != "parent" or not child_ids:
+            return {"children": [], "complete": True}
+        child_evidence = worker_raw.get("childEvidence") or worker_raw.get("child_evidence") or {}
+        child_cleanup = cleanup_raw.get("childCleanup") or cleanup_raw.get("child_cleanup") or {}
+        if not isinstance(child_evidence, dict):
+            child_evidence = {}
+        if not isinstance(child_cleanup, dict):
+            child_cleanup = {}
+        matrix: list[dict[str, Any]] = []
+        blockers: list[str] = []
+        for child_id in child_ids:
+            has_evidence = bool(child_evidence.get(child_id))
+            has_cleanup = bool(child_cleanup.get(child_id))
+            matrix.append({
+                "taskId": child_id,
+                "hasChildEvidence": has_evidence,
+                "hasChildCleanup": has_cleanup,
+                "requiredKanbanCloseout": "review_ready",
+            })
+            if not has_evidence:
+                blockers.append(f"childEvidence:{child_id}")
+            if not has_cleanup:
+                blockers.append(f"childCleanup:{child_id}")
+        if blockers:
+            raise ValueError("parent child closeout matrix blocked review_ready: " + ", ".join(blockers))
+        return {"children": matrix, "complete": True}
 
     def _done_criteria_ledger(self, run: KanbanUltragoalRun) -> dict[str, Any]:
         criteria = []
@@ -637,6 +736,8 @@ class KanbanUltragoalStore:
         pr_raw = self._load_optional_json(run_id, "pr.json")
         ci_raw = self._load_optional_json(run_id, "evidence/ci.json")
         cleanup_raw = self._load_optional_json(run_id, "cleanup.json")
+        quality_gate = self._require_quality_gate(reviewer_raw)
+        child_closeout_matrix = self._require_parent_child_closeout_matrix(run, worker_raw, cleanup_raw)
         ledger = self._done_criteria_ledger(run)
         artifact_refs = [str(root / "ledger.jsonl"), str(root / "run.json"), str(root / "goals.json")]
         tests_run = [str(item) for item in worker_raw.get("tests_run") or worker_raw.get("commandsRun") or []]
@@ -708,6 +809,8 @@ class KanbanUltragoalStore:
             "verifier_result": verifier,
             "reviewer_loop": {"attempt": 1, "max_attempts": 3, "mode": "kanban-ultragoal-internal-phases"},
             "reviewer_result": reviewer_raw,
+            "quality_gate": quality_gate,
+            "child_closeout_matrix": child_closeout_matrix,
             "review_package": review_package,
             "artifact_refs": artifact_refs,
             "authority_boundary_confirmed": True,

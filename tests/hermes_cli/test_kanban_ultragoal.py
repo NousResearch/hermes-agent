@@ -25,6 +25,30 @@ def _authority(task_id="BO-203", *, snapshot_hash="sha256:a", done_hash="sha256:
     }
 
 
+def _quality_gate():
+    return {
+        "architect_review": {
+            "architecture_status": "CLEAR",
+            "product_status": "CLEAR",
+            "code_status": "CLEAR",
+            "recommendation": "APPROVE",
+            "evidence": ["reviews/final.json"],
+            "blockers": [],
+        },
+        "verifier_qa": {
+            "status": "passed",
+            "contract_coverage": [{"done_criterion": "ship reviewed PR", "status": "covered", "evidence_refs": ["pytest"]}],
+            "surface_evidence": [{"surface": "cli", "invocation": "pytest", "verdict": "passed", "artifact_refs": ["pytest"]}],
+            "adversarial_cases": [{"scenario": "missing evidence", "expected_behavior": "block", "verdict": "passed", "artifact_refs": ["pytest"]}],
+        },
+        "iteration": {"full_rerun": True, "rerun_commands": ["pytest"], "blockers": []},
+    }
+
+
+def _reviewer_approve():
+    return {"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": [], "quality_gate": _quality_gate()}
+
+
 def test_start_creates_canonical_run_root_with_subordinate_ultragoal_root(tmp_path):
     from hermes_cli.kanban_ultragoal import KanbanUltragoalStore
 
@@ -122,7 +146,7 @@ def test_controller_transitions_block_pr_until_verifier_and_reviewer_pass(tmp_pa
     run = store.record_reviewer_result(
         "BO-203",
         authority=_authority(),
-        result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []},
+        result=_reviewer_approve(),
     )
     assert run.state == "review_passed"
 
@@ -148,7 +172,7 @@ def test_pr_ready_requires_complete_artifact_package(tmp_path):
     store.record_reviewer_result(
         "BO-203",
         authority=_authority(),
-        result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []},
+        result=_reviewer_approve(),
     )
     store.record_pr_created(
         "BO-203",
@@ -166,6 +190,34 @@ def test_pr_ready_requires_complete_artifact_package(tmp_path):
     assert run.state == "review_ready"
     package = json.loads((store.root("BO-203") / "pr.json").read_text())
     assert package["url"].endswith("/1")
+
+
+def test_mark_review_ready_blocks_missing_quality_gate_matrix(tmp_path):
+    from hermes_cli.kanban_ultragoal import KanbanUltragoalStore
+
+    store = KanbanUltragoalStore(tmp_path)
+    store.start("BO-203", authority=_authority(), root_objective="Bring one reviewed PR")
+    store.record_worker_done("BO-203", authority=_authority(), evidence={"commandsRun": ["pytest"]})
+    store.record_verifier_result(
+        "BO-203",
+        authority=_authority(),
+        result={"passed": True, "doneCriteriaEvidence": [{"criterionId": "DC-1", "evidence": "pytest"}]},
+    )
+    store.record_reviewer_result(
+        "BO-203",
+        authority=_authority(),
+        result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []},
+    )
+    store.record_pr_created(
+        "BO-203",
+        authority=_authority(),
+        pr={"url": "https://github.com/chriskim12/hermes-agent/pull/1", "number": 1, "headSha": "abc"},
+    )
+    store.record_ci_result("BO-203", authority=_authority(), ci={"state": "success", "headSha": "abc"})
+    store.record_cleanup_proof("BO-203", authority=_authority(), proof={"status": "passed", "retained": []})
+
+    with pytest.raises(ValueError, match="quality_gate"):
+        store.mark_review_ready("BO-203", authority=_authority())
 
 
 def test_force_start_clears_stale_ledger_and_evidence(tmp_path):
@@ -298,7 +350,7 @@ def test_ci_success_must_match_pr_head_sha_and_success_clears_repair_goal(tmp_pa
     store.record_reviewer_result(
         "BO-203",
         authority=_authority(),
-        result={"recommendation": "APPROVE", "securityConcerns": [], "logicErrors": []},
+        result=_reviewer_approve(),
     )
     store.record_pr_created(
         "BO-203",
@@ -539,7 +591,7 @@ def test_cli_transition_subcommands_expose_existing_store_state_machine(tmp_path
     run(["start", "t_parent", "--authority-json", authority_json, "--root-objective", "one reviewed PR"])
     assert run(["record-worker-done", "t_parent", "--authority-json", authority_json, "--evidence-json", '{"commandsRun":["pytest"]}'])["state"] == "worker_done"
     assert run(["record-verifier-result", "t_parent", "--authority-json", authority_json, "--result-json", '{"passed":true,"doneCriteriaEvidence":[{"criterionId":"DC-1","evidence":"pytest"}]}'])["state"] == "verification_passed"
-    assert run(["record-reviewer-result", "t_parent", "--authority-json", authority_json, "--result-json", '{"recommendation":"APPROVE","securityConcerns":[],"logicErrors":[]}'])["state"] == "review_passed"
+    assert run(["record-reviewer-result", "t_parent", "--authority-json", authority_json, "--result-json", json.dumps(_reviewer_approve())])["state"] == "review_passed"
     assert run(["record-pr-created", "t_parent", "--authority-json", authority_json, "--pr-json", '{"url":"https://github.com/chriskim12/hermes-agent/pull/92","number":92,"headSha":"abc"}'])["state"] == "pr_created"
     assert run(["record-ci-result", "t_parent", "--authority-json", authority_json, "--ci-json", '{"state":"success","headSha":"abc"}'])["state"] == "ci_passed"
     assert run(["record-cleanup-proof", "t_parent", "--authority-json", authority_json, "--proof-json", '{"status":"passed","retained":[]}'])["state"] == "ci_passed"

@@ -317,6 +317,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         )
     finally:
         runner._clear_session_env(tokens)
+        runner._shutdown_executor()
 
     assert result == {
         "platform": "telegram",
@@ -334,7 +335,10 @@ async def test_run_in_executor_with_context_forwards_args():
     def add(a, b):
         return a + b
 
-    result = await runner._run_in_executor_with_context(add, 3, 7)
+    try:
+        result = await runner._run_in_executor_with_context(add, 3, 7)
+    finally:
+        runner._shutdown_executor()
     assert result == 10
 
 
@@ -346,5 +350,45 @@ async def test_run_in_executor_with_context_propagates_exceptions():
     def blow_up():
         raise ValueError("boom")
 
-    with pytest.raises(ValueError, match="boom"):
-        await runner._run_in_executor_with_context(blow_up)
+    try:
+        with pytest.raises(ValueError, match="boom"):
+            await runner._run_in_executor_with_context(blow_up)
+    finally:
+        runner._shutdown_executor()
+
+
+@pytest.mark.asyncio
+async def test_run_in_executor_with_context_survives_default_executor_shutdown():
+    """Gateway agent work should not depend on asyncio's default executor."""
+    runner = object.__new__(GatewayRunner)
+    loop = asyncio.get_running_loop()
+
+    await loop.run_in_executor(None, lambda: None)
+    await loop.shutdown_default_executor()
+
+    try:
+        result = await runner._run_in_executor_with_context(lambda: "ok")
+    finally:
+        runner._shutdown_executor()
+
+    assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_run_in_executor_with_context_recreates_shutdown_gateway_executor():
+    """A stopped gateway-owned executor should be replaced on the next use."""
+    runner = object.__new__(GatewayRunner)
+
+    try:
+        first = await runner._run_in_executor_with_context(lambda: "first")
+        first_executor = runner._executor
+        runner._shutdown_executor()
+
+        second = await runner._run_in_executor_with_context(lambda: "second")
+        second_executor = runner._executor
+    finally:
+        runner._shutdown_executor()
+
+    assert first == "first"
+    assert second == "second"
+    assert second_executor is not first_executor

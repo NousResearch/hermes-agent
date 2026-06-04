@@ -391,6 +391,306 @@ class TestMattermostWebSocketParsing:
         assert msg_event.source.thread_id == "root_post_123"
 
     @pytest.mark.asyncio
+    async def test_first_thread_turn_omits_prior_slash_commands_from_context(self):
+        """Old slash commands in a Mattermost thread should not seed context."""
+        post_data = {
+            "id": "post_reply",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id summarize this",
+            "root_id": "root_post_123",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@carol",
+            },
+        }
+
+        async def fake_api_get(path):
+            if path == "posts/root_post_123/thread":
+                return {
+                    "posts": {
+                        "root_post_123": {
+                            "id": "root_post_123",
+                            "user_id": "user_789",
+                            "message": "Original question",
+                            "create_at": 1000,
+                        },
+                        "prior_slash": {
+                            "id": "prior_slash",
+                            "user_id": "user_456",
+                            "message": "/todo internal command",
+                            "create_at": 2000,
+                        },
+                        "post_reply": {
+                            "id": "post_reply",
+                            "user_id": "user_123",
+                            "message": "@bot_user_id summarize this",
+                            "create_at": 3000,
+                        },
+                    }
+                }
+            if path == "users/user_789":
+                return {"username": "alice"}
+            if path == "users/user_456":
+                return {"username": "bob"}
+            return {}
+
+        self.adapter._api_get = AsyncMock(side_effect=fake_api_get)
+
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_789"}):
+            os.environ.pop("MATTERMOST_THREAD_CONTEXT", None)
+            os.environ.pop("MATTERMOST_ALLOW_ALL_USERS", None)
+            os.environ.pop("GATEWAY_ALLOWED_USERS", None)
+            os.environ.pop("GATEWAY_ALLOW_ALL_USERS", None)
+            await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("[Thread context")
+        assert "[alice]: Original question" in msg_event.text
+        assert "/todo internal command" not in msg_event.text
+        assert "[carol]: summarize this" not in msg_event.text
+        assert msg_event.text.endswith("summarize this")
+
+    @pytest.mark.asyncio
+    async def test_thread_context_limit_keeps_most_recent_prior_posts(self):
+        """Long threads should keep the newest prior posts, not the oldest."""
+
+        async def fake_api_get(path):
+            if path == "posts/root_post_123/thread":
+                return {
+                    "posts": {
+                        "root_post_123": {
+                            "id": "root_post_123",
+                            "user_id": "user_1",
+                            "username": "alice",
+                            "message": "Oldest root",
+                            "create_at": 1000,
+                        },
+                        "prior_2": {
+                            "id": "prior_2",
+                            "user_id": "user_2",
+                            "username": "bob",
+                            "message": "Middle detail",
+                            "create_at": 2000,
+                        },
+                        "prior_3": {
+                            "id": "prior_3",
+                            "user_id": "user_3",
+                            "username": "carol",
+                            "message": "Newest detail",
+                            "create_at": 3000,
+                        },
+                        "current": {
+                            "id": "current",
+                            "user_id": "user_4",
+                            "username": "dan",
+                            "message": "@bot_user_id summarize",
+                            "create_at": 4000,
+                        },
+                    }
+                }
+            return {}
+
+        self.adapter._api_get = AsyncMock(side_effect=fake_api_get)
+
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "all"}):
+            context = await self.adapter._fetch_thread_context(
+                root_id="root_post_123",
+                current_post_id="current",
+                limit=2,
+            )
+
+        assert "Oldest root" not in context
+        assert "[bob]: Middle detail" in context
+        assert "[carol]: Newest detail" in context
+        assert "summarize" not in context
+        assert context.index("[bob]:") < context.index("[carol]:")
+
+    @pytest.mark.asyncio
+    async def test_thread_context_filters_non_allowlisted_authors(self):
+        """Injected thread history should not leak non-allowlisted authors."""
+        post_data = {
+            "id": "post_reply",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id summarize this",
+            "root_id": "root_post_123",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@carol",
+            },
+        }
+
+        async def fake_api_get(path):
+            if path == "posts/root_post_123/thread":
+                return {
+                    "posts": {
+                        "root_post_123": {
+                            "id": "root_post_123",
+                            "user_id": "allowed_user",
+                            "username": "alice",
+                            "message": "Allowed context",
+                            "create_at": 1000,
+                        },
+                        "prior_unlisted": {
+                            "id": "prior_unlisted",
+                            "user_id": "unlisted_user",
+                            "username": "mallory",
+                            "message": "Private unlisted context",
+                            "create_at": 2000,
+                        },
+                        "post_reply": {
+                            "id": "post_reply",
+                            "user_id": "user_123",
+                            "username": "carol",
+                            "message": "@bot_user_id summarize this",
+                            "create_at": 3000,
+                        },
+                    }
+                }
+            return {}
+
+        self.adapter._api_get = AsyncMock(side_effect=fake_api_get)
+
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "allowed_user"}):
+            os.environ.pop("MATTERMOST_THREAD_CONTEXT", None)
+            os.environ.pop("MATTERMOST_ALLOW_ALL_USERS", None)
+            os.environ.pop("GATEWAY_ALLOWED_USERS", None)
+            os.environ.pop("GATEWAY_ALLOW_ALL_USERS", None)
+            await self.adapter._handle_ws_event(event)
+
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert "Allowed context" in msg_event.text
+        assert "Private unlisted context" not in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_thread_context_all_includes_non_allowlisted_authors(self):
+        """MATTERMOST_THREAD_CONTEXT=all is an explicit full-history opt-in."""
+
+        async def fake_api_get(path):
+            if path == "posts/root_post_123/thread":
+                return {
+                    "posts": {
+                        "root_post_123": {
+                            "id": "root_post_123",
+                            "user_id": "allowed_user",
+                            "username": "alice",
+                            "message": "Allowed context",
+                            "create_at": 1000,
+                        },
+                        "prior_unlisted": {
+                            "id": "prior_unlisted",
+                            "user_id": "unlisted_user",
+                            "username": "mallory",
+                            "message": "Unlisted context",
+                            "create_at": 2000,
+                        },
+                        "current": {
+                            "id": "current",
+                            "user_id": "user_123",
+                            "username": "carol",
+                            "message": "@bot_user_id summarize",
+                            "create_at": 3000,
+                        },
+                    }
+                }
+            return {}
+
+        self.adapter._api_get = AsyncMock(side_effect=fake_api_get)
+
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "all"}):
+            context = await self.adapter._fetch_thread_context(
+                root_id="root_post_123",
+                current_post_id="current",
+            )
+
+        assert "Allowed context" in context
+        assert "Unlisted context" in context
+
+    @pytest.mark.asyncio
+    async def test_thread_context_off_skips_context_fetch(self):
+        """MATTERMOST_THREAD_CONTEXT=off disables first-turn context seeding."""
+        post_data = {
+            "id": "post_reply",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id summarize this",
+            "root_id": "root_post_123",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@carol",
+            },
+        }
+        self.adapter._api_get = AsyncMock(return_value={})
+
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "off"}):
+            await self.adapter._handle_ws_event(event)
+
+        self.adapter._api_get.assert_not_called()
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "summarize this"
+
+    @pytest.mark.asyncio
+    async def test_existing_thread_session_skips_thread_context_fetch(self):
+        """Thread context should not be fetched again once session exists."""
+        post_data = {
+            "id": "post_reply_2",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id Thread reply",
+            "root_id": "root_post_123",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        session_key = "custom-session-store-key"
+        session_store = MagicMock()
+        session_store._entries = {session_key: object()}
+        session_store._generate_session_key = lambda _source: session_key
+        session_store._ensure_loaded = MagicMock()
+        session_store._should_reset = lambda _entry, _source: None
+        self.adapter.set_session_store(session_store)
+        self.adapter._api_get = AsyncMock(
+            return_value={
+                "posts": {
+                    "root_post_123": {
+                        "id": "root_post_123",
+                        "user_id": "user_456",
+                        "username": "bob",
+                        "message": "Original question",
+                        "create_at": 1000,
+                    }
+                }
+            }
+        )
+
+        await self.adapter._handle_ws_event(event)
+
+        self.adapter._api_get.assert_not_called()
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "Thread reply"
+
+    @pytest.mark.asyncio
     async def test_invalid_post_json_ignored(self):
         """Invalid JSON in data.post should be silently ignored."""
         event = {

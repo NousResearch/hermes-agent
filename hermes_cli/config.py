@@ -272,6 +272,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
+    "MATTERMOST_THREAD_CONTEXT",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
@@ -3274,6 +3275,13 @@ OPTIONAL_ENV_VARS = {
     "MATTERMOST_FREE_RESPONSE_CHANNELS": {
         "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
         "prompt": "Free-response channel IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_THREAD_CONTEXT": {
+        "description": "First-turn Mattermost thread context policy: allowlisted, off, or all",
+        "prompt": "Thread context policy (allowlisted/off/all)",
         "url": None,
         "password": False,
         "category": "messaging",

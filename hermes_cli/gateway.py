@@ -4063,6 +4063,12 @@ _PLATFORMS = [
                 "password": False,
                 "help": "off = flat channel messages, thread = replies nest under your message.",
             },
+            {
+                "name": "MATTERMOST_THREAD_CONTEXT",
+                "prompt": "Thread context policy (allowlisted/off/all, default: allowlisted)",
+                "password": False,
+                "help": "allowlisted seeds only allowed authors; off disables seeding; all seeds full thread history.",
+            },
         ],
     },
     {

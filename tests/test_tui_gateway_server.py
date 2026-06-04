@@ -5495,6 +5495,218 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
 
 
+def test_idle_compression_config_defaults_disabled(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"compression": {"enabled": True, "threshold": 0.6}},
+    )
+
+    cfg = server._load_idle_compression_config()
+
+    assert cfg["enabled"] is False
+    assert cfg["threshold"] == 0.54
+    assert cfg["idle_after_seconds"] == 120.0
+    assert cfg["min_interval_seconds"] == 1800.0
+
+
+def test_idle_compression_config_respects_parent_enabled(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "compression": {
+                "enabled": False,
+                "threshold": 0.6,
+                "idle": {"enabled": True},
+            }
+        },
+    )
+
+    cfg = server._load_idle_compression_config()
+
+    assert cfg["enabled"] is False
+    assert cfg["threshold"] == 0.54
+
+
+def test_idle_compression_config_rejects_non_finite_values(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "compression": {
+                "enabled": True,
+                "threshold": 0.6,
+                "idle": {
+                    "enabled": "yes",
+                    "threshold": "nan",
+                    "idle_after_seconds": "inf",
+                    "min_interval_seconds": -1,
+                },
+            }
+        },
+    )
+
+    cfg = server._load_idle_compression_config()
+
+    assert cfg["enabled"] is True
+    assert cfg["threshold"] == 0.54
+    assert cfg["idle_after_seconds"] == 120.0
+    assert cfg["min_interval_seconds"] == 60.0
+
+
+def test_session_info_reports_idle_compression_as_running(monkeypatch):
+    session = _session(idle_compression_running=True)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_display_session_cwd", lambda _session: "/tmp")
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda _cwd: "")
+    monkeypatch.setattr(server, "_project_info_for_cwd", lambda _cwd: None)
+    monkeypatch.setattr(server, "_session_usage_snapshot", lambda _session: {})
+
+    info = server._session_info(session["agent"], session)
+
+    assert info["running"] is True
+
+
+def test_finalize_session_cancels_pending_idle_compression(monkeypatch):
+    stop_event = threading.Event()
+    fake_thread = threading.Thread(target=lambda: None)
+    session = _session(agent=types.SimpleNamespace(session_id="session-key"), sid="sid")
+    server._IDLE_COMPRESSION_THREADS["sid"] = (fake_thread, stop_event)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *args, **kwargs: None)
+
+    try:
+        server._finalize_session(session)
+
+        assert stop_event.is_set()
+        assert "sid" not in server._IDLE_COMPRESSION_THREADS
+    finally:
+        server._IDLE_COMPRESSION_THREADS.pop("sid", None)
+
+
+class _IdleCompressAgent:
+    session_id = "session-key"
+
+    def _compress_context(self, history, system_message, approx_tokens=None, focus_topic=None):
+        return history[:2], {}
+
+
+def test_idle_compression_drops_result_if_prompt_started_during_compress():
+    history = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    session = _session(agent=_IdleCompressAgent(), history=history, history_version=3)
+    original = list(history)
+
+    def racing_compress(*args, **kwargs):
+        session["running"] = True
+        return original[:2], {}
+
+    session["agent"]._compress_context = racing_compress
+    removed, _usage = server._compress_session_history(
+        session,
+        approx_tokens=600,
+        before_messages=original,
+        history_version=3,
+        abort_if_running=True,
+    )
+
+    assert removed == 0
+    assert session["history"] == original
+    assert session["history_version"] == 3
+
+
+def test_idle_compression_attempt_cooldown_after_noop(monkeypatch):
+    history = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    session = _session(
+        agent=types.SimpleNamespace(session_id="session-key"),
+        history=history,
+        last_active=0.0,
+    )
+    now = {"value": 250.0}
+    calls = []
+    monkeypatch.setattr(server.time, "time", lambda: now["value"])
+    monkeypatch.setattr(
+        server,
+        "_load_idle_compression_config",
+        lambda: {
+            "enabled": True,
+            "threshold": 0.5,
+            "idle_after_seconds": 120.0,
+            "min_interval_seconds": 1800.0,
+            "emit_status": False,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.estimate_request_tokens_rough",
+        lambda messages, system_prompt="", tools=None: 600,
+    )
+    monkeypatch.setattr(
+        server, "_session_compression_threshold_tokens", lambda _agent, _cfg: 500
+    )
+    monkeypatch.setattr(
+        server,
+        "_compress_session_history",
+        lambda *args, **kwargs: calls.append(kwargs) or (0, {}),
+    )
+
+    assert server._run_idle_compression_once("sid", session) is False
+    assert session["last_idle_compression_attempt_at"] == 250.0
+    now["value"] = 300.0
+    assert server._run_idle_compression_once("sid", session) is False
+    assert len(calls) == 1
+
+
+def test_idle_compression_schedule_debounces_to_latest_activity(monkeypatch):
+    class FakeThread:
+        created = []
+
+        def __init__(self, target, **kwargs):
+            self.target = target
+            self._alive = False
+            self.__class__.created.append(self)
+
+        def start(self):
+            self._alive = True
+
+        def is_alive(self):
+            return self._alive
+
+    now = {"value": 100.0}
+    session = _session(last_active=100.0, sid="sid")
+    monkeypatch.setattr(
+        server,
+        "_load_idle_compression_config",
+        lambda: {
+            "enabled": True,
+            "threshold": 0.5,
+            "idle_after_seconds": 120.0,
+            "min_interval_seconds": 1800.0,
+            "emit_status": False,
+        },
+    )
+    monkeypatch.setattr(server.time, "time", lambda: now["value"])
+    monkeypatch.setattr(server.threading, "Thread", FakeThread)
+    server._IDLE_COMPRESSION_THREADS.clear()
+
+    server._schedule_idle_compression("sid", session)
+    assert session["idle_compression_due_at"] == 220.0
+    now["value"] = 150.0
+    session["last_active"] = 150.0
+    server._schedule_idle_compression("sid", session)
+
+    assert len(FakeThread.created) == 1
+    assert session["idle_compression_due_at"] == 270.0
+
+
 def test_session_compress_reports_aborted_summary_without_success(monkeypatch):
     compression_state = types.SimpleNamespace(
         _last_compress_aborted=True,

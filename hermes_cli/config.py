@@ -1514,6 +1514,19 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "idle": {                    # Gateway idle pre-compression. Opt-in: when
+                                      # enabled, the Gateway schedules a quiet background
+                                      # compact pass after a session has been idle so the
+                                      # next prompt is less likely to block on preflight
+                                      # compression.
+            "enabled": False,
+                                      # threshold is intentionally omitted here: if the user
+                                      # does not set compression.idle.threshold explicitly,
+                                      # Gateway derives it as compression.threshold * 0.9.
+            "idle_after_seconds": 120,
+            "min_interval_seconds": 1800,
+            "emit_status": False,    # keep quiet by default; logs record outcomes.
+        },
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

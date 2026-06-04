@@ -6,6 +6,7 @@ import copy
 import inspect
 import json
 import logging
+import math
 import os
 import queue
 import subprocess
@@ -262,6 +263,9 @@ _pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=_rpc_pool_workers,
     thread_name_prefix="tui-rpc",
 )
+_IDLE_COMPRESSION_THREADS: dict[str, tuple[threading.Thread, threading.Event]] = {}
+_IDLE_COMPRESSION_LOCK = threading.Lock()
+_IDLE_COMPRESSION_GLOBAL_SEMAPHORE = threading.BoundedSemaphore(1)
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
@@ -578,6 +582,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
+
+    sid = session.get("sid") or session.get("tui_session_id") or ""
+    if sid:
+        with _IDLE_COMPRESSION_LOCK:
+            worker = _IDLE_COMPRESSION_THREADS.pop(sid, None)
+        if worker:
+            _thread, idle_stop = worker
+            idle_stop.set()
 
     agent = session.get("agent")
     lock = session.get("history_lock")
@@ -3445,6 +3457,7 @@ def _compress_session_history(
     approx_tokens: int | None = None,
     before_messages: list | None = None,
     history_version: int | None = None,
+    abort_if_running: bool = False,
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_request_tokens_rough
 
@@ -3481,6 +3494,9 @@ def _compress_session_history(
         focus_topic=focus_topic or None,
     )
     with session["history_lock"]:
+        if abort_if_running and session.get("running"):
+            usage = _get_usage(agent)
+            return 0, usage
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
             # result so we don't clobber concurrent edits.
@@ -3490,6 +3506,225 @@ def _compress_session_history(
         session["history_version"] = history_version + 1
     usage = _get_usage(agent)
     return len(history) - len(compressed), usage
+
+
+def _session_busy(session: dict) -> bool:
+    return bool(session.get("running") or session.get("idle_compression_running"))
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if math.isfinite(coerced) else default
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return default
+
+
+def _load_idle_compression_config() -> dict:
+    """Read conservative Gateway idle pre-compression settings."""
+    cfg = _load_cfg().get("compression") or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    parent_enabled = _coerce_bool(cfg.get("enabled"), True)
+    idle = cfg.get("idle") or cfg.get("idle_precompression") or {}
+    if not isinstance(idle, dict):
+        idle = {}
+    base_threshold = _coerce_float(cfg.get("threshold"), 0.5)
+    default_threshold = max(0.1, base_threshold * 0.9)
+    threshold = _coerce_float(idle.get("threshold"), default_threshold)
+    threshold = max(0.1, min(threshold, 0.95))
+    idle_after = _coerce_float(
+        idle.get("idle_after_seconds", idle.get("after_seconds", 120.0)), 120.0
+    )
+    min_interval = _coerce_float(
+        idle.get("min_interval_seconds", idle.get("cooldown_seconds", 1800.0)),
+        1800.0,
+    )
+    return {
+        "enabled": parent_enabled and _coerce_bool(idle.get("enabled"), False),
+        "threshold": threshold,
+        "idle_after_seconds": min(3600.0, max(10.0, idle_after)),
+        "min_interval_seconds": min(86400.0, max(60.0, min_interval)),
+        "emit_status": _coerce_bool(idle.get("emit_status"), False),
+    }
+
+
+def _session_compression_threshold_tokens(agent: Any, cfg: dict) -> int:
+    compressor = getattr(agent, "context_compressor", None)
+    context_length = getattr(compressor, "context_length", None)
+    if not context_length:
+        try:
+            from agent.model_metadata import get_model_context_length
+
+            context_length = get_model_context_length(
+                getattr(agent, "model", "") or _resolve_model(),
+                base_url=getattr(agent, "base_url", "") or "",
+                api_key=getattr(agent, "api_key", "") or "",
+                provider=getattr(agent, "provider", "") or "",
+                config_context_length=getattr(agent, "_config_context_length", None),
+            )
+        except Exception:
+            context_length = 0
+    if not context_length:
+        return 0
+    return int(context_length * float(cfg.get("threshold", 0.5)))
+
+
+def _run_idle_compression_once(sid: str, session: dict) -> bool:
+    """Attempt one safe idle compression pass for a Gateway session."""
+    cfg = _load_idle_compression_config()
+    if not cfg.get("enabled"):
+        return False
+    now = time.time()
+    with session["history_lock"]:
+        if _session_busy(session) or session.get("_finalized"):
+            return False
+        last_active = float(session.get("last_active") or 0.0)
+        if now - last_active < float(cfg["idle_after_seconds"]):
+            return False
+        last_attempt = float(
+            session.get("last_idle_compression_attempt_at")
+            or session.get("last_idle_compression_at")
+            or 0.0
+        )
+        if last_attempt and now - last_attempt < float(cfg["min_interval_seconds"]):
+            return False
+        history = list(session.get("history", []))
+        history_version = int(session.get("history_version", 0))
+    if len(history) < 4:
+        return False
+    agent = session.get("agent")
+    if agent is None:
+        return False
+    try:
+        from agent.model_metadata import estimate_request_tokens_rough
+
+        approx_tokens = estimate_request_tokens_rough(
+            history,
+            system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+            tools=getattr(agent, "tools", None) or None,
+        )
+    except Exception as exc:
+        logger.debug("idle compression token estimate skipped for %s: %s", sid, exc)
+        return False
+    threshold_tokens = _session_compression_threshold_tokens(agent, cfg)
+    if not threshold_tokens or approx_tokens < threshold_tokens:
+        return False
+    if not _IDLE_COMPRESSION_GLOBAL_SEMAPHORE.acquire(blocking=False):
+        with session["history_lock"]:
+            if not session.get("_finalized") and not _session_busy(session):
+                session["idle_compression_due_at"] = time.time() + min(
+                    30.0, float(cfg["idle_after_seconds"])
+                )
+        return False
+    try:
+        with session["history_lock"]:
+            if _session_busy(session) or int(session.get("history_version", 0)) != history_version:
+                return False
+            session["idle_compression_running"] = True
+            session["last_idle_compression_attempt_at"] = now
+        if cfg.get("emit_status"):
+            _emit(
+                "status.update",
+                sid,
+                {"kind": "status", "text": f"idle compacting ~{approx_tokens:,} tokens…"},
+            )
+        try:
+            removed, _usage = _compress_session_history(
+                session,
+                approx_tokens=approx_tokens,
+                before_messages=history,
+                history_version=history_version,
+                abort_if_running=True,
+            )
+            if removed > 0:
+                _sync_session_key_after_compress(
+                    sid,
+                    session,
+                    clear_pending_title=False,
+                    restart_slash_worker=True,
+                )
+                with session["history_lock"]:
+                    session["last_idle_compression_at"] = now
+                logger.info(
+                    "idle compression completed: sid=%s approx_tokens=%s threshold=%s removed=%s",
+                    sid,
+                    approx_tokens,
+                    threshold_tokens,
+                    removed,
+                )
+                return True
+            return False
+        finally:
+            with session["history_lock"]:
+                session["idle_compression_running"] = False
+            if cfg.get("emit_status"):
+                _emit("status.update", sid, {"kind": "status", "text": "ready"})
+    except Exception as exc:
+        logger.warning("idle compression failed for sid=%s: %s", sid, exc)
+        return False
+    finally:
+        _IDLE_COMPRESSION_GLOBAL_SEMAPHORE.release()
+
+
+def _schedule_idle_compression(sid: str, session: dict) -> None:
+    if session.get("sid") != sid:
+        return
+    cfg = _load_idle_compression_config()
+    if not cfg.get("enabled"):
+        return
+    due_at = time.time() + float(cfg["idle_after_seconds"])
+    with session["history_lock"]:
+        if session.get("_finalized") or _session_busy(session):
+            return
+        session["idle_compression_due_at"] = due_at
+    stop_event = threading.Event()
+
+    def _worker() -> None:
+        try:
+            while True:
+                with session["history_lock"]:
+                    if session.get("_finalized"):
+                        return
+                    target_due_at = float(session.get("idle_compression_due_at") or 0.0)
+                remaining = max(0.0, target_due_at - time.time())
+                if remaining > 0 and stop_event.wait(timeout=remaining):
+                    return
+                _run_idle_compression_once(sid, session)
+                with session["history_lock"]:
+                    next_due_at = float(session.get("idle_compression_due_at") or 0.0)
+                    finalized = bool(session.get("_finalized"))
+                if finalized or next_due_at <= time.time():
+                    return
+        finally:
+            with _IDLE_COMPRESSION_LOCK:
+                cur = _IDLE_COMPRESSION_THREADS.get(sid)
+                if cur and cur[0] is threading.current_thread():
+                    _IDLE_COMPRESSION_THREADS.pop(sid, None)
+
+    with _IDLE_COMPRESSION_LOCK:
+        existing = _IDLE_COMPRESSION_THREADS.get(sid)
+        if existing and existing[0].is_alive():
+            return
+        thread = threading.Thread(
+            target=_worker,
+            daemon=True,
+            name=f"idle-compress-{sid[:12] or 'session'}",
+        )
+        _IDLE_COMPRESSION_THREADS[sid] = (thread, stop_event)
+        thread.start()
 
 
 def _sync_session_key_after_compress(
@@ -3801,7 +4036,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "branch": _git_branch_for_cwd(cwd),
         "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
-        "running": bool((session or {}).get("running")),
+        "running": _session_busy(session or {}),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
         "stored_session_id": session_key or "",
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -5139,6 +5374,7 @@ def _init_session(
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent,
+            "sid": sid,
             "session_key": key,
             "history": history,
             "history_lock": threading.Lock(),
@@ -10424,6 +10660,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 f"{type(_drain_exc).__name__}: {_drain_exc}",
                 file=sys.stderr,
             )
+
+        _schedule_idle_compression(sid, session)
 
     run_thread = threading.Thread(target=run, daemon=True)
     session["_run_thread"] = run_thread

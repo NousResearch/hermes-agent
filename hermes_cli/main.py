@@ -7270,45 +7270,62 @@ def _electron_download_cache_dirs() -> list[Path]:
     return out
 
 
-def _purge_corrupt_electron_cache() -> list[Path]:
-    """Delete corrupt cached Electron zips so the next build re-downloads cleanly.
+def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
+    """Clear the cached Electron download + half-written unpacked dir so the
+    next ``pack`` re-downloads and re-stages from scratch.
 
     Root cause of the ``ENOENT … rename '…/linux-unpacked/electron' ->
-    '…/linux-unpacked/Hermes'`` desktop build failure: a truncated/duplicated
-    download leaves a corrupt zip in the Electron cache. ``unpack-electron``
-    extracts a partial tree from it that is MISSING the ``electron`` binary, so
-    electron-builder dies on the final rename. The packed dir then looks plausible
-    (LICENSE, .pak files, chrome-sandbox) but has no launchable binary.
+    '…/linux-unpacked/Hermes'`` desktop build failure: a corrupt zip in the
+    per-user Electron download cache (a partial download resumed into the same
+    file leaves prepended/concatenated junk, or an interrupted write truncates
+    it). electron-builder's ``app-builder unpack-electron`` extracts the
+    distribution from that cached zip (NOT from node_modules); a bad zip yields
+    a partial tree MISSING the 193 MB ``electron`` binary, so the final rename
+    dies. Re-running repeats the same broken extraction forever.
 
-    Validates every ``electron-*.zip`` in the cache with the stdlib zip reader
-    (``testzip()`` does a full per-entry CRC check) and removes the bad ones.
-    Best-effort: never raises; returns the list of removed paths so the caller
-    can decide whether a retry is worthwhile.
+    We deliberately do NOT try to detect corruption ourselves. stdlib
+    ``zipfile`` silently tolerates the prepended/concatenated junk that is the
+    most common corruption here — it reads from the end-of-central-directory
+    backward, so ``testzip()`` returns clean on exactly the zips ``unzip -t``
+    and ``@electron/get`` reject. Gating the purge on a self-rolled validator
+    would therefore skip the real-world case and never self-heal. Instead, on a
+    packaged-build failure we unconditionally remove the version's cached zips
+    and the stale unpacked dir, then let the caller retry once: ``@electron/get``
+    re-downloads with its own SHASUM verification (the real source of truth),
+    and ``before-pack.cjs`` re-wipes the unpacked dir. If the failure was
+    unrelated, a clean re-download is harmless and the retry fails the same way.
+
+    Best-effort: never raises. Returns the paths removed so the caller can log
+    them and decide whether a retry is worthwhile (empty list ⇒ nothing to
+    clear, so no point retrying).
     """
-    import zipfile
-
     removed: list[Path] = []
+
     for cache_dir in _electron_download_cache_dirs():
         if not cache_dir.is_dir():
             continue
         for zip_path in sorted(cache_dir.rglob("electron-*.zip")):
-            corrupt = False
-            try:
-                with zipfile.ZipFile(zip_path) as zf:
-                    # testzip() returns the first bad member, or None if every
-                    # CRC checks out. A raise here means it isn't a readable zip.
-                    corrupt = zf.testzip() is not None
-            except Exception:
-                corrupt = True
-            if not corrupt:
-                continue
             try:
                 zip_path.unlink()
                 removed.append(zip_path)
             except OSError:
-                # A locked/permission-denied cache entry is out of our hands;
-                # surface nothing and let the build report its own error.
+                # Locked/permission-denied entry is out of our hands; let the
+                # build report its own error rather than masking it.
                 pass
+
+    # Drop the half-written unpacked dir too: an interrupted prior pack leaves
+    # a partial tree that poisons the rename even after the zip is fixed.
+    # (before-pack.cjs also handles this, but clearing it here makes the retry
+    # robust even if the hook is somehow skipped.)
+    release_dir = desktop_dir / "release"
+    if release_dir.is_dir():
+        for unpacked in release_dir.glob("*-unpacked"):
+            try:
+                shutil.rmtree(unpacked, ignore_errors=True)
+                removed.append(unpacked)
+            except OSError:
+                pass
+
     return removed
 
 
@@ -7469,14 +7486,22 @@ def cmd_gui(args: argparse.Namespace):
             build_script = "build" if source_mode else "pack"
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
-                # A corrupt cached Electron zip makes `pack` fail with an ENOENT on
-                # the final `electron` -> `Hermes` rename: unpack-electron extracted
-                # a partial tree from the bad zip. Purge the bad cache entry and
-                # retry once so a poisoned download self-heals instead of wedging
-                # every future `hermes desktop` run.
-                purged = _purge_corrupt_electron_cache()
+                # A corrupt cached Electron zip makes `pack` fail with an ENOENT
+                # on the final `electron` -> `Hermes` rename: unpack-electron
+                # extracted a partial tree (missing the 193 MB binary) from the
+                # bad zip. We do NOT try to prove the zip is corrupt ourselves —
+                # stdlib zipfile silently tolerates the prepended/concatenated
+                # junk that is the most common corruption (a partial download
+                # resumed into the same file), so a `testzip()` gate would pass
+                # and never self-heal. Instead, on any packaged-build failure we
+                # purge the version's cached zip + the half-written unpacked dir
+                # and retry once: @electron/get re-downloads with its own SHASUM
+                # verification, which is the real source of truth. If the
+                # failure was something else, the clean re-download is harmless
+                # and the retry fails the same way.
+                purged = _purge_electron_build_cache(desktop_dir)
                 if purged:
-                    print(f"  ⚠ Detected corrupt cached Electron download ({len(purged)} file(s)); removed and retrying build...")
+                    print("  ⚠ Desktop build failed; cleared cached Electron download and retrying once...")
                     for p in purged:
                         print(f"    - {p}")
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)

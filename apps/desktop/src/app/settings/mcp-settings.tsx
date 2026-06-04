@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,6 +12,7 @@ import { $activeSessionId } from '@/store/session'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { EmptyState, LoadingState, Pill, SettingsContent } from './primitives'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 interface McpSettingsProps {
   gateway?: HermesGateway | null
@@ -46,7 +46,6 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   const activeSessionId = useStore($activeSessionId)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
-  const [searchParams, setSearchParams] = useSearchParams()
   const [name, setName] = useState('')
   const [body, setBody] = useState('')
   const [saving, setSaving] = useState(false)
@@ -73,36 +72,13 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
   const servers = useMemo(() => getServers(config), [config])
   const names = useMemo(() => Object.keys(servers).sort(), [servers])
 
-  // Deep-link target from the command palette (?server=<name>): select it and
-  // scroll the list entry into view.
-  const targetServer = searchParams.get('server')
-
-  useEffect(() => {
-    if (!targetServer || !config || !(targetServer in servers)) {
-      return
-    }
-
-    setSelected(targetServer)
-
-    const scrollTimeout = window.setTimeout(() => {
-      const element = document.getElementById(`mcp-server-${targetServer}`)
-      element?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-      element?.classList.add('setting-field-highlight')
-      window.setTimeout(() => element?.classList.remove('setting-field-highlight'), 1600)
-    }, 80)
-
-    setSearchParams(
-      previous => {
-        const next = new URLSearchParams(previous)
-        next.delete('server')
-
-        return next
-      },
-      { replace: true }
-    )
-
-    return () => window.clearTimeout(scrollTimeout)
-  }, [config, servers, setSearchParams, targetServer])
+  useDeepLinkHighlight({
+    block: 'nearest',
+    elementId: serverName => `mcp-server-${serverName}`,
+    onResolve: setSelected,
+    param: 'server',
+    ready: serverName => Boolean(config) && serverName in servers
+  })
 
   useEffect(() => {
     const server = selected ? servers[selected] : null

@@ -33,6 +33,23 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
+// Choice and "Other" rows share a layout; only color/hover differs.
+const OPTION_ROW_CLASS = 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors'
+
+function RadioDot({ selected }: { selected: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        'grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
+        selected ? 'border-primary' : 'border-muted-foreground/40'
+      )}
+    >
+      {selected && <span className="size-1.5 rounded-full bg-primary" />}
+    </span>
+  )
+}
+
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   const isPending = props.result === undefined
 
@@ -164,8 +181,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           {choices.map((choice, index) => (
             <button
               className={cn(
-                'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-foreground/95',
-                'transition-colors hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-55',
+                OPTION_ROW_CLASS,
+                'text-foreground/95 hover:bg-accent/60 disabled:cursor-not-allowed disabled:opacity-55',
                 selectedChoice === choice && 'bg-accent/60'
               )}
               data-choice
@@ -177,24 +194,13 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
               }}
               type="button"
             >
-              <span
-                aria-hidden
-                className={cn(
-                  'grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
-                  selectedChoice === choice ? 'border-primary' : 'border-muted-foreground/40'
-                )}
-              >
-                {selectedChoice === choice && <span className="size-1.5 rounded-full bg-primary" />}
-              </span>
+              <RadioDot selected={selectedChoice === choice} />
               <span className="flex-1 wrap-anywhere">{choice}</span>
               {selectedChoice === choice && <Check aria-hidden className="size-4 shrink-0 text-primary" />}
             </button>
           ))}
           <button
-            className={cn(
-              'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground',
-              'transition-colors hover:bg-accent/40 hover:text-foreground'
-            )}
+            className={cn(OPTION_ROW_CLASS, 'text-muted-foreground hover:bg-accent/40 hover:text-foreground')}
             disabled={submitting}
             onClick={() => {
               setTyping(true)
@@ -202,7 +208,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             }}
             type="button"
           >
-            <span aria-hidden className="size-3.5 shrink-0 rounded-full border border-muted-foreground/40" />
+            <RadioDot selected={false} />
             <span className="flex-1">Other (type your answer)</span>
           </button>
         </div>

@@ -16,7 +16,7 @@ import {
 } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
+import { Activity, AlertCircle, BarChart3, type IconComponent, Pin } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -53,6 +53,14 @@ const SECTION_DESCRIPTIONS: Record<CommandCenterSection, string> = {
   system: 'Status, logs, and system actions',
   usage: 'Token, cost, and skill activity over time'
 }
+
+const SECTION_ICONS: Record<CommandCenterSection, IconComponent> = {
+  sessions: Pin,
+  system: Activity,
+  usage: BarChart3
+}
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 function formatTimestamp(value?: number | null): string {
   if (!value) {
@@ -182,7 +190,7 @@ export function CommandCenterView({
       setStatus(nextStatus)
       setLogs(nextLogs.lines)
     } catch (error) {
-      setSystemError(error instanceof Error ? error.message : String(error))
+      setSystemError(errorText(error))
     } finally {
       setSystemLoading(false)
     }
@@ -202,7 +210,7 @@ export function CommandCenterView({
       }
     } catch (error) {
       if (usageRequestRef.current === requestId) {
-        setUsageError(error instanceof Error ? error.message : String(error))
+        setUsageError(errorText(error))
       }
     } finally {
       if (usageRequestRef.current === requestId) {
@@ -266,7 +274,7 @@ export function CommandCenterView({
           upsertDesktopActionTask(pendingStatus)
         }
       } catch (error) {
-        setSystemError(error instanceof Error ? error.message : String(error))
+        setSystemError(errorText(error))
       } finally {
         void refreshSystem()
       }
@@ -281,7 +289,7 @@ export function CommandCenterView({
           {SECTIONS.map(value => (
             <OverlayNavItem
               active={section === value}
-              icon={value === 'sessions' ? Pin : value === 'system' ? Activity : BarChart3}
+              icon={SECTION_ICONS[value]}
               key={value}
               label={SECTION_LABELS[value]}
               onClick={() => setSection(value)}

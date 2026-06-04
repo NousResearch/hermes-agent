@@ -238,6 +238,12 @@ class WeComAdapter(BasePlatformAdapter):
         # arrives — a new inbound message gives us a new req_id and the
         # stream channel becomes usable again.
         self._stream_expired_chats: set[str] = set()
+        # Chats whose stream has been finalized (finish=true sent) during the
+        # current turn. Prevents _keep_typing from re-opening a stream AFTER
+        # send() already closed it (race window: send() finishes → _keep_typing
+        # fires send_typing → new orphan stream starts → nothing to close it).
+        # Cleared on the next inbound message for the chat.
+        self._stream_delivered_chats: set[str] = set()
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -1009,6 +1015,10 @@ class WeComAdapter(BasePlatformAdapter):
         # stale "stream is dead" marker from prior 846608 responses so the
         # next outbound turn can attempt native streaming again.
         self._stream_expired_chats.discard(normalized_chat_id)
+        # A new inbound message starts a new "turn" — allow send_typing to
+        # open a fresh stream again (the previous turn's delivery guard is
+        # no longer relevant).
+        self._stream_delivered_chats.discard(normalized_chat_id)
 
     def _resolve_stream_req_id(
         self, chat_id: str, reply_to: Optional[str]
@@ -1601,6 +1611,7 @@ class WeComAdapter(BasePlatformAdapter):
                         finish=True,
                     )
                     self._reset_native_stream_state()
+                    self._stream_delivered_chats.add(chat_id.strip())
                     return SendResult(
                         success=True,
                         message_id=self._active_stream_id or uuid.uuid4().hex[:12],
@@ -1858,6 +1869,13 @@ class WeComAdapter(BasePlatformAdapter):
             # Already streaming — typing indicator is already showing.
             return
         if chat in self._stream_expired_chats:
+            return
+        # Guard: once send() has already finalized the stream for this chat
+        # (within the same turn), don't re-open a new one. _keep_typing can
+        # race with send() and fire send_typing *after* the reply was
+        # already delivered — the resulting orphan stream would never get
+        # closed because no further send() call comes in this turn.
+        if chat in self._stream_delivered_chats:
             return
         try:
             await self.send_stream_frame("", chat_id=chat)

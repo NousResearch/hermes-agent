@@ -382,3 +382,34 @@ class TestSearchContextParsing:
         assert result.matches[0].path == "dir/file-12-name.py"
         assert result.matches[0].line_number == 8
         assert result.matches[0].content == "context here"
+
+    def test_search_with_grep_passes_extended_regex_flag(self):
+        """Regression: grep must use -E so alternation (|) and other
+        extended-regex metacharacters behave like ripgrep's defaults."""
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(exit_code=1, stdout="")
+            ops._search_with_grep(
+                "foo|bar",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=0,
+            )
+
+        cmd = mock_exec.call_args[0][0]
+        # -E may be combined with other flags (e.g. "-rnHE")
+        # Find the grep flags token (first token starting with "-")
+        tokens = cmd.split()
+        grep_flags = next((t for t in tokens if t.startswith("-") and "E" in t and len(t) > 2), None)
+        # Also check standalone -E
+        has_standalone_E = "-E" in tokens
+        has_combined_E = grep_flags is not None
+        assert has_standalone_E or has_combined_E, (
+            f"grep command missing -E flag: {cmd}"
+        )

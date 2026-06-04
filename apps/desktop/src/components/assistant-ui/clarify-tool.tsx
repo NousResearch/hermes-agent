@@ -103,7 +103,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           answer
         })
         triggerHaptic('submit')
-        clearClarifyRequest(matchingRequest.requestId)
+        clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
       } catch (error) {

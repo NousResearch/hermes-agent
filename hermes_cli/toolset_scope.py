@@ -5,6 +5,7 @@ from typing import Set
 
 # Toolsets without a restriction entry are available on every platform.
 _TOOLSET_PLATFORM_RESTRICTIONS = {
+    "reaction_menu": {"matrix"},
     "discord": {"discord"},
     "discord_admin": {"discord"},
     "matrix_followup": {"matrix"},

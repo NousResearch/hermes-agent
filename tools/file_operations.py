@@ -1127,7 +1127,7 @@ class ShellFileOperations(FileOperations):
 
         # Fall back to ``python`` (Windows / older systems where there's no
         # ``python3`` symlink but a ``python`` binary is on PATH).
-        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+        if result.exit_code == 127:
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
 
         if result.exit_code != 0:

@@ -3744,6 +3744,55 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
+ipcMain.handle('hermes:gitFileDiff', async (_event, filePath) => {
+  const fs = require('fs')
+
+  if (!filePath || typeof filePath !== 'string') return { diff: '', status: '', fileContent: '' }
+
+  let resolvedPath = filePath
+  if (resolvedPath.startsWith('file://')) {
+    try { resolvedPath = new URL(resolvedPath).pathname } catch {}
+  }
+  resolvedPath = path.resolve(resolvedPath)
+
+  if (!fs.existsSync(resolvedPath)) return { diff: '', status: '', fileContent: '' }
+
+  // Read current file
+  let fileContent = ''
+  try { fileContent = fs.readFileSync(resolvedPath, 'utf8') } catch { return { diff: '', status: '', fileContent: '' } }
+
+  // Read HEAD version via git show
+  const { execFileSync } = require('child_process')
+  const dir = path.dirname(resolvedPath)
+
+  let gitRoot = ''
+  try {
+    gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: dir, timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
+    }).trim()
+  } catch {
+    return { diff: '', status: '', fileContent }
+  }
+
+  const relPath = path.relative(gitRoot, resolvedPath)
+
+  let headContent = ''
+  let isUntracked = false
+  try {
+    headContent = execFileSync('git', ['show', `HEAD:${relPath}`], {
+      cwd: gitRoot, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
+    })
+  } catch {
+    // File is untracked or not in git
+    isUntracked = true
+  }
+
+  // Status string for the renderer
+  const status = isUntracked ? 'untracked' : headContent !== fileContent ? 'modified' : ''
+
+  return { diff: '', status, fileContent, headContent }
+})
+
 ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
   const properties = options?.directories ? ['openDirectory'] : ['openFile']
   if (options?.multiple !== false) properties.push('multiSelections')

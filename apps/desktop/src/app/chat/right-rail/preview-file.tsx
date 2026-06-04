@@ -295,16 +295,257 @@ function MarkdownPreview({ text }: { text: string }) {
   )
 }
 
-function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: () => void }) {
+// --- DiffView: full-file view with git changes highlighted ---
+
+type DiffLineType = 'add' | 'context' | 'remove'
+
+interface FullDiffLine {
+  content: string
+  lineNum: number
+  type: DiffLineType
+}
+
+/**
+ * Compute line-level diff between old (HEAD) and new (working) text.
+ * Uses LCS for the middle section after trimming common prefix/suffix.
+ */
+function computeLineDiff(headLines: string[], fileLines: string[]): {
+  added: Set<number>
+  removed: Array<{ afterLine: number; content: string }>
+} {
+  const added = new Set<number>()
+  const removed: Array<{ afterLine: number; content: string }> = []
+
+  // Find common prefix
+  let start = 0
+  while (start < headLines.length && start < fileLines.length && headLines[start] === fileLines[start]) {
+    start++
+  }
+
+  // Find common suffix
+  let headEnd = headLines.length
+  let fileEnd = fileLines.length
+  while (headEnd > start && fileEnd > start && headLines[headEnd - 1] === fileLines[fileEnd - 1]) {
+    headEnd--
+    fileEnd--
+  }
+
+  // Middle sections
+  const headMid = headLines.slice(start, headEnd)
+  const fileMid = fileLines.slice(start, fileEnd)
+
+  if (headMid.length === 0 && fileMid.length === 0) {
+    return { added, removed }
+  }
+
+  // Build LCS table
+  const m = headMid.length
+  const n = fileMid.length
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (headMid[i - 1] === fileMid[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
+      }
+    }
+  }
+
+  // Backtrack to find LCS
+  const lcsIndices = new Array<{ headIdx: number; fileIdx: number }>()
+  let i = m, j = n
+  while (i > 0 && j > 0) {
+    if (headMid[i - 1] === fileMid[j - 1]) {
+      lcsIndices.push({ headIdx: i - 1, fileIdx: j - 1 })
+      i--
+      j--
+    } else if (dp[i - 1][j] > dp[i][j - 1]) {
+      i--
+    } else {
+      j--
+    }
+  }
+  lcsIndices.reverse()
+
+  // Build annotations
+  let hi = 0, fi = 0
+  for (const { headIdx, fileIdx } of lcsIndices) {
+    // Lines in headMid not in LCS → removed
+    while (hi < headIdx) {
+      const afterLine = start + fi // insert before this file line
+      removed.push({ afterLine: afterLine, content: headMid[hi] })
+      hi++
+    }
+    // Lines in fileMid not in LCS → added
+    while (fi < fileIdx) {
+      added.add(start + fi + 1) // 1-indexed
+      fi++
+    }
+    // Match → context
+    hi++
+    fi++
+  }
+  // Trailing removes
+  while (hi < headMid.length) {
+    removed.push({ afterLine: start + fi, content: headMid[hi] })
+    hi++
+  }
+  // Trailing adds
+  while (fi < fileMid.length) {
+    added.add(start + fi + 1)
+    fi++
+  }
+
+  return { added, removed }
+}
+
+function DiffView({ fileContent, headContent }: { fileContent: string; headContent: string }) {
+  const lines = useMemo(() => {
+    const fileLines = fileContent.split('\n')
+    const headLines = headContent.split('\n')
+    const result: FullDiffLine[] = []
+
+    // Untracked: all lines are added
+    if (!headContent && fileContent) {
+      for (let i = 0; i < fileLines.length; i++) {
+        result.push({ content: fileLines[i], lineNum: i + 1, type: 'add' })
+      }
+      return result
+    }
+
+    const { added, removed } = computeLineDiff(headLines, fileLines)
+
+    // Group removed lines by insertion point
+    const removesByLine = new Map<number, string[]>()
+    for (const r of removed) {
+      const existing = removesByLine.get(r.afterLine) || []
+      existing.push(r.content)
+      removesByLine.set(r.afterLine, existing)
+    }
+
+    for (let i = 0; i < fileLines.length; i++) {
+      const lineNum = i + 1
+
+      // Insert removed lines BEFORE this line
+      const removes = removesByLine.get(lineNum - 1) || []
+      for (const rc of removes) {
+        result.push({ content: rc, lineNum: 0, type: 'remove' })
+      }
+
+      result.push({
+        content: fileLines[i],
+        lineNum,
+        type: added.has(lineNum) ? 'add' : 'context'
+      })
+    }
+
+    // Trailing removes
+    const trailing = removesByLine.get(fileLines.length) || []
+    for (const rc of trailing) {
+      result.push({ content: rc, lineNum: 0, type: 'remove' })
+    }
+
+    return result
+  }, [fileContent, headContent])
+
+  const hasChanges = lines.some(l => l.type !== 'context')
+
+  if (!hasChanges) {
+    return (
+      <div className="grid h-32 place-items-center text-xs text-muted-foreground/60">
+        No uncommitted changes
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-w-max font-mono text-xs leading-relaxed select-text">
+      {lines.map((line, index) => (
+        <div
+          className={cn(
+            'flex',
+            line.type === 'add' && 'bg-emerald-500/15 dark:bg-emerald-500/10',
+            line.type === 'remove' && 'bg-rose-500/15 dark:bg-rose-500/10'
+          )}
+          key={index}
+        >
+          <div
+            className={cn(
+              'w-12 shrink-0 select-none px-1.5 py-px text-right tabular-nums',
+              line.type === 'add' && 'text-emerald-600/60 dark:text-emerald-400/50',
+              line.type === 'remove' && 'text-rose-600/60 dark:text-rose-400/50',
+              line.type === 'context' && 'text-muted-foreground/40'
+            )}
+          >
+            {line.lineNum || ''}
+          </div>
+          <div
+            className={cn(
+              'w-5 shrink-0 select-none py-px text-center',
+              line.type === 'add' && 'text-emerald-700 dark:text-emerald-300',
+              line.type === 'remove' && 'text-rose-700 dark:text-rose-300'
+            )}
+          >
+            {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
+          </div>
+          <pre
+            className={cn(
+              'flex-1 whitespace-pre py-px pr-3',
+              line.type === 'add' && 'text-emerald-800 dark:text-emerald-200',
+              line.type === 'remove' && 'text-rose-800 dark:text-rose-200 line-through opacity-70',
+              line.type === 'context' && 'text-foreground'
+            )}
+          >
+            {line.content}
+          </pre>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// --- PreviewToggle: segmented control for SOURCE | CHANGES | PREVIEW ---
+
+type RenderMode = 'diff' | 'preview' | 'source'
+
+function PreviewToggle({
+  hasDiff,
+  hasPreview,
+  mode,
+  onModeChange
+}: {
+  hasDiff: boolean
+  hasPreview: boolean
+  mode: RenderMode
+  onModeChange: (mode: RenderMode) => void
+}) {
+  const modes: { key: RenderMode; label: string }[] = [
+    ...(hasPreview ? [{ key: 'preview' as RenderMode, label: 'PREVIEW' }] : []),
+    { key: 'source', label: 'SOURCE' },
+    { key: 'diff', label: 'CHANGES' }
+  ]
+
   return (
     <div className="sticky top-0 z-10 flex justify-end border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
-      <button
-        className="text-[0.625rem] font-bold text-muted-foreground underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
-        onClick={onToggle}
-        type="button"
-      >
-        {asSource ? 'PREVIEW' : 'SOURCE'}
-      </button>
+      <div className="flex gap-0.5 rounded-md bg-muted/50 p-0.5">
+        {modes.map(({ key, label }) => (
+          <button
+            className={cn(
+              'rounded px-2 py-0.5 text-[0.625rem] font-bold transition-colors',
+              mode === key
+                ? 'bg-background text-foreground shadow-xs'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+            key={key}
+            onClick={() => onModeChange(key)}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -411,8 +652,33 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
+  const [renderMode, setRenderMode] = useState<RenderMode>('source')
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+
+  const [gitDiff, setGitDiff] = useState<{ diff: string; status: string; fileContent: string; headContent: string }>({ diff: '', status: '', fileContent: '', headContent: '' })
+
+  // Fetch git diff when file loads or reloadKey changes
+  useEffect(() => {
+    if (!filePath || isImage) return
+
+    let active = true
+    const fetchDiff = async () => {
+      try {
+        const result = await window.hermesDesktop?.gitFileDiff?.(filePath)
+        if (active && result) {
+          setGitDiff(result)
+        }
+      } catch {
+        if (active) setGitDiff({ diff: '', status: '', fileContent: '', headContent: '' })
+      }
+    }
+    void fetchDiff()
+
+    return () => { active = false }
+  }, [filePath, isImage, reloadKey])
+
+  const hasDiff = Boolean(gitDiff.status || gitDiff.headContent)
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
@@ -489,66 +755,96 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return <PreviewEmptyState body={state.error} title="Preview unavailable" />
   }
 
+  const isMarkdown = (state.language || target.language) === 'markdown'
+  const showRendered = isMarkdown && !renderMarkdownAsSource && renderMode !== 'source' && renderMode !== 'diff'
+  const hasTextContent = isText && state.text !== undefined
+
+  // Binary/large block — only when not force-previewed and not viewing diff
   if (
     !isImage &&
     !forcePreview &&
+    renderMode !== 'diff' &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
     const binary = target.binary || state.binary
     const size = target.byteSize || state.byteSize
 
     return (
-      <PreviewEmptyState
-        body={
-          binary
-            ? `Previewing ${target.label} may show unreadable text.`
-            : `${target.label} is ${formatBytes(size)}. Hermes will only show the first 512 KB.`
-        }
-        primaryAction={{ label: 'Preview anyway', onClick: () => setForcePreview(true) }}
-        title={binary ? 'This looks like a binary file' : 'This file is large'}
-        tone="warning"
-      />
-    )
-  }
-
-  if (isImage && state.dataUrl) {
-    return (
-      <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
-        <img
-          alt={target.label}
-          className="max-h-full max-w-full rounded-lg object-contain shadow-sm"
-          draggable={false}
-          src={state.dataUrl}
+      <div className="h-full overflow-auto bg-transparent">
+        <PreviewToggle
+          hasDiff={hasDiff}
+          hasPreview={isMarkdown}
+          mode={renderMode}
+          onModeChange={newMode => {
+            setRenderMode(newMode)
+            if (newMode === 'source') {
+              setRenderMarkdownAsSource(true)
+            } else if (newMode === 'preview') {
+              setRenderMarkdownAsSource(false)
+            }
+          }}
+        />
+        <PreviewEmptyState
+          body={
+            binary
+              ? `Previewing ${target.label} may show unreadable text.`
+              : `${target.label} is ${formatBytes(size)}. Hermes will only show the first 512 KB.`
+          }
+          primaryAction={{ label: 'Preview anyway', onClick: () => setForcePreview(true) }}
+          title={binary ? 'This looks like a binary file' : 'This file is large'}
+          tone="warning"
         />
       </div>
     )
   }
 
-  if (isText && state.text !== undefined) {
-    const isMarkdown = (state.language || target.language) === 'markdown'
-    const showRendered = isMarkdown && !renderMarkdownAsSource
-
-    return (
-      <div className="h-full overflow-auto bg-transparent">
-        {state.truncated && (
-          <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
-            Showing first 512 KB.
-          </div>
-        )}
-        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
-        {showRendered ? (
-          <MarkdownPreview text={state.text} />
-        ) : (
-          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
-        )}
-      </div>
-    )
-  }
-
   return (
-    <PreviewEmptyState
-      body={`${target.mimeType || 'This file type'} can still be attached as context.`}
-      title="No inline preview"
-    />
+    <div className="h-full overflow-auto bg-transparent select-text">
+      <PreviewToggle
+        hasDiff={hasDiff}
+        hasPreview={isMarkdown}
+        mode={renderMode}
+        onModeChange={newMode => {
+          setRenderMode(newMode)
+          if (newMode === 'source') {
+            setRenderMarkdownAsSource(true)
+          } else if (newMode === 'preview') {
+            setRenderMarkdownAsSource(false)
+          }
+        }}
+      />
+      {state.truncated && renderMode !== 'diff' && (
+        <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
+          Showing first 512 KB.
+        </div>
+      )}
+      {renderMode === 'diff' ? (
+        hasDiff ? (
+          <DiffView fileContent={gitDiff.fileContent || state.text || ''} headContent={gitDiff.headContent || ''} />
+        ) : (
+          <div className="grid h-32 place-items-center text-xs text-muted-foreground/60">
+            No uncommitted changes
+          </div>
+        )
+      ) : isImage && state.dataUrl ? (
+        <div className="flex h-full w-full items-center justify-center overflow-auto p-4">
+          <img
+            alt={target.label}
+            className="max-h-full max-w-full rounded-lg object-contain shadow-sm"
+            draggable={false}
+            src={state.dataUrl}
+          />
+        </div>
+      ) : showRendered && hasTextContent ? (
+        <MarkdownPreview text={state.text!} />
+      ) : hasTextContent ? (
+        <SourceView filePath={filePath} language={state.language || 'text'} text={state.text!} />
+      ) : (
+        <PreviewEmptyState
+          body={`${target.mimeType || 'This file type'} can still be attached as context.`}
+          title="No inline preview"
+        />
+      )}
+    </div>
   )
 }

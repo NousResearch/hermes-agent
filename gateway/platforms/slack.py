@@ -892,6 +892,33 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Catch-all no-op handler for any other subscribed bot event that
+            # Hermes has no listener for (e.g. user_change, user_huddle_changed,
+            # reaction_added, member_joined_channel, etc.).
+            #
+            # Without this, slack-bolt returns HTTP 404 for every unhandled
+            # event envelope and never sends the Socket Mode ack. When the app
+            # is subscribed to high-volume events (user_change fires on every
+            # presence/status change for the whole org), the resulting flood of
+            # un-acked 404s pushes Slack's failure rate past its 95%/60-min
+            # threshold and it auto-disables the app's Event Subscriptions —
+            # silently killing all inbound delivery until manually re-enabled.
+            #
+            # Placing this AFTER the specific handlers means bolt's router
+            # matches those first; this handler only fires for truly unhandled
+            # types. The envelope is acked with 200, keeping the failure rate
+            # near 0% regardless of which events the Slack app manifest
+            # subscribes to.
+            import re as _re
+            @self._app.event(_re.compile(r".*"))
+            async def _ack_unhandled_event(event, logger):
+                logger.debug(
+                    "[Slack] Ignoring unhandled event type=%s (no listener registered; "
+                    "subscribed events not handled by Hermes should be removed from the "
+                    "Slack app manifest via `hermes slack manifest`)",
+                    (event or {}).get("type", "unknown"),
+                )
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack

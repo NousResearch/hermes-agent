@@ -383,20 +383,16 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
         """Surface obviously-broken redirect_uris before bouncing to Portal.
 
         The Portal-side check (``agent-redirect-uri.ts``) is authoritative;
-        this is a fast-fail for the common operator-error case.
+        this is a fast-fail for the common operator-error case. We allow any
+        ``http://`` host (not just localhost) so self-hosted dashboards reached
+        over plain HTTP — LAN IPs, internal hostnames, reverse proxies that
+        terminate TLS upstream — are not rejected here; Portal makes the final
+        call on which redirect_uris are permitted.
         """
         parsed = urllib.parse.urlparse(redirect_uri)
         if parsed.scheme not in ("https", "http"):
             raise ProviderError(
                 f"redirect_uri must be http(s), got {redirect_uri!r}"
-            )
-        if parsed.scheme == "http" and parsed.hostname not in (
-            "localhost",
-            "127.0.0.1",
-        ):
-            raise ProviderError(
-                "redirect_uri may only use http:// for localhost/127.0.0.1, "
-                f"got {redirect_uri!r}"
             )
         if not parsed.path or not parsed.path.endswith("/auth/callback"):
             raise ProviderError(

@@ -61,6 +61,8 @@ Read only the files needed for the question:
   `/Users/ritik/Coding/claude-analytics/scripts/plan-analytics-question.ts`
 - Source change planner:
   `/Users/ritik/Coding/claude-analytics/scripts/plan-source-change.ts`
+- Source change scope checker:
+  `/Users/ritik/Coding/claude-analytics/scripts/check-source-change-scope.ts`
 - Self-improvement cadence checker:
   `/Users/ritik/Coding/claude-analytics/scripts/check-self-improvement-cadence.ts`
 - Self-improvement planner:
@@ -359,9 +361,12 @@ Call `elixir_analytics_runner` with `mode: "source_change_plan"` and
 generic shell setup.
 
 If it returns `requiresClarification`, ask before editing. Otherwise, edit the
-returned `requiredFiles`, update the returned `testFiles`, run the returned
-verification commands, and open a PR using `prTitle`. Do not silently change
-production metric behavior.
+returned `requiredFiles` and update the returned `testFiles`. Before committing,
+call `elixir_analytics_runner` with `mode: "source_change_scope_check"`, the
+original request, and the changed file paths. This runs
+`scripts/check-source-change-scope.ts`. If it returns `status: "blocked"`,
+resolve the blockers before running the verification commands. Then open a PR
+using `prTitle`. Do not silently change production metric behavior.
 
 Only enter this path for explicit source-change requests such as "definition is
 wrong", "add this glossary term", "change the dashboard", "fix the query", or

@@ -107,6 +107,7 @@ def test_elixir_analytics_distribution_ships_analytics_skill():
     assert "/Users/ritik/Coding/claude-analytics/docs/slack-smoke-suite.md" in body
     assert "/Users/ritik/Coding/claude-analytics/scripts/plan-analytics-question.ts" in body
     assert "/Users/ritik/Coding/claude-analytics/scripts/plan-source-change.ts" in body
+    assert "/Users/ritik/Coding/claude-analytics/scripts/check-source-change-scope.ts" in body
     assert "/Users/ritik/Coding/claude-analytics/scripts/check-self-improvement-cadence.ts" in body
     assert "/Users/ritik/Coding/claude-analytics/scripts/plan-self-improvement.ts" in body
     assert "/Users/ritik/Coding/claude-analytics/scripts/check-ops-readiness.ts" in body
@@ -123,6 +124,8 @@ def test_elixir_analytics_distribution_ships_analytics_skill():
     assert "Plan remaining Slack analytics questions" in body
     assert "Plan every definition/glossary/schema/dashboard source-change request" in body
     assert "`elixir_analytics_runner` mode `source_change_plan`" in body
+    assert 'mode: "source_change_scope_check"' in body
+    assert "`scripts/check-source-change-scope.ts`" in body
     assert "Check self-improvement cadence with `elixir_analytics_runner` mode" in body
     assert "`self_improvement_check`" in body
     assert "Plan self-improvement reviews with `elixir_analytics_runner` mode" in body

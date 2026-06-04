@@ -54,9 +54,11 @@ def test_tool_schema_tells_model_to_use_answer_question_first():
     assert "payload.slackText" in schema["description"]
     assert "answer_question" in schema["parameters"]["properties"]["mode"]["enum"]
     assert "source_change_plan" in schema["parameters"]["properties"]["mode"]["enum"]
+    assert "source_change_scope_check" in schema["parameters"]["properties"]["mode"]["enum"]
     assert "self_improvement_check" in schema["parameters"]["properties"]["mode"]["enum"]
     assert "self_improvement_plan" in schema["parameters"]["properties"]["mode"]["enum"]
     assert "query_log" in schema["parameters"]["properties"]
+    assert "changed_files" in schema["parameters"]["properties"]
     assert (
         "use answer_question first"
         in schema["parameters"]["properties"]["mode"]["description"]
@@ -286,6 +288,73 @@ def test_source_change_plan_mode_invokes_source_change_planner_on_stdin(monkeypa
         "scripts/plan-source-change.ts",
     ]
     assert kwargs["input"] == "GTV definition is wrong, wallet loads should be included"
+
+
+def test_source_change_scope_check_mode_invokes_scope_checker(monkeypatch):
+    module = _load_plugin_module()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return _Completed(json.dumps({"ok": True, "status": "ready"}))
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module.run_elixir_analytics_runner(
+        {
+            "mode": "source_change_scope_check",
+            "request": "GTV definition is wrong",
+            "changed_files": [
+                "GLOSSARY.md",
+                "tests/metric-contracts.test.ts",
+            ],
+        }
+    )
+
+    command, kwargs = calls[0]
+    assert result["ok"] is True
+    assert command == [
+        "node",
+        "--import",
+        "tsx",
+        "scripts/check-source-change-scope.ts",
+        "--changed-files-json",
+        '["GLOSSARY.md", "tests/metric-contracts.test.ts"]',
+    ]
+    assert kwargs["input"] == "GTV definition is wrong"
+
+
+def test_source_change_scope_check_accepts_string_changed_files(monkeypatch):
+    module = _load_plugin_module()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return _Completed(json.dumps({"ok": True, "status": "ready"}))
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = module.run_elixir_analytics_runner(
+        {
+            "mode": "source_change_scope_check",
+            "request": "add a glossary term",
+            "changed_files": "GLOSSARY.md, tests/agent-instructions.test.ts",
+            "allow_unexpected_files": True,
+        }
+    )
+
+    command, kwargs = calls[0]
+    assert result["ok"] is True
+    assert command == [
+        "node",
+        "--import",
+        "tsx",
+        "scripts/check-source-change-scope.ts",
+        "--changed-files-json",
+        '["GLOSSARY.md", "tests/agent-instructions.test.ts"]',
+        "--allow-unexpected-files",
+    ]
+    assert kwargs["input"] == "add a glossary term"
 
 
 def test_self_improvement_plan_mode_invokes_self_improvement_planner_with_query_log(monkeypatch):

@@ -91,6 +91,23 @@ def _request_json(args: dict[str, Any]) -> str | None:
     return json.dumps(request, ensure_ascii=False)
 
 
+def _changed_files_json(args: dict[str, Any]) -> str:
+    changed_files = args.get("changed_files") or args.get("changedFiles") or []
+    if isinstance(changed_files, str):
+        changed_files = [
+            line.strip()
+            for line in changed_files.replace(",", "\n").splitlines()
+            if line.strip()
+        ]
+    if not isinstance(changed_files, list) or not all(
+        isinstance(item, str) for item in changed_files
+    ):
+        raise ValueError(
+            "changed_files must be a list of file paths or a newline/comma separated string."
+        )
+    return json.dumps(changed_files, ensure_ascii=False)
+
+
 def _safe_payload_summary(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {"payloadType": type(payload).__name__}
@@ -265,6 +282,22 @@ def _runner_command(args: dict[str, Any]) -> tuple[list[str], str | None]:
             "scripts/plan-source-change.ts",
         ], request
 
+    if mode == "source_change_scope_check":
+        request = str(args.get("request") or args.get("question") or "").strip()
+        if not request:
+            raise ValueError("mode='source_change_scope_check' requires request.")
+        command = [
+            "node",
+            "--import",
+            "tsx",
+            "scripts/check-source-change-scope.ts",
+            "--changed-files-json",
+            _changed_files_json(args),
+        ]
+        if _coerce_bool(args.get("allow_unexpected_files") or args.get("allowUnexpectedFiles")):
+            command.append("--allow-unexpected-files")
+        return command, request
+
     if mode in {"self_improvement_check", "self_improvement_plan"}:
         query_log = str(args.get("query_log") or args.get("queryLog") or "QUERY_LOG.md").strip()
         if not query_log:
@@ -284,7 +317,7 @@ def _runner_command(args: dict[str, Any]) -> tuple[list[str], str | None]:
         ], None
 
     raise ValueError(
-        "mode must be one of plan, answer_question, saved_topic, supabase_ad_hoc, posthog_ad_hoc, source_change_plan, self_improvement_check, self_improvement_plan."
+        "mode must be one of plan, answer_question, saved_topic, supabase_ad_hoc, posthog_ad_hoc, source_change_plan, source_change_scope_check, self_improvement_check, self_improvement_plan."
     )
 
 
@@ -406,6 +439,7 @@ def register(ctx) -> None:
                             "supabase_ad_hoc",
                             "posthog_ad_hoc",
                             "source_change_plan",
+                            "source_change_scope_check",
                             "self_improvement_check",
                             "self_improvement_plan",
                         ],
@@ -421,12 +455,27 @@ def register(ctx) -> None:
                         "description": (
                             "AdHocQueryRequest/PostHogQueryRequest object for "
                             "ad hoc modes, or source-change request text for "
-                            "source_change_plan mode."
+                            "source_change_plan/source_change_scope_check mode."
                         ),
                         "anyOf": [
                             {"type": "object"},
                             {"type": "string"},
                         ],
+                    },
+                    "changed_files": {
+                        "description": (
+                            "Changed repo file paths for source_change_scope_check."
+                        ),
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "allow_unexpected_files": {
+                        "description": (
+                            "For source_change_scope_check: downgrade files outside "
+                            "the source-change plan from blockers to warnings."
+                        ),
+                        "type": "boolean",
+                        "default": False,
                     },
                     "query_log": {
                         "description": (

@@ -73,8 +73,9 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
-// The active profile pops in its own color — the "where am I" cue. Only mounted
-// when >1 profile exists, so single-profile users never see it.
+// The active profile pops in its own color — the "where am I" cue. Single-
+// profile users see only the "+" (create their first profile); everything else
+// appears once a second profile exists.
 export function ProfileRail() {
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
@@ -116,6 +117,7 @@ export function ProfileRail() {
   const onDefault = !isAll && activeKey === 'default'
 
   const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
+  const multiProfile = profiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
   const sensors = useSensors(
@@ -166,48 +168,52 @@ export function ProfileRail() {
   return (
     <div aria-label="Profiles" className="flex items-center gap-0.5" role="tablist">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
-          layers face when showing everything. Pinned left like Manage is right. */}
-      {defaultProfile ? (
-        // On default → toggle to all. Anywhere else (all view or a named
-        // profile) → return to default. So leaving a profile never lands on all.
-        <ProfilePill
-          active={isAll || onDefault}
-          glyph={isAll ? 'layers' : 'home'}
-          label={onDefault ? 'Show all profiles' : `Switch to ${defaultProfile.name}`}
-          onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
-        />
-      ) : (
-        <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
-      )}
+          layers face when showing everything. Pinned left like Manage is right.
+          Hidden until a second profile exists. */}
+      {multiProfile &&
+        (defaultProfile ? (
+          // On default → toggle to all. Anywhere else (all view or a named
+          // profile) → return to default. So leaving a profile never lands on all.
+          <ProfilePill
+            active={isAll || onDefault}
+            glyph={isAll ? 'layers' : 'home'}
+            label={onDefault ? 'Show all profiles' : `Switch to ${defaultProfile.name}`}
+            onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
+          />
+        ) : (
+          <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
+        ))}
 
       <div
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         ref={scrollRef}
       >
-        <DndContext
-          collisionDetection={closestCenter}
-          modifiers={[stepThroughCells]}
-          onDragEnd={handleDragEnd}
-          onDragOver={handleDragOver}
-          onDragStart={handleDragStart}
-          sensors={sensors}
-        >
-          <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
-            {/* relative → the strip is the dragged square's offsetParent, so the
-                clamp modifier bounds drags to the occupied cells (not the +). */}
-            <div className="relative flex items-center gap-1">
-              {named.map(profile => (
-                <ProfileSquare
-                  active={!isAll && normalizeProfileKey(profile.name) === activeKey}
-                  color={profileColor(profile.name)}
-                  key={profile.name}
-                  label={profile.name}
-                  onSelect={() => selectProfile(profile.name)}
-                />
-              ))}
-            </div>
-          </SortableContext>
-        </DndContext>
+        {multiProfile && (
+          <DndContext
+            collisionDetection={closestCenter}
+            modifiers={[stepThroughCells]}
+            onDragEnd={handleDragEnd}
+            onDragOver={handleDragOver}
+            onDragStart={handleDragStart}
+            sensors={sensors}
+          >
+            <SortableContext items={named.map(profile => profile.name)} strategy={horizontalListSortingStrategy}>
+              {/* relative → the strip is the dragged square's offsetParent, so the
+                  clamp modifier bounds drags to the occupied cells (not the +). */}
+              <div className="relative flex items-center gap-1">
+                {named.map(profile => (
+                  <ProfileSquare
+                    active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                    color={profileColor(profile.name)}
+                    key={profile.name}
+                    label={profile.name}
+                    onSelect={() => selectProfile(profile.name)}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
+        )}
 
         <Tip label="New profile">
           <button
@@ -221,7 +227,9 @@ export function ProfileRail() {
         </Tip>
       </div>
 
-      <ProfilePill active={false} glyph="ellipsis" label="Manage profiles…" onSelect={() => navigate(PROFILES_ROUTE)} />
+      {multiProfile && (
+        <ProfilePill active={false} glyph="ellipsis" label="Manage profiles…" onSelect={() => navigate(PROFILES_ROUTE)} />
+      )}
 
       <CreateProfileDialog onClose={() => setCreateOpen(false)} onCreated={refreshActiveProfile} open={createOpen} />
     </div>

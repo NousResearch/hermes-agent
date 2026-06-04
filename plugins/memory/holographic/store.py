@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS fact_supersedes (
+    new_id     INTEGER NOT NULL REFERENCES facts(fact_id),
+    old_id     INTEGER NOT NULL REFERENCES facts(fact_id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (new_id, old_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supersedes_old ON fact_supersedes(old_id);
 """
 
 # Trust adjustment constants
@@ -179,6 +188,10 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: add superseded_at column if missing. NULL = live; a non-NULL
+        # timestamp marks a fact replaced by a newer version (see fact_supersedes).
+        if "superseded_at" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN superseded_at TIMESTAMP")
         self._conn.commit()
 
     # ------------------------------------------------------------------

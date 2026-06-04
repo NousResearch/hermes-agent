@@ -354,7 +354,7 @@ class CuaDriverBackend(ComputerUseBackend):
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        `get_window_state(capture_mode=...)` for all modes (vision/som/ax).
         """
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
@@ -425,18 +425,35 @@ class CuaDriverBackend(ComputerUseBackend):
         window_title = ""
 
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
-        else:
-            # get_window_state: AX tree + optional screenshot.
+            # cua-driver 0.5.x has no standalone `screenshot` tool — it was
+            # merged into `get_window_state` (captures a PNG as a side effect).
+            # Use `capture_mode="vision"` for screenshot-only (no AX tree).
             gws_out = self._session.call_tool(
                 "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
+                {
+                    "pid": self._active_pid,
+                    "window_id": self._active_window_id,
+                    "capture_mode": "vision",
+                },
+            )
+            if gws_out["images"]:
+                png_b64 = gws_out["images"][0]
+            gws_sc = gws_out.get("structuredContent") or {}
+            if isinstance(gws_sc, dict):
+                if gws_sc.get("screenshot_width"):
+                    width = int(gws_sc["screenshot_width"])
+                if gws_sc.get("screenshot_height"):
+                    height = int(gws_sc["screenshot_height"])
+        else:
+            # get_window_state: AX tree + optional screenshot.
+            capture_mode = mode if mode in ("som", "ax") else "som"
+            gws_out = self._session.call_tool(
+                "get_window_state",
+                {
+                    "pid": self._active_pid,
+                    "window_id": self._active_window_id,
+                    "capture_mode": capture_mode,
+                },
             )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
@@ -454,6 +471,13 @@ class CuaDriverBackend(ComputerUseBackend):
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
             if wt:
                 window_title = wt.group(1)
+
+            gws_sc = gws_out.get("structuredContent") or {}
+            if isinstance(gws_sc, dict):
+                if gws_sc.get("screenshot_width"):
+                    width = int(gws_sc["screenshot_width"])
+                if gws_sc.get("screenshot_height"):
+                    height = int(gws_sc["screenshot_height"])
 
         png_bytes_len = 0
         if png_b64:

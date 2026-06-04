@@ -78,6 +78,35 @@ Useful local CLIs already present:
 
 Clear Thought should be treated as a reasoning aid, not as a replacement for Hermes skills. Use it for complex decisions, debugging, trade-off analysis, planning, and systematic review.
 
+## Spark Subagent Policy
+
+GPT-5.3-Codex-Spark subagents should be a deliberate part of the Buddy architecture. Their job is to make Hermes feel more capable and responsive by handling bounded side work while the main Buddy keeps the user-facing conversation coherent.
+
+Use Spark subagents for:
+
+- Fast mechanical checks, such as file inventories, grep-style searches, schema extraction, and simple comparisons.
+- Parallel research extraction where each subagent has a separate, concrete question.
+- Verification sidecars, such as checking whether generated reports exist, whether a local app renders, or whether an excluded MCP is absent.
+- Lightweight codebase exploration before the main Buddy summarizes implications.
+- Drafting small artifacts that the main Buddy reviews and integrates.
+
+Do not use Spark subagents for:
+
+- Final user-facing judgment.
+- Sensitive credential or `.env` inspection.
+- Business/client-system work excluded from the Buddy profile.
+- Broad autonomous implementation without a written plan.
+- Actions that require approval under the trust policy.
+- Deep chained delegation or subagents that spawn further subagents.
+
+Design constraints:
+
+- The main Buddy remains the orchestrator and owns the final answer.
+- Subagent tasks must be concrete, bounded, and non-overlapping.
+- Spark should be preferred for small/fast sidecars; stronger Codex models should remain available for ambiguous synthesis, architecture, or high-stakes reasoning.
+- Telegram should not receive raw subagent logs. The main Buddy should summarize what subagents checked, what they found, and what changed the decision.
+- Spark subagents should be used proactively when they reduce latency, improve coverage, or let multiple independent checks run in parallel, but not when a direct local tool call is simpler.
+
 ## Trust And Permission Model
 
 The Buddy profile should reduce approval fatigue through a trusted routine actions policy.
@@ -171,6 +200,7 @@ Phase 3: Personal tool profile
 - Keep excluded business MCPs unloaded.
 - Define allowlisted personal folders.
 - Encode the trusted routine actions policy.
+- Encode Spark subagent usage rules so bounded sidecars are used appropriately without leaking raw subagent chatter into Telegram.
 
 Phase 4: UX verification
 
@@ -179,6 +209,7 @@ Phase 4: UX verification
 - Verify concise progress updates and artifact delivery.
 - Verify routine local actions do not trigger excessive approval prompts.
 - Verify excluded MCPs are not loaded.
+- Verify Spark subagents are used for appropriate sidecar tasks and not used for excluded/sensitive work.
 
 ## Verification Criteria
 
@@ -189,6 +220,7 @@ The design is successful when:
 - Business/client MCPs are absent from the Buddy tool surface.
 - Routine approved local actions proceed without repeated approval prompts.
 - Risky actions still stop for approval.
+- GPT-5.3-Codex-Spark subagents are used for bounded sidecars where they improve speed or coverage, while the main Buddy keeps orchestration and final judgment.
 - The housing-interview transcript failure mode is not repeated.
 - `SOUL.md` and memory guidance create a recognizable Buddy posture without fake intimacy or over-personalization.
 

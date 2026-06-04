@@ -73,6 +73,11 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 const COMPOSER_STACK_BREAKPOINT_PX = 320
 
+// A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
+// vertical padding). Anything taller means the text wrapped to a second line,
+// which is when the composer should expand to the stacked layout.
+const COMPOSER_SINGLE_LINE_MAX_PX = 36
+
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
 
@@ -256,14 +261,13 @@ export function ChatBar({
     }
   }, [urlOpen])
 
-  // Track expansion via cheap heuristics (newline or length threshold) instead
-  // of reading editor.scrollHeight on every keystroke. scrollHeight forces a
-  // synchronous layout flush — measured at 2.27 layouts per character typed
-  // (see scripts/leak-typing.mjs). With ~30 chars before a typical wrap on
-  // composer-default-width, this heuristic flips at roughly the right time
-  // and the user only notices if they type far past the wrap boundary
-  // without a newline; in that case the ResizeObserver below catches it via
-  // a height delta and we still expand.
+  // Expansion (input on its own full-width row, controls below) is driven by
+  // the editor's *actual* rendered height via the ResizeObserver in
+  // syncComposerMetrics — it only fires when the text genuinely wraps to a
+  // second line, so the layout flips exactly at the wrap point rather than at
+  // a guessed character count. We only handle the two cases the observer
+  // can't: an explicit newline (expand before layout settles) and an emptied
+  // draft (collapse back). We never read scrollHeight per keystroke.
   useEffect(() => {
     if (!draft) {
       setExpanded(false)
@@ -275,7 +279,7 @@ export function ChatBar({
       return
     }
 
-    if (draft.includes('\n') || draft.length > 60) {
+    if (draft.includes('\n')) {
       setExpanded(true)
     }
   }, [draft, expanded])
@@ -311,6 +315,18 @@ export function ChatBar({
       }
     }
 
+    // Expand once the input has actually wrapped past a single line. The
+    // observer only fires on real size changes, so this reads scrollHeight at
+    // most once per wrap (not per keystroke). One line ≈ 28px (1.625rem
+    // min-height + padding); a second line clears ~36px. We only ever expand
+    // here — collapse is handled by the emptied-draft effect to avoid
+    // oscillating across the wrap boundary as the input switches widths.
+    const editor = editorRef.current
+
+    if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
+      setExpanded(true)
+    }
+
     if (height > 0) {
       const bucket = Math.round(height / 8) * 8
 
@@ -330,7 +346,7 @@ export function ChatBar({
     }
   }, [])
 
-  useResizeObserver(syncComposerMetrics, composerRef, composerSurfaceRef)
+  useResizeObserver(syncComposerMetrics, composerRef, composerSurfaceRef, editorRef)
 
   useEffect(() => {
     return () => {
@@ -1109,7 +1125,7 @@ export function ChatBar({
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
-          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
+          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',

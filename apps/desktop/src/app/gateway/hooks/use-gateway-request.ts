@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -14,6 +15,10 @@ export function useGatewayRequest() {
 
   const gatewayStateRef = useRef(gatewayState)
   const reconnectingRef = useRef<Promise<HermesGateway | null> | null>(null)
+  // Holds the reauth error from the most recent failed reconnect so
+  // requestGateway can surface the gateway's "session expired, sign in again"
+  // message instead of the opaque "connection closed" that triggered the retry.
+  const reauthErrorRef = useRef<unknown>(null)
 
   useEffect(() => {
     gatewayStateRef.current = gatewayState
@@ -41,14 +46,26 @@ export function useGatewayRequest() {
         return null
       }
 
+      reauthErrorRef.current = null
+
       try {
         const conn = await desktop.getConnection()
         connectionRef.current = conn
         setConnection(conn)
-        await existing.connect(conn.wsUrl)
+        // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
+        // and short-lived, so the cached conn.wsUrl ticket is dead here;
+        // resolveGatewayWsUrl() throws a reauth error in OAuth mode rather than
+        // connecting with a stale ticket. Stash it so requestGateway can show
+        // the actionable "sign in again" message.
+        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        await existing.connect(wsUrl)
 
         return existing
-      } catch {
+      } catch (error) {
+        if (isGatewayReauthRequired(error)) {
+          reauthErrorRef.current = error
+        }
+
         connectionRef.current = null
         setConnection(null)
 
@@ -81,6 +98,15 @@ export function useGatewayRequest() {
         const recovered = await ensureGatewayOpen()
 
         if (!recovered) {
+          // Prefer the reauth error from the failed reconnect (OAuth session
+          // expired) over the generic transport error that triggered the retry.
+          const reauthError = reauthErrorRef.current
+          reauthErrorRef.current = null
+
+          if (reauthError) {
+            throw reauthError
+          }
+
           throw error
         }
 

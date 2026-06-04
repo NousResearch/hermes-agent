@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
+import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
 import { $currentBranch, $currentCwd } from '@/store/session'
@@ -31,17 +32,14 @@ interface RightSidebarTab {
 }
 
 const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
-  { id: 'files', label: 'File system', icon: 'files' },
+  { id: 'files', label: 'File system', icon: 'list-tree' },
   { id: 'terminal', label: 'Terminal', icon: 'terminal' }
 ]
 
-export function RightSidebarPane({
-  onActivateFile,
-  onActivateFolder,
-  onChangeCwd
-}: RightSidebarPaneProps) {
+export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd }: RightSidebarPaneProps) {
   const activeTab = useStore($rightSidebarTab)
   const terminalTakeover = useStore($terminalTakeover)
+  const panesFlipped = useStore($panesFlipped)
   const currentBranch = useStore($currentBranch).trim()
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
@@ -53,8 +51,17 @@ export function RightSidebarPane({
         .pop() ?? currentCwd)
     : 'No folder selected'
 
-  const { collapseAll, collapseNonce, data, loadChildren, openState, refreshRoot, rootError, rootLoading, setNodeOpen } =
-    useProjectTree(currentCwd)
+  const {
+    collapseAll,
+    collapseNonce,
+    data,
+    loadChildren,
+    openState,
+    refreshRoot,
+    rootError,
+    rootLoading,
+    setNodeOpen
+  } = useProjectTree(currentCwd)
 
   const canCollapse = Object.values(openState).some(Boolean)
   const effectiveTab: RightSidebarTabId = terminalTakeover ? 'files' : activeTab
@@ -86,14 +93,17 @@ export function RightSidebarPane({
     }
   }
 
-  const tabs = terminalTakeover
-    ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal')
-    : RIGHT_SIDEBAR_TABS
+  const tabs = terminalTakeover ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal') : RIGHT_SIDEBAR_TABS
 
   return (
     <aside
       aria-label="Right sidebar"
-      className="before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-l border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary) shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)] before:absolute before:inset-x-0 before:top-(--titlebar-height) before:z-1 before:h-px before:bg-(--ui-stroke-tertiary)"
+      className={cn(
+        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
+        panesFlipped
+          ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+          : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+      )}
     >
       <RightSidebarChrome activeTab={effectiveTab} branch={currentBranch} tabs={tabs} />
 
@@ -135,26 +145,27 @@ function RightSidebarChrome({
 }) {
   return (
     <header className="shrink-0 bg-transparent text-[0.75rem]">
-      <div className="flex items-center gap-2 border-b border-(--ui-stroke-tertiary) px-2.5 py-1">
+      <div className="flex items-center gap-2 px-2.5 py-1">
         <nav aria-label="Right sidebar panels" className="flex min-w-0 items-center gap-1">
           {tabs.map(tab => (
-            <button
+            <Button
               aria-label={tab.label}
               aria-pressed={tab.id === activeTab}
               className={cn(
-                'grid size-6 shrink-0 place-items-center rounded-lg text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring active:bg-(--ui-control-active-background) active:text-foreground',
-                'data-[active=true]:bg-(--ui-control-active-background) data-[active=true]:text-foreground'
+                'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                tab.id === activeTab && 'bg-(--ui-control-active-background) text-foreground'
               )}
-              data-active={tab.id === activeTab}
               key={tab.id}
               onClick={() => setRightSidebarTab(tab.id)}
+              size="icon-xs"
               title={tab.label}
-              type="button"
+              variant="ghost"
             >
               <Codicon name={tab.icon} size="0.875rem" />
-            </button>
+            </Button>
           ))}
         </nav>
+
         {branch && (
           <span className="ml-auto flex min-w-0 items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
             <Codicon className="shrink-0" name="git-branch" size="0.75rem" />
@@ -175,8 +186,11 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   onRefresh: () => void
 }
 
+// Sidebar-specific color/hover treatment only — size, radius, cursor and the
+// base focus ring come from <Button size="icon-xs">. This constant exists
+// purely to share the sidebar palette + the hover-reveal behavior below.
 const HEADER_ACTION_CLASS =
-  'size-6 shrink-0 rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-2 focus-visible:ring-sidebar-ring'
+  'text-sidebar-foreground/70 hover:bg-sidebar-accent! hover:text-sidebar-accent-foreground! focus-visible:ring-sidebar-ring'
 
 const HEADER_ACTION_REVEAL_CLASS = `${HEADER_ACTION_CLASS} pointer-events-none opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100`
 
@@ -211,10 +225,21 @@ function FilesystemTab({
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </button>
         <Button
+          aria-label="Refresh tree"
+          className={HEADER_ACTION_CLASS}
+          disabled={!hasCwd || loading}
+          onClick={onRefresh}
+          size="icon-xs"
+          title="Refresh tree"
+          variant="ghost"
+        >
+          <Codicon name="refresh" size="0.8125rem" spinning={loading} />
+        </Button>
+        <Button
           aria-label="Open folder"
           className={HEADER_ACTION_CLASS}
           onClick={() => void onChangeFolder()}
-          size="icon"
+          size="icon-xs"
           title={hasCwd ? 'Open a different folder' : 'Open a folder'}
           variant="ghost"
         >
@@ -225,22 +250,11 @@ function FilesystemTab({
           className={HEADER_ACTION_REVEAL_CLASS}
           disabled={!hasCwd || !canCollapse}
           onClick={onCollapseAll}
-          size="icon"
+          size="icon-xs"
           title="Collapse all folders"
           variant="ghost"
         >
           <Codicon name="collapse-all" size="0.8125rem" />
-        </Button>
-        <Button
-          aria-label="Refresh tree"
-          className={HEADER_ACTION_REVEAL_CLASS}
-          disabled={!hasCwd || loading}
-          onClick={onRefresh}
-          size="icon"
-          title="Refresh tree"
-          variant="ghost"
-        >
-          <Codicon name="refresh" size="0.8125rem" spinning={loading} />
         </Button>
       </RightSidebarSectionHeader>
       <FileTreeBody
@@ -261,7 +275,7 @@ function FilesystemTab({
 }
 
 export function RightSidebarSectionHeader({ children }: { children: ReactNode }) {
-  return <div className="flex h-7 shrink-0 items-center px-2">{children}</div>
+  return <div className="flex h-7 shrink-0 items-center px-2.5">{children}</div>
 }
 
 interface FileTreeBodyProps {

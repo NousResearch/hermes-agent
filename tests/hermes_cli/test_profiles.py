@@ -477,6 +477,23 @@ class TestListProfiles:
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
 
+    def test_no_duplicate_default_when_profiles_dir_has_default(self, profile_env):
+        """A physical ~/.hermes/profiles/default/ dir must not produce a
+        second 'default' entry — the built-in root profile is the only one.
+        Regression test for https://github.com/NousResearch/hermes-agent/issues/39346
+        """
+        tmp_path = profile_env
+        # Simulate a physical profiles/default/ directory (e.g. manually
+        # created or left over from an older version).
+        (tmp_path / ".hermes" / "profiles" / "default").mkdir(parents=True)
+        profiles = list_profiles()
+        names = [p.name for p in profiles]
+        assert names.count("default") == 1, (
+            f"Expected exactly 1 'default' entry, got {names.count('default')}: {names}"
+        )
+        assert profiles[0].name == "default"
+        assert profiles[0].is_default is True
+
 
 # ===================================================================
 # TestActiveProfile

@@ -42,8 +42,8 @@ Use `remindctl` to manage Apple Reminders directly from the terminal. Tasks sync
 ### View Reminders
 
 ```bash
-remindctl                    # Today's reminders
-remindctl today              # Today
+remindctl                    # As of 2026-02-15's reminders
+remindctl as of 2026-02-15              # As of 2026-02-15
 remindctl tomorrow           # Tomorrow
 remindctl week               # This week
 remindctl overdue            # Past due
@@ -110,15 +110,15 @@ remindctl delete 4A83 --force     # Delete by ID
 ### Output Formats
 
 ```bash
-remindctl today --json       # JSON for scripting
-remindctl today --plain      # TSV format
-remindctl today --quiet      # Counts only
+remindctl as of 2026-02-15 --json       # JSON for scripting
+remindctl as of 2026-02-15 --plain      # TSV format
+remindctl as of 2026-02-15 --quiet      # Counts only
 ```
 
 ## Date Formats
 
 Accepted by `--due` and date filters:
-- `today`, `tomorrow`, `yesterday`
+- `as of 2026-02-15`, `tomorrow`, `yesterday`
 - `YYYY-MM-DD`
 - `YYYY-MM-DD HH:mm`
 - ISO 8601 (`2026-01-04T12:34:56Z`)

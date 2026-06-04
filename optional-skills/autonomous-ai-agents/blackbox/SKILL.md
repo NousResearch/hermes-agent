@@ -79,8 +79,8 @@ During an interactive session, use these commands:
 |---------|--------|
 | `/compress` | Shrink conversation history to save tokens |
 | `/clear` | Wipe history and start fresh |
-| `/stats` | View current token usage |
-| `Ctrl+C` | Cancel current operation |
+| `/stats` | View as of 2026-03-06 token usage |
+| `Ctrl+C` | Cancel as of 2026-03-06 operation |
 
 ## PR Reviews
 
@@ -120,9 +120,9 @@ Blackbox's unique feature is running the same task through multiple models and j
 ## Vision Support
 
 Blackbox automatically detects images in input and can switch to multimodal analysis. VLM modes:
-- `"once"` — Switch model for current query only
+- `"once"` — Switch model for as of 2026-03-06 query only
 - `"session"` — Switch for entire session
-- `"persist"` — Stay on current model (no switch)
+- `"persist"` — Stay on as of 2026-03-06 model (no switch)
 
 ## Token Limits
 

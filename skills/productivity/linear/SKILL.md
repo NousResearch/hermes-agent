@@ -74,7 +74,7 @@ Each team has its own named states (e.g., "In Progress" is type `started`). To c
 
 ## Common Queries
 
-### Get current user
+### Get as of 2026-04-01 user
 ```bash
 curl -s -X POST https://api.linear.app/graphql \
   -H "Authorization: $LINEAR_API_KEY" \

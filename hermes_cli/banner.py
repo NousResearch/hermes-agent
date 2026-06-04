@@ -675,6 +675,18 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             )
     except Exception:
         pass
+    # Indicate when the claude_subprocess runtime is active (subscription
+    # tokens instead of API credits).
+    try:
+        from hermes_cli.claude_runtime_switch import get_current_runtime as _get_claude_rt
+        from hermes_cli.config import load_config as _load_cfg2
+        if _get_claude_rt(_load_cfg2()) == "claude_subprocess":
+            right_lines.append(
+                f"[bold {accent}]Runtime:[/] [{text}]claude subprocess[/] "
+                f"[dim {dim}](subscription tokens via claude CLI)[/]"
+            )
+    except Exception:
+        pass
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name

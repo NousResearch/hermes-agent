@@ -128,6 +128,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
+    CommandDef("claude-runtime", "Toggle Claude subprocess runtime (uses subscription tokens)",
+               "Configuration", aliases=("claude_runtime",),
+               args_hint="[auto|claude_subprocess|on|off]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 

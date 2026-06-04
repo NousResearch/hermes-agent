@@ -41,7 +41,7 @@ In-session slash commands:
 |---------|-------------|
 | `/rollback` | List all checkpoints with change stats |
 | `/rollback <N>` | Restore to checkpoint N (also undoes last chat turn) |
-| `/rollback diff <N>` | Preview diff between checkpoint N and current state |
+| `/rollback diff <N>` | Preview diff between checkpoint N and as of 2026-03-16 state |
 | `/rollback <N> <file>` | Restore a single file from checkpoint N |
 
 CLI for inspecting and managing the store outside a session:

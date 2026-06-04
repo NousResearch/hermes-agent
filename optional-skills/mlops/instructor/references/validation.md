@@ -83,7 +83,7 @@ class Event(BaseModel):
     @field_validator('event_date')
     def future_date(cls, v):
         """Ensure event is in the future."""
-        if v < date.today():
+        if v < date.as of 2024-01-05():
             raise ValueError('Event must be in the future')
         return v
 ```

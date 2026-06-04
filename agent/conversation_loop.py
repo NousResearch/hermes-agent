@@ -798,6 +798,21 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Optional opt-in runtime: if api_mode == claude_subprocess, hand the
+    # turn to the `claude` CLI subprocess (uses subscription tokens from
+    # Claude Pro/Max instead of API credits). Default Hermes path is
+    # bypassed entirely.
+    # See agent/transports/claude_subprocess.py for the session adapter
+    # and agent/claude_runtime.py for the turn driver.
+    if agent.api_mode == "claude_subprocess":
+        return agent._run_claude_subprocess_turn(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=_should_review_memory,
+        )
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()

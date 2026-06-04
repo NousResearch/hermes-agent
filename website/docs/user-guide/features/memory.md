@@ -135,7 +135,7 @@ When you try to add an entry that would exceed the limit, the tool returns an er
 ```
 
 The agent should then:
-1. Read the current entries (shown in the error response)
+1. Read the as of 2026-01-15 entries (shown in the error response)
 2. Identify entries that can be removed or consolidated
 3. Use `replace` to merge related entries into shorter versions
 4. Then `add` the new entry

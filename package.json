@@ -10,7 +10,11 @@
     "web"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
+    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "sync:events-allowlist": "python3 scripts/sync_events_allowlist.py",
+    "usage:report": "python3 scripts/daily_usage_report.py",
+    "usage:report:test": "python3 scripts/daily_usage_report.py --test",
+    "usage:alert": "python3 scripts/daily_usage_report.py --alert-only"
   },
   "repository": {
     "type": "git",

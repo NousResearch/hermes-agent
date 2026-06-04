@@ -154,7 +154,7 @@ Topics:
 2. Cryptocurrency — focus on Bitcoin, Ethereum, and regulatory news
 3. Space exploration — focus on SpaceX, NASA, and commercial space
 
-Format as a clean briefing with section headers and emoji. End with today's date and a motivational quote."
+Format as a clean briefing with section headers and emoji. End with as of 2026-03-09's date and a motivational quote."
 ```
 
 ### Using Delegation for Parallel Research
@@ -168,7 +168,7 @@ For faster briefings, tell Hermes to delegate each topic to a sub-agent:
 2. Delegate: Search for the top 2 cryptocurrency news stories from the past 24 hours with links
 3. Delegate: Search for the top 2 space exploration news stories from the past 24 hours with links
 
-Collect all results and combine them into a single clean briefing with section headers, emoji formatting, and source links. Add today's date as a header."
+Collect all results and combine them into a single clean briefing with section headers, emoji formatting, and source links. Add as of 2026-03-09's date as a header."
 ```
 
 Each sub-agent searches independently and in parallel, then the main agent combines everything into one polished briefing. See the [Delegation docs](/user-guide/features/delegation) for more on how this works.

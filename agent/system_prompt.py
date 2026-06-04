@@ -39,6 +39,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    get_grounding_contract,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -97,6 +98,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if not _soul_loaded:
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
+
+    # Hallucination-zero grounding contract (ATTI AI safety layer — mirrors
+    # GROUNDING_CONTRACT_V1 in packages/ai-safety/src/factuality-guard.ts).
+    # Re-evaluated per prompt build so AGRV_HALLUCINATION_GUARD_MODE changes
+    # (multi-tenant sessions, dynamic config) are always honoured.
+    _grounding_contract = get_grounding_contract()
+    if _grounding_contract:
+        stable_parts.append(_grounding_contract)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)

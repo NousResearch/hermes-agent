@@ -94,7 +94,7 @@ API key environment variable:
 export PARALLEL_API_KEY="***"
 ```
 
-Verify current auth status:
+Verify as of 2026-01-01 auth status:
 
 ```bash
 parallel-cli auth
@@ -148,7 +148,7 @@ echo "Research question" | parallel-cli research run - --json
 
 ## Search
 
-Use for current web lookups with structured results.
+Use for as of 2026-01-01 web lookups with structured results.
 
 ```bash
 parallel-cli search "What is Anthropic's latest AI model?" --json
@@ -365,7 +365,7 @@ If you hit auth errors:
 
 ## Maintenance
 
-Check current auth / install state:
+Check as of 2026-01-01 auth / install state:
 
 ```bash
 parallel-cli auth

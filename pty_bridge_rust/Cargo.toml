@@ -1,0 +1,9 @@
+[package]
+name = "hermes-pty-refactor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+portable-pty = "0.8.1"
+regex = "1.10"

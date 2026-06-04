@@ -7010,10 +7010,11 @@ import re
 # the dashboard (sessions, jobs, metrics, config editor) still loads and the
 # /api/pty endpoint cleanly refuses with a WSL-suggested message.
 try:
-    from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+    from hermes_cli.pty_bridge import PtyBridge, RustPtyBridge, PtyUnavailableError
     _PTY_BRIDGE_AVAILABLE = True
 except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
     PtyBridge = None  # type: ignore[assignment]
+    RustPtyBridge = None
     _PTY_BRIDGE_AVAILABLE = False
 
     class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
@@ -7474,7 +7475,12 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        if RustPtyBridge is not None and RustPtyBridge.is_available():
+            bridge = await RustPtyBridge.spawn(argv, cwd=cwd, env=env)
+            is_rust = True
+        else:
+            bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+            is_rust = False
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
@@ -7489,9 +7495,12 @@ async def pty_ws(ws: WebSocket) -> None:
     # --- reader task: PTY master → WebSocket ----------------------------
     async def pump_pty_to_ws() -> None:
         while True:
-            chunk = await loop.run_in_executor(
-                None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-            )
+            if is_rust:
+                chunk = await bridge.read_async()
+            else:
+                chunk = await loop.run_in_executor(
+                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+                )
             if chunk is None:  # EOF
                 return
             if not chunk:  # no data this tick; yield control and retry

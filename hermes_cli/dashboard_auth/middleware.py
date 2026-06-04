@@ -207,6 +207,22 @@ async def gated_auth_middleware(
     # good refresh token — defeating the whole transparent-refresh feature.
     session = None
     if at:
+        # Try every registered provider's verify_session in turn. A provider
+        # that doesn't recognise the token returns None and we move on; the
+        # first provider that returns a Session wins.
+        #
+        # A provider may instead raise ProviderError (its IDP/JWKS is
+        # unreachable, so it can neither confirm nor deny the token). With
+        # multiple providers stacked, that MUST NOT abort the chain — the
+        # token may belong to a *different*, reachable provider. (Concretely:
+        # a self-hosted-OIDC session hits the `nous` provider first, which
+        # tries to reach Nous Portal's JWKS; if that's unreachable it raises,
+        # but the `self-hosted` provider can still verify the token.) So we
+        # remember the unreachable error and keep going. Only if NO provider
+        # verifies the token AND at least one was unreachable do we surface a
+        # 503 — distinguishing "transient IDP outage" (don't force re-login)
+        # from "token genuinely invalid" (fall through to refresh/relogin).
+        unreachable_provider: str | None = None
         for provider in list_providers():
             try:
                 session = provider.verify_session(access_token=at)
@@ -221,12 +237,19 @@ async def gated_auth_middleware(
                     reason="provider_unreachable",
                     ip=_client_ip(request),
                 )
-                return JSONResponse(
-                    {"detail": f"Auth provider {provider.name!r} unreachable"},
-                    status_code=503,
-                )
+                if unreachable_provider is None:
+                    unreachable_provider = provider.name
+                continue
             if session is not None:
                 break
+        if session is None and unreachable_provider is not None:
+            # No provider could verify the token and at least one couldn't be
+            # reached — treat as a transient outage rather than forcing a
+            # re-login through a (possibly also-unreachable) refresh.
+            return JSONResponse(
+                {"detail": f"Auth provider {unreachable_provider!r} unreachable"},
+                status_code=503,
+            )
 
     if session is None:
         # Access token is expired/invalid. Before forcing re-login, try to

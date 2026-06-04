@@ -81,6 +81,8 @@ HERMES_HOME=/tmp/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
+For Desktop localization work, see [Desktop i18n guidelines](docs/i18n.md).
+
 ### Building installers
 
 ```bash

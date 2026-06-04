@@ -4034,6 +4034,16 @@ class BasePlatformAdapter(ABC):
                 # cancelling, let this message-processing task unwind now.
                 pass
         
+        async def _stop_typing_now(chat_id: str) -> None:
+            """Stop the persistent typing loop *before* response delivery
+            so Discord's ~10s typing indicator doesn't overlap the reply."""
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(chat_id)
+            except Exception:
+                pass
+
         try:
             await self._run_processing_hook("on_processing_start", event)
 
@@ -4069,6 +4079,9 @@ class BasePlatformAdapter(ABC):
                     session_key,
                 )
                 response = None
+            # Stop persistent typing indicator before response delivery so
+            # Discord's ~10s typing bubble doesn't overlap the reply text.
+            await _stop_typing_now(event.source.chat_id)
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:

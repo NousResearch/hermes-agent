@@ -196,17 +196,20 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """
     config_path = get_config_path()
     if not config_path.exists():
+        logger.debug("技能配置文件不存在：%s", config_path)
         return set()
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
     except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
+        logger.warning("技能配置文件读取失败：%s - %s", config_path, e)
         return set()
     if not isinstance(parsed, dict):
+        logger.warning("技能配置文件格式异常：根节点不是 dict")
         return set()
 
     skills_cfg = parsed.get("skills")
     if not isinstance(skills_cfg, dict):
+        logger.debug("配置中未找到 skills 节")
         return set()
 
     from gateway.session_context import get_session_env
@@ -221,15 +224,22 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     enabled = skills_cfg.get("enabled")
     if enabled is not None:
         enabled_set = _normalize_string_set(enabled)
-        all_names = _collect_all_skill_names()
+        all_names = _collect_all_skill_names(include_external=False)
         disabled = all_names - enabled_set
+        logger.debug(
+            "技能白名单模式：已启用=%d 内置总量=%d 被禁用=%d%s",
+            len(enabled_set), len(all_names), len(disabled),
+            f" platform={resolved_platform}" if resolved_platform else "",
+        )
         # Platform-specific overrides still apply on top
         if resolved_platform:
             plat_disabled = (skills_cfg.get("platform_disabled") or {}).get(
                 resolved_platform
             )
             if plat_disabled is not None:
-                disabled |= _normalize_string_set(plat_disabled)
+                plat_set = _normalize_string_set(plat_disabled)
+                disabled |= plat_set
+                logger.debug("平台附加禁用：platform=%s 新增=%d", resolved_platform, len(plat_set))
         return disabled
 
     # ── Denylist mode (original) ────────────────────────────────────────
@@ -238,11 +248,16 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
             resolved_platform
         )
         if platform_disabled is not None:
-            return _normalize_string_set(platform_disabled)
-    return _normalize_string_set(skills_cfg.get("disabled"))
+            result = _normalize_string_set(platform_disabled)
+            logger.debug("技能黑名单模式（平台级）：platform=%s 禁用=%d", resolved_platform, len(result))
+            return result
+    result = _normalize_string_set(skills_cfg.get("disabled"))
+    if result:
+        logger.debug("技能黑名单模式（全局）：禁用=%d", len(result))
+    return result
 
 
-def _collect_all_skill_names() -> Set[str]:
+def _collect_all_skill_names(*, include_external: bool = True) -> Set[str]:
     """Scan all skill directories for available skill names."""
     names: Set[str] = set()
     skills_dir = get_skills_dir()
@@ -255,16 +270,17 @@ def _collect_all_skill_names() -> Set[str]:
                 names.add(str(name).strip())
             except Exception:
                 continue
-    for ext_dir in get_external_skills_dirs():
-        if ext_dir.exists():
-            for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
-                try:
-                    content = skill_md.read_text(encoding="utf-8")[:2000]
-                    frontmatter, _ = parse_frontmatter(content)
-                    name = frontmatter.get("name", skill_md.parent.name)
-                    names.add(str(name).strip())
-                except Exception:
-                    continue
+    if include_external:
+        for ext_dir in get_external_skills_dirs():
+            if ext_dir.exists():
+                for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
+                    try:
+                        content = skill_md.read_text(encoding="utf-8")[:2000]
+                        frontmatter, _ = parse_frontmatter(content)
+                        name = frontmatter.get("name", skill_md.parent.name)
+                        names.add(str(name).strip())
+                    except Exception:
+                        continue
     return names
 
 

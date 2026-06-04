@@ -130,14 +130,31 @@ else
         TEMP_DIR=$(mktemp -d)
         TEMP_ZIP="$TEMP_DIR/skill.zip"
 
-        # 下载skill
+        # 下载skill，同时捕获响应头以获取文件名
         echo "  下载URL: $DOWNLOAD_URL"
-        HTTP_CODE=$(curl -s -o "$TEMP_ZIP" -w "%{http_code}" "$DOWNLOAD_URL")
+        HTTP_CODE=$(curl -s -o "$TEMP_ZIP" -D "$TEMP_DIR/headers.txt" -w "%{http_code}" "$DOWNLOAD_URL")
 
         if [ "$HTTP_CODE" != "200" ]; then
             echo "  错误: 下载失败, HTTP状态码: $HTTP_CODE"
             rm -rf "$TEMP_DIR"
             continue
+        fi
+
+        # 从 Content-Disposition 响应头提取原始文件名，格式如 {name}-{version}.zip
+        # 然后用名称替换 id 作为目录名
+        ZIP_FILENAME=$(grep -i "Content-Disposition" "$TEMP_DIR/headers.txt" | sed -n 's/.*filename="\?\([^";]*\)"\?.*/\1/p' || true)
+        if [ -n "$ZIP_FILENAME" ]; then
+            SKILL_NAME=$(echo "$ZIP_FILENAME" | sed "s/-${SKILL_VERSION}\.zip$//" || true)
+            if [ -n "$SKILL_NAME" ]; then
+                SKILL_DIR_NAME="$SKILL_NAME"
+                TARGET_DIR="$SKILLS_DIR/$SKILL_DIR_NAME"
+                # 重设目录名后重新检查是否已存在
+                if [ -d "$TARGET_DIR" ]; then
+                    echo "  skill 已存在，跳过: $TARGET_DIR"
+                    rm -rf "$TEMP_DIR"
+                    continue
+                fi
+            fi
         fi
 
         # 检查下载的文件大小

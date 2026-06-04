@@ -1466,16 +1466,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
     # Email
+    email_provider = os.getenv("EMAIL_PROVIDER", "imap").strip().lower() or "imap"
     email_addr = os.getenv("EMAIL_ADDRESS")
     email_pwd = os.getenv("EMAIL_PASSWORD")
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    email_proton = bool(os.getenv("PROTON_CLIENT_FACTORY") or os.getenv("PROTON_MAILBOX"))
+    if all([email_addr, email_pwd, email_imap, email_smtp]) or (
+        email_provider == "proton" and email_addr and email_proton
+    ):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True
         config.platforms[Platform.EMAIL].extra.update({
             "address": email_addr,
+            "provider": email_provider,
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })

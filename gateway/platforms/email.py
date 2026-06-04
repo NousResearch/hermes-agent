@@ -5,6 +5,7 @@ Allows users to interact with Hermes by sending emails.
 Uses IMAP to receive and SMTP to send messages.
 
 Environment variables:
+    EMAIL_PROVIDER      — Email provider backend: imap (default) or proton
     EMAIL_IMAP_HOST     — IMAP server host (e.g., imap.gmail.com)
     EMAIL_IMAP_PORT     — IMAP server port (default: 993)
     EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
@@ -13,11 +14,16 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_PROTON_SEEN_PATH — Optional persistent dedupe file for Proton ids
+    PROTON_CLIENT_FACTORY — module:function returning a Proton API client
+    PROTON_MAILBOX      — JSON mailbox path for dry-runs/tests
 """
 
 import asyncio
 import email as email_lib
 import imaplib
+import importlib
+import json
 import logging
 import os
 import re
@@ -25,13 +31,16 @@ import smtplib
 import ssl
 import uuid
 from email.header import decode_header
+from email.utils import parseaddr
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.utils import formatdate
 from email import encoders
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Tuple
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -64,6 +73,222 @@ MAX_MESSAGE_LENGTH = 50_000
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_PROTON_INITIAL_RECONNECT_DELAY_SECONDS = 5
+_PROTON_MAX_RECONNECT_DELAY_SECONDS = 300
+
+
+class ProtonClient(Protocol):
+    """Small protocol for the Proton runtime used in production.
+
+    The actual Proton client is loaded by ``PROTON_CLIENT_FACTORY`` so Hermes
+    does not need to depend on a provider-private package.  The production
+    client must expose ``event_polling`` and ``get_message`` for inbound mail.
+    Outbound email is optional but must be explicit: one of ``send_reply``,
+    ``reply_message``, ``send_email``, or ``send_message`` must exist.
+    """
+
+    def event_polling(self) -> Iterable[dict[str, Any]]:
+        ...
+
+    def get_message(self, email_id: str) -> dict[str, Any]:
+        ...
+
+
+class JsonProtonMailboxClient:
+    """Local Proton-shaped mailbox for tests and dry-runs."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.data = json.loads(path.read_text(encoding="utf-8"))
+        self.sent: list[dict[str, Any]] = self.data.setdefault("sent", [])
+
+    def event_polling(self) -> Iterable[dict[str, Any]]:
+        return self.data.get("events", [])
+
+    def get_message(self, email_id: str) -> dict[str, Any]:
+        for message in self.data.get("messages", []):
+            if str(message.get("id") or message.get("ID") or message.get("MessageID")) == email_id:
+                return message
+        raise KeyError(f"Unknown email id: {email_id}")
+
+    def send_reply(
+        self,
+        *,
+        message_id: str | None,
+        to: str,
+        subject: str,
+        body: str,
+        **_: Any,
+    ) -> str:
+        sent_id = f"json-proton-{uuid.uuid4().hex[:12]}"
+        self.sent.append({
+            "id": sent_id,
+            "message_id": message_id,
+            "to": to,
+            "subject": subject,
+            "body": body,
+        })
+        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+        return sent_id
+
+
+def _load_proton_client() -> ProtonClient:
+    mailbox = os.getenv("PROTON_MAILBOX")
+    if mailbox:
+        return JsonProtonMailboxClient(Path(mailbox).expanduser())
+
+    factory = os.getenv("PROTON_CLIENT_FACTORY")
+    if not factory:
+        raise RuntimeError(
+            "No Proton client configured. Set PROTON_CLIENT_FACTORY=module:function "
+            "or PROTON_MAILBOX=/path/to/mailbox.json for dry-runs."
+        )
+    module_name, function_name = factory.split(":", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, function_name)()
+
+
+def _model_value(value: Any, *names: str) -> Any:
+    for name in names:
+        if isinstance(value, Mapping) and name in value:
+            return value.get(name)
+        if hasattr(value, name):
+            return getattr(value, name)
+        lower = name[:1].lower() + name[1:]
+        if hasattr(value, lower):
+            return getattr(value, lower)
+    return None
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _sender_from_value(value: Any) -> tuple[str, str]:
+    sender = _as_mapping(value)
+    if sender:
+        name = str(sender.get("Name") or sender.get("name") or "").strip()
+        address = str(
+            sender.get("Address")
+            or sender.get("address")
+            or sender.get("Email")
+            or sender.get("email")
+            or ""
+        ).strip()
+        return name, address
+
+    name = str(_model_value(value, "Name", "DisplayName") or "").strip()
+    address = str(_model_value(value, "Address", "Email") or "").strip()
+    if address:
+        return name, address
+
+    parsed_name, parsed_address = parseaddr(str(value or ""))
+    return parsed_name, parsed_address
+
+
+def _sender_from_proton_message(value: Any) -> tuple[str, str]:
+    for field in ("sender", "Sender", "from", "From", "from_", "FromAddress"):
+        sender_name, sender_email = _sender_from_value(_model_value(value, field))
+        if sender_email:
+            return sender_name, sender_email
+
+    headers = _as_mapping(_model_value(value, "headers", "Headers"))
+    for header in ("From", "from", "Reply-To", "reply-to"):
+        sender_name, sender_email = _sender_from_value(headers.get(header))
+        if sender_email:
+            return sender_name, sender_email
+
+    sender_name = str(_model_value(value, "SenderName", "sender_name", "FromName") or "").strip()
+    sender_email = str(
+        _model_value(value, "SenderAddress", "sender_address", "Address", "Email", "FromEmail") or ""
+    ).strip()
+    return sender_name, sender_email
+
+
+def _extract_proton_event_message(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    action = event.get("Action", event.get("action"))
+    if action is not None and str(action) != "1":
+        return None
+    message = (
+        event.get("message")
+        or event.get("Message")
+        or event.get("mail")
+        or event.get("Mail")
+        or event.get("payload")
+    )
+    if isinstance(message, dict):
+        return message
+    if event.get("id") or event.get("ID") or event.get("MessageID"):
+        return dict(event)
+    return None
+
+
+def _proton_message_id(value: Mapping[str, Any]) -> str:
+    return str(_model_value(value, "id", "ID", "message_id", "MessageID") or "")
+
+
+def _proton_thread_id(value: Mapping[str, Any]) -> str:
+    return str(
+        _model_value(
+            value,
+            "thread_id",
+            "ThreadID",
+            "ConversationID",
+            "conversation_id",
+        )
+        or ""
+    )
+
+
+def _proton_subject(value: Mapping[str, Any]) -> str:
+    return str(_model_value(value, "subject", "Subject") or "(no subject)")
+
+
+def _proton_body(value: Mapping[str, Any]) -> str:
+    body = str(
+        _model_value(value, "body_text", "BodyText", "text", "Text", "body", "Body")
+        or ""
+    )
+    if body:
+        return body
+    html = _model_value(value, "body_html", "BodyHTML", "HTML", "Html")
+    if html:
+        return _strip_html(str(html))
+    return ""
+
+
+def _redact_email_for_log(address: str) -> str:
+    local, _, domain = address.partition("@")
+    if not domain:
+        return "[redacted]"
+    return f"{local[:2]}***@{domain}"
+
+
+def _call_proton_outbound(
+    method: Any,
+    *,
+    message_id: str | None,
+    thread_id: str | None,
+    to_addr: str,
+    subject: str,
+    body: str,
+) -> Any:
+    attempts = [
+        {"message_id": message_id, "thread_id": thread_id, "to": to_addr, "subject": subject, "body": body},
+        {"message_id": message_id, "to": to_addr, "subject": subject, "body": body},
+        {"email_id": message_id, "thread_id": thread_id, "to": to_addr, "subject": subject, "body": body},
+        {"email_id": message_id, "to": to_addr, "subject": subject, "body": body},
+        {"to": to_addr, "subject": subject, "body": body},
+    ]
+    last_error: TypeError | None = None
+    for kwargs in attempts:
+        try:
+            return method(**kwargs)
+        except TypeError as e:
+            last_error = e
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Proton outbound method could not be called")
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
@@ -101,7 +326,10 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
     
 def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
+    provider = os.getenv("EMAIL_PROVIDER", "imap").strip().lower()
     addr = os.getenv("EMAIL_ADDRESS")
+    if provider == "proton":
+        return bool(addr and (os.getenv("PROTON_CLIENT_FACTORY") or os.getenv("PROTON_MAILBOX")))
     pwd = os.getenv("EMAIL_PASSWORD")
     imap = os.getenv("EMAIL_IMAP_HOST")
     smtp = os.getenv("EMAIL_SMTP_HOST")
@@ -243,11 +471,12 @@ def _extract_attachments(
 
 
 class EmailAdapter(BasePlatformAdapter):
-    """Email gateway adapter using IMAP (receive) and SMTP (send)."""
+    """Email gateway adapter using IMAP/SMTP or Proton API transport."""
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 
+        self._provider = os.getenv("EMAIL_PROVIDER", "imap").strip().lower() or "imap"
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
@@ -255,6 +484,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+        self._allowed_users = {
+            addr.strip().lower()
+            for addr in allowed_raw.split(",")
+            if addr.strip()
+        }
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -267,11 +502,43 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
+        self._proton_client: Optional[ProtonClient] = None
+        self._proton_reconnect_delay = _PROTON_INITIAL_RECONNECT_DELAY_SECONDS
+        self._proton_seen_path = Path(
+            os.getenv(
+                "EMAIL_PROTON_SEEN_PATH",
+                os.path.expanduser("~/.cache/hermes/proton-email-seen.json"),
+            )
+        )
 
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
-        logger.info("[Email] Adapter initialized for %s", self._address)
+        logger.info("[Email] Adapter initialized for %s using %s provider", self._address, self._provider)
+
+    def _load_persistent_seen_uids(self) -> None:
+        if self._provider != "proton":
+            return
+        try:
+            if not self._proton_seen_path.exists():
+                return
+            data = json.loads(self._proton_seen_path.read_text(encoding="utf-8"))
+            ids = data.get("seen_ids", data if isinstance(data, list) else [])
+            self._seen_uids.update(str(item) for item in ids if item)
+            self._trim_seen_uids()
+            logger.info("[Email] Loaded %d Proton seen ids", len(self._seen_uids))
+        except Exception as e:
+            logger.warning("[Email] Failed to load Proton seen ids: %s", e)
+
+    def _save_persistent_seen_uids(self) -> None:
+        if self._provider != "proton":
+            return
+        try:
+            self._proton_seen_path.parent.mkdir(parents=True, exist_ok=True)
+            items = sorted(str(item) for item in self._seen_uids)[-self._seen_uids_max:]
+            self._proton_seen_path.write_text(json.dumps({"seen_ids": items}, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning("[Email] Failed to persist Proton seen ids: %s", e)
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -294,7 +561,21 @@ class EmailAdapter(BasePlatformAdapter):
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
     async def connect(self) -> bool:
-        """Connect to the IMAP server and start polling for new messages."""
+        """Connect to the configured email backend and start polling."""
+        if self._provider == "proton":
+            try:
+                self._proton_client = _load_proton_client()
+                self._load_persistent_seen_uids()
+                logger.info("[Email] Proton client loaded for %s", self._address)
+            except Exception as e:
+                logger.error("[Email] Proton client initialization failed: %s", e)
+                return False
+
+            self._running = True
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            print(f"[Email] Connected as {self._address} via Proton")
+            return True
+
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
@@ -343,13 +624,27 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:
-        """Poll IMAP for new messages at regular intervals."""
+        """Poll the configured email backend for new messages."""
         while self._running:
             try:
                 await self._check_inbox()
+                self._proton_reconnect_delay = _PROTON_INITIAL_RECONNECT_DELAY_SECONDS
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if self._provider == "proton":
+                    delay = self._proton_reconnect_delay
+                    logger.warning(
+                        "[Email] Proton poll failed with %s; retrying in %ss",
+                        type(e).__name__,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    self._proton_reconnect_delay = min(
+                        self._proton_reconnect_delay * 2,
+                        _PROTON_MAX_RECONNECT_DELAY_SECONDS,
+                    )
+                    continue
                 logger.error("[Email] Poll error: %s", e)
             await asyncio.sleep(self._poll_interval)
 
@@ -357,9 +652,78 @@ class EmailAdapter(BasePlatformAdapter):
         """Check INBOX for unseen messages and dispatch them."""
         # Run IMAP operations in a thread to avoid blocking the event loop
         loop = asyncio.get_running_loop()
-        messages = await loop.run_in_executor(None, self._fetch_new_messages)
+        if self._provider == "proton":
+            messages = await loop.run_in_executor(None, self._fetch_new_proton_messages)
+        else:
+            messages = await loop.run_in_executor(None, self._fetch_new_messages)
         for msg_data in messages:
             await self._dispatch_message(msg_data)
+
+    def _fetch_new_proton_messages(self) -> List[Dict[str, Any]]:
+        """Fetch new Proton events. Runs in executor thread."""
+        if self._proton_client is None:
+            raise RuntimeError("Proton client is not initialized")
+
+        results: List[Dict[str, Any]] = []
+        for event in self._proton_client.event_polling():
+            message = _extract_proton_event_message(event)
+            if not message:
+                continue
+            message_id = _proton_message_id(message)
+            if not message_id or message_id in self._seen_uids:
+                continue
+
+            raw_message = dict(message)
+            sender_name, raw_sender = _sender_from_proton_message(raw_message)
+            parsed_name, parsed_email = parseaddr(str(raw_sender))
+            sender_addr = str(parsed_email or raw_sender).strip().lower()
+
+            body = _proton_body(raw_message)
+            should_hydrate = not sender_addr or not body
+            if should_hydrate:
+                try:
+                    full_message = self._proton_client.get_message(message_id)
+                    raw_message = {**raw_message, **full_message, "id": message_id}
+                    full_sender_name, full_raw_sender = _sender_from_proton_message(raw_message)
+                    full_parsed_name, full_parsed_email = parseaddr(str(full_raw_sender))
+                    sender_name = full_sender_name or sender_name or full_parsed_name
+                    sender_addr = str(full_parsed_email or full_raw_sender or sender_addr).strip().lower()
+                    body = _proton_body(raw_message)
+                except Exception as e:
+                    logger.warning("[Email] Proton hydrate failed for id=%s: %s", message_id, type(e).__name__)
+
+            if not sender_addr:
+                logger.warning("[Email] Proton event id=%s has no sender after hydration", message_id)
+                self._seen_uids.add(message_id)
+                self._save_persistent_seen_uids()
+                continue
+
+            subject = _proton_subject(raw_message)
+            msg_headers = dict(_as_mapping(_model_value(raw_message, "headers", "Headers")))
+            if _is_automated_sender(sender_addr, msg_headers):
+                logger.debug("[Email] Skipping automated Proton sender: %s", _redact_email_for_log(sender_addr))
+                self._seen_uids.add(message_id)
+                self._save_persistent_seen_uids()
+                continue
+
+            self._seen_uids.add(message_id)
+            self._trim_seen_uids()
+            self._save_persistent_seen_uids()
+
+            results.append({
+                "uid": message_id,
+                "sender_addr": sender_addr,
+                "sender_name": sender_name or parsed_name,
+                "subject": subject,
+                "message_id": message_id,
+                "thread_id": _proton_thread_id(raw_message),
+                "in_reply_to": str(_model_value(raw_message, "InReplyTo", "in_reply_to") or ""),
+                "body": body,
+                "attachments": [],
+                "date": str(_model_value(raw_message, "Date", "Time", "date") or ""),
+                "raw": raw_message,
+            })
+        return results
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
@@ -446,11 +810,10 @@ class EmailAdapter(BasePlatformAdapter):
         # that the gateway will never authorize.  Without this early guard,
         # a race between dispatch and authorization can result in the adapter
         # sending a reply even though the handler returned None.
-        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
-        if allowed_raw:
-            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
-            if sender_addr.lower() not in allowed:
-                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+        if self._allowed_users:
+            if sender_addr.lower() not in self._allowed_users:
+                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", _redact_email_for_log(sender_addr))
+                await self._send_passive_notification(msg_data)
                 return
 
         subject = msg_data["subject"]
@@ -477,6 +840,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "thread_id": msg_data.get("thread_id", ""),
         }
 
         source = self.build_source(
@@ -497,8 +861,39 @@ class EmailAdapter(BasePlatformAdapter):
             reply_to_message_id=msg_data["in_reply_to"] or None,
         )
 
-        logger.info("[Email] New message from %s: %s", sender_addr, subject)
+        logger.info("[Email] New message from %s: %s", _redact_email_for_log(sender_addr), subject)
         await self.handle_message(event)
+
+    async def _send_passive_notification(self, msg_data: Dict[str, Any]) -> None:
+        """Notify the owner about non-trusted email without triggering an agent turn."""
+        bot_token = (
+            os.getenv("EMAIL_PASSIVE_TELEGRAM_BOT_TOKEN")
+            or os.getenv("HERMES_TELEGRAM_BOT_TOKEN")
+            or os.getenv("TELEGRAM_BOT_TOKEN")
+        )
+        chat_id = (
+            os.getenv("EMAIL_PASSIVE_TELEGRAM_CHAT_ID")
+            or os.getenv("HERMES_TELEGRAM_CHAT_ID")
+            or os.getenv("TELEGRAM_CHAT_ID")
+        )
+        if not bot_token or not chat_id:
+            return
+
+        sender = msg_data.get("sender_addr", "")
+        if msg_data.get("sender_name"):
+            sender = f"{msg_data['sender_name']} <{sender}>"
+        text = f"Nouveau mail De: {sender} Sujet: {msg_data.get('subject') or '(no subject)'}"
+
+        def _post() -> None:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            data = urlparse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+            urlrequest.urlopen(url, data=data, timeout=10).read()
+
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _post)
+        except Exception as e:
+            logger.warning("[Email] Passive notification failed: %s", type(e).__name__)
 
     async def send(
         self,
@@ -510,13 +905,68 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email reply to the given address."""
         try:
             loop = asyncio.get_running_loop()
-            message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
-            )
+            if self._provider == "proton":
+                message_id = await loop.run_in_executor(
+                    None, self._send_proton_email, chat_id, content, reply_to
+                )
+            else:
+                message_id = await loop.run_in_executor(
+                    None, self._send_email, chat_id, content, reply_to
+                )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
-            logger.error("[Email] Send failed to %s: %s", chat_id, e)
+            logger.error("[Email] Send failed to %s: %s", _redact_email_for_log(chat_id), e)
             return SendResult(success=False, error=str(e))
+
+    def _send_proton_email(
+        self,
+        to_addr: str,
+        body: str,
+        reply_to_msg_id: Optional[str] = None,
+    ) -> str:
+        """Send an email through the configured Proton runtime."""
+        client = self._proton_client or _load_proton_client()
+        ctx = self._thread_context.get(to_addr, {})
+        subject = ctx.get("subject", "Hermes Agent")
+        if not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        thread_id = ctx.get("thread_id") or None
+
+        for method_name in ("send_reply", "reply_message"):
+            method = getattr(client, method_name, None)
+            if callable(method):
+                result = _call_proton_outbound(
+                    method,
+                    message_id=original_msg_id,
+                    thread_id=thread_id,
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=body,
+                )
+                sent_id = str(result.get("id") if isinstance(result, Mapping) else result)
+                logger.info("[Email] Sent Proton reply to %s (subject: %s)", _redact_email_for_log(to_addr), subject)
+                return sent_id
+
+        for method_name in ("send_email", "send_message"):
+            method = getattr(client, method_name, None)
+            if callable(method):
+                result = _call_proton_outbound(
+                    method,
+                    message_id=original_msg_id,
+                    thread_id=thread_id,
+                    to_addr=to_addr,
+                    subject=subject,
+                    body=body,
+                )
+                sent_id = str(result.get("id") if isinstance(result, Mapping) else result)
+                logger.info("[Email] Sent Proton email to %s (subject: %s)", _redact_email_for_log(to_addr), subject)
+                return sent_id
+
+        raise RuntimeError(
+            "Proton outbound email is unavailable: configured client exposes no "
+            "send_reply, reply_message, send_email, or send_message method"
+        )
 
     def _send_email(
         self,
@@ -559,7 +1009,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-        logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        logger.info("[Email] Sent reply to %s (subject: %s)", _redact_email_for_log(to_addr), subject)
         return msg_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:

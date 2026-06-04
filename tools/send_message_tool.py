@@ -1282,11 +1282,33 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 async def _send_email(extra, chat_id, message):
-    """Send via SMTP (one-shot, no persistent connection needed)."""
+    """Send email via the configured provider (one-shot, no persistent connection needed)."""
     import smtplib
     from email.mime.text import MIMEText
 
+    provider = os.getenv("EMAIL_PROVIDER", "imap").strip().lower() or "imap"
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
+    if provider == "proton":
+        try:
+            from gateway.platforms.email import _call_proton_outbound, _load_proton_client
+
+            client = _load_proton_client()
+            for method_name in ("send_email", "send_message", "send_reply", "reply_message"):
+                method = getattr(client, method_name, None)
+                if callable(method):
+                    _call_proton_outbound(
+                        method,
+                        message_id=None,
+                        thread_id=None,
+                        to_addr=chat_id,
+                        subject="Hermes Agent",
+                        body=message,
+                    )
+                    return {"success": True, "platform": "email", "chat_id": chat_id}
+            return {"error": "Email send failed: Proton outbound is not available in the configured client"}
+        except Exception as e:
+            return _error(f"Email send failed: {e}")
+
     password = os.getenv("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
     try:

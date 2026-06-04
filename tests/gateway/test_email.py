@@ -62,6 +62,19 @@ class TestConfigEnvOverrides(unittest.TestCase):
         _apply_env_overrides(config)
         self.assertNotIn(Platform.EMAIL, config.platforms)
 
+    @patch.dict(os.environ, {
+        "EMAIL_PROVIDER": "proton",
+        "EMAIL_ADDRESS": "agent@thomas.md",
+        "PROTON_MAILBOX": "/tmp/proton-mailbox.json",
+    }, clear=True)
+    def test_proton_email_config_loaded_from_env(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        self.assertIn(Platform.EMAIL, config.platforms)
+        self.assertTrue(config.platforms[Platform.EMAIL].enabled)
+        self.assertEqual(config.platforms[Platform.EMAIL].extra["provider"], "proton")
+
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
 
@@ -86,6 +99,15 @@ class TestCheckRequirements(unittest.TestCase):
     def test_requirements_empty_env(self):
         from gateway.platforms.email import check_email_requirements
         self.assertFalse(check_email_requirements())
+
+    @patch.dict(os.environ, {
+        "EMAIL_PROVIDER": "proton",
+        "EMAIL_ADDRESS": "agent@thomas.md",
+        "PROTON_MAILBOX": "/tmp/proton-mailbox.json",
+    }, clear=True)
+    def test_proton_requirements_met(self):
+        from gateway.platforms.email import check_email_requirements
+        self.assertTrue(check_email_requirements())
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -606,6 +628,177 @@ class TestThreadContext(unittest.TestCase):
             self.assertIn("Date", send_call)
 
 
+class TestProtonEmailAdapter(unittest.TestCase):
+    """Test Proton provider behavior in the EmailAdapter."""
+
+    def _write_mailbox(self, tmp_path, payload):
+        import json
+        path = tmp_path / "mailbox.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _make_adapter(self, mailbox_path, seen_path, allowed="thomas@lfglabs.dev"):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_PROVIDER": "proton",
+            "EMAIL_ADDRESS": "agent@thomas.md",
+            "PROTON_MAILBOX": str(mailbox_path),
+            "EMAIL_PROTON_SEEN_PATH": str(seen_path),
+            "EMAIL_ALLOWED_USERS": allowed,
+        }, clear=True):
+            from gateway.platforms.email import EmailAdapter
+            from gateway.platforms.email import _load_proton_client
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            adapter._proton_client = _load_proton_client()
+            return adapter
+
+    def test_proton_empty_sender_hydrates_and_dispatches_trusted_event(self):
+        import asyncio
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            mailbox = self._write_mailbox(tmp, {
+                "events": [{
+                    "Action": 1,
+                    "Message": {
+                        "ID": "msg-1",
+                        "Sender": {},
+                        "Subject": "Hermes smoke",
+                    },
+                }],
+                "messages": [{
+                    "ID": "msg-1",
+                    "Headers": {"From": "Thomas Marchand <thomas@lfglabs.dev>"},
+                    "Subject": "Hermes smoke",
+                    "BodyText": "reply to me with exactly toto",
+                }],
+            })
+            adapter = self._make_adapter(mailbox, tmp / "seen.json")
+            captured = []
+
+            async def capture_handle(event):
+                captured.append(event)
+
+            adapter.handle_message = capture_handle
+            messages = adapter._fetch_new_proton_messages()
+            self.assertEqual(len(messages), 1)
+            asyncio.run(adapter._dispatch_message(messages[0]))
+
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0].source.chat_id, "thomas@lfglabs.dev")
+            self.assertIn("[Subject: Hermes smoke]", captured[0].text)
+            self.assertIn("reply to me with exactly toto", captured[0].text)
+
+    def test_proton_non_trusted_sender_does_not_dispatch(self):
+        import asyncio
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            mailbox = self._write_mailbox(tmp, {
+                "events": [{
+                    "Action": 1,
+                    "Message": {
+                        "ID": "msg-2",
+                        "Sender": {"Address": "outsider@example.com"},
+                        "Subject": "Nope",
+                        "BodyText": "do a thing",
+                    },
+                }],
+                "messages": [],
+            })
+            adapter = self._make_adapter(mailbox, tmp / "seen.json")
+            adapter._message_handler = MagicMock()
+
+            messages = adapter._fetch_new_proton_messages()
+            self.assertEqual(len(messages), 1)
+            asyncio.run(adapter._dispatch_message(messages[0]))
+
+            adapter._message_handler.assert_not_called()
+            self.assertNotIn("outsider@example.com", adapter._thread_context)
+
+    def test_proton_dedupe_persists_seen_ids(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            seen = tmp / "seen.json"
+            mailbox = self._write_mailbox(tmp, {
+                "events": [{
+                    "Action": 1,
+                    "Message": {
+                        "ID": "msg-3",
+                        "Sender": {"Address": "thomas@lfglabs.dev"},
+                        "Subject": "Once",
+                        "BodyText": "hello",
+                    },
+                }],
+                "messages": [],
+            })
+            adapter = self._make_adapter(mailbox, seen)
+            self.assertEqual(len(adapter._fetch_new_proton_messages()), 1)
+
+            second = self._make_adapter(mailbox, seen)
+            second._load_persistent_seen_uids()
+            self.assertEqual(second._fetch_new_proton_messages(), [])
+
+    def test_proton_send_uses_client_outbound(self):
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            mailbox = self._write_mailbox(tmp, {"events": [], "messages": []})
+            adapter = self._make_adapter(mailbox, tmp / "seen.json")
+            adapter._thread_context["thomas@lfglabs.dev"] = {
+                "subject": "Smoke",
+                "message_id": "msg-4",
+            }
+
+            result = asyncio.run(adapter.send("thomas@lfglabs.dev", "toto"))
+            self.assertTrue(result.success)
+            data = json.loads(mailbox.read_text(encoding="utf-8"))
+            self.assertEqual(data["sent"][0]["body"], "toto")
+            self.assertEqual(data["sent"][0]["subject"], "Re: Smoke")
+
+    def test_proton_poll_loop_retries_transient_failure(self):
+        import asyncio
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_PROVIDER": "proton",
+            "EMAIL_ADDRESS": "agent@thomas.md",
+            "PROTON_MAILBOX": "/tmp/unused.json",
+            "EMAIL_POLL_INTERVAL": "1",
+        }, clear=True):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        calls = {"count": 0}
+
+        async def flaky_check():
+            calls["count"] += 1
+            adapter._running = False
+            raise ConnectionError("remote disconnected")
+
+        async def fake_sleep(_delay):
+            return None
+
+        adapter._running = True
+        adapter._check_inbox = flaky_check
+        with patch("gateway.platforms.email.asyncio.sleep", fake_sleep):
+            asyncio.run(adapter._poll_loop())
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(adapter._proton_reconnect_delay, 10)
+
+
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
 
@@ -1009,6 +1202,32 @@ class TestSendEmailStandalone(unittest.TestCase):
 
         self.assertIn("error", result)
         self.assertIn("not configured", result["error"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_email_tool_uses_proton_provider(self):
+        """Proton provider should use the configured Proton outbound client."""
+        import asyncio
+        import json
+        import tempfile
+        from pathlib import Path
+        from tools.send_message_tool import _send_email
+
+        with tempfile.TemporaryDirectory() as td:
+            mailbox = Path(td) / "mailbox.json"
+            mailbox.write_text(json.dumps({"events": [], "messages": []}), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "EMAIL_PROVIDER": "proton",
+                "EMAIL_ADDRESS": "agent@thomas.md",
+                "PROTON_MAILBOX": str(mailbox),
+            }, clear=True):
+                result = asyncio.run(
+                    _send_email({}, "thomas@lfglabs.dev", "Hello")
+                )
+
+            self.assertTrue(result["success"])
+            data = json.loads(mailbox.read_text(encoding="utf-8"))
+            self.assertEqual(data["sent"][0]["to"], "thomas@lfglabs.dev")
+            self.assertEqual(data["sent"][0]["body"], "Hello")
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

@@ -430,7 +430,12 @@ function useThreadScrollAnchor({
       return
     }
     if (groupCount > prevGroupCountForLayoutRef.current && stickyBottomRef.current) {
-      pinToBottom()
+      // Defer to rAF so that browser scroll/wheel events from the current
+      // frame are processed first.  Without this deferral, a trackpad
+      // scroll-up during streaming can race with this effect: the wheel
+      // event hasn't fired yet so stickyBottomRef is still true, and the
+      // immediate pinToBottom() would snap the viewport back to bottom
+      // against the user's intent.
       requestAnimationFrame(() => {
         if (stickyBottomRef.current) {
           pinToBottom()

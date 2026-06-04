@@ -313,6 +313,25 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
+    """Resolve the prefill file path from env/config.
+
+    ``prefill_messages_file`` at the top level is the canonical config key.
+    ``agent.prefill_messages_file`` remains a legacy fallback for older CLI and
+    godmode-generated configs.
+    """
+    env_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "").strip()
+    if env_path:
+        return env_path
+    top_level = str(config.get("prefill_messages_file", "") or "").strip()
+    if top_level:
+        return top_level
+    agent_cfg = config.get("agent", {})
+    if isinstance(agent_cfg, dict):
+        return str(agent_cfg.get("prefill_messages_file", "") or "").strip()
+    return ""
+
+
 def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
     from hermes_constants import parse_reasoning_effort
@@ -3331,7 +3350,7 @@ class HermesCLI:
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(
-            CLI_CONFIG["agent"].get("prefill_messages_file", "")
+            _resolve_prefill_messages_file(CLI_CONFIG)
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
@@ -14958,6 +14977,17 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            # Erase the live bottom chrome (status bar, input box, separator
+            # rules) on exit instead of freezing a final copy into scrollback.
+            # Without this, prompt_toolkit's render_as_done teardown repaints
+            # the chrome one last time and leaves it stranded above the exit
+            # summary — so a dead status bar + empty prompt sit between the
+            # conversation transcript and the "Resume this session" block, and
+            # stack with the next session's UI on resume (#38252). The actual
+            # conversation transcript is printed through patch_stdout into
+            # normal scrollback and is unaffected; only the managed chrome is
+            # erased. Applies to every exit path (/exit, /quit, EOF, Ctrl+C).
+            erase_when_done=True,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         _disable_prompt_toolkit_cpr_warning(app)

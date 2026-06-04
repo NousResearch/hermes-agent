@@ -178,7 +178,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 return (
                   <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                     <DropdownMenuSubTrigger
-                      className={cn(dropdownMenuRow, 'cursor-pointer')}
+                      className={dropdownMenuRow}
                       hideChevron
                       onClick={activate}
                       onKeyDown={event => {
@@ -212,7 +212,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       <DropdownMenuSeparator className="mx-0" />
 
       <DropdownMenuItem
-        className={cn(dropdownMenuRow, 'cursor-pointer text-(--ui-text-tertiary)')}
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
       >
         Edit Models…

@@ -96,6 +96,10 @@ export interface OAuthPollResponse {
 export interface EnvVarInfo {
   advanced: boolean
   category: string
+  // True when this var is a messaging-platform credential owned by a card on
+  // the dedicated Messaging page. The Keys page hides these to avoid
+  // duplicating the richer channel-configuration UI.
+  channel_managed?: boolean
   description: string
   is_password: boolean
   is_set: boolean

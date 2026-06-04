@@ -190,11 +190,14 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 class TestJobCRUD:
     def test_runtime_state_is_saved_outside_jobs_json(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="every 1h")
+        jobs_path = tmp_cron_dir / "cron" / "jobs.json"
+        jobs_before = jobs_path.read_text()
 
         mark_job_run(job["id"], success=True)
 
-        jobs_path = tmp_cron_dir / "cron" / "jobs.json"
         state_path = tmp_cron_dir / "cron" / "state.json"
+        assert jobs_path.read_text() == jobs_before
+
         durable = json.loads(jobs_path.read_text())
         runtime = json.loads(state_path.read_text())
         durable_job = durable["jobs"][0]

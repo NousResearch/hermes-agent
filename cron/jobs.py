@@ -593,6 +593,15 @@ def save_jobs(jobs: List[Dict[str, Any]]):
     # Write runtime state first. If this fails, leave jobs.json untouched rather
     # than stripping execution metadata without preserving it elsewhere.
     _atomic_write_json(_state_file(), {"jobs": runtime_state, "updated_at": updated_at})
+
+    try:
+        with JOBS_FILE.open('r', encoding='utf-8') as f:
+            existing = json.load(f)
+        if isinstance(existing, dict) and existing.get("jobs") == durable_jobs:
+            return
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
     _atomic_write_json(JOBS_FILE, {"jobs": durable_jobs, "updated_at": updated_at})
 
 

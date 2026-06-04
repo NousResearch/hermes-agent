@@ -567,11 +567,11 @@
   animation-direction: reverse;
 }
 
-/* Nous Portal hero: slower, blue → purple arc. */
+/* Nous Portal hero: slower, blue → orange arc. */
 .arc-border.arc-nous,
 :root.dark .arc-border.arc-nous {
   --arc-c1: #4f8cff;
-  --arc-c2: #b06bff;
+  --arc-c2: #ff8c42;
   --arc-duration: 3.27s;
 }
 

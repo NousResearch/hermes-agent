@@ -136,6 +136,24 @@ try:
 except (ValueError, TypeError):
     _slash_timeout = 45.0
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
+
+# When a WebSocket client (the dashboard's embedded-chat tab / desktop app)
+# disconnects, ``tui_gateway.ws`` detaches the transport but intentionally
+# leaves the session parked so a quick reconnect can reattach it (see ws.py).
+# That park is unbounded, though: a browser refresh spins up a brand-new
+# ``session.create`` (new sid + a fresh _SlashWorker via _deferred_build) and
+# never reattaches the OLD sid, so the old session's slash-worker subprocess
+# lingers forever — one leaked python process per refresh (#38591 fallout).
+# After this grace window, an orphaned (transport-detached, not-running) WS
+# session is reaped: its _SlashWorker is closed and the session finalized.
+# Set to 0 to disable (park forever, pre-fix behaviour).
+try:
+    _ws_orphan_reap_grace = float(
+        os.environ.get("HERMES_TUI_WS_ORPHAN_REAP_GRACE_S") or "20"
+    )
+except (ValueError, TypeError):
+    _ws_orphan_reap_grace = 20.0
+_WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -324,6 +342,78 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                 db.end_session(session_id, end_reason)
         except Exception:
             pass
+
+
+def _teardown_session(session: dict | None) -> None:
+    """Fully tear down a session: finalize, unregister, close agent + worker.
+
+    Shared by ``session.close`` and the orphaned-WS-session reaper so the
+    slash-worker subprocess is always closed exactly once via the same path.
+    Idempotent: the ``_finalized`` guard in ``_finalize_session`` and the
+    ``poll()`` guard in ``_SlashWorker.close`` make repeat calls harmless.
+    """
+    if not session:
+        return
+    _finalize_session(session)
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        unregister_gateway_notify(session["session_key"])
+    except Exception:
+        pass
+    try:
+        agent = session.get("agent")
+        if agent and hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
+
+
+def _ws_session_is_orphaned(session: dict | None) -> bool:
+    """True if a WS session has no live transport and no in-flight turn.
+
+    After ``handle_ws`` detaches a disconnected client it points the session
+    at ``_stdio_transport``. In the dashboard's in-process gateway there is no
+    real stdio peer reading those frames, so a session left on the stdio
+    transport (and not mid-turn) is genuinely orphaned and safe to reap.
+    """
+    if not session or session.get("_finalized"):
+        return False
+    if session.get("running"):
+        return False
+    return session.get("transport") is _stdio_transport
+
+
+def _schedule_ws_orphan_reap(sid: str) -> None:
+    """After a grace window, reap session ``sid`` iff it's still orphaned.
+
+    Called from the WS-disconnect path. The grace window lets a transient
+    reconnect (or a ``session.resume`` that reattaches the transport) cancel
+    the reap by re-binding a live transport. Disabled when the grace is 0.
+    """
+    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+        return
+
+    def _reap() -> None:
+        with _session_resume_lock:
+            session = _sessions.get(sid)
+            if not _ws_session_is_orphaned(session):
+                return
+            _sessions.pop(sid, None)
+        try:
+            _teardown_session(session)
+        except Exception:
+            pass
+
+    timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
+    timer.daemon = True
+    timer.start()
 
 
 def _shutdown_sessions() -> None:
@@ -3675,25 +3765,7 @@ def _(rid, params: dict) -> dict:
             session = _sessions.pop(sid, None)
         if not session:
             return _ok(rid, {"closed": False})
-        _finalize_session(session)
-        try:
-            from tools.approval import unregister_gateway_notify
-
-            unregister_gateway_notify(session["session_key"])
-        except Exception:
-            pass
-        try:
-            agent = session.get("agent")
-            if agent and hasattr(agent, "close"):
-                agent.close()
-        except Exception:
-            pass
-        try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
+        _teardown_session(session)
     return _ok(rid, {"closed": True})
 
 

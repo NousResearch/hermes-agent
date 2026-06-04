@@ -87,11 +87,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for tool_call in tool_calls:
         function_name = tool_call.function.name
 
-        # Reset nudge counters
-        if function_name == "memory":
-            agent._turns_since_memory = 0
-        elif function_name == "skill_manage":
-            agent._iters_since_skill = 0
+        # NOTE: nudge counters (_turns_since_memory, _iters_since_skill) are
+        # intentionally NOT reset here. Resetting before execution means a
+        # blocked/rejected/failed tool call still clears the counter, causing
+        # the nudge to not fire again for another full interval (issue #38863).
+        # Counters are reset in the post-execution path (see below) only when
+        # the tool call actually ran successfully.
 
         try:
             function_args = json.loads(tool_call.function.arguments)

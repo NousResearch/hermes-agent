@@ -425,6 +425,25 @@
   display: none;
 }
 
+/* Primitive-level pointer cursor for every interactive control (buttons,
+   selects, menu items, switches, tabs, summaries). Keeps individual
+   components from having to hardcode `cursor-pointer`; explicit cursor
+   utilities (cursor-grab, cursor-default, disabled:cursor-*) still win since
+   they live in the utilities layer. */
+@layer base {
+  button:not(:disabled):not([aria-disabled='true']),
+  summary,
+  [role='button']:not([aria-disabled='true']),
+  [role='menuitem']:not([aria-disabled='true']),
+  [role='menuitemradio']:not([aria-disabled='true']),
+  [role='menuitemcheckbox']:not([aria-disabled='true']),
+  [role='option']:not([aria-disabled='true']),
+  [role='switch']:not([aria-disabled='true']),
+  [role='tab']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}
+
 @layer utilities {
   [class*='rounded-full'],
   [class*=':rounded-full'] {
@@ -467,6 +486,57 @@
   --arc-c1: var(--dt-foreground);
 }
 
+/* Quest-style "needs you" pulse for a clarify-blocked session's dot —
+   a soft amber glow that breathes so the row draws the eye without a toast. */
+@keyframes quest-glow {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0.1875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 70%, transparent),
+      0 0 0.5rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 45%, transparent);
+  }
+  50% {
+    transform: scale(1.18);
+    box-shadow:
+      0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
+      0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
+  }
+}
+
+.quest-glow {
+  animation: quest-glow 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quest-glow {
+    animation: none;
+    box-shadow:
+      0 0 0.25rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 80%, transparent),
+      0 0 0.625rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 55%, transparent);
+  }
+}
+
+/* Command-palette deep-link: briefly flash the targeted settings row. */
+@keyframes setting-field-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--dt-primary, #f59e0b) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.setting-field-highlight {
+  animation: setting-field-flash 1.6s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setting-field-highlight {
+    animation: none;
+  }
+}
+
 .arc-border::before {
   content: '';
   position: absolute;
@@ -496,6 +566,21 @@
   .arc-border::before {
     animation: none;
   }
+}
+
+/* No focus rings, anywhere. Kills the native outline plus Tailwind's
+   `focus-visible:ring-*` (a box-shadow driven by --tw-ring-*). Unlayered so it
+   beats the utilities layer without !important on the outline. The composer /
+   .desktop-input-chrome focus glow is untouched — those set `box-shadow`
+   directly rather than through the ring vars. */
+*:focus,
+*:focus-visible {
+  outline: none;
+}
+
+*:focus-visible {
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
 }
 
 button {

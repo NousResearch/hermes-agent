@@ -98,9 +98,12 @@ function ChatHeader({
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
+
   const activeStoredSession =
     sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
+
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
   // state after auto-compression rotates the id.
@@ -109,6 +112,13 @@ function ChatHeader({
     : selectedSessionId
       ? pinnedSessionIds.includes(selectedSessionId)
       : false
+
+  // A brand-new session has no session to pin/delete/rename, so the header is
+  // just a dead "New session" label + chevron. Drop it (and its border)
+  // entirely until there's a real session to act on.
+  if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
+    return null
+  }
 
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
@@ -123,7 +133,7 @@ function ChatHeader({
           title={title}
         >
           <Button
-            className="pointer-events-auto h-6 min-w-0 gap-1 rounded-md border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
+            className="pointer-events-auto h-6 min-w-0 gap-1 border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
             type="button"
             variant="ghost"
           >

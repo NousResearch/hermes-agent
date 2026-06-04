@@ -338,6 +338,17 @@ if [ -f "$HERMES_HOME/.env" ]; then
     chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
 fi
 
+# --- Migrate persisted config schema ---
+# Docker image upgrades replace the code under $INSTALL_DIR but preserve
+# $HERMES_HOME on the mounted volume. Run the same safe, non-interactive
+# config-schema migrations that `hermes update` runs for non-Docker installs,
+# after first-boot seeding and before supervised gateway services start.
+# Set HERMES_SKIP_CONFIG_MIGRATION=1 for controlled/manual migrations.
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
+        || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
+fi
+
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering
 # rotated refresh tokens on container restart.

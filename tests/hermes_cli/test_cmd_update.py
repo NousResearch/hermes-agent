@@ -279,7 +279,7 @@ class TestCmdUpdateBranchFallback:
         # cmd_update runs npm commands in these locations:
         #   1. repo root  — root-only install (--workspaces=false)
         #   2. repo root  — workspace install (--workspace ui-tui --workspace web)
-        #   3. web/       — npm ci --silent (if lockfile not at root)
+        #   3. web/       — npm ci --silent --prefer-offline (if lockfile not at root)
         #                  via _build_web_ui (subprocess.run)
         #   4. web/       — npm run build (_run_with_idle_timeout)
         #
@@ -297,6 +297,7 @@ class TestCmdUpdateBranchFallback:
             "ci",
             "--no-fund",
             "--no-audit",
+            "--prefer-offline",
             "--progress=false",
             "--workspaces=false",
         ]
@@ -305,6 +306,7 @@ class TestCmdUpdateBranchFallback:
             "ci",
             "--no-fund",
             "--no-audit",
+            "--prefer-offline",
             "--progress=false",
             "--workspace",
             "ui-tui",
@@ -319,7 +321,7 @@ class TestCmdUpdateBranchFallback:
             # The web/ install runs from the workspace root when the root
             # lockfile exists (npm workspaces hoist node_modules upward).
             assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--workspace", "web", "--silent"], PROJECT_ROOT),
+                (["/usr/bin/npm", "ci", "--workspace", "web", "--silent", "--prefer-offline"], PROJECT_ROOT),
             ]
 
         # The web UI build itself went through the streaming helper.

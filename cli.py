@@ -313,6 +313,25 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
+    """Resolve the prefill file path from env/config.
+
+    ``prefill_messages_file`` at the top level is the canonical config key.
+    ``agent.prefill_messages_file`` remains a legacy fallback for older CLI and
+    godmode-generated configs.
+    """
+    env_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "").strip()
+    if env_path:
+        return env_path
+    top_level = str(config.get("prefill_messages_file", "") or "").strip()
+    if top_level:
+        return top_level
+    agent_cfg = config.get("agent", {})
+    if isinstance(agent_cfg, dict):
+        return str(agent_cfg.get("prefill_messages_file", "") or "").strip()
+    return ""
+
+
 def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
     from hermes_constants import parse_reasoning_effort
@@ -872,6 +891,17 @@ _cleanup_done = False
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 _deferred_agent_startup_done = False
+# Set True once the TUI's prompt_toolkit app starts (which enables focus
+# reporting + mouse tracking). Gates the on-exit terminal reset so non-TUI
+# one-shot CLI runs — which also register _run_cleanup via atexit — don't emit
+# escape codes for modes they never enabled (#36823).
+_tui_input_modes_active = False
+
+
+def _mark_tui_input_modes_active() -> None:
+    """Record that the TUI app started, so _run_cleanup resets input modes."""
+    global _tui_input_modes_active
+    _tui_input_modes_active = True
 
 
 def _prepare_deferred_agent_startup() -> None:
@@ -927,6 +957,12 @@ def _run_cleanup():
         return
     _cleanup_done = True
 
+    # Reset terminal input modes first, before the slower resource teardown
+    # below (MCP / browser / memory shutdown can take seconds). On Ctrl+C the
+    # user's terminal becomes usable immediately, and a later step raising
+    # can't skip the reset (#36823). No-op unless the TUI actually ran.
+    _reset_terminal_input_modes_on_exit()
+
     try:
         _cleanup_all_terminals()
     except Exception:
@@ -952,7 +988,12 @@ def _run_cleanup():
     # session boundary — NOT per-turn inside run_conversation().
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+            reason="shutdown",
+        )
     except Exception:
         pass
     try:
@@ -968,6 +1009,86 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
+    except Exception:
+        pass
+
+
+def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") -> None:
+    """Best-effort on_session_end hook for interrupted non-interactive runs."""
+    agent = getattr(cli, "agent", None)
+    if agent is None:
+        return
+
+    try:
+        agent.interrupt(reason.replace("_", " "))
+    except Exception:
+        pass
+
+    session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+    if session_id:
+        try:
+            cli.session_id = session_id
+        except Exception:
+            pass
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_end",
+            session_id=session_id,
+            task_id=getattr(agent, "_current_task_id", "") or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            completed=False,
+            interrupted=True,
+            model=getattr(agent, "model", None),
+            platform=getattr(agent, "platform", None) or "cli",
+            reason=reason,
+        )
+    except Exception:
+        pass
+
+
+def _reset_terminal_input_modes_on_exit() -> None:
+    """Best-effort: disable focus reporting + mouse tracking on TUI exit so they
+    don't leak into the next shell session sharing the tab.
+
+    prompt_toolkit restores these on a clean teardown, but Ctrl+C, SIGTERM /
+    SIGHUP and crashes can bypass its unwind, leaving the modes enabled. The
+    terminal then emits raw ``ESC[I`` / ``ESC[O`` focus events and fragmented
+    SGR mouse reports as visible text in whatever runs next in the same tab
+    (#36823). Called from ``_run_cleanup`` (atexit-registered + invoked on the
+    normal / EOF / interrupt exit paths) this covers normal quit, Ctrl+C and
+    SIGTERM/SIGHUP. ``kill -9`` is uncatchable, and the kanban worker's
+    ``os._exit(0)`` path bypasses ``atexit``; neither runs this — but both are
+    non-TTY / non-TUI, so there is nothing to reset there.
+
+    Gated on ``_tui_input_modes_active`` so one-shot non-TUI CLI runs (which
+    share ``_run_cleanup`` via ``atexit``) never emit these codes. Writes to the
+    controlling terminal directly: by exit, prompt_toolkit's own output is torn
+    down, so ``sys.stdout`` is the real fd; falls back to ``/dev/tty`` when
+    stdout is redirected away from the terminal.
+    """
+    global _tui_input_modes_active
+    if not _tui_input_modes_active:
+        return
+    # About to disable the modes — clear the flag so a re-armed _run_cleanup (or
+    # a long-lived process that reuses it) doesn't re-emit them.
+    _tui_input_modes_active = False
+    # Prefer stdout when it's the terminal; otherwise the TUI may have driven
+    # /dev/tty while stdout was redirected — reset there instead of nowhere.
+    try:
+        stream = sys.stdout
+        if stream is not None and stream.isatty():
+            stream.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+            stream.flush()
+            return
+    except Exception:
+        pass
+    try:
+        with open("/dev/tty", "w", encoding="ascii") as tty:
+            tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
+            tty.flush()
     except Exception:
         pass
 
@@ -2116,6 +2237,41 @@ def _cprint(text: str):
             pass
 
 
+def _prepend_note_to_message(message, note: str):
+    """Prepend a one-shot system-style note to a user message.
+
+    ``message`` is normally a plain string, but when the user attaches an image
+    to a vision-capable model it becomes a list of OpenAI-style content parts
+    (text + ``image_url`` blocks). Naively doing ``note + "\\n\\n" + message``
+    then raises ``TypeError: can only concatenate str (not "list") to str`` —
+    e.g. running ``/model ...`` (which queues a model-switch note) and then
+    sending a pasted image in the same turn.
+
+    Returns the message with ``note`` prepended:
+      * ``str``  → ``f"{note}\\n\\n{message}"`` (just ``note`` when empty)
+      * ``list`` → note folded into the first text part, or inserted as a new
+        leading ``{"type": "text"}`` part when there is no text part.
+    Unknown shapes are returned unchanged (fail-open).
+    """
+    note = str(note or "").strip()
+    if not note:
+        return message
+    if isinstance(message, str):
+        return f"{note}\n\n{message}" if message else note
+    if isinstance(message, list):
+        parts = list(message)
+        for i, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") == "text":
+                merged = dict(part)
+                text = merged.get("text", "")
+                merged["text"] = f"{note}\n\n{text}" if text else note
+                parts[i] = merged
+                return parts
+        # No text part (image-only) — insert the note as a leading text block.
+        return [{"type": "text", "text": note}, *parts]
+    return message
+
+
 # ---------------------------------------------------------------------------
 # File-drop / local attachment detection — extracted as pure helpers for tests.
 # ---------------------------------------------------------------------------
@@ -3135,7 +3291,7 @@ class HermesCLI:
         
         # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(
-            CLI_CONFIG["agent"].get("prefill_messages_file", "")
+            _resolve_prefill_messages_file(CLI_CONFIG)
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
@@ -4971,6 +5127,7 @@ class HermesCLI:
                         f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
                         f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                     )
+                self._restore_session_cwd(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -5190,6 +5347,59 @@ class HermesCLI:
 
         self._console_print()
 
+    def _restore_session_cwd(self, session_meta: dict, *, quiet: bool = False) -> None:
+        """Relaunch a resumed session in the directory it was started from.
+
+        Idempotent and safe to call from every resume path. When the stored
+        ``cwd`` differs from the current process directory, we both
+        ``os.chdir()`` (so the process and any ``os.getcwd()`` fallback agree)
+        and retarget ``TERMINAL_CWD`` (so the terminal tool, code-exec tool,
+        and relative-path resolution all land in the same place — the local
+        terminal backend snapshots cwd on first use, which happens after this).
+
+        No-ops when: the session recorded no cwd (gateway/remote/older
+        sessions), the directory no longer exists, or we're already there.
+        A missing directory degrades to a single dim warning rather than a
+        crash — repos get moved and deleted.
+        """
+        recorded = (session_meta or {}).get("cwd")
+        if not recorded:
+            return
+        recorded = os.path.expanduser(str(recorded))
+        try:
+            current = os.getcwd()
+        except OSError:
+            current = None
+        if current and os.path.realpath(recorded) == os.path.realpath(current):
+            return  # Already where the session lived — nothing to announce.
+
+        if not os.path.isdir(recorded):
+            msg = f"⚠ Session's working directory is gone: {recorded} — staying in {current or '.'}"
+            if quiet:
+                print(msg, file=sys.stderr)
+            else:
+                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            return
+
+        try:
+            os.chdir(recorded)
+        except OSError as e:
+            msg = f"⚠ Could not enter session's working directory {recorded}: {e}"
+            if quiet:
+                print(msg, file=sys.stderr)
+            else:
+                self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+            return
+
+        # Retarget the terminal/code-exec tools to match the process cwd.
+        os.environ["TERMINAL_CWD"] = recorded
+
+        msg = f"↻ Working directory: {recorded}"
+        if quiet:
+            print(msg, file=sys.stderr)
+        else:
+            self._console_print(f"[{_DIM}]{_escape(msg)}[/]")
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -5246,6 +5456,7 @@ class HermesCLI:
                 f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
                 f"{len(restored)} total messages)[/]"
             )
+            self._restore_session_cwd(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(
@@ -6434,6 +6645,7 @@ class HermesCLI:
                 event_type,
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
+                reason="new_session" if event_type == "on_session_reset" else "session_boundary",
             )
         except Exception:
             pass
@@ -6954,7 +7166,11 @@ class HermesCLI:
         except Exception:
             pass
 
-        # Create the new session with parent link
+        # Create the new session with parent link.
+        # Persist a stable ``_branched_from`` marker in model_config so
+        # list_sessions_rich() can keep the branch visible in /resume and
+        # /sessions even after the parent is reopened and re-ended with a
+        # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
@@ -6963,6 +7179,7 @@ class HermesCLI:
                 model_config={
                     "max_iterations": self.max_turns,
                     "reasoning_config": self.reasoning_config,
+                    "_branched_from": parent_session_id,
                 },
                 parent_session_id=parent_session_id,
             )
@@ -12135,17 +12352,21 @@ class HermesCLI:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
-                # Prepend pending model switch note so the model knows about the switch
+                # Prepend pending notes via _prepend_note_to_message, which
+                # handles both plain-string and multimodal content-parts list
+                # messages. Naive ``note + "\n\n" + agent_message`` crashed with
+                # TypeError when an image was attached (agent_message is a list)
+                # and a /model or /reload-skills note was queued for the turn.
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
-                    agent_message = _msn + "\n\n" + agent_message
+                    agent_message = _prepend_note_to_message(agent_message, _msn)
                     self._pending_model_switch_note = None
                 # Prepend pending /reload-skills note so the model sees which
                 # skills were added/removed before handling this turn. Same
                 # one-shot queue pattern as the model-switch note above.
                 _srn = getattr(self, '_pending_skills_reload_note', None)
                 if _srn:
-                    agent_message = _srn + "\n\n" + agent_message
+                    agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(
@@ -12511,8 +12732,53 @@ class HermesCLI:
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
     
+    def _clear_terminal_on_exit(self):
+        """Clear screen + scrollback so nothing is stranded above the exit summary.
+
+        Called from ``_print_exit_summary`` after ``app.run()`` has returned and
+        prompt_toolkit has torn down its renderer + restored terminal modes —
+        so a direct write to the real stdout fd is safe (the StdoutProxy /
+        patch_stdout layer is gone by now).
+
+        Sequence: ``ESC[3J`` (erase scrollback) + ``ESC[2J`` (erase visible
+        screen) + ``ESC[H`` (cursor home). Modern terminals on Linux, macOS and
+        Windows (Terminal / conhost with VT processing, which prompt_toolkit
+        already enables) all honor these. Best-effort: skip silently when
+        stdout isn't a real console, and fall back to the platform ``clear`` /
+        ``cls`` command if the escape write fails.
+        """
+        try:
+            stream = sys.stdout
+            if stream is None or not stream.isatty():
+                return
+        except Exception:
+            return
+        try:
+            stream.write("\033[3J\033[2J\033[H")
+            stream.flush()
+            return
+        except Exception:
+            pass
+        # Fallback: shell clear command (rarely needed — escapes work on every
+        # VT-capable terminal, but this covers exotic stdout wrappers).
+        try:
+            os.system("cls" if os.name == "nt" else "clear")
+        except Exception:
+            pass
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
+        # Clear the screen + scrollback before printing the summary so the
+        # live bottom chrome (status bar, input box, separator rules) and the
+        # rest of the session transcript don't get stranded above the exit
+        # summary (#38252). By this point app.run() has returned and
+        # prompt_toolkit has restored terminal modes, so writing raw escapes
+        # to stdout is safe. ESC[3J clears scrollback, ESC[2J clears the
+        # visible screen, ESC[H homes the cursor — so the summary prints at a
+        # clean top-left. Falls back to the platform clear command if stdout
+        # isn't a TTY-capable stream. Honors NO_COLOR/dumb terminals by
+        # skipping silently when there's no real console.
+        self._clear_terminal_on_exit()
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -14658,6 +14924,17 @@ class HermesCLI:
             style=style,
             full_screen=False,
             mouse_support=False,
+            # Erase the live bottom chrome (status bar, input box, separator
+            # rules) on exit instead of freezing a final copy into scrollback.
+            # Without this, prompt_toolkit's render_as_done teardown repaints
+            # the chrome one last time and leaves it stranded above the exit
+            # summary — so a dead status bar + empty prompt sit between the
+            # conversation transcript and the "Resume this session" block, and
+            # stack with the next session's UI on resume (#38252). The actual
+            # conversation transcript is printed through patch_stdout into
+            # normal scrollback and is unaffected; only the managed chrome is
+            # erased. Applies to every exit path (/exit, /quit, EOF, Ctrl+C).
+            erase_when_done=True,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         _disable_prompt_toolkit_cpr_warning(app)
@@ -15096,6 +15373,9 @@ class HermesCLI:
                     pass  # No running loop -- nothing to patch
                 except Exception:
                     pass
+                # The app enables focus reporting + mouse tracking; record that
+                # so _run_cleanup resets them on exit (#36823).
+                _mark_tui_input_modes_active()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
@@ -15181,6 +15461,7 @@ class HermesCLI:
                         interrupted=True,
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
+                        reason="shutdown",
                     )
                 except Exception:
                     pass
@@ -15540,6 +15821,7 @@ def main(
         raise KeyboardInterrupt()
     try:
         import signal as _signal
+        _signal.signal(_signal.SIGINT, _signal_handler_q)
         _signal.signal(_signal.SIGTERM, _signal_handler_q)
         if hasattr(_signal, "SIGHUP"):
             _signal.signal(_signal.SIGHUP, _signal_handler_q)
@@ -15661,10 +15943,15 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
+                    try:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                        )
+                    except KeyboardInterrupt:
+                        _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                        sys.exit(130)
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
                     # session_id to stderr for automation wrappers; without
@@ -15704,9 +15991,33 @@ def main(
 
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                    
-                    # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+
+                    # Ensure proper exit code for automation wrappers.
+                    #
+                    # Kanban workers get a special case: when the run failed
+                    # purely because the provider rate-limited / exhausted
+                    # quota (not because the task itself is broken), exit with
+                    # the EX_TEMPFAIL sentinel instead of the generic 1. The
+                    # dispatcher's reap classifier maps that code to a
+                    # ``rate_limited`` exit and releases the task back to
+                    # ``ready`` WITHOUT incrementing the failure counter, so a
+                    # 5-hour quota window can't trip the circuit breaker and
+                    # permanently block the card. Non-kanban runs keep the
+                    # plain 0/1 contract automation wrappers expect.
+                    _exit_code = 0
+                    if isinstance(result, dict) and result.get("failed"):
+                        _exit_code = 1
+                        if os.environ.get("HERMES_KANBAN_TASK") and result.get(
+                            "failure_reason"
+                        ) in ("rate_limit", "billing"):
+                            try:
+                                from hermes_cli.kanban_db import (
+                                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                )
+                                _exit_code = _RL_CODE
+                            except Exception:
+                                _exit_code = 1
+                    sys.exit(_exit_code)
             
             # Exit with error code if credentials or agent init fails
             sys.exit(1)

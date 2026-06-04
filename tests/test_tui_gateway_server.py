@@ -4,10 +4,60 @@ import sys
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from tui_gateway import server
+
+
+def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
+    """Desktop/TUI sessions must pin the agent cwd per session.
+
+    The gateway process itself is often launched from apps/desktop in dev, so
+    falling back to os.getcwd() makes agents answer from the desktop app folder
+    even when the sidebar/session cwd is a real project.
+    """
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    sid = "cwd-sid"
+    session_key = "cwd-key"
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "apps" / "desktop"
+    launcher.mkdir(parents=True)
+
+    server._sessions[sid] = {"session_key": session_key, "cwd": str(project)}
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(launcher)
+
+    tokens = server._set_session_context(session_key)
+    try:
+        assert resolve_agent_cwd() == project
+    finally:
+        server._clear_session_context(tokens)
+        server._sessions.pop(sid, None)
+
+
+def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
+    """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
+    parent workspace is passed explicitly; it must pin instead of clearing back
+    to the gateway launch dir."""
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = tmp_path / "apps" / "desktop"
+    launcher.mkdir(parents=True)
+
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.chdir(launcher)
+
+    tokens = server._set_session_context("bg_deadbe", cwd=str(project))
+    try:
+        assert resolve_agent_cwd() == project
+    finally:
+        server._clear_session_context(tokens)
 
 
 class _ChunkyStdout:
@@ -82,6 +132,20 @@ def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
     assert capped.startswith("[showing verbose tail; omitted ")
     assert capped.endswith("three\nfour")
     assert "one" not in capped
+
+
+def test_tui_verbose_default_cap_stays_small(monkeypatch):
+    # Regression guard for #34095: the verbose tool text shipped to the TUI is
+    # rendered into a persisted, expanded-by-default trail block for the whole
+    # session. Raising this cap back toward the old 16KB re-introduces the Ink
+    # render-tree blowup that silently OOM-killed the TUI. Keep it small.
+    assert server._TUI_VERBOSE_TEXT_MAX_CHARS <= 2_000
+
+    huge = "x" * 40_000
+    capped = server._cap_tui_verbose_text(huge)
+
+    assert len(capped) < 2_000
+    assert capped.startswith("[showing verbose tail; omitted ")
 
 
 def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
@@ -884,6 +948,90 @@ def test_session_title_queues_when_db_row_not_ready(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_notification_event_routing_by_session_key(monkeypatch):
+    """Background-process events surface only in the session that owns them."""
+    mine = _session(session_key="mine")
+    other = _session(session_key="other")
+    monkeypatch.setattr(server, "_sessions", {"a": mine, "b": other})
+
+    # My own event → handle it.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "mine"}) is False
+    # Global/system event with no owner → handle it.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": ""}) is False
+    assert server._notification_event_belongs_elsewhere(mine, {}) is False
+    # Owned by another *live* session → defer to that session's poller.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "other"}) is True
+    # Owner is gone (not in _sessions) → handle as fallback so it isn't lost.
+    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "ghost"}) is False
+
+
+def test_session_create_does_not_persist_empty_row(monkeypatch):
+    """session.create must NOT eagerly write a DB row.
+
+    Every TUI/desktop launch opens a session here just to paint the composer;
+    eagerly creating a row left an empty "Untitled" session behind for every
+    launch the user never typed into. The row is created lazily on first prompt.
+    """
+    created = []
+
+    class _FakeDB:
+        def create_session(self, *args, **kwargs):
+            created.append((args, kwargs))
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server.threading,
+        "Timer",
+        lambda *a, **k: types.SimpleNamespace(daemon=False, start=lambda: None),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    try:
+        assert resp["result"]["stored_session_id"]
+        assert created == [], "session.create should not persist an empty DB row"
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
+    """An explicitly chosen workspace is persisted as the session cwd."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
+
+    assert created == [
+        {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(tmp_path)}
+    ]
+
+
+def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
+    """Without an explicit workspace, cwd is left null so the session groups
+    under "No workspace" rather than the gateway's launch directory."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
+
+    assert created == [{"key": "k1", "source": "tui", "model": "test-model", "cwd": None}]
+
+
 def test_session_title_clears_pending_after_persist(monkeypatch):
     class _FakeDB:
         def __init__(self):
@@ -1666,12 +1814,21 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
     assert resp["result"]["provider"] == "bedrock"
 
 
-def test_complete_slash_includes_provider_alias():
+def test_complete_slash_drops_removed_provider_alias():
+    # `/provider` was folded into a single `/model` command, so autocomplete
+    # must no longer offer the dead alias...
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/pro"}}
     )
 
-    assert any(item["text"] == "provider" for item in resp["result"]["items"])
+    assert not any(item["text"] == "provider" for item in resp["result"]["items"])
+
+    # ...while `/model` stays the canonical command.
+    resp_model = server.handle_request(
+        {"id": "2", "method": "complete.slash", "params": {"text": "/mod"}}
+    )
+
+    assert any(item["text"] == "model" for item in resp_model["result"]["items"])
 
 
 def test_complete_slash_returns_plain_string_fields():
@@ -5317,3 +5474,62 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         assert requeued["session_id"] == "proc_busy_test"
     finally:
         server._sessions.pop("sid_busy", None)
+
+
+def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
+    """TUI /save (session.save RPC) must snapshot under the Hermes profile
+    home — not the project/workspace CWD — and include the system prompt,
+    mirroring the classic CLI /save and the dashboard save export.
+
+    Regression: the gateway handler wrote ``hermes_conversation_*.json`` to
+    ``os.path.abspath(...)`` (the workspace CWD) and only exported ``model``
+    and ``messages``, so ``system_prompt`` was missing.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    # Run from a different CWD to prove the snapshot does NOT leak there.
+    work = tmp_path / "workspace"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    sid = "save-sid"
+    agent = types.SimpleNamespace(
+        model="hermes-test",
+        session_id="20260101_120000_abc123",
+        session_start=datetime(2026, 1, 1, 12, 0, 0),
+        _cached_system_prompt="You are Hermes.",
+    )
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    server._sessions[sid] = {
+        "agent": agent,
+        "session_key": "save-key",
+        "history": history,
+        "history_lock": threading.Lock(),
+        "created_at": 1735732800.0,
+    }
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    saved_file = Path(resp["result"]["file"])
+
+    # Must NOT leak into the workspace/project CWD.
+    assert not list(work.glob("hermes_conversation_*.json"))
+
+    saved_dir = home / "sessions" / "saved"
+    assert saved_file.parent == saved_dir
+    assert saved_file.exists()
+
+    payload = json.loads(saved_file.read_text())
+    assert payload["model"] == "hermes-test"
+    assert payload["session_id"] == "20260101_120000_abc123"
+    assert payload["session_start"] == "2026-01-01T12:00:00"
+    assert payload["system_prompt"] == "You are Hermes."
+    assert payload["messages"] == history

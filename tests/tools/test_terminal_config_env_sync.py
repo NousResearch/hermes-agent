@@ -156,14 +156,15 @@ def test_cli_and_gateway_env_maps_agree():
 
 def test_save_config_set_supports_critical_bridged_keys():
     """``hermes config set terminal.X true`` must propagate to .env for
-    known-critical keys.  This used to be an all-keys invariant but several
-    pre-existing terminal keys (ssh_*, docker_forward_env, docker_volumes)
-    aren't in _config_to_env_sync and are instead handled via the separate
-    api_keys TERMINAL_SSH_* fallback path or user-edits-yaml-directly.
+    known-critical keys.  This used to be an all-keys invariant but the SSH
+    terminal keys (ssh_*) aren't in _config_to_env_sync and are instead
+    handled via the separate api_keys TERMINAL_SSH_* fallback path or
+    user-edits-yaml-directly.
 
     Until those gaps are audited and fixed, pin the specific keys that are
-    load-bearing for the docker backend's ownership flag so the bug we just
-    fixed cannot silently regress.
+    load-bearing for the docker backend so the bugs we fixed cannot silently
+    regress.  (docker_volumes / docker_forward_env, previously listed here as
+    gaps, are now bridged — see the dedicated tests below.)
     """
     save_keys = _save_config_env_sync_keys()
     required = {
@@ -260,3 +261,37 @@ def test_docker_orphan_reaper_is_bridged_everywhere():
     assert "docker_orphan_reaper" in _gateway_env_map_keys()
     assert "docker_orphan_reaper" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()
+
+
+def test_docker_volumes_is_bridged_everywhere():
+    """Regression pin for ``terminal.docker_volumes`` being silently dropped by
+    ``hermes config set``.
+
+    The JSON list of ``host:container`` bind mounts was bridged by cli.py and
+    gateway/run.py and consumed by terminal_tool (via json.loads), but was
+    missing from set_config_value's _config_to_env_sync.  So
+    ``hermes config set terminal.docker_volumes '["/host:/workspace"]'`` wrote
+    config.yaml yet left the running process's TERMINAL_DOCKER_VOLUMES stale —
+    the mounts didn't apply until a full restart.  Same four-site bridge
+    invariant as docker_env / docker_run_as_host_user.
+    """
+    assert "docker_volumes" in _cli_env_map_keys()
+    assert "docker_volumes" in _gateway_env_map_keys()
+    assert "docker_volumes" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_VOLUMES" in _terminal_tool_env_var_names()
+
+
+def test_docker_forward_env_is_bridged_everywhere():
+    """Regression pin for ``terminal.docker_forward_env`` — the sibling gap to
+    docker_volumes.
+
+    The JSON list of host env-var names forwarded into the container was
+    bridged by cli.py and gateway/run.py and consumed by terminal_tool (via
+    json.loads), but missing from set_config_value's _config_to_env_sync, so
+    ``hermes config set terminal.docker_forward_env '["GITHUB_TOKEN"]'`` had no
+    effect on the running process until restart.
+    """
+    assert "docker_forward_env" in _cli_env_map_keys()
+    assert "docker_forward_env" in _gateway_env_map_keys()
+    assert "docker_forward_env" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()

@@ -208,15 +208,25 @@ function ThemeSwitcherOptions({
 }
 
 function ThemeSwatch({ theme }: { theme: DashboardTheme }) {
-  const { background, midground, warmGlow } = theme.palette;
+  // Inverted themes (Nous Blue / future lens themes) author their palette
+  // pre-inversion — `#FFAC02` reads as `#0053FD` blue once the foreground-
+  // difference layer flips the page. The picker can't replay that math
+  // cheaply, so themes opt-in to an explicit `swatchColors` triplet that
+  // mirrors the on-screen result. Falls back to the raw palette hexes for
+  // every other theme so existing dark-theme swatches are untouched.
+  const [c1, c2, c3] = theme.swatchColors ?? [
+    theme.palette.background.hex,
+    theme.palette.midground.hex,
+    theme.palette.warmGlow,
+  ];
   return (
     <div
       aria-hidden
       className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20"
     >
-      <span className="flex-1" style={{ background: background.hex }} />
-      <span className="flex-1" style={{ background: midground.hex }} />
-      <span className="flex-1" style={{ background: warmGlow }} />
+      <span className="flex-1" style={{ background: c1 }} />
+      <span className="flex-1" style={{ background: c2 }} />
+      <span className="flex-1" style={{ background: c3 }} />
     </div>
   );
 }

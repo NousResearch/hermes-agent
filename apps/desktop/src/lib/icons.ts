@@ -2,6 +2,8 @@ import {
   IconActivity as Activity,
   IconAlertCircle as AlertCircle,
   IconAlertTriangle as AlertTriangle,
+  IconArchive as Archive,
+  IconArchiveOff as ArchiveOff,
   IconArrowUp as ArrowUp,
   IconArrowUpRight as ArrowUpRight,
   IconAt as AtSign,
@@ -47,6 +49,7 @@ import {
   IconLoader2 as Loader2,
   IconLoader2 as Loader2Icon,
   IconLock as Lock,
+  IconLogin as LogIn,
   IconMessageCircle as MessageCircle,
   IconMessage2 as MessageSquareText,
   IconMicrophone as Mic,
@@ -91,13 +94,16 @@ import {
   IconTool as Wrench,
   IconX as X,
   IconX as XIcon,
-  IconBolt as Zap
+  IconBolt as Zap,
+  IconBoltFilled as ZapFilled
 } from '@tabler/icons-react'
 
 export {
   Activity,
   AlertCircle,
   AlertTriangle,
+  Archive,
+  ArchiveOff,
   ArrowUp,
   ArrowUpRight,
   AtSign,
@@ -143,6 +149,7 @@ export {
   Loader2,
   Loader2Icon,
   Lock,
+  LogIn,
   MessageCircle,
   MessageSquareText,
   Mic,
@@ -187,7 +194,8 @@ export {
   Wrench,
   X,
   XIcon,
-  Zap
+  Zap,
+  ZapFilled
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'

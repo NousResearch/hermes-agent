@@ -1523,6 +1523,243 @@ class TestDeleteSessionOrphansChildren:
         assert grandchild["parent_session_id"] == "child"
 
 
+class TestBulkDeleteSessions:
+    """``delete_sessions(ids)`` — the bulk-delete primitive backing the
+    sessions-page "Delete N selected" button. Per-row contract matches
+    :meth:`SessionDB.delete_session` (children orphaned, not cascade-
+    deleted), but applied across the whole list in one transaction.
+
+    Invariants this class locks in:
+
+    1. Returns the real deleted count (existing intersection), not
+       just ``len(session_ids)`` — selection state in the UI can race
+       against another tab's delete.
+    2. Unknown IDs are silently skipped, never raise.
+    3. ``message_count > 0`` sessions are deleted too — unlike
+       ``delete_empty_sessions``, the user explicitly picked them, so
+       we trust the selection.
+    4. Live (un-ended) and archived sessions ARE deleted on explicit
+       selection (no bulk-sweep safety guards apply when the user
+       hand-picks the row).
+    5. Children of any deleted parent are orphaned, even when the
+       parent is mid-list.
+    6. ``[]`` / ``None``-laden lists are safe no-ops.
+    """
+
+    def test_deletes_listed_sessions(self, db):
+        db.create_session(session_id="a", source="cli")
+        db.append_message("a", role="user", content="hi")
+        db.create_session(session_id="b", source="cli")
+        db.create_session(session_id="c", source="cli")
+
+        deleted = db.delete_sessions(["a", "b"])
+        assert deleted == 2
+        assert db.get_session("a") is None
+        assert db.get_session("b") is None
+        # Unlisted survives.
+        assert db.get_session("c") is not None
+
+    def test_returns_real_count_skipping_unknown_ids(self, db):
+        """Unknown IDs are silently skipped — the return value reflects
+        what was *actually* deleted, so the UI can show an accurate
+        toast even if the selection raced against another tab."""
+        db.create_session(session_id="real", source="cli")
+
+        deleted = db.delete_sessions(["real", "ghost1", "ghost2"])
+        assert deleted == 1
+        assert db.get_session("real") is None
+
+    def test_empty_list_is_noop(self, db):
+        """``[]`` returns 0 without touching the DB. Guards against a
+        bulk endpoint with an empty payload triggering an
+        unconditional 'wipe everything' if the caller forgets the
+        WHERE clause."""
+        db.create_session(session_id="keep", source="cli")
+        assert db.delete_sessions([]) == 0
+        assert db.get_session("keep") is not None
+
+    def test_drops_non_string_entries(self, db):
+        """Stray ``None`` / empty strings in the input list are
+        filtered out before hitting SQL. Callers may pull selection IDs
+        from a Set-like that occasionally contains noise; we don't want
+        a SQL parameter-type error to fail the whole batch."""
+        db.create_session(session_id="real", source="cli")
+        # noinspection PyTypeChecker
+        deleted = db.delete_sessions(["real", None, "", "ghost"])  # type: ignore[list-item]
+        assert deleted == 1
+        assert db.get_session("real") is None
+
+    def test_dedupes_duplicate_ids(self, db):
+        """The same ID listed twice counts as one deletion. Defends
+        against a hand-crafted POST body or a UI bug that double-adds
+        the same selection."""
+        db.create_session(session_id="real", source="cli")
+        deleted = db.delete_sessions(["real", "real"])
+        assert deleted == 1
+
+    def test_orphans_children_of_deleted_parents(self, db):
+        """Bulk-deleting a parent leaves its children alive but
+        re-parented to NULL. Same contract as the single-session
+        :meth:`delete_session` path."""
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent"
+        )
+
+        deleted = db.delete_sessions(["parent"])
+        assert deleted == 1
+        child = db.get_session("child")
+        assert child is not None
+        assert child["parent_session_id"] is None
+
+    def test_deletes_archived_and_active_when_selected(self, db):
+        """Unlike the safety-gated ``delete_empty_sessions`` sweep,
+        explicit bulk-select trusts the user — archived sessions and
+        un-ended live sessions are both deleted when in the list.
+        Otherwise the selection UI would silently 'leak' rows the user
+        thought they'd removed."""
+        db.create_session(session_id="archived", source="cli")
+        db.end_session("archived", end_reason="done")
+        db.set_session_archived("archived", True)
+        db.create_session(session_id="live", source="cli")
+
+        deleted = db.delete_sessions(["archived", "live"])
+        assert deleted == 2
+        assert db.get_session("archived") is None
+        assert db.get_session("live") is None
+
+    def test_cleans_up_transcript_files(self, db, tmp_path):
+        """When ``sessions_dir`` is provided, on-disk transcripts are
+        swept as part of the bulk operation — mirrors the per-row
+        :meth:`delete_session(sessions_dir=...)` behaviour so the
+        bulk-delete CLI / web flows don't leak files."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        (tmp_path / "s1.jsonl").write_text("")
+        (tmp_path / "s2.json").write_text("{}")
+
+        deleted = db.delete_sessions(["s1", "s2"], sessions_dir=tmp_path)
+        assert deleted == 2
+        assert not (tmp_path / "s1.jsonl").exists()
+        assert not (tmp_path / "s2.json").exists()
+
+
+class TestDeleteEmptySessions:
+    """``delete_empty_sessions`` sweeps every ended, non-archived session
+    whose ``message_count`` is 0. Backs the dashboard's "Delete empty"
+    button — see ``SessionsPage.tsx`` + ``DELETE /api/sessions/empty``
+    in ``hermes_cli/web_server.py``.
+
+    Invariants this class locks in:
+
+    1. Only ``message_count = 0`` rows are touched.
+    2. Active (un-ended) sessions are skipped even if they're empty —
+       the agent might be mid-handshake, and yanking the row would
+       race the live runtime.
+    3. Archived sessions are skipped — the user already filed them away.
+    4. Children of a deleted parent are orphaned (parent_session_id →
+       NULL) rather than cascade-deleted, matching the
+       ``delete_session`` / ``prune_sessions`` contract.
+    5. The pre-DB count matches the post-DB delete return value.
+    """
+
+    def test_count_and_delete_empties_only(self, db):
+        # Two empty + ended sessions → both should be in the kill list.
+        db.create_session(session_id="empty1", source="cli")
+        db.end_session("empty1", end_reason="done")
+        db.create_session(session_id="empty2", source="cli")
+        db.end_session("empty2", end_reason="done")
+
+        # One non-empty + ended session → must survive.
+        db.create_session(session_id="hasmsg", source="cli")
+        db.append_message("hasmsg", role="user", content="Hello")
+        db.end_session("hasmsg", end_reason="done")
+
+        assert db.count_empty_sessions() == 2
+
+        deleted = db.delete_empty_sessions()
+        assert deleted == 2
+        assert db.get_session("empty1") is None
+        assert db.get_session("empty2") is None
+        assert db.get_session("hasmsg") is not None
+        assert db.count_empty_sessions() == 0
+
+    def test_skips_active_empty_sessions(self, db):
+        """A live (un-ended) empty session is what you get during the
+        race between session-create and the first message landing. The
+        sweep must not delete it — that would yank a session out from
+        under the agent before its first reply persists."""
+        db.create_session(session_id="live", source="cli")
+        # Deliberately no end_session() — session is "active".
+
+        assert db.count_empty_sessions() == 0
+        assert db.delete_empty_sessions() == 0
+        assert db.get_session("live") is not None
+
+    def test_skips_archived_empty_sessions(self, db):
+        """Archived = soft-hidden by the user. They explicitly chose to
+        keep the row around (even though it's empty), so the bulk sweep
+        must not surprise them by deleting it. Restoring an archived
+        session is one click; resurrecting one we deleted is impossible."""
+        db.create_session(session_id="archived_empty", source="cli")
+        db.end_session("archived_empty", end_reason="done")
+        db.set_session_archived("archived_empty", True)
+
+        assert db.count_empty_sessions() == 0
+        assert db.delete_empty_sessions() == 0
+        assert db.get_session("archived_empty") is not None
+
+    def test_returns_zero_when_nothing_to_delete(self, db):
+        """No-op path: no candidate rows → return 0, no error."""
+        db.create_session(session_id="hasmsg", source="cli")
+        db.append_message("hasmsg", role="user", content="Hello")
+        db.end_session("hasmsg", end_reason="done")
+
+        assert db.count_empty_sessions() == 0
+        assert db.delete_empty_sessions() == 0
+        assert db.get_session("hasmsg") is not None
+
+    def test_orphans_children_of_deleted_empty_parent(self, db):
+        """Even an empty parent can have a child (e.g. a branch session
+        spawned before the parent received any messages). The sweep
+        must orphan that child, not cascade-delete it — same contract
+        as ``delete_session`` and ``prune_sessions``."""
+        db.create_session(session_id="empty_parent", source="cli")
+        db.end_session("empty_parent", end_reason="done")
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="empty_parent"
+        )
+        db.append_message("child", role="user", content="something")
+        db.end_session("child", end_reason="done")
+
+        deleted = db.delete_empty_sessions()
+        assert deleted == 1
+        assert db.get_session("empty_parent") is None
+        child = db.get_session("child")
+        assert child is not None
+        assert child["parent_session_id"] is None
+
+    def test_cleans_up_on_disk_transcript_files(self, db, tmp_path):
+        """When ``sessions_dir`` is provided, transcript files left
+        behind by a crashed gateway (``request_dump_*.json``) are swept
+        too. Empty sessions rarely have ``{id}.json`` / ``.jsonl``
+        transcripts, but the request-dump path is real — the gateway
+        writes one before the first reply lands, so a crash mid-reply
+        produces an empty session with a non-empty dump file."""
+        db.create_session(session_id="empty_with_dump", source="cli")
+        db.end_session("empty_with_dump", end_reason="done")
+
+        dump = tmp_path / "request_dump_empty_with_dump_0.json"
+        dump.write_text("{}")
+        transcript = tmp_path / "empty_with_dump.jsonl"
+        transcript.write_text("")
+
+        deleted = db.delete_empty_sessions(sessions_dir=tmp_path)
+        assert deleted == 1
+        assert not dump.exists()
+        assert not transcript.exists()
+
+
 # =========================================================================
 # Schema and WAL mode
 # =========================================================================
@@ -2478,6 +2715,44 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         ids = [s["id"] for s in sessions]
         assert "branch" in ids, "Branch session should be visible in default list"
+
+    def test_branch_session_visible_after_parent_reopen_and_reend(self, db):
+        """Branch sessions stay visible after the parent is reopened and re-ended.
+
+        Regression for issue #20856: /branch (aka /fork) sessions vanished from
+        /resume and /sessions once the parent was reopened (e.g. resumed) and
+        re-ended with a different end_reason — tui_shutdown overwriting
+        'branched' — which broke the legacy end_reason heuristic. The stable
+        _branched_from marker in model_config keeps them visible.
+        """
+        import json as _json
+
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session(
+            "branch",
+            "cli",
+            model_config={"_branched_from": "parent"},
+            parent_session_id="parent",
+        )
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        # Marker is persisted at creation time.
+        branch_row = db.get_session("branch")
+        cfg = _json.loads(branch_row["model_config"]) if branch_row["model_config"] else {}
+        assert cfg.get("_branched_from") == "parent"
+
+        # Visible immediately after branching.
+        assert "branch" in [s["id"] for s in db.list_sessions_rich()]
+
+        # Parent reopened + re-ended with a different reason (the bug trigger).
+        db.reopen_session("parent")
+        db.end_session("parent", "tui_shutdown")
+
+        # Branch must STILL be visible — the marker survives the parent's
+        # end_reason churn, unlike the legacy 'branched' heuristic.
+        ids = [s["id"] for s in db.list_sessions_rich()]
+        assert "branch" in ids, "Branch should stay visible after parent re-end"
 
     def test_subagent_session_still_hidden(self, db):
         """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
@@ -3509,3 +3784,97 @@ class TestApplyWalProbe:
         assert any("journal_mode=WAL" in sql for sql in conn.executed), (
             "set-pragma must fire when probe returns 'delete'"
         )
+
+
+class TestSessionArchive:
+    """Soft-archiving hides a session from default listings without deleting it."""
+
+    def _seed(self, db, sid, *, archived=False):
+        db.create_session(session_id=sid, source="cli")
+        db.append_message(session_id=sid, role="user", content=f"hello from {sid}")
+        if archived:
+            db.set_session_archived(sid, True)
+
+    def test_set_session_archived_roundtrip(self, db):
+        self._seed(db, "s1")
+        assert db.set_session_archived("s1", True) is True
+        assert db.get_session("s1")["archived"] == 1
+        assert db.set_session_archived("s1", False) is True
+        assert db.get_session("s1")["archived"] == 0
+
+    def test_set_session_archived_missing_row(self, db):
+        assert db.set_session_archived("nope", True) is False
+
+    def test_archived_excluded_by_default(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        ids = [s["id"] for s in db.list_sessions_rich()]
+        assert ids == ["live"]
+        assert db.session_count() == 1
+
+    def test_archived_only_and_include(self, db):
+        self._seed(db, "live")
+        self._seed(db, "hidden", archived=True)
+
+        only = [s["id"] for s in db.list_sessions_rich(archived_only=True)]
+        assert only == ["hidden"]
+        assert db.session_count(archived_only=True) == 1
+
+        both = {s["id"] for s in db.list_sessions_rich(include_archived=True)}
+        assert both == {"live", "hidden"}
+        assert db.session_count(include_archived=True) == 2
+
+
+
+class TestSessionIdSearch:
+    """Session id search backs Desktop's Search Sessions UX."""
+
+    def _seed(self, db, sid, *, content="ordinary message", archived=False):
+        db.create_session(session_id=sid, source="cli", model="test-model")
+        db.append_message(session_id=sid, role="user", content=content)
+        if archived:
+            db.set_session_archived(sid, True)
+
+    def test_search_sessions_by_id_matches_exact_prefix_and_substring(self, db):
+        self._seed(db, "20260603_090200_abcd12", content="content without id")
+        self._seed(db, "20260602_111111_other99", content="other content")
+
+        assert [s["id"] for s in db.search_sessions_by_id("20260603_090200_abcd12")] == [
+            "20260603_090200_abcd12"
+        ]
+        assert [s["id"] for s in db.search_sessions_by_id("20260603")] == ["20260603_090200_abcd12"]
+        assert [s["id"] for s in db.search_sessions_by_id("ABCD12")] == ["20260603_090200_abcd12"]
+
+    def test_search_sessions_by_id_respects_limit_and_prioritizes_exact_matches(self, db):
+        self._seed(db, "20260603_090200_abcd12")
+        self._seed(db, "20260603_090200_abcd12_child")
+        self._seed(db, "x_20260603_090200_abcd12")
+
+        ids = [s["id"] for s in db.search_sessions_by_id("20260603_090200_abcd12", limit=2)]
+
+        assert ids == ["20260603_090200_abcd12", "20260603_090200_abcd12_child"]
+
+    def test_search_sessions_by_id_can_include_or_exclude_archived(self, db):
+        self._seed(db, "20260603_090200_live")
+        self._seed(db, "20260603_090200_archived", archived=True)
+
+        included = {s["id"] for s in db.search_sessions_by_id("20260603_090200", include_archived=True)}
+        excluded = {s["id"] for s in db.search_sessions_by_id("20260603_090200", include_archived=False)}
+
+        assert included == {"20260603_090200_live", "20260603_090200_archived"}
+        assert excluded == {"20260603_090200_live"}
+
+    def test_search_sessions_by_id_matches_projected_lineage_root_id(self, db):
+        root = "20260602_235959_root99"
+        tip = "20260603_010000_tip01"
+        db.create_session(session_id=root, source="cli")
+        db.append_message(root, role="user", content="root conversation")
+        db.end_session(root, "compression")
+        db.create_session(session_id=tip, source="cli", parent_session_id=root)
+        db.append_message(tip, role="user", content="continued conversation")
+
+        matches = db.search_sessions_by_id("root99")
+
+        assert [s["id"] for s in matches] == [tip]
+        assert matches[0]["_lineage_root_id"] == root

@@ -83,6 +83,7 @@ import sys
 import threading
 import logging
 import time
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -153,6 +154,17 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
 DEFAULT_CRASH_GRACE_SECONDS = 30
 
 
+# Sentinel exit code a kanban worker uses to signal "I bailed because the
+# provider rate-limited / exhausted quota, not because the task failed."
+# The dispatcher's reap classifier maps this to a ``rate_limited`` exit kind
+# so ``detect_crashed_workers`` can release the task back to ``ready``
+# WITHOUT counting a failure (the circuit breaker must never trip on a
+# transient throttle). 75 == BSD ``EX_TEMPFAIL`` (sysexits.h) — the
+# conventional "temporary failure, retry later" code, and well clear of the
+# 0/1/2 codes the worker uses for success / generic failure / usage error.
+KANBAN_RATE_LIMIT_EXIT_CODE = 75
+
+
 def _resolve_crash_grace_seconds() -> int:
     """Return the crash-detection grace period in seconds.
 
@@ -172,6 +184,28 @@ def _resolve_crash_grace_seconds() -> int:
     return DEFAULT_CRASH_GRACE_SECONDS
 
 
+def _resolve_rate_limit_cooldown_seconds() -> int:
+    """Return the rate-limit requeue cooldown in seconds.
+
+    Reads ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS`` from the environment;
+    falls back to ``DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS`` when absent, empty,
+    non-integer, or negative. A value of 0 disables the cooldown (re-spawn on
+    the next tick) — useful for tests that want to assert the task becomes
+    spawnable again immediately.
+    """
+    raw = os.environ.get(
+        "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -189,6 +223,20 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 DEFAULT_BOARD = "default"
+_CURRENT_BOARD_OVERRIDE: ContextVar[str | None] = ContextVar(
+    "hermes_kanban_current_board_override",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def scoped_current_board(slug: str):
+    """Temporarily pin the active board for the current context only."""
+    token: Token[str | None] = _CURRENT_BOARD_OVERRIDE.set(slug)
+    try:
+        yield
+    finally:
+        _CURRENT_BOARD_OVERRIDE.reset(token)
 
 # Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
 # Strict enough to stop traversal (`..`) and embedded path separators, loose
@@ -272,6 +320,15 @@ def get_current_board() -> str:
     with a best-effort warning — the dispatcher must never crash because a
     user hand-edited a file or removed a board directory.
     """
+    scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    if scoped:
+        try:
+            normed = _normalize_board_slug(scoped)
+            if normed and board_exists(normed):
+                return normed
+        except ValueError:
+            pass
+
     env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if env:
         try:
@@ -4353,13 +4410,21 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if root_row is None:
             return None
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        # Children inherit the root's workspace by default so a fan-out
+        # of a code-gen task lands in the parent's project dir/worktree
+        # rather than throwaway scratch tmp dirs. A child dict can still
+        # override with its own 'workspace_kind' / 'workspace_path'.
+        root_ws_kind = root_row["workspace_kind"] or "scratch"
+        root_ws_path = root_row["workspace_path"]
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -4370,16 +4435,30 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            # Per-child override wins; otherwise inherit the root's
+            # workspace. A child that sets workspace_kind without a path
+            # falls back to the root path only when kinds match (so a
+            # child can't accidentally point a 'dir' at the root's
+            # worktree path or vice versa).
+            child_ws_kind = child.get("workspace_kind") or root_ws_kind
+            if child.get("workspace_path"):
+                child_ws_path = child.get("workspace_path")
+            elif child_ws_kind == root_ws_kind:
+                child_ws_path = root_ws_path
+            else:
+                child_ws_path = None
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    child_ws_kind,
+                    child_ws_path,
                     tenant,
                     now,
                     (author or "decomposer"),
@@ -4697,6 +4776,15 @@ _RESPAWN_BLOCKER_RE = re.compile(
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
+# Cooldown after a rate-limited (quota-wall) requeue before the dispatcher
+# re-spawns the worker. Without this, a task released by the rate-limit path
+# would be re-spawned on the very next tick and immediately bounce off the
+# same quota wall, burning a worker slot every tick for hours. The cooldown
+# spaces retries out so the board keeps cheaply probing whether quota is back
+# without thrashing. Overridable via ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``
+# for operators who want a tighter/looser probe cadence.
+DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -4754,6 +4842,11 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    rate_limited: list[str] = field(default_factory=list)
+    """Task ids whose workers bailed on a provider rate-limit / quota wall
+    (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
+    counting a failure. These never trip the circuit breaker — a long quota
+    window just makes the task bounce cheaply until the window clears."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4801,14 +4894,20 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       task is still ``running`` in the DB, this is a protocol violation
       (worker exited without calling ``kanban_complete`` / ``kanban_block``)
       and should be auto-blocked immediately — retrying will just loop.
+    * ``"rate_limited"`` — ``WIFEXITED`` with status
+      ``KANBAN_RATE_LIMIT_EXIT_CODE``. The worker bailed because the
+      provider rate-limited / exhausted quota, NOT because the task failed.
+      ``detect_crashed_workers`` releases the task back to ``ready`` without
+      counting a failure, so a long quota window can't trip the breaker.
     * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
     * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
       something else, or died between reap tick and liveness check). Fall
       back to existing crashed-counter behavior.
 
-    ``code`` is the exit status (for ``clean_exit`` / ``nonzero_exit``) or
-    the signal number (for ``signaled``), or ``None`` for ``unknown``.
+    ``code`` is the exit status (for ``clean_exit`` / ``rate_limited`` /
+    ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
+    for ``unknown``.
     """
     entry = _recent_worker_exits.get(int(pid))
     if entry is None:
@@ -4819,6 +4918,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
             code = os.WEXITSTATUS(raw)
             if code == 0:
                 return ("clean_exit", 0)
+            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                return ("rate_limited", code)
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
@@ -5289,8 +5390,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     ``kanban_complete`` / ``kanban_block``) and trip the circuit breaker
     on the first occurrence — retrying a worker whose CLI keeps
     returning 0 without a terminal transition just loops forever.
+
+    When the reap registry shows the worker exited with the rate-limit
+    sentinel (``KANBAN_RATE_LIMIT_EXIT_CODE``), the worker bailed on a
+    provider quota wall, NOT a task failure. Such tasks are released back
+    to ``ready`` WITHOUT counting a failure (so a long quota window can't
+    trip the breaker) and stamped with a quota-blocker error so
+    ``check_respawn_guard`` defers their respawn until the window clears.
+    The ids are returned via the ``_last_rate_limited`` function attribute
+    (the public return stays the crashed-only ``list[str]``).
     """
     crashed: list[str] = []
+    rate_limited: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -5322,6 +5433,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
+            rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
@@ -5333,6 +5445,26 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "kanban_complete or kanban_block — protocol violation"
                 )
                 event_kind = "protocol_violation"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_code": code,
+                }
+            elif kind == "rate_limited":
+                # Worker bailed because the provider rate-limited / exhausted
+                # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —
+                # the task is fine, the account just hit a wall. Release it
+                # back to ``ready`` so the respawn guard defers it until the
+                # quota window clears, and crucially do NOT count a failure
+                # (skip ``_record_task_failure``) so a long quota window can't
+                # trip the circuit breaker and permanently block the card.
+                protocol_violation = False
+                rate_limited_exit = True
+                error_text = (
+                    f"pid {pid} exited rate-limited (quota wall) — "
+                    f"requeued without counting a failure"
+                )
+                event_kind = "rate_limited"
                 event_payload = {
                     "pid": pid,
                     "claimer": row["claim_lock"],
@@ -5359,9 +5491,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 (row["id"],),
             )
             if cur.rowcount == 1:
+                # Rate-limited requeues are a clean release, not a crash —
+                # record the run outcome as ``rate_limited`` so the board
+                # history doesn't show a phantom crash for a quota wall.
+                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
                 run_id = _end_run(
                     conn, row["id"],
-                    outcome="crashed", status="crashed",
+                    outcome=_run_outcome, status=_run_outcome,
                     error=error_text,
                     metadata=dict(event_payload),
                 )
@@ -5370,11 +5506,23 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
-                crashed.append(row["id"])
-                crash_details.append(
-                    (row["id"], pid, row["claim_lock"],
-                     protocol_violation, error_text)
-                )
+                if rate_limited_exit:
+                    # Stamp the failure-error column so ``check_respawn_guard``
+                    # recognizes this as a quota blocker and defers the
+                    # respawn until the window clears — WITHOUT touching
+                    # ``consecutive_failures`` (that's the whole point: no
+                    # breaker trip on a throttle).
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    rate_limited.append(row["id"])
+                else:
+                    crashed.append(row["id"])
+                    crash_details.append(
+                        (row["id"], pid, row["claim_lock"],
+                         protocol_violation, error_text)
+                    )
     # Outside the main txn: increment the unified failure counter for
     # each crashed task. If the breaker trips, the task transitions
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
@@ -5414,6 +5562,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # and tests that destructure the result; ``dispatch_once`` reads this
     # side-channel attribute to populate ``DispatchResult.auto_blocked``.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
+    # Same side-channel for rate-limited requeues — these did NOT count a
+    # failure and are NOT crashes, so they stay out of the ``crashed`` return.
+    detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
     return crashed
 
 
@@ -5641,6 +5792,18 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     Checks in priority order:
 
+    ``"rate_limit_cooldown"``
+        The task's most recent run ended with the ``rate_limited`` outcome
+        (a worker bailed on a provider quota wall via the EX_TEMPFAIL
+        sentinel) within ``_resolve_rate_limit_cooldown_seconds()``. The
+        quota almost certainly hasn't reset yet, so defer the respawn until
+        the cooldown elapses — then allow a cheap probe. This is checked
+        BEFORE ``blocker_auth`` because the rate-limit requeue stamps a
+        quota-flavored ``last_failure_error`` that would otherwise match the
+        auth-blocker regex and park the task forever (the rate-limit path
+        never increments ``consecutive_failures``, so the breaker can't free
+        it). Once the cooldown elapses the task falls through and respawns.
+
     ``"blocker_auth"``
         The task's last failure error matches a quota / authentication
         pattern. Retrying immediately is unlikely to help (rate limits
@@ -5673,14 +5836,50 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     if row is None:
         return None
 
-    # 1. Quota / auth blocker: retrying immediately will not help.
+    now = int(time.time())
+
+    # 1. Rate-limit cooldown. The most recent run ended ``rate_limited``
+    #    (quota wall) — defer while inside the cooldown window, then allow a
+    #    cheap probe. Must run BEFORE the blocker_auth regex check, because a
+    #    rate-limit requeue stamps a quota-flavored last_failure_error that
+    #    the regex would otherwise match → defer forever (no failure counter
+    #    increment on this path means the breaker can never free it).
+    #
+    #    We look at the LATEST run only (ORDER BY ended_at DESC LIMIT 1): if a
+    #    newer crash/completion superseded the rate-limit run, this guard
+    #    no longer applies and the normal paths take over.
+    rl_cooldown = _resolve_rate_limit_cooldown_seconds()
+    latest_run = conn.execute(
+        "SELECT outcome, ended_at FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if (
+        latest_run is not None
+        and latest_run["outcome"] == "rate_limited"
+    ):
+        if rl_cooldown <= 0:
+            # Cooldown disabled — respawn immediately, and skip the
+            # blocker_auth regex so the stamped rate-limit text doesn't
+            # re-trap the task.
+            return None
+        ended_at = latest_run["ended_at"]
+        if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+            return "rate_limit_cooldown"
+        # Cooldown elapsed — allow the respawn. Return early so the
+        # blocker_auth check below doesn't catch the rate-limit text we
+        # stamped on the task; this path intentionally retries forever
+        # (cheaply, spaced by the cooldown) until quota returns or a real
+        # crash/completion supersedes it.
+        return None
+
+    # 2. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
-    now = int(time.time())
-
-    # 2. Completed run within guard window — proof of recent success.
+    # 3. Completed run within guard window — proof of recent success.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
     if conn.execute(
         "SELECT id FROM task_runs "
@@ -5689,7 +5888,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ).fetchone():
         return "recent_success"
 
-    # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
@@ -5818,6 +6017,14 @@ def dispatch_once(
     )
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
+    # Rate-limited requeues (quota wall, no failure counted) — surface for
+    # telemetry / tests. These tasks went back to ``ready`` and the respawn
+    # guard will defer them until the quota window clears.
+    _crash_rate_limited = getattr(
+        detect_crashed_workers, "_last_rate_limited", []
+    )
+    if _crash_rate_limited:
+        result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 

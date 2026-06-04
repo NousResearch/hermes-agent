@@ -20,6 +20,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const [info, setInfo] = useState<null | SkillInfo>(null)
   const [installing, setInstalling] = useState(false)
   const [err, setErr] = useState('')
+  const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
 
   const { stdout } = useStdout()
@@ -47,6 +48,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
       setStage('skill')
       setInfo(null)
       setErr('')
+      setNotice('')
 
       return
     }
@@ -66,6 +68,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const inspect = (name: string) => {
     setInfo(null)
     setErr('')
+    setNotice('')
 
     gw.request<{ info?: SkillInfo }>('skills.manage', { action: 'inspect', query: name })
       .then(r => setInfo(r?.info ?? { name }))
@@ -75,9 +78,25 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const install = (name: string) => {
     setInstalling(true)
     setErr('')
+    setNotice('')
 
-    gw.request<{ installed?: boolean; name?: string }>('skills.manage', { action: 'install', query: name })
-      .then(() => onClose())
+    gw.request<SkillsInstallResponse>('skills.manage', { action: 'install', query: name })
+      .then(r => {
+        if (r?.review_required) {
+          setInfo(r.info ?? { name })
+          setNotice(r.message ?? 'Review required before installing this skill.')
+
+          return
+        }
+
+        if (r?.installed) {
+          onClose()
+
+          return
+        }
+
+        setErr('install failed')
+      })
       .catch((e: unknown) => setErr(rpcErrorMessage(e)))
       .finally(() => setInstalling(false))
   }
@@ -92,6 +111,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         setStage('skill')
         setInfo(null)
         setErr('')
+        setNotice('')
 
         return
       }
@@ -285,11 +305,18 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
       <Text color={t.color.muted}>{info?.category ?? selectedCat}</Text>
       {info?.description ? <Text color={t.color.text}>{info.description}</Text> : null}
       {info?.path ? <Text color={t.color.muted}>path: {info.path}</Text> : null}
-      {!info && !err ? <Text color={t.color.muted}>loading…</Text> : null}
+      {!info && !err && !notice ? <Text color={t.color.muted}>loading…</Text> : null}
+      {notice ? <Text color={t.color.label}>review required: {notice}</Text> : null}
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {installing ? <Text color={t.color.accent}>installing…</Text> : null}
+      {info?.skill_md_preview ? (
+        <>
+          <Text color={t.color.muted}>SKILL.md preview</Text>
+          <Text color={t.color.text}>{info.skill_md_preview}</Text>
+        </>
+      ) : null}
+      {installing ? <Text color={t.color.accent}>checking install requirements…</Text> : null}
 
-      <OverlayHint t={t}>i reinspect · x reinstall · Enter/Esc back · q close</OverlayHint>
+      <OverlayHint t={t}>i reinspect · x review install · Enter/Esc back · q close</OverlayHint>
     </Box>
   )
 }
@@ -299,6 +326,16 @@ interface SkillInfo {
   description?: string
   name?: string
   path?: string
+  skill_md_preview?: string
+}
+
+interface SkillsInstallResponse {
+  info?: SkillInfo
+  installed?: boolean
+  message?: string
+  name?: string
+  review_required?: boolean
+  status?: string
 }
 
 interface SkillsHubProps {

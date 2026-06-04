@@ -336,6 +336,50 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('shows review-required status for /skills install', async () => {
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        info: {
+          description: 'Demo skill',
+          identifier: 'example/foo',
+          name: 'foo',
+          skill_md_preview: '# foo\nreview me',
+          source: 'community'
+        },
+        installed: false,
+        message: 'Review the skill details before installing from the CLI.',
+        review_required: true,
+        status: 'review_required'
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/skills install foo')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
+      action: 'install',
+      query: 'foo'
+    })
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking install requirements for foo…')
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.panel).toHaveBeenCalledWith('Skill Review Required', [
+        {
+          rows: [
+            ['Name', 'foo'],
+            ['Source', 'community'],
+            ['Identifier', 'example/foo']
+          ]
+        },
+        { text: 'Demo skill' },
+        { text: '# foo\nreview me', title: 'SKILL.md preview' }
+      ])
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'review required for foo: Review the skill details before installing from the CLI.'
+      )
+    })
+  })
+
   it('opens the pet picker for /pet list only', () => {
     const ctx = buildCtx()
 

@@ -1692,6 +1692,34 @@ def test_skills_manage_search_uses_tools_hub_sources(server):
     search.assert_called_once_with("showroom", ["source"], source_filter="all", limit=20)
 
 
+def test_skills_manage_install_requires_review_surface(server):
+    inspect_skill = MagicMock(return_value={"name": "showroom", "skill_md_preview": "# showroom"})
+    do_install = MagicMock()
+    fake_skills_hub = types.SimpleNamespace(
+        do_install=do_install,
+        inspect_skill=inspect_skill,
+    )
+
+    with patch.dict(sys.modules, {"hermes_cli.skills_hub": fake_skills_hub}):
+        resp = server.handle_request({
+            "id": "skills-install",
+            "method": "skills.manage",
+            "params": {"action": "install", "query": "showroom"},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "info": {"name": "showroom", "skill_md_preview": "# showroom"},
+        "installed": False,
+        "message": "Review the skill details before installing from the CLI.",
+        "name": "showroom",
+        "review_required": True,
+        "status": "review_required",
+    }
+    inspect_skill.assert_called_once_with("showroom")
+    do_install.assert_not_called()
+
+
 def test_command_dispatch_steer_fallback_sends_message(server):
     """command.dispatch /steer with no active agent falls back to send."""
     sid = "test-session"

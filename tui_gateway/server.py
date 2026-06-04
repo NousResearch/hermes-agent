@@ -15761,14 +15761,19 @@ def _(rid, params: dict) -> dict:
                 },
             )
         if action == "install":
-            from hermes_cli.skills_hub import do_install
+            from hermes_cli.skills_hub import inspect_skill
 
-            class _Q:
-                def print(self, *a, **k):
-                    pass
-
-            do_install(query, skip_confirm=True, console=_Q())
-            return _ok(rid, {"installed": True, "name": query})
+            return _ok(
+                rid,
+                {
+                    "installed": False,
+                    "name": query,
+                    "status": "review_required",
+                    "review_required": True,
+                    "message": "Review the skill details before installing from the CLI.",
+                    "info": inspect_skill(query) or {},
+                },
+            )
         if action == "browse":
             from hermes_cli.skills_hub import browse_skills
 

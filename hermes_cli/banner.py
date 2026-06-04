@@ -358,6 +358,13 @@ def check_for_updates() -> Optional[int]:
             behind = check_via_pypi()
         else:
             behind = _check_via_local_git(repo_dir)
+            # Git compares against origin/main, but main may have moved past
+            # the latest release tag. When git says 0 commits behind, also
+            # check PyPI so we don't silently miss a published upgrade.
+            if behind == 0:
+                pypi_behind = check_via_pypi()
+                if pypi_behind is not None and pypi_behind > 0:
+                    behind = UPDATE_AVAILABLE_NO_COUNT
 
     try:
         cache_file.write_text(

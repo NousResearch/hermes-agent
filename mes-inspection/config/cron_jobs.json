@@ -39,6 +39,14 @@
       "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
       "enabled_toolsets": ["terminal"],
       "deliver": "feishu"
+    },
+    {
+      "name": "mes-evolution",
+      "schedule": "0 2 * * 0",
+      "prompt": "执行 MES 巡检技能进化：\n1. 使用 mes_evolution(action='list') 获取可进化技能列表\n2. 使用 mes_evolution(action='evolve_all') 批量进化所有技能\n3. 分析进化报告：哪些技能改进了，哪些没有\n4. 通过飞书推送进化报告\n\n注意：进化过程可能需要 30-60 分钟。如果进化失败，记录错误信息并推送告警。",
+      "skills": ["mes-evolution"],
+      "enabled_toolsets": ["terminal"],
+      "deliver": "feishu"
     }
   ]
 }

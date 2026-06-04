@@ -209,6 +209,19 @@ export function GatewaySettings() {
     return 'your identity provider'
   }, [probe])
 
+  // A username/password gateway authenticates through a credential form on the
+  // gateway's /login page (POST /auth/password-login) rather than an OAuth
+  // redirect. Everything downstream — the session cookie, the ws-ticket mint,
+  // the persistent partition — is identical, so the desktop drives it through
+  // the same sign-in window; only the button copy changes. We treat the
+  // gateway as password-style only when EVERY advertised provider supports
+  // password, so a mixed deployment keeps the generic OAuth copy.
+  const isPasswordProvider = useMemo(() => {
+    const providers: DesktopAuthProvider[] = probe?.providers ?? []
+
+    return providers.length > 0 && providers.every(p => p.supportsPassword)
+  }, [probe])
+
   const oauthConnected = state.remoteOauthConnected
 
   const canUseRemote = useMemo(() => {
@@ -409,7 +422,7 @@ export function GatewaySettings() {
         />
         <ModeCard
           active={state.mode === 'remote'}
-          description="Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth; self-hosted ones may use a session token."
+          description="Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token."
           disabled={state.envOverride}
           icon={Globe}
           onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
@@ -446,7 +459,7 @@ export function GatewaySettings() {
           </div>
         ) : null}
 
-        {/* OAuth gateways: present a sign-in button + connection status. */}
+        {/* OAuth / password gateways: present a sign-in button + connection status. */}
         {state.mode === 'remote' && authResolved && authMode === 'oauth' ? (
           <ListRow
             action={
@@ -463,14 +476,18 @@ export function GatewaySettings() {
               ) : (
                 <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
                   {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  Sign in with {providerLabel}
+                  {isPasswordProvider ? 'Sign in' : `Sign in with ${providerLabel}`}
                 </Button>
               )
             }
             description={
               oauthConnected
-                ? 'This gateway uses OAuth. You are signed in; the session refreshes automatically.'
-                : `This gateway uses OAuth. Sign in with ${providerLabel} to authorize this desktop app.`
+                ? isPasswordProvider
+                  ? 'This gateway uses a username and password. You are signed in; the session refreshes automatically.'
+                  : 'This gateway uses OAuth. You are signed in; the session refreshes automatically.'
+                : isPasswordProvider
+                  ? 'This gateway uses a username and password. Sign in to authorize this desktop app.'
+                  : `This gateway uses OAuth. Sign in with ${providerLabel} to authorize this desktop app.`
             }
             title="Authentication"
           />

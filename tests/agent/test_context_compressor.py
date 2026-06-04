@@ -24,6 +24,7 @@ def compressor():
             protect_last_n=2,
             quiet_mode=True,
         )
+        _ = c.context_length
         return c
 
 
@@ -2304,11 +2305,13 @@ class TestSummaryTargetRatio:
         """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+            _ = c.context_length
         # 200K < 512K → threshold floored at 75%: 150K * 0.40 ratio = 60K
         assert c.tail_token_budget == 60_000
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+            _ = c.context_length
         # 1M * 0.50 threshold * 0.40 ratio = 200K
         assert c.tail_token_budget == 200_000
 
@@ -2316,10 +2319,12 @@ class TestSummaryTargetRatio:
         """Max summary tokens should be 5% of context, capped at 10K."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.max_summary_tokens == 10_000  # 200K * 0.05
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.max_summary_tokens == 10_000  # capped at 10K ceiling
 
     def test_ratio_clamped(self):
@@ -2336,6 +2341,7 @@ class TestSummaryTargetRatio:
         """Sub-512K models get the 75% small-context threshold floor."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.threshold_percent == 0.75
         # 75% of 100K = 75K, above the 64K minimum floor
         assert c.threshold_tokens == 75_000
@@ -2344,6 +2350,7 @@ class TestSummaryTargetRatio:
         """At 512K+ the configured (default 50%) percentage is used directly."""
         with patch("agent.context_compressor.get_model_context_length", return_value=512_000):
             c = ContextCompressor(model="test", quiet_mode=True)
+            _ = c.context_length
         assert c.threshold_percent == 0.50
         assert c.threshold_tokens == 256_000
 
@@ -2984,6 +2991,55 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestLazyContextResolution:
+    """Verify that ContextCompressor defers get_model_context_length until
+    context_length is first accessed."""
+
+    def test_init_does_not_call_get_model_context_length(self):
+        with patch("agent.context_compressor.get_model_context_length") as mock_get:
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+            mock_get.assert_not_called()
+
+            _ = c.context_length
+            mock_get.assert_called_once()
+
+    def test_context_length_setter_bypasses_resolution(self):
+        with patch("agent.context_compressor.get_model_context_length") as mock_get:
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+            c.context_length = 100_000
+            result = c.context_length
+            mock_get.assert_not_called()
+            assert result == 100_000
+            assert c.threshold_percent == 0.75
+            assert c.threshold_tokens == 75_000
+
+    def test_config_context_length_skips_network_probe(self):
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            side_effect=lambda model, **kwargs: kwargs.get("config_context_length"),
+        ) as mock_get:
+            c = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                config_context_length=200_000,
+            )
+            result = c.context_length
+            assert result == 200_000
+            mock_get.assert_called_once()
 
 
 class TestPreflightSentinelGuard:

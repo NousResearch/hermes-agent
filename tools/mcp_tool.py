@@ -585,6 +585,30 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     return stripped
 
 
+def _mcp_connectivity_hostname(name: str, config: dict) -> Optional[str]:
+    """Return the hostname a network connectivity probe should resolve.
+
+    MCP server names are config keys, not necessarily DNS names. HTTP/SSE
+    transports should probe the host from the configured URL; stdio transports
+    use local subprocess pipes and have no remote host to resolve.
+    """
+    if "url" not in config:
+        return None
+
+    try:
+        return urlparse(str(config.get("url", ""))).hostname or name
+    except Exception:
+        return name
+
+
+def _run_mcp_connectivity_check(name: str, config: dict, probe) -> None:
+    """Run a hostname-based MCP connectivity probe when one is applicable."""
+    hostname = _mcp_connectivity_hostname(name, config)
+    if hostname is None:
+        return
+    probe(hostname)
+
+
 def _resolve_client_cert(server_name: str, config: dict):
     """Resolve the ``client_cert`` / ``client_key`` config for mTLS.
 

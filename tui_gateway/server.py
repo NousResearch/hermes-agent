@@ -647,6 +647,7 @@ def _completion_cwd(params: dict | None = None) -> str:
         (params or {}).get("cwd")
         or _sessions.get((params or {}).get("session_id") or "", {}).get("cwd")
         or os.environ.get("TERMINAL_CWD")
+        or (_load_cfg().get("terminal") or {}).get("cwd")
         or os.getcwd()
     )
     try:

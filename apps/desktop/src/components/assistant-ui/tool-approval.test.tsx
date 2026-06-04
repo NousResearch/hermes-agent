@@ -43,11 +43,10 @@ describe('PendingToolApproval', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('renders the inline bar with the command on the pending terminal row', () => {
+  it('renders the inline run/reject controls on the pending terminal row', () => {
     setRequest('chmod -R 777 /tmp/x')
     render(<PendingToolApproval part={part('terminal')} />)
 
-    expect(screen.queryByText(/chmod -R 777/)).not.toBeNull()
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })

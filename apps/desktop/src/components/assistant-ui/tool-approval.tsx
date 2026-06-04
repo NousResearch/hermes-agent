@@ -11,15 +11,17 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
-import { ChevronDown, Loader2, Terminal } from '@/lib/icons'
+import { ChevronDown, Loader2 } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
 
 import type { ToolPart } from './tool-fallback-model'
 
-// Inline, Cursor-style command-approval card. Rendered under the pending tool
-// row that raised the approval instead of as a modal overlay.
+// Inline, Cursor-style approval control. Rendered as a compact button strip
+// under the pending tool row that raised the approval (the row already shows
+// the command, so the strip deliberately doesn't repeat it) instead of as a
+// modal overlay.
 //
 // Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
 // carries no structured args (only tool_id/name/context — see
@@ -99,58 +101,49 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [respond])
 
-  const command = request.command.trim()
-
   return (
-    <div
-      className="mt-1.5 overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) text-sm"
-      data-slot="tool-approval-inline"
-    >
-      <div className="flex items-start gap-2 px-3 py-2.5">
-        <Terminal className="mt-px size-3.5 shrink-0 text-(--ui-text-tertiary)" />
-        <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[0.8125rem] leading-snug text-foreground">
-          {command || request.description}
-        </pre>
-      </div>
-
-      <div className="flex items-center justify-between gap-2 border-t border-(--ui-stroke-tertiary) bg-[color-mix(in_srgb,var(--foreground)_3%,transparent)] px-2.5 py-1.5">
-        <span className="min-w-0 truncate text-xs text-(--ui-text-tertiary)">{request.description}</span>
-
-        <div className="flex shrink-0 items-center gap-1.5">
-          <Button className="gap-1.5" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="ghost">
-            {submitting === 'deny' ? <Loader2 className="size-3.5 animate-spin" /> : 'Reject'}
-            {submitting !== 'deny' && <span className="text-[0.6875rem] opacity-55">Esc</span>}
-          </Button>
-
-          <div className="flex items-stretch">
-            <Button className="gap-1.5 rounded-r-none" disabled={busy} onClick={() => void respond('once')} size="sm">
-              {submitting === 'once' ? <Loader2 className="size-3.5 animate-spin" /> : 'Run'}
-              {submitting !== 'once' && (
-                <span className="text-[0.6875rem] opacity-70">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>
-              )}
+    <div className="mt-1 flex items-center gap-1 ps-5" data-slot="tool-approval-inline">
+      <div className="flex items-stretch">
+        <Button
+          className="h-6 gap-1 rounded-md rounded-r-none px-2 text-xs font-medium"
+          disabled={busy}
+          onClick={() => void respond('once')}
+          size="sm"
+        >
+          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : 'Run'}
+          {submitting !== 'once' && <span className="text-[0.625rem] opacity-70">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label="More approval options"
+              className="h-6 rounded-md rounded-l-none border-l border-primary-foreground/25 px-1"
+              disabled={busy}
+              size="sm"
+            >
+              <ChevronDown className="size-3" />
             </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  aria-label="More approval options"
-                  className="rounded-l-none border-l border-primary-foreground/25 px-1.5"
-                  disabled={busy}
-                  size="sm"
-                >
-                  <ChevronDown className="size-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-44">
-                <DropdownMenuItem onSelect={() => void respond('session')}>Allow this session</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => void respond('always')}>Always allow</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-                  Reject
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-44">
+            <DropdownMenuItem onSelect={() => void respond('session')}>Allow this session</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void respond('always')}>Always allow</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
+              Reject
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
+
+      <Button
+        className="h-6 gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground"
+        disabled={busy}
+        onClick={() => void respond('deny')}
+        size="sm"
+        variant="ghost"
+      >
+        {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : 'Reject'}
+        {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
+      </Button>
     </div>
   )
 }

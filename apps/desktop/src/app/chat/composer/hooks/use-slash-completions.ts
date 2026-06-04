@@ -16,7 +16,7 @@ interface SlashItemMetadata extends Record<string, string> {
   command: string
   display: string
   meta: string
-  rawText?: string
+  rawText: string
 }
 
 function textValue(value: unknown, fallback = ''): string {

@@ -5033,13 +5033,14 @@ def _component_check_auth(
 class ExecApprovalView(discord.ui.View):
     """Interactive button view for exec approval."""
     def __init__(self, session_key: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
-        super().__init__(timeout=300)
+        super().__init__(timeout=300)  # 5-minute timeout
         self.session_key = session_key
         self.allowed_user_ids = allowed_user_ids
         self.allowed_role_ids = allowed_role_ids or set()
         self.resolved = False
 
     async def on_timeout(self):
+        """Disable buttons when the view times out."""
         self.resolved = True
         for child in self.children:
             child.disabled = True
@@ -5050,20 +5051,25 @@ class ExecApprovalView(discord.ui.View):
                 pass
 
     def _check_auth(self, interaction: discord.Interaction) -> bool:
+        """Verify the user clicking is authorized."""
         return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
 
     async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
         if self.resolved:
             return
         if not self._check_auth(interaction):
-            await interaction.response.send_message("Not authorized~", ephemeral=True)
+            await interaction.response.send_message("Not authorized", ephemeral=True)
             return
 
-        self.resolved = True
-        embed = interaction.message.embeds[0] if (interaction.message and interaction.message.embeds) else None
+       self.resolved = True
+        embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
         if embed:
             embed.color = color
-            embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+            embed.set_field_at(0, name="Status", value=label, inline=False)
+            await interaction.response.edit_message(embed=embed, view=None)
+            
+            # Unblock the agent thread (varsayılan metodun burada çağrıldığını varsayıyorum)
+        resolve_gateway_approval(self.session_key, choice)
 
         for child in self.children:
             child.disabled = True

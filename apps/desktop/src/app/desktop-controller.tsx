@@ -68,7 +68,7 @@ import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -133,6 +133,8 @@ export function DesktopController() {
     currentView,
     openAgents,
     openCommandCenterSection,
+    openSettings,
+    openSettingsTab,
     profilesOpen,
     settingsOpen,
     toggleCommandCenter
@@ -315,9 +317,7 @@ export function DesktopController() {
     requestGateway
   })
 
-  const openProviderSettings = useCallback(() => {
-    navigate(`${SETTINGS_ROUTE}?tab=providers`)
-  }, [navigate])
+  const openProviderSettings = useCallback(() => openSettingsTab('providers'), [openSettingsTab])
 
   const modelMenuContent = useMemo(
     () =>
@@ -397,7 +397,6 @@ export function DesktopController() {
     archiveSession,
     branchCurrentSession,
     createBackendSessionForSend,
-    openSettings,
     removeSession,
     resumeSession,
     selectSidebarItem,
@@ -778,9 +777,9 @@ export function DesktopController() {
           />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />
-          <Route element={null} path="settings" />
-          <Route element={null} path="command-center" />
-          <Route element={null} path="agents" />
+          <Route element={chatView} path="settings" />
+          <Route element={chatView} path="command-center" />
+          <Route element={chatView} path="agents" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />

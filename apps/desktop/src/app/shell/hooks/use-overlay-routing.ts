@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { type CommandCenterSection } from '@/app/command-center'
-import { AGENTS_ROUTE, appViewForPath, COMMAND_CENTER_ROUTE, isOverlayView, NEW_CHAT_ROUTE } from '@/app/routes'
+import {
+  AGENTS_ROUTE,
+  appViewForPath,
+  COMMAND_CENTER_ROUTE,
+  isOverlayView,
+  NEW_CHAT_ROUTE,
+  SETTINGS_ROUTE
+} from '@/app/routes'
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
 
@@ -34,9 +41,20 @@ export function useOverlayRouting() {
     [location.search]
   )
 
+  const openOverlayRoute = useCallback(
+    (path: string) => {
+      if (!overlayOpen) {
+        returnPathRef.current = `${location.pathname}${location.search}${location.hash}`
+      }
+
+      navigate(path)
+    },
+    [location.hash, location.pathname, location.search, navigate, overlayOpen]
+  )
+
   const openCommandCenterSection = useCallback(
-    (section: CommandCenterSection) => navigate(`${COMMAND_CENTER_ROUTE}?section=${section}`),
-    [navigate]
+    (section: CommandCenterSection) => openOverlayRoute(`${COMMAND_CENTER_ROUTE}?section=${section}`),
+    [openOverlayRoute]
   )
 
   const closeOverlayToPreviousRoute = useCallback(
@@ -48,11 +66,17 @@ export function useOverlayRouting() {
     if (commandCenterOpen) {
       closeOverlayToPreviousRoute()
     } else {
-      navigate(COMMAND_CENTER_ROUTE)
+      openOverlayRoute(COMMAND_CENTER_ROUTE)
     }
-  }, [closeOverlayToPreviousRoute, commandCenterOpen, navigate])
+  }, [closeOverlayToPreviousRoute, commandCenterOpen, openOverlayRoute])
 
-  const openAgents = useCallback(() => navigate(AGENTS_ROUTE), [navigate])
+  const openAgents = useCallback(() => openOverlayRoute(AGENTS_ROUTE), [openOverlayRoute])
+  const openSettings = useCallback(() => openOverlayRoute(SETTINGS_ROUTE), [openOverlayRoute])
+
+  const openSettingsTab = useCallback(
+    (tab: string) => openOverlayRoute(`${SETTINGS_ROUTE}?tab=${tab}`),
+    [openOverlayRoute]
+  )
 
   return {
     agentsOpen,
@@ -64,6 +88,8 @@ export function useOverlayRouting() {
     currentView,
     openAgents,
     openCommandCenterSection,
+    openSettings,
+    openSettingsTab,
     profilesOpen,
     settingsOpen,
     toggleCommandCenter

@@ -28,6 +28,7 @@ import stat
 import sys
 import base64
 import hashlib
+import math
 import subprocess
 import threading
 import time
@@ -36,6 +37,7 @@ import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
@@ -792,8 +794,9 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
 def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
     """Best-effort parse of a ``Retry-After`` header into whole seconds.
 
-    Supports the delta-seconds form (e.g. ``"120"``). HTTP-date forms and
-    missing/unparseable values return ``None`` rather than guessing.
+    Supports the delta-seconds form (e.g. ``"120"``) and the HTTP-date form
+    allowed by RFC 9110. Missing/unparseable values return ``None`` rather
+    than guessing.
     """
     if headers is None:
         return None
@@ -806,7 +809,16 @@ def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
     try:
         seconds = int(str(raw).strip())
     except (TypeError, ValueError):
-        return None
+        try:
+            retry_at = parsedate_to_datetime(str(raw).strip())
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        delta = (
+            retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)
+        ).total_seconds()
+        return max(0, math.ceil(delta))
     return seconds if seconds >= 0 else None
 
 

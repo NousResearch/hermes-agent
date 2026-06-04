@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 from typing import Iterable, Optional
 
@@ -20,6 +21,51 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
+
+# Default connection-pool sizing for the fallback transport's inner
+# AsyncHTTPTransport instances.  httpx's built-in defaults (max_connections=100,
+# max_keepalive_connections=20, keepalive_expiry=5s) are far too small/short for
+# a long-lived gateway: the getUpdates long-poll plus bursty send traffic churn
+# through the pool, leaving server-closed sockets in CLOSE_WAIT and eventually
+# raising "Pool timeout: All connections in the connection pool are occupied."
+# These are overridable via the same env vars the PTB request layer reads.
+_DEFAULT_POOL_SIZE = 512
+_DEFAULT_KEEPALIVE_EXPIRY = 20.0  # seconds
+
+
+def _default_transport_limits() -> "httpx.Limits":
+    """Build sane pool limits for the inner fallback transports.
+
+    PTB applies ``connection_pool_size`` to the *outer* ``httpx.AsyncClient``,
+    but httpx ignores those limits when a custom ``transport`` is supplied — all
+    pool management happens inside this transport's own AsyncHTTPTransport
+    instances.  Without this, the inner pool silently falls back to httpx's
+    default of 100 connections regardless of the configured pool size.
+    """
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            value = int(os.environ.get(name, str(default)))
+            return value if value > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    def _env_float(name: str, default: float) -> float:
+        try:
+            value = float(os.environ.get(name, str(default)))
+            return value if value > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    pool_size = _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", _DEFAULT_POOL_SIZE)
+    keepalive = _env_float(
+        "HERMES_TELEGRAM_HTTP_KEEPALIVE_EXPIRY", _DEFAULT_KEEPALIVE_EXPIRY
+    )
+    return httpx.Limits(
+        max_connections=pool_size,
+        max_keepalive_connections=pool_size,
+        keepalive_expiry=keepalive,
+    )
 
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
@@ -63,6 +109,15 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        # PTB sizes the OUTER httpx.AsyncClient pool via connection_pool_size,
+        # but httpx ignores those limits once a custom transport is supplied —
+        # the real pool lives in the inner AsyncHTTPTransport instances below.
+        # Without explicit limits they silently use httpx's tiny defaults
+        # (100 conns / 20 keepalive / 5s expiry), which a long-lived gateway
+        # exhausts ("Pool timeout: All connections ... occupied") and leaks as
+        # CLOSE_WAIT sockets. Inject sane limits unless the caller set them.
+        if "limits" not in transport_kwargs:
+            transport_kwargs["limits"] = _default_transport_limits()
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._fallbacks = {
             ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips

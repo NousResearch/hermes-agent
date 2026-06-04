@@ -355,6 +355,77 @@ class TestFallbackTransportInit:
         assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
 
+class TestFallbackTransportPoolLimits:
+    """Regression tests for the CLOSE_WAIT / pool-exhaustion leak.
+
+    PTB applies connection_pool_size to the OUTER httpx.AsyncClient, but httpx
+    ignores those limits when a custom transport is supplied. The inner
+    AsyncHTTPTransport instances must therefore set their own limits, or they
+    silently fall back to httpx defaults (100 conns / 20 keepalive / 5s expiry)
+    and exhaust under a long-lived gateway's traffic.
+    """
+
+    def _pool_limits(self, real_transport):
+        pool = real_transport._pool
+        return (
+            pool._max_connections,
+            pool._max_keepalive_connections,
+            pool._keepalive_expiry,
+        )
+
+    def test_inner_transports_get_large_pool_by_default(self, monkeypatch):
+        for key in ("HERMES_TELEGRAM_HTTP_POOL_SIZE", "HERMES_TELEGRAM_HTTP_KEEPALIVE_EXPIRY",
+                    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
+                    "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+
+        for tr in (transport._primary, *transport._fallbacks.values()):
+            max_conn, max_keepalive, expiry = self._pool_limits(tr)
+            assert max_conn == tnet._DEFAULT_POOL_SIZE
+            assert max_keepalive == tnet._DEFAULT_POOL_SIZE
+            assert expiry == tnet._DEFAULT_KEEPALIVE_EXPIRY
+            # Guard against silently reverting to httpx's tiny defaults.
+            assert max_conn > 100
+
+    def test_pool_size_env_override(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
+                    "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "1024")
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_KEEPALIVE_EXPIRY", "45")
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        max_conn, max_keepalive, expiry = self._pool_limits(transport._primary)
+        assert max_conn == 1024
+        assert max_keepalive == 1024
+        assert expiry == 45.0
+
+    def test_invalid_env_falls_back_to_defaults(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
+                    "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "not-a-number")
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_KEEPALIVE_EXPIRY", "-5")
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+        max_conn, _, expiry = self._pool_limits(transport._primary)
+        assert max_conn == tnet._DEFAULT_POOL_SIZE
+        assert expiry == tnet._DEFAULT_KEEPALIVE_EXPIRY
+
+    def test_explicit_limits_kwarg_is_respected(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
+                    "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        caller_limits = tnet.httpx.Limits(max_connections=7, max_keepalive_connections=3)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"], limits=caller_limits)
+        max_conn, max_keepalive, _ = self._pool_limits(transport._primary)
+        assert max_conn == 7
+        assert max_keepalive == 3
+
+
 class TestFallbackTransportClose:
     @pytest.mark.asyncio
     async def test_aclose_closes_all_transports(self, monkeypatch):

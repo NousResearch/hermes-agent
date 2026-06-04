@@ -359,11 +359,31 @@ def _normalize_base_url_text(base_url) -> str:
     """Normalize SDK/base transport URL values to a plain string for inspection.
 
     Some client objects expose ``base_url`` as an ``httpx.URL`` instead of a raw
-    string.  Provider/auth detection should accept either shape.
+    string. Provider/auth detection should accept either shape.
     """
     if not base_url:
         return ""
     return str(base_url).strip()
+
+
+def _normalize_anthropic_client_base_url(base_url: str | None) -> str:
+    """Normalize base URLs before handing them to the Anthropic SDK.
+
+    Most Anthropic-compatible endpoints want the exact root passed through.
+    OpenCode's Anthropic-wire routes are the exception: Hermes stores the Go/Zen
+    profile base URLs with a trailing ``/v1`` for OpenAI-compatible transports,
+    but Anthropic's SDK appends its own ``/v1/messages`` suffix. Leaving the
+    stored ``/v1`` intact yields ``.../v1/v1/messages`` and a 404.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return ""
+    lowered = normalized.rstrip("/").lower()
+    if lowered.endswith("/zen/go/v1") or lowered.endswith("/zen/v1"):
+        import re as _re
+
+        return _re.sub(r"/v1/?$", "", normalized.rstrip("/"))
+    return normalized
 
 
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
@@ -606,11 +626,9 @@ def _build_anthropic_client_with_bearer_hook(
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
 
-    # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
-    normalized_base_url = _normalize_base_url_text(base_url)
-    if normalized_base_url:
-        import re as _re
-        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
+    # Anthropic SDK appends /v1/messages. Normalize provider roots that store
+    # an OpenAI-compatible /v1 suffix in config/runtime state.
+    normalized_base_url = _normalize_anthropic_client_base_url(base_url)
 
     http_client = build_bearer_http_client(token_provider, timeout=timeout_obj)
 
@@ -694,7 +712,7 @@ def build_anthropic_client(
 
     from httpx import Timeout
 
-    normalized_base_url = _normalize_base_url_text(base_url)
+    normalized_base_url = _normalize_anthropic_client_base_url(base_url)
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),

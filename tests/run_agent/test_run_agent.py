@@ -1638,6 +1638,34 @@ class TestBuildApiKwargs:
         assert kwargs["reasoning_effort"] == "medium"
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
 
+    def test_opencode_go_kimi_omits_reasoning_effort(self, agent):
+        """OpenCode Go's Kimi relay rejects requests that send both
+        thinking and reasoning_effort, so Hermes must emit thinking only."""
+        agent.provider = "opencode-go"
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-k2.6"
+        agent.reasoning_config = {"effort": "medium"}
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+        assert "reasoning_effort" not in kwargs
+
+    def test_opencode_go_kimi_disables_thinking_without_reasoning_effort(self, agent):
+        agent.provider = "opencode-go"
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "kimi-k2.6"
+        agent.reasoning_config = {"enabled": False}
+        messages = [{"role": "user", "content": "hi"}]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+        assert "reasoning_effort" not in kwargs
+
     def test_provider_preferences_injected(self, agent):
         agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"

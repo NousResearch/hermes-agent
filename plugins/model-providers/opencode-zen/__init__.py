@@ -3,8 +3,8 @@
 Both use per-model api_mode routing:
   - OpenCode Zen: Claude → anthropic_messages, GPT-5/Codex → codex_responses,
     everything else → chat_completions (this profile)
-  - OpenCode Go: MiniMax → anthropic_messages, GLM/Kimi → chat_completions
-    (this profile)
+  - OpenCode Go: GLM/Kimi/MiniMax → chat_completions (this profile)
+    while qwen3.7-max remains a special case outside the generic transport
 """
 
 from __future__ import annotations
@@ -56,24 +56,17 @@ class OpenCodeGoProfile(ProviderProfile):
         top_level: dict[str, Any] = {}
 
         if _is_kimi_k2_model(model):
-            # Kimi K2 on OpenCode Go uses Moonshot's native wire shape:
-            # extra_body.thinking (binary toggle) + top-level reasoning_effort
-            # (low|medium|high). Mirrors the KimiProfile (api.moonshot.ai/v1).
+            # OpenCode Go's Kimi relay rejects requests that include BOTH
+            # extra_body.thinking and top-level reasoning_effort. Native
+            # ``opencode run`` succeeds with thinking-only, so mirror that
+            # wire shape here and let the relay/provider choose its default
+            # reasoning depth when thinking is enabled.
             if not isinstance(reasoning_config, dict):
                 # No config → leave server defaults alone.
                 return extra_body, top_level
 
             enabled = reasoning_config.get("enabled") is not False
             extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
-
-            if not enabled:
-                return extra_body, top_level
-
-            effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in {"xhigh", "max"}:
-                top_level["reasoning_effort"] = "high"
-            elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
             return extra_body, top_level
 
         if not _is_deepseek_thinking_model(model):

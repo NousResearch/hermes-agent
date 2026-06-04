@@ -3090,12 +3090,18 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
-    - MiniMax models on Go use ``/v1/messages``
     - GLM / Kimi on Go use ``/v1/chat/completions``
+    - MiniMax on Go is empirically chat-completions compatible in Hermes
+      (the ``/v1/messages`` route currently 404s in live smoke tests)
     - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
       ``/v1/chat/completions``
 
-    This follows the published OpenCode docs for Zen and Go endpoints.
+    Notes from live smoke tests on 2026-06-04:
+    - ``minimax-m2.7`` succeeded via ``chat_completions`` and failed via
+      ``anthropic_messages`` on the Hermes transport.
+    - ``qwen3.7-max`` still does not fit Hermes' current OpenAI-compat nor
+      Anthropic transports even though ``opencode run`` can serve it, so it
+      remains special-cased separately pending a dedicated transport fix.
     """
     provider = normalize_provider(provider_id)
     normalized = normalize_opencode_model_id(provider_id, model_id).lower()
@@ -3103,8 +3109,6 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
         return "chat_completions"
 
     if provider == "opencode-go":
-        if normalized.startswith("minimax-"):
-            return "anthropic_messages"
         if normalized.startswith("qwen3.7-max"):
             return "anthropic_messages"
         return "chat_completions"

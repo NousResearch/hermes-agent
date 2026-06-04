@@ -1,14 +1,11 @@
 """
 Achilli Bridge -- MCP tool chain resilience, circuit breaker, format translation.
 
-IMPORTANT: The core hook this plugin needs (post_tool_call) is DECLARED in
-Hermes VALID_HOOKS but NEVER INVOKED in the Python runtime. This plugin
-loads, registers its tools, and does not crash -- but the interception logic
-cannot function until Hermes fixes the missing invoke_hook("post_tool_call")
-call site.
+Uses the post_tool_call hook (available in Hermes >= 0.15.2 / fork) to observe
+all tool call results. Tracks per-MCP-server failure rates and manages circuit
+breaker state (closed -> open -> half_open -> closed).
 
-Hermes needs to add the invocation in the tool dispatch path after a tool
-returns but before the result is appended to the conversation messages.
+Compatible with Hermes Agent >= 0.15.2 (fork with post_tool_call hook).
 """
 
 from __future__ import annotations
@@ -42,9 +39,86 @@ def _get_cooldown() -> float:
         return 60.0
 
 
+def _get_server(tool_name: str) -> Dict[str, Any]:
+    """Return (and lazily initialise) the state dict for a given MCP server."""
+    if tool_name not in _SERVER_STATE:
+        _SERVER_STATE[tool_name] = {
+            "state": "closed",
+            "failures": 0,
+            "last_failure": None,
+            "opened_at": None,
+            "total_calls": 0,
+            "total_failures": 0,
+        }
+    return _SERVER_STATE[tool_name]
+
+
+def _is_mcp_tool(tool_name: str) -> bool:
+    """Heuristic: MCP tools are prefixed with their server name (e.g. 'mcp_...')."""
+    return tool_name.startswith("mcp_")
+
+
 # ---------------------------------------------------------------------------
-# Hook -- subagent_stop is the only one that fires reliably
+# Hooks
 # ---------------------------------------------------------------------------
+
+
+def _on_post_tool_call(
+    tool_name: str = "",
+    result: Any = None,
+    status: str = "",
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+    duration_ms: int = 0,
+    **_: Any,
+) -> None:
+    """Observe every tool call result and update circuit breaker state."""
+    if not tool_name or not _is_mcp_tool(tool_name):
+        return
+
+    server = _get_server(tool_name)
+    server["total_calls"] += 1
+
+    is_error = status == "error" or error_type is not None
+
+    if is_error:
+        server["total_failures"] += 1
+        server["failures"] += 1
+        server["last_failure"] = time.time()
+        logger.debug(
+            "bridge: tool=%s failure #%d type=%s",
+            tool_name, server["failures"], error_type,
+        )
+
+        # Check if circuit should open
+        if server["failures"] >= _get_failure_threshold():
+            if server["state"] != "open":
+                server["state"] = "open"
+                server["opened_at"] = time.time()
+                logger.warning(
+                    "bridge: circuit OPEN for %s after %d consecutive failures",
+                    tool_name, server["failures"],
+                )
+    else:
+        # Success: reset consecutive failures
+        if server["state"] == "open":
+            # Check if cooldown has elapsed
+            cooldown = _get_cooldown()
+            opened_at = server.get("opened_at") or 0
+            if time.time() - opened_at >= cooldown:
+                server["state"] = "half_open"
+                logger.info(
+                    "bridge: circuit HALF_OPEN for %s (cooldown elapsed)", tool_name
+                )
+        elif server["state"] == "half_open":
+            # Successful call in half_open -> close the circuit
+            server["state"] = "closed"
+            server["failures"] = 0
+            server["opened_at"] = None
+            logger.info("bridge: circuit CLOSED for %s (recovery confirmed)", tool_name)
+        else:
+            # Normal closed state: reset consecutive failure count
+            server["failures"] = 0
 
 
 def _on_subagent_stop(
@@ -54,8 +128,6 @@ def _on_subagent_stop(
     **_: Any,
 ) -> None:
     """Track delegation completion for bridge status reporting."""
-    # Without post_tool_call, we can't intercept MCP tool calls directly.
-    # We at least track delegation activity as a proxy for MCP usage.
     logger.debug(
         "bridge: observed subagent_stop role=%s status=%s",
         child_role, child_status,
@@ -68,15 +140,20 @@ def _on_subagent_stop(
 
 
 def _bridge_status_tool(*_, **__) -> dict:
-    """Return bridge/circuit-breaker status. Limited without post_tool_call."""
+    """Return bridge/circuit-breaker status."""
+    active = any(
+        s.get("state") in ("open", "half_open")
+        for s in _SERVER_STATE.values()
+    )
     return {
-        "status": "degraded",
-        "reason": "post_tool_call hook not invoked in Hermes core",
+        "status": "active" if _SERVER_STATE else "active (no MCP calls yet)",
         "loaded": True,
         "circuit_breakers": {
             name: {
                 "state": info.get("state", "closed"),
                 "consecutive_failures": info.get("failures", 0),
+                "total_calls": info.get("total_calls", 0),
+                "total_failures": info.get("total_failures", 0),
                 "last_failure": info.get("last_failure"),
             }
             for name, info in _SERVER_STATE.items()
@@ -85,11 +162,7 @@ def _bridge_status_tool(*_, **__) -> dict:
             "failure_threshold": _get_failure_threshold(),
             "cooldown_s": _get_cooldown(),
         },
-        "note": (
-            "Full circuit breaker and format translation features require "
-            "post_tool_call hook, which Hermes does not currently invoke. "
-            "This tool reports static configuration only."
-        ),
+        "any_open_circuits": active,
     }
 
 
@@ -100,7 +173,6 @@ def _achilli_bridge_status_tool(*_, **__) -> str:
         "# Achilli Bridge Status",
         "",
         "Status: **{}**".format(status["status"]),
-        "Reason: {}".format(status["reason"]),
         "",
         "## Configuration",
         "- Failure threshold: {} consecutive failures".format(
@@ -112,13 +184,16 @@ def _achilli_bridge_status_tool(*_, **__) -> str:
     ]
     if status["circuit_breakers"]:
         for name, cb in status["circuit_breakers"].items():
-            lines.append("- **{}**: {} ({} failures)".format(
-                name, cb["state"], cb["consecutive_failures"]
+            lines.append("- **{}**: {} ({} consecutive, {} total / {} failures)".format(
+                name, cb["state"], cb["consecutive_failures"],
+                cb["total_calls"], cb["total_failures"],
             ))
     else:
-        lines.append("- No MCP servers tracked yet")
+        lines.append("- No MCP tool calls observed yet")
 
-    lines.extend(["", "Note: {}".format(status["note"])])
+    if status.get("any_open_circuits"):
+        lines.extend(["", "⚠ At least one circuit is open or half-open."])
+
     return "\n".join(lines)
 
 
@@ -128,12 +203,13 @@ def _achilli_bridge_status_tool(*_, **__) -> str:
 
 
 def register(ctx) -> None:
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("subagent_stop", _on_subagent_stop)
     ctx.register_tool(
         name="bridge_status",
         description=(
             "Return MCP server circuit breaker status and health. "
-            "(achilli-bridge, limited: post_tool_call not invoked in core)"
+            "(achilli-bridge)"
         ),
         parameters={"type": "object", "properties": {}},
         handler=_bridge_status_tool,

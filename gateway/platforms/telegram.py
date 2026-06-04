@@ -447,6 +447,47 @@ class TelegramAdapter(BasePlatformAdapter):
         #               behavior; opt-in via display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
 
+    async def refresh_skill_group(self) -> tuple[int, int]:
+        """Refresh Telegram's BotCommand menu after a skill reload.
+
+        ``/reload-skills`` already refreshes Hermes' in-process skill command
+        map. Telegram also caches the slash-command hint menu through
+        ``set_my_commands()``, so re-register it here; otherwise a newly
+        projected shared skill can be typed manually but remain absent from
+        Telegram autocomplete until the next reconnect.
+
+        Returns ``(registered_count, hidden_skill_count)``.
+        """
+        if not self._bot:
+            return (0, 0)
+        try:
+            from telegram import BotCommand
+            from hermes_cli.commands import telegram_menu_commands
+
+            menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
+            await self._bot.set_my_commands(
+                [BotCommand(name, desc) for name, desc in menu_commands]
+            )
+            if hidden_count:
+                logger.info(
+                    "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
+                    self.name, len(menu_commands), hidden_count,
+                )
+            else:
+                logger.info(
+                    "[%s] Telegram menu: %d commands registered.",
+                    self.name, len(menu_commands),
+                )
+            return (len(menu_commands), hidden_count)
+        except Exception as e:
+            logger.warning(
+                "[%s] Could not register Telegram command menu: %s",
+                self.name,
+                e,
+                exc_info=True,
+            )
+            return (0, 0)
+
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -1392,31 +1433,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=_polling_error_callback,
                 )
             
-            # Register bot commands so Telegram shows a hint menu when users type /
-            # List is derived from the central COMMAND_REGISTRY — adding a new
-            # gateway command there automatically adds it to the Telegram menu.
-            try:
-                from telegram import BotCommand
-                from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit.  Skill descriptions are truncated to 40
-                # chars in telegram_menu_commands() to fit 100 commands safely.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
-                    BotCommand(name, desc) for name, desc in menu_commands
-                ])
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "[%s] Could not register Telegram command menu: %s",
-                    self.name,
-                    e,
-                    exc_info=True,
-                )
+            await self.refresh_skill_group()
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"

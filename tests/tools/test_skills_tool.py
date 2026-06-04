@@ -16,6 +16,7 @@ from tools.skills_tool import (
     _find_all_skills,
     skill_matches_platform,
     skills_list,
+    skill_status,
     skill_view,
     MAX_DESCRIPTION_LENGTH,
 )
@@ -54,6 +55,50 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"symlinks unavailable in test environment: {exc}")
     return external_category
+
+
+def _write_shared_capability_registry(shared_root: Path, capability_id: str = "write-trip-report") -> Path:
+    registry_path = shared_root / "capabilities.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "capabilities": [
+                    {
+                        "id": capability_id,
+                        "title": "Write Trip Report Skill",
+                        "kind": "skill",
+                        "owner_repo": "acoastalfog/skills",
+                        "source_path": f"codex-skills/{capability_id}",
+                        "runtime_surfaces": [
+                            {
+                                "runtime": "hermes",
+                                "status": "candidate",
+                                "projection": "requires NOC-managed Hermes skills.external_dirs",
+                            }
+                        ],
+                        "safety_class": "guidance_only",
+                        "privacy_class": "sensitive_source_possible",
+                        "durable_write_authority": "none; durable report admission belongs to kb-engine preview/confirmed routes",
+                        "known_limitations": [
+                            "Guidance only; not a durable KB write route."
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return registry_path
+
+
+def _reset_skill_command_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent.skill_commands as sc_mod
+    import agent.skill_utils as su_mod
+
+    monkeypatch.setattr(sc_mod, "_skill_commands", {}, raising=False)
+    monkeypatch.setattr(sc_mod, "_skill_commands_platform", None, raising=False)
+    su_mod._external_dirs_cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +375,75 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
+
+
+# ---------------------------------------------------------------------------
+# skill_status
+# ---------------------------------------------------------------------------
+
+
+class TestSkillStatus:
+    def _shared_skill_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        local_skills = hermes_home / "skills"
+        shared_root = tmp_path / "shared-skills"
+        external_skills = shared_root / "codex-skills"
+        local_skills.mkdir(parents=True)
+        external_skills.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            f"    - {external_skills}\n",
+            encoding="utf-8",
+        )
+        _write_shared_capability_registry(shared_root)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _reset_skill_command_state(monkeypatch)
+        return local_skills, external_skills
+
+    def test_reports_external_write_trip_report_available(self, tmp_path, monkeypatch):
+        local_skills, external_skills = self._shared_skill_env(tmp_path, monkeypatch)
+        _make_skill(
+            external_skills,
+            "write-trip-report",
+            body="Generate a trip report.",
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", local_skills):
+            result = json.loads(skill_status("/write_trip_report"))
+
+        assert result["success"] is True
+        assert result["status"] == "available"
+        assert result["available"] is True
+        assert result["capability"]["id"] == "write-trip-report"
+        assert result["skill"]["source_kind"] == "external_skill"
+        assert result["commands"]["hermes"] == "/write-trip-report"
+        assert result["commands"]["telegram"] == "/write_trip_report"
+        assert "kb-engine" in result["capability"]["durable_write_authority"]
+
+    def test_reports_registry_capability_missing_projection(self, tmp_path, monkeypatch):
+        local_skills, _external_skills = self._shared_skill_env(tmp_path, monkeypatch)
+
+        with patch("tools.skills_tool.SKILLS_DIR", local_skills):
+            result = json.loads(skill_status("write-trip-report"))
+
+        assert result["success"] is True
+        assert result["status"] == "known_not_projected"
+        assert result["available"] is False
+        assert result["capability"]["id"] == "write-trip-report"
+        assert result["missing_projection"]["runtime"] == "hermes"
+        assert "NOC" in result["missing_projection"]["projection"]
+
+    def test_reports_unknown_capability_without_guessing(self, tmp_path, monkeypatch):
+        local_skills, _external_skills = self._shared_skill_env(tmp_path, monkeypatch)
+
+        with patch("tools.skills_tool.SKILLS_DIR", local_skills):
+            result = json.loads(skill_status("not-a-real-skill"))
+
+        assert result["success"] is True
+        assert result["status"] == "unknown"
+        assert result["available"] is False
+        assert "not visible" in result["message"]
 
 
 # ---------------------------------------------------------------------------

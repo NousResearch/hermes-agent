@@ -179,6 +179,24 @@ def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
     assert "spotify" in enabled
 
 
+def test_get_platform_tools_expands_composite_after_runtime_toolset_growth():
+    """Runtime-registered tools must not make a composite drop its toolset.
+
+    Importing ``tools.skills_tool`` registers ``skill_status`` under the
+    ``skills`` toolset.  ``hermes-cli`` may not list every future tool, but the
+    platform should still treat the skills toolset as enabled when its core
+    tools are present in the composite.
+    """
+    import tools.skills_tool  # noqa: F401
+
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "skills" in enabled
+    assert "spotify" in enabled
+
+
 def test_get_platform_tools_composite_only_unchanged():
     """Composite-only config (no configurable in list) must still take the
     else-branch path and produce the full toolset — guards against the new

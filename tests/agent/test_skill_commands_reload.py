@@ -90,6 +90,39 @@ class TestReloadSkillsHelper:
         assert result["total"] == 1
         assert result["commands"] == 1
 
+    def test_detects_newly_added_external_write_trip_report_skill(self, hermes_home):
+        from agent.skill_commands import reload_skills, get_skill_commands
+        from agent.skill_utils import _external_dirs_cache_clear
+
+        external_root = hermes_home / "shared-skills" / "codex-skills"
+        external_root.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            f"    - {external_root}\n",
+            encoding="utf-8",
+        )
+        _external_dirs_cache_clear()
+
+        # Prime before the shared skill exists; reload should report it as added.
+        get_skill_commands()
+        _write_skill(
+            external_root,
+            "write-trip-report",
+            "Generate a concise trip report.",
+        )
+        result = reload_skills()
+
+        assert result["added"] == [
+            {
+                "name": "write-trip-report",
+                "description": "Generate a concise trip report.",
+            }
+        ]
+        assert result["removed"] == []
+        assert result["total"] == 1
+        assert result["commands"] == 1
+
     def test_detects_removed_skill_carries_description(self, hermes_home):
         from agent.skill_commands import reload_skills
 

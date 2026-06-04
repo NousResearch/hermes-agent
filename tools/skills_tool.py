@@ -629,6 +629,288 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
+def _normalize_skill_query(value: Any) -> str:
+    """Normalize a user-provided skill/capability name for matching."""
+    raw = str(value or "").strip().lower().lstrip("/")
+    raw = raw.replace("_", "-").replace(" ", "-")
+    raw = re.sub(r"[^a-z0-9-]", "", raw)
+    raw = re.sub(r"-{2,}", "-", raw)
+    return raw.strip("-")
+
+
+def _read_skills_config() -> Dict[str, Any]:
+    """Read the ``skills:`` config block without importing the full CLI config."""
+    try:
+        from agent.skill_utils import yaml_load
+        from hermes_constants import get_config_path
+
+        config_path = get_config_path()
+        if not config_path.exists():
+            return {}
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            return {}
+        skills_cfg = parsed.get("skills")
+        return skills_cfg if isinstance(skills_cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalize_path_list(raw: Any) -> List[Path]:
+    if not raw:
+        return []
+    if isinstance(raw, (str, os.PathLike)):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    from hermes_constants import get_hermes_home
+
+    hermes_home = get_hermes_home()
+    paths: List[Path] = []
+    seen: Set[Path] = set()
+    for entry in raw:
+        value = str(entry or "").strip()
+        if not value:
+            continue
+        expanded = os.path.expanduser(os.path.expandvars(value))
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = hermes_home / path
+        try:
+            path = path.resolve()
+        except Exception:
+            path = path.absolute()
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def _capability_registry_paths() -> List[Path]:
+    """Return configured/inferred capability registry JSON files.
+
+    NOC can provide explicit ``skills.capability_registry_paths`` entries.
+    For the common shared-skills projection, Hermes also infers a sibling
+    ``capabilities.json`` next to each ``skills.external_dirs`` root, e.g.
+    ``/home/abcosta/Knowledge/skills/codex-skills`` ->
+    ``/home/abcosta/Knowledge/skills/capabilities.json``.
+    """
+    skills_cfg = _read_skills_config()
+    candidates: List[Path] = []
+    candidates.extend(
+        _normalize_path_list(
+            skills_cfg.get("capability_registry_paths")
+            or skills_cfg.get("capability_registry_path")
+        )
+    )
+
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+
+        for external_dir in get_external_skills_dirs():
+            candidates.append((external_dir / "capabilities.json").resolve())
+            candidates.append((external_dir.parent / "capabilities.json").resolve())
+    except Exception:
+        pass
+
+    result: List[Path] = []
+    seen: Set[Path] = set()
+    for path in candidates:
+        if path in seen or not path.exists() or not path.is_file():
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def _load_capability_records() -> List[Dict[str, Any]]:
+    """Load public capability metadata from configured registry files."""
+    records: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for path in _capability_registry_paths():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        raw_records = payload.get("capabilities") if isinstance(payload, dict) else payload
+        if not isinstance(raw_records, list):
+            continue
+        for record in raw_records:
+            if not isinstance(record, dict):
+                continue
+            cap_id = str(record.get("id") or "").strip()
+            if not cap_id or cap_id in seen:
+                continue
+            seen.add(cap_id)
+            records.append(record)
+    return records
+
+
+def _match_capability_record(query: str) -> Optional[Dict[str, Any]]:
+    normalized = _normalize_skill_query(query)
+    if not normalized:
+        return None
+    for record in _load_capability_records():
+        values = {
+            record.get("id"),
+            record.get("title"),
+            Path(str(record.get("source_path") or "")).name,
+        }
+        for value in values:
+            if _normalize_skill_query(value) == normalized:
+                return record
+    return None
+
+
+def _capability_runtime_surface(record: Dict[str, Any], runtime: str) -> Dict[str, Any]:
+    surfaces = record.get("runtime_surfaces")
+    if isinstance(surfaces, list):
+        for surface in surfaces:
+            if not isinstance(surface, dict):
+                continue
+            if str(surface.get("runtime") or "").strip().lower() == runtime:
+                return dict(surface)
+    return {}
+
+
+def _skill_source_kind(skill_md_path: str) -> str:
+    try:
+        skill_path = Path(skill_md_path).resolve()
+    except Exception:
+        return "unknown"
+    try:
+        skill_path.relative_to(SKILLS_DIR.resolve())
+        return "hermes_local_skill"
+    except Exception:
+        pass
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+
+        for external_dir in get_external_skills_dirs():
+            try:
+                skill_path.relative_to(external_dir.resolve())
+                return "external_skill"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _telegram_command_name(command_key: str | None) -> Optional[str]:
+    if not command_key:
+        return None
+    try:
+        from hermes_cli.commands import _sanitize_telegram_name
+
+        sanitized = _sanitize_telegram_name(command_key.lstrip("/"))
+        return f"/{sanitized}" if sanitized else None
+    except Exception:
+        return command_key.replace("-", "_")
+
+
+def skill_status(name: str, task_id: str = None) -> str:
+    """Explain whether a skill/capability is visible in this Hermes runtime.
+
+    This is intentionally diagnostic metadata only. It never loads private
+    source bodies and it never grants durable-write authority.
+    """
+    query = str(name or "").strip()
+    if not query:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Provide a skill or capability name.",
+            },
+            ensure_ascii=False,
+        )
+
+    registry_record = _match_capability_record(query)
+
+    command_key = None
+    command_info: Dict[str, Any] = {}
+    try:
+        from agent.skill_commands import get_skill_commands, resolve_skill_command_key
+
+        command_key = resolve_skill_command_key(_normalize_skill_query(query))
+        if command_key:
+            command_info = dict(get_skill_commands().get(command_key) or {})
+    except Exception:
+        command_key = None
+        command_info = {}
+
+    result: Dict[str, Any] = {
+        "success": True,
+        "query": query,
+        "runtime": "hermes",
+        "status": "unknown",
+        "available": False,
+        "message": f"Skill or capability '{query}' is not visible in this Hermes runtime.",
+    }
+
+    if registry_record:
+        result["capability"] = {
+            "id": registry_record.get("id"),
+            "title": registry_record.get("title"),
+            "kind": registry_record.get("kind"),
+            "owner_repo": registry_record.get("owner_repo"),
+            "source_path": registry_record.get("source_path"),
+            "safety_class": registry_record.get("safety_class"),
+            "privacy_class": registry_record.get("privacy_class"),
+            "durable_write_authority": registry_record.get("durable_write_authority"),
+            "runtime_surface": _capability_runtime_surface(registry_record, "hermes"),
+            "known_limitations": registry_record.get("known_limitations") or [],
+        }
+
+    if command_key and command_info:
+        result.update(
+            {
+                "status": "available",
+                "available": True,
+                "message": f"Skill '{command_info.get('name') or query}' is installed and visible in Hermes.",
+                "skill": {
+                    "name": command_info.get("name"),
+                    "description": command_info.get("description"),
+                    "source_kind": _skill_source_kind(str(command_info.get("skill_md_path") or "")),
+                },
+                "commands": {
+                    "hermes": command_key,
+                    "telegram": _telegram_command_name(command_key),
+                },
+            }
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    if registry_record:
+        surface = _capability_runtime_surface(registry_record, "hermes")
+        result.update(
+            {
+                "status": "known_not_projected",
+                "message": (
+                    f"Capability '{registry_record.get('id') or query}' exists in the "
+                    "capability registry but is not visible in this Hermes runtime."
+                ),
+                "missing_projection": {
+                    "runtime": "hermes",
+                    "expected_status": surface.get("status"),
+                    "projection": surface.get("projection"),
+                    "remediation": "Ask NOC to project the capability into Hermes and reload skills.",
+                },
+            }
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    try:
+        result["available_skills"] = [
+            s["name"] for s in _sort_skills(_find_all_skills())[:20]
+        ]
+    except Exception:
+        pass
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _load_category_description(category_dir: Path) -> Optional[str]:
     """
     Load category description from DESCRIPTION.md if it exists.
@@ -1522,6 +1804,21 @@ SKILL_VIEW_SCHEMA = {
     },
 }
 
+SKILL_STATUS_SCHEMA = {
+    "name": "skill_status",
+    "description": "Check whether a skill-like capability is known and visible in the current Hermes runtime. Use this before answering whether a skill exists.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Skill or capability name, such as write-trip-report or /write_trip_report.",
+            }
+        },
+        "required": ["name"],
+    },
+}
+
 registry.register(
     name="skills_list",
     toolset="skills",
@@ -1532,6 +1829,19 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+
+registry.register(
+    name="skill_status",
+    toolset="skills",
+    schema=SKILL_STATUS_SCHEMA,
+    handler=lambda args, **kw: skill_status(
+        args.get("name", ""), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="📚",
+)
+
+
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count on success. Best-effort: a
     telemetry failure never breaks the tool call."""
@@ -1565,4 +1875,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

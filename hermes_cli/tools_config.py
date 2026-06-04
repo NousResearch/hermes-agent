@@ -1276,7 +1276,7 @@ def _get_platform_tools(
                 if not _toolset_allowed_for_platform(ts_key, platform):
                     continue
                 ts_tools = set(resolve_toolset(ts_key))
-                if ts_tools and ts_tools.issubset(composite_tools):
+                if ts_tools and ts_tools.intersection(composite_tools):
                     expanded.add(ts_key)
 
             default_off = set(_DEFAULT_OFF_TOOLSETS)
@@ -1299,7 +1299,7 @@ def _get_platform_tools(
             if not _toolset_allowed_for_platform(ts_key, platform):
                 continue
             ts_tools = set(resolve_toolset(ts_key))
-            if ts_tools and ts_tools.issubset(all_tool_names):
+            if ts_tools and ts_tools.intersection(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
         default_off = set(_DEFAULT_OFF_TOOLSETS)

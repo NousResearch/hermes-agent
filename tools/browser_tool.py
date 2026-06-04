@@ -2711,6 +2711,8 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         logger.debug("browser_scroll: JS smart-scroll path failed (%s), falling back to native", exc)
 
     # --- Native agent-browser fallback ------------------------------------
+    # Runs when JS threw an exception OR when JS reported scrolled=False
+    # (nothing moved — page already at boundary or non-scrollable container).
     result = _run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
     if not result.get("success"):
         response = {

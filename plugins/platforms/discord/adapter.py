@@ -2159,7 +2159,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if bot_id is None:
             return False
 
-        async def _scan_history(channel: Any) -> bool:
+        async def _scan_history(channel: Any, *, allow_unreferenced_bot_response: bool) -> bool:
             history = getattr(channel, "history", None)
             if not callable(history):
                 return False
@@ -2172,17 +2172,28 @@ class DiscordAdapter(BasePlatformAdapter):
                         continue
                     reference = getattr(candidate, "reference", None)
                     ref_id = str(getattr(reference, "message_id", "") or "")
-                    if not ref_id or ref_id == str(getattr(message, "id", "")):
+                    if ref_id == str(getattr(message, "id", "")):
+                        return True
+                    if allow_unreferenced_bot_response and not ref_id:
                         return True
             except Exception:
                 return False
             return False
 
-        if await _scan_history(getattr(message, "channel", None)):
+        message_channel = getattr(message, "channel", None)
+        # In a thread, bot responses are usually ordinary unreferenced messages
+        # after the user's post.  In a parent channel, however, an unreferenced
+        # bot post after a user message is not evidence that it answered this
+        # specific message; otherwise one successful reply can mask multiple
+        # missed parent-channel posts after a rate-limit/outage burst.
+        if await _scan_history(
+            message_channel,
+            allow_unreferenced_bot_response=bool(getattr(message_channel, "parent_id", None)),
+        ):
             return True
 
         thread = getattr(message, "thread", None)
-        if thread is not None and await _scan_history(thread):
+        if thread is not None and await _scan_history(thread, allow_unreferenced_bot_response=True):
             return True
         return False
 

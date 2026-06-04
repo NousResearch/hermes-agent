@@ -3,14 +3,14 @@
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-# 确保项目根目录在 sys.path 中，支持独立运行
 _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from scripts.base_checker import BaseChecker, CheckResult, ExitCode, InspectionReport
+from scripts.ssh_executor import create_executor, SSHExecutor, LocalExecutor
 
 
 class JvmChecker(BaseChecker):
@@ -21,11 +21,15 @@ class JvmChecker(BaseChecker):
         return "jvm"
 
     def check(self) -> InspectionReport:
+        return self.check_all_targets()
+
+    def check_node(self, target: Dict[str, Any]) -> InspectionReport:
+        """对单个节点执行 JVM 巡检。"""
+        executor = create_executor(target)
         checks: List[CheckResult] = []
 
-        pid = self._get_pid()
+        pid = self._get_pid(executor)
         if pid is None:
-            # 找不到进程，所有检查项标记 CRITICAL
             checks.append(self.make_check(
                 "进程存活", ExitCode.CRITICAL,
                 value=None, message="未找到 catalina 进程",
@@ -39,13 +43,13 @@ class JvmChecker(BaseChecker):
             summary = "JVM 进程未运行"
         else:
             checks.append(self._check_process(pid))
-            gc_data = self._get_jstat_data(pid)
+            gc_data = self._get_jstat_data(pid, executor)
             checks.append(self._check_heap(gc_data))
             checks.append(self._check_gc_freq(gc_data))
             checks.append(self._check_gc_time(gc_data))
-            checks.append(self._check_threads(pid))
-            checks.append(self._check_deadlock(pid))
-            checks.append(self._check_log_errors())
+            checks.append(self._check_threads(pid, executor))
+            checks.append(self._check_deadlock(pid, executor))
+            checks.append(self._check_log_errors(target, executor))
             status = self.overall_status(checks)
             summary = f"JVM 巡检完成，PID={pid}，共 {len(checks)} 项，状态: {status.name}"
 
@@ -58,15 +62,11 @@ class JvmChecker(BaseChecker):
             metadata={"pid": pid},
         )
 
-    # ------------------------------------------------------------------
-    # PID 获取
-    # ------------------------------------------------------------------
-
-    def _get_pid(self) -> Optional[int]:
+    def _get_pid(self, executor) -> Optional[int]:
         """通过 jps 获取 catalina 进程 PID。"""
         proc_name = self.config.get("tomcat_process_name", "catalina")
         try:
-            result = self.run_command(f"jps -l | grep {proc_name}", timeout=10)
+            result = executor.run(f"jps -l | grep {proc_name}", timeout=10)
             if not result.stdout.strip():
                 return None
             first_line = result.stdout.strip().splitlines()[0]
@@ -75,16 +75,12 @@ class JvmChecker(BaseChecker):
         except Exception:
             return None
 
-    # ------------------------------------------------------------------
-    # jstat 数据获取
-    # ------------------------------------------------------------------
-
-    def _get_jstat_data(self, pid: int) -> Dict[str, float]:
+    def _get_jstat_data(self, pid: int, executor) -> Dict[str, float]:
         """获取 jstat -gcutil 数据，返回解析后的字典。"""
         data: Dict[str, float] = {}
         try:
             cmd = f"jstat -gcutil {pid} 1000 1"
-            result = self.run_command(cmd, timeout=15)
+            result = executor.run(cmd, timeout=15)
             lines = result.stdout.strip().splitlines()
             if len(lines) < 2:
                 return data
@@ -98,10 +94,6 @@ class JvmChecker(BaseChecker):
         except Exception:
             pass
         return data
-
-    # ------------------------------------------------------------------
-    # 检查项
-    # ------------------------------------------------------------------
 
     def _check_process(self, pid: int) -> CheckResult:
         """确认 catalina 进程存活。"""
@@ -176,19 +168,18 @@ class JvmChecker(BaseChecker):
             message=f"Full GC 平均耗时: {avg_time:.2f}s（总 {fgct:.2f}s / {int(fgc)} 次）",
         )
 
-    def _check_threads(self, pid: int) -> CheckResult:
+    def _check_threads(self, pid: int, executor) -> CheckResult:
         """通过 jstack 统计线程状态。"""
         warn_active = self.config.get("active_threads_warn", 500)
         crit_blocked = self.config.get("blocked_threads_critical", 10)
         try:
-            result = self.run_command(f"jstack {pid}", timeout=15)
+            result = executor.run(f"jstack {pid}", timeout=15)
             output = result.stdout
             if not output.strip():
                 return self.make_check(
                     "线程状态", ExitCode.WARNING,
                     value=None, message="jstack 输出为空",
                 )
-            # 统计各状态线程数
             state_counts: Dict[str, int] = {}
             for match in re.finditer(r'Thread.State:\s*(\S+)', output):
                 state = match.group(1)
@@ -218,10 +209,10 @@ class JvmChecker(BaseChecker):
                 value=None, message=f"线程检查异常: {e}",
             )
 
-    def _check_deadlock(self, pid: int) -> CheckResult:
+    def _check_deadlock(self, pid: int, executor) -> CheckResult:
         """通过 jstack 检测死锁。"""
         try:
-            result = self.run_command(f"jstack {pid}", timeout=15)
+            result = executor.run(f"jstack {pid}", timeout=15)
             if re.search(r'Found.*deadlock', result.stdout, re.IGNORECASE):
                 return self.make_check(
                     "死锁检测", ExitCode.CRITICAL,
@@ -240,13 +231,15 @@ class JvmChecker(BaseChecker):
                 value=None, message=f"死锁检测异常: {e}",
             )
 
-    def _check_log_errors(self) -> CheckResult:
+    def _check_log_errors(self, target: Dict[str, Any], executor) -> CheckResult:
         """检查 catalina.out 最近 N 行中的错误数。"""
         log_lines = self.config.get("catalina_log_lines", 1000)
-        log_path = self.config.get("catalina_log_path", "logs/catalina.out")
+        log_path = target.get("catalina_log_path") or self.config.get(
+            "catalina_log_path", "logs/catalina.out"
+        )
         try:
             cmd = f"tail -n {log_lines} {log_path}"
-            result = self.run_command(cmd, timeout=15)
+            result = executor.run(cmd, timeout=15)
             output = result.stdout
             if not output.strip():
                 return self.make_check(
@@ -271,10 +264,6 @@ class JvmChecker(BaseChecker):
                 value=None, message=f"日志检查异常: {e}",
             )
 
-    # ------------------------------------------------------------------
-    # 工具方法
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _extract_deadlock_detail(output: str) -> str:
         """提取死锁详细信息（Found deadlock 后 20 行）。"""
@@ -289,10 +278,6 @@ class JvmChecker(BaseChecker):
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).isoformat()
 
-
-# ------------------------------------------------------------------
-# 入口
-# ------------------------------------------------------------------
 
 if __name__ == "__main__":
     from config.config_manager import ConfigManager

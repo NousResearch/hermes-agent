@@ -1,0 +1,32 @@
+# Hermes multi-tenant client registry — TEMPLATE.
+#
+# Copy this to a real `clients.yaml` ON THE HOST (not in the repo — the repo
+# is public and must not carry real client names or tokens), then point
+# tooling at it via $HERMES_CLIENTS_REGISTRY=/opt/data/clients.yaml.
+#
+# This is the single source of truth for which client bots exist, in which
+# environment, and how they're configured. Deploy/onboarding tooling reads
+# it instead of hardcoding profile lists. See hermes_cli/clients.py.
+#
+# One client bot == one Hermes profile (profiles/<profile>/). Secrets never
+# live here: `telegram_token_ref` names the ENV VAR that holds the token,
+# resolved on the host from e.g. /opt/data/secrets/<name>.env.
+
+clients:
+  # The baseline 'default' profile is the gateway root itself. It may inherit
+  # the base config, so telegram_token_ref is optional for it. Keep it on dev.
+  - name: default
+    profile: default
+    env: dev
+
+  # A typical client bot. `profile` defaults to `name` if omitted.
+  - name: acme
+    env: prod
+    telegram_token_ref: ACME_TG_TOKEN     # env var name, NOT the token value
+    model: claude-sonnet-4-6              # optional; omit to use the global default
+    tier: standard                        # free-form label for future resource tiers
+    isolation: shared                     # 'shared' now; flip to 'container' to graduate
+
+  - name: example-client
+    env: prod
+    telegram_token_ref: EXAMPLE_CLIENT_TG_TOKEN

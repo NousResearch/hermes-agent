@@ -1,0 +1,133 @@
+{
+  "_comment": "Hermes 桌面版中文翻译文件",
+  "_version": "1.0",
+
+  "title": "Hermes",
+
+  "settings": {
+    "sidebar": {
+      "gateway": "网关",
+      "api_keys": "API 密钥",
+      "archived_chats": "已存档的聊天",
+      "about": "关于",
+      "export_import": "导出/导入配置",
+      "reset_defaults": "重置为默认值"
+    },
+    "sections": {
+      "model": "模型",
+      "conversation": "对话",
+      "appearance": "外观",
+      "workspace": "工作区",
+      "safety": "安全",
+      "memory_context": "记忆与上下文",
+      "voice": "语音",
+      "advanced": "高级"
+    },
+    "appearance": {
+      "title": "外观",
+      "description": "自定义 Hermes 界面的外观和感觉",
+      "color_mode": "颜色模式",
+      "light": "浅色",
+      "dark": "深色",
+      "system": "跟随系统",
+      "tool_call_display": "工具调用显示",
+      "product": "产品模式",
+      "technical": "技术模式"
+    },
+    "about": {
+      "version": "版本",
+      "check_updates": "检查更新",
+      "check_now": "检查更新",
+      "automatic_updates": "自动更新",
+      "release_notes": "发布说明",
+      "minutes_ago": "{n} 分钟前",
+      "hours_ago": "{n} 小时前",
+      "days_ago": "{n} 天前",
+      "just_now": "刚刚",
+      "never": "从未"
+    },
+    "gateway": {
+      "loading": "正在加载网关设置...",
+      "saved": "已保存，下次重启生效",
+      "restarting": "网关连接正在重启",
+      "restart_message": "Hermes 桌面版将使用保存的设置重新连接。",
+      "save_failed": "无法保存网关设置",
+      "apply_failed": "无法应用网关设置",
+      "env_override": "环境变量正在控制此桌面会话。",
+      "local": "本地网关",
+      "remote": "远程网关",
+      "paste_token": "粘贴会话令牌",
+      "token_saved": "现有令牌 {preview} 已保存"
+    },
+    "fields": {
+      "model_default": "默认模型",
+      "model_provider": "提供商",
+      "model_temperature": "温度",
+      "model_max_tokens": "最大令牌数",
+      "conversation_auto_title": "自动标题",
+      "conversation_compress": "自动压缩",
+      "conversation_history": "历史记录数",
+      "appearance_theme": "主题",
+      "appearance_font_size": "字体大小",
+      "workspace_dir": "工作目录",
+      "safety_dangerous_cmd": "危险命令确认",
+      "memory_enabled": "启用记忆",
+      "voice_input": "语音输入",
+      "voice_output": "语音输出",
+      "voice_input_device": "输入设备",
+      "voice_output_device": "输出设备",
+      "advanced_debug": "调试模式",
+      "advanced_log_level": "日志级别",
+      "advanced_dev_tools": "开发者工具"
+    }
+  },
+
+  "onboarding": {
+    "title": "初始化 Hermes",
+    "provider_search": "搜索提供商...",
+    "connect_api_key": "连接 API 密钥",
+    "oauth_flow": "OAuth 授权",
+    "recommended": "推荐",
+    "connected": "已连接",
+    "collapse": "折叠",
+    "openrouter_desc": "访问 200+ 模型的统一 API"
+  },
+
+  "chat": {
+    "placeholder": "请输入消息...",
+    "send": "发送",
+    "stop": "停止",
+    "clear": "清除",
+    "new_chat": "新建聊天",
+    "search": "搜索对话..."
+  },
+
+  "sidebar": {
+    "new_session": "新建会话",
+    "sessions": "会话",
+    "today": "今天",
+    "yesterday": "昨天",
+    "previous_7_days": "过去 7 天",
+    "previous_30_days": "过去 30 天",
+    "older": "更早",
+    "no_sessions": "暂无会话"
+  },
+
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "confirm": "确认",
+    "delete": "删除",
+    "edit": "编辑",
+    "close": "关闭",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "warning": "警告",
+    "info": "信息",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "on": "开",
+    "off": "关"
+  }
+}

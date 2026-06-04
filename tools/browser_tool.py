@@ -2576,13 +2576,93 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
-    result = _run_browser_command(effective_task_id, "click", [ref])
+    js_success = False
+    
+    # 1. Fetch exact mathematical bounding box
+    logger.info(f"Initiating trusted CDP tag-and-click fallback for {ref}...")
+    box_result = _run_browser_command(effective_task_id, "get", ["box", "--json", ref])
+    
+    if isinstance(box_result, dict) and box_result.get("error"):
+        error_msg = box_result.get("error")
+        logger.warning(f"Could not retrieve bounding box for {ref}: {error_msg}")
+        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        
+    box_data = box_result.get("data") if isinstance(box_result, dict) and "data" in box_result else box_result
+    if isinstance(box_data, dict) and "x" in box_data:
+        try:
+            x, y = float(box_data["x"]), float(box_data["y"])
+            width, height = float(box_data["width"]), float(box_data["height"])
+            logger.info(f"Target bounding box for {ref} is x:{x}, y:{y}, width:{width}, height:{height}")
+            
+            # 2. Search DOM for the exact matching box and check for obscuring elements
+            js_script = f"(function() {{ document.querySelectorAll('[data-hermes-click-target]').forEach(e => e.removeAttribute('data-hermes-click-target')); const target = {{x: {x}, y: {y}, width: {width}, height: {height}}}; const elements = document.querySelectorAll('*'); for (let i = elements.length - 1; i >= 0; i--) {{ const el = elements[i]; const rect = el.getBoundingClientRect(); if (Math.abs(rect.x - target.x) <= 3 && Math.abs(rect.y - target.y) <= 3 && Math.abs(rect.width - target.width) <= 3 && Math.abs(rect.height - target.height) <= 3) {{ el.scrollIntoView({{block: 'center', inline: 'center'}}); const newRect = el.getBoundingClientRect(); const cx = newRect.x + newRect.width / 2; const cy = newRect.y + newRect.height / 2; let topmost = document.elementFromPoint(cx, cy); let isObscured = true; let curr = topmost; while (curr) {{ if (curr === el) {{ isObscured = false; break; }} curr = curr.parentElement; }} let text = el.innerText ? el.innerText.trim().replace(/\\n/g, ' ').substring(0, 40) : ''; el.setAttribute('data-hermes-click-target', 'true'); if (isObscured) {{ let reason = topmost ? topmost.tagName : 'unknown'; if (topmost && topmost.id) reason += '#' + topmost.id; else if (topmost && topmost.className) reason += '.' + topmost.className.replace(/\\s+/g, '.'); return {{success: true, obscured_by: reason, target_text: text}}; }} return {{success: true, target_text: text}}; }} }} return {{error: 'Element not found matching coordinates'}}; }})()"
+            eval_res = _run_browser_command(effective_task_id, "eval", [js_script])
+            logger.info(f"Tagging eval result for {ref}: {eval_res}")
+            
+            if isinstance(eval_res, dict):
+                eval_data = eval_res.get("data", {})
+                if isinstance(eval_data, dict):
+                    res_val = eval_data.get("result", eval_data.get("output"))
+                    
+                    if isinstance(res_val, dict) and res_val.get("success"):
+                        target_text = res_val.get("target_text", "")
+                        obscured_by = res_val.get("obscured_by")
+                        
+                        if obscured_by:
+                            error_msg = f"Element '{target_text}' is physically obscured by: {obscured_by}"
+                            logger.warning(f"Click aborted for {ref}: {error_msg}")
+                            return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+                        
+                        logger.info(f"Target element '{target_text}' ({ref}) is cleanly visible.")
+                            
+                        # 3. Execute trusted CDP click on the tagged element
+                        click_res = _run_browser_command(effective_task_id, "click", ["[data-hermes-click-target='true']"])
+                        logger.info(f"Trusted CDP click result for {ref}: {click_res}")
+                        
+                        if isinstance(click_res, dict) and click_res.get("success"):
+                            js_success = True
+                        else:
+                            logger.warning(f"Trusted CDP click command failed for '{target_text}' ({ref})")
+                    elif isinstance(res_val, dict) and "error" in res_val:
+                        error_msg = res_val["error"]
+                        logger.warning(f"Click aborted for {ref}: {error_msg}")
+                        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+                    else:
+                        logger.warning(f"Tagging DOM element via JS failed for {ref}: {res_val}")
+                    
+        except Exception as e:
+            logger.warning(f"JS bounding box click failed parsing for {ref}: {e}")
+    else:
+        logger.warning(f"Could not retrieve bounding box for {ref}: {box_result}")
+
+    # 4. Fallback to coordinate click
+    if not js_success:
+        html_result = _run_browser_command(effective_task_id, "get", ["html", ref])
+        
+        if isinstance(html_result, dict):
+            html_data = html_result.get("data", {})
+            if isinstance(html_data, dict):
+                element_html = html_data.get("html", html_data.get("output", html_data.get("result", str(html_result))))
+            else:
+                element_html = html_result.get("output", html_result.get("result", str(html_result)))
+        else:
+            element_html = str(html_result)
+            
+        logger.warning(f"JS bounding box click failed for {ref}, falling back to coordinate click. Element HTML: {element_html}")
+        result = _run_browser_command(effective_task_id, "click", [ref])
+    else:
+        result = {"success": True}
+        if 'obscured_by' in locals() and obscured_by:
+            result["warning"] = f"Element '{target_text}' might be physically obscured by {obscured_by}. Hardware click dispatched anyway."
 
     if result.get("success"):
         response = {
             "success": True,
             "clicked": ref
         }
+        if "warning" in result:
+            response["warning"] = result["warning"]
+            
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
     else:
         response = {

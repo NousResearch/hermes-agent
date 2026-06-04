@@ -3660,6 +3660,12 @@ def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str],
     enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
     if action == "disable":
         updated = enabled - set(toolset_names)
+        # Clean up .env vars for disabled tools
+        for tool_name in toolset_names:
+            from hermes_cli.env_cleanup import remove_env_vars_for_feature
+            removed = remove_env_vars_for_feature("tool", tool_name)
+            if removed:
+                logger.info("Removed %s env vars for disabled tool %s", len(removed), tool_name)
     else:
         updated = enabled | set(toolset_names)
     _save_platform_tools(config, platform, updated)

@@ -5916,6 +5916,14 @@ def set_config_value(key: str, value: str):
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
     
+    # Clean up .env vars when a platform is explicitly disabled
+    if key.startswith("platforms.") and key.endswith(".enabled") and value is False:
+        platform_name = key.split(".")[1]
+        from hermes_cli.env_cleanup import remove_env_vars_for_feature
+        removed = remove_env_vars_for_feature("platform", platform_name)
+        if removed:
+            logger.info("Removed %s env vars for disabled platform %s", len(removed), platform_name)
+    
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     _config_to_env_sync = {
@@ -6225,3 +6233,86 @@ def _inject_platform_plugin_env_vars() -> None:
 
 # Eagerly inject so that platform plugin env vars show up in the setup wizard.
 _inject_platform_plugin_env_vars()
+
+
+# =============================================================================
+# Env command handler
+# =============================================================================
+
+def env_command(args):
+    """Handle env subcommands for ~/.hermes/.env."""
+    subcmd = getattr(args, "env_command", None)
+
+    if subcmd is None or subcmd == "path":
+        print(get_env_path())
+        return
+
+    if subcmd == "list":
+        env_path = get_env_path()
+        if not env_path.exists():
+            print("No .env file found.")
+            return
+        with open(env_path, encoding="utf-8-sig", errors="replace") as f:
+            lines = f.readlines()
+        print(f"\n  Env vars in {env_path}:")
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _ = line.split("=", 1)
+                print(f"    {key}")
+        print()
+        return
+
+    if subcmd == "get":
+        key = getattr(args, "key", None)
+        if not key:
+            print("Usage: hermes env get <KEY>")
+            sys.exit(1)
+        value = get_env_value(key)
+        if value is not None:
+            # Mask secrets
+            if len(value) > 8:
+                print(f"{key}={value[:4]}{'*' * (len(value) - 8)}{value[-4:]}")
+            else:
+                print(f"{key}={value}")
+        else:
+            print(f"{key} is not set")
+        return
+
+    if subcmd == "set":
+        key = getattr(args, "key", None)
+        value = getattr(args, "value", None)
+        if not key or value is None:
+            print("Usage: hermes env set <KEY> <VALUE>")
+            sys.exit(1)
+        save_env_value(key, value)
+        print(f"✓ Set {key} in {get_env_path()}")
+        return
+
+    if subcmd == "rm":
+        key = getattr(args, "key", None)
+        if not key:
+            print("Usage: hermes env rm <KEY>")
+            sys.exit(1)
+        if remove_env_value(key):
+            print(f"✓ Removed {key} from {get_env_path()}")
+        else:
+            print(f"{key} not found in {get_env_path()}")
+        return
+
+    if subcmd == "edit":
+        editor = os.environ.get("EDITOR", "nano")
+        env_path = get_env_path()
+        print()
+        print("WARNING: This file contains sensitive credentials.")
+        print("Removing a token here may break the associated platform or tool.")
+        print("Use `hermes config set` to disable features safely; it will clean up")
+        print(".env automatically. Only edit this file directly if you know what")
+        print("you are doing.")
+        print()
+        if not env_path.exists():
+            env_path.write_text("# Hermes environment variables\n", encoding="utf-8")
+        subprocess.run([editor, str(env_path)])
+        return

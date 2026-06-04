@@ -6544,6 +6544,13 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_env(args):
+    """Env file management."""
+    from hermes_cli.config import env_command
+
+    env_command(args)
+
+
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     if getattr(args, "quick", False):
@@ -13652,6 +13659,40 @@ Examples:
     config_subparsers.add_parser("migrate", help="Update config with new options")
 
     config_parser.set_defaults(func=cmd_config)
+
+    # =========================================================================
+    # env command
+    # =========================================================================
+    env_parser = subparsers.add_parser(
+        "env",
+        help="Manage ~/.hermes/.env secrets",
+        description="Inspect and edit the .env file that stores API keys and tokens",
+    )
+    env_subparsers = env_parser.add_subparsers(dest="env_command")
+
+    # env path (default)
+    env_subparsers.add_parser("path", help="Print .env file path")
+
+    # env list
+    env_subparsers.add_parser("list", help="List all env vars (values masked)")
+
+    # env get
+    env_get = env_subparsers.add_parser("get", help="Get value of an env var")
+    env_get.add_argument("key", help="Env var name")
+
+    # env set
+    env_set = env_subparsers.add_parser("set", help="Set an env var")
+    env_set.add_argument("key", help="Env var name")
+    env_set.add_argument("value", help="Value to set")
+
+    # env rm
+    env_rm = env_subparsers.add_parser("rm", help="Remove an env var")
+    env_rm.add_argument("key", help="Env var name")
+
+    # env edit
+    env_subparsers.add_parser("edit", help="Open .env in $EDITOR")
+
+    env_parser.set_defaults(func=cmd_env)
 
     # =========================================================================
     # pairing command

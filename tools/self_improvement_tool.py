@@ -382,6 +382,22 @@ _STATUS_ONLY_PATTERNS = (
     re.compile(r"\btriage(?:d|s|)\b", re.IGNORECASE),
     re.compile(r"\bworking on\b", re.IGNORECASE),
 )
+_CODEX_COMPLETED_VALUE_CLAIM_PATTERNS = (
+    re.compile(
+        r"\b(?:I|we|codex|agent)\s+(?:have\s+)?"
+        r"(?:completed|delivered|implemented|fixed|repaired|resolved|created|updated|"
+        r"added|removed|changed|opened|merged|pushed|committed|verified|documented|"
+        r"backfilled|generated|published)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:^|[\n.!?]\s*|[-*]\s*)"
+        r"(?:completed|delivered|implemented|fixed|repaired|resolved|created|updated|"
+        r"added|removed|changed|opened|merged|pushed|committed|verified|documented|"
+        r"backfilled|generated|published)\b",
+        re.IGNORECASE,
+    ),
+)
 _DURABLE_TEXT_PATTERNS = (
     ("commit", re.compile(r"\b(?:commit|committed|sha)\b[^.\n]{0,120}\b[0-9a-f]{7,40}\b", re.IGNORECASE)),
     ("commit", re.compile(r"\b[0-9a-f]{7,40}\b[^.\n]{0,120}\b(?:commit|sha)\b", re.IGNORECASE)),
@@ -1885,6 +1901,25 @@ def _collect_record_text(value: Any, key: str = "") -> list[str]:
     return []
 
 
+def _collect_claim_text(value: Any, key: str = "") -> list[str]:
+    normalized_key = _normalize_evidence_key(key)
+    if normalized_key in _TEXT_EVIDENCE_EXCLUDED_KEYS:
+        return []
+    if normalized_key in _CLAIM_TEXT_KEYS:
+        return _collect_record_text(value, key)
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for child_key, child_value in value.items():
+            parts.extend(_collect_claim_text(child_value, str(child_key)))
+        return parts
+    if isinstance(value, list):
+        parts = []
+        for child_value in value:
+            parts.extend(_collect_claim_text(child_value, key))
+        return parts
+    return []
+
+
 def _redact_operator_evidence_value(text: str) -> str:
     redacted = re.sub(
         r"\b(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}",
@@ -2030,6 +2065,14 @@ def _status_only_markers(text: str) -> set[str]:
     return {pattern.pattern for pattern in _STATUS_ONLY_PATTERNS if pattern.search(text)}
 
 
+def _codex_completed_value_claim_markers(text: str) -> set[str]:
+    return {
+        pattern.pattern
+        for pattern in _CODEX_COMPLETED_VALUE_CLAIM_PATTERNS
+        if pattern.search(text)
+    }
+
+
 def _value_categories_from_signals(signals: set[str]) -> list[str]:
     categories: list[str] = []
     for category, _label in _ALLOWED_VALUE_CATEGORIES:
@@ -2108,6 +2151,15 @@ def _record_claims_work(record: dict[str, Any], text: str) -> bool:
     return False
 
 
+def _codex_record_claims_work(record: dict[str, Any], text: str) -> bool:
+    if _structured_durable_signals(record) or _text_durable_signals(text):
+        return True
+    claim_text = "\n".join(_collect_claim_text(record))
+    if not claim_text.strip():
+        return False
+    return bool(_codex_completed_value_claim_markers(claim_text))
+
+
 def _iter_recent_claimed_work_items(
     *,
     journal_payload: Any,
@@ -2134,7 +2186,11 @@ def _iter_recent_claimed_work_items(
                 if age_hours > freshness_hours:
                     continue
             text = "\n".join(_collect_record_text(record))
-            if not _record_claims_work(record, text):
+            if source == "codex_runs":
+                claims_work = _codex_record_claims_work(record, text)
+            else:
+                claims_work = _record_claims_work(record, text)
+            if not claims_work:
                 continue
             yield {
                 "source": source,

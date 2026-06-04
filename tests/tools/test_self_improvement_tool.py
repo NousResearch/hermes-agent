@@ -568,10 +568,10 @@ def test_status_language_only_work_fails_anti_make_work_check(tmp_path):
     assert "incident risk reduced" in anti_make_work["detail"]
     assert "system capability changed" in anti_make_work["detail"]
     assert "Remediation" in anti_make_work["detail"]
-    assert "For shallow completed Codex runs, backfill structured fields" in anti_make_work["detail"]
-    assert anti_make_work["metrics"]["assessed_work_item_count"] == 2
-    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 1
-    assert anti_make_work["metrics"]["status_language_only_count"] == 2
+    assert "For shallow completed Codex runs, backfill structured fields" not in anti_make_work["detail"]
+    assert anti_make_work["metrics"]["assessed_work_item_count"] == 1
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 0
+    assert anti_make_work["metrics"]["status_language_only_count"] == 1
     assert [
         item["label"]
         for item in anti_make_work["metrics"]["allowed_value_categories"]
@@ -589,19 +589,24 @@ def test_status_language_only_work_fails_anti_make_work_check(tmp_path):
         "incident_risk_reduced": 0,
         "system_capability_changed": 0,
     }
-    for example in anti_make_work["metrics"]["shallow_examples"]:
-        assert example["value_categories"] == []
-        assert example["remediation"].startswith("Add evidence for at least one allowed value category")
-        assert example["issue"] == "status_language_without_value_category_evidence"
-    codex_example = next(
-        item for item in anti_make_work["metrics"]["shallow_examples"] if item["source"] == "codex_runs"
-    )
-    assert codex_example["backfill_fields"] == [
-        "operatorDecisionSupport or nextDecision",
-        "changedFiles, tests, commitShas, pullRequests, or artifactPaths",
-        "controlOwnershipPreserved, incidentRiskReduced, or systemCapabilityChanged when applicable",
+    assert anti_make_work["metrics"]["shallow_examples"] == [
+        {
+            "source": "journal_entries",
+            "id": "status-only",
+            "timestamp": recent,
+            "durable": False,
+            "signals": [],
+            "value_categories": [],
+            "value_category_labels": [],
+            "status_language": True,
+            "issue": "status_language_without_value_category_evidence",
+            "backfill_fields": [],
+            "remediation": anti_make_work["metrics"]["shallow_examples"][0]["remediation"],
+        }
     ]
-    assert "Backfill completed Codex run codex_status" in codex_example["remediation"]
+    assert anti_make_work["metrics"]["shallow_examples"][0]["remediation"].startswith(
+        "Add evidence for at least one allowed value category"
+    )
     assert "anti_make_work_check" in benchmark["critical_failures"]
     assert "reliability_gate" not in benchmark["critical_failures"]
     assert benchmark["issue_selection"]["blocked_checks"] == [
@@ -609,6 +614,154 @@ def test_status_language_only_work_fails_anti_make_work_check(tmp_path):
         "operator_value_alignment",
     ]
     assert benchmark["project_score"] < 100.0
+
+
+def test_status_only_codex_telemetry_does_not_fail_anti_make_work_check(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(journal_path, {"entries": []})
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_111f38d44471": {
+                    "run_id": "codex_111f38d44471",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "final_message": "",
+                    "exit_code": 0,
+                },
+                "codex_3b03fb0ad7ad": {
+                    "run_id": "codex_3b03fb0ad7ad",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "exit_code": 0,
+                },
+                "codex_53231f8941eb": {
+                    "run_id": "codex_53231f8941eb",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "final_message": "STATUS\nIn progress. Summary captured; no blockers.",
+                    "exit_code": 0,
+                },
+                "codex_5ea20c85f7b2": {
+                    "run_id": "codex_5ea20c85f7b2",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "final_message": "STATUS\nQueued next steps for operator review.",
+                    "exit_code": 0,
+                },
+                "codex_7e9ce5de2da0": {
+                    "run_id": "codex_7e9ce5de2da0",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "final_message": None,
+                    "exit_code": 0,
+                },
+                "codex_aea695f5bd80": {
+                    "run_id": "codex_aea695f5bd80",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "last_agent_message": (
+                        "The largest source conflict is an insertion-point collision: "
+                        "both the old PR and newer main added blocks near the Kansas/Wyoming area. "
+                        "I'm preserving both sets, then I'll move the block so it can add "
+                        "the Molina managed-care workflow facet cleanly."
+                    ),
+                    "exit_code": 0,
+                },
+            }
+        },
+    )
+    _write_json(
+        ctx_path,
+        {"sessions": {"ctx_1": {"session_id": "ctx_1", "active": False, "updated_at": recent}}},
+    )
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    anti_make_work = benchmark["checks"]["anti_make_work_check"]
+    assert anti_make_work["status"] == "pass"
+    assert anti_make_work["score"] == 1.0
+    assert anti_make_work["metrics"]["assessed_work_item_count"] == 0
+    assert anti_make_work["metrics"]["shallow_work_item_count"] == 0
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 0
+    assert anti_make_work["metrics"]["shallow_examples"] == []
+    assert "anti_make_work_check" not in benchmark["critical_failures"]
+
+
+def test_codex_completed_value_claim_without_evidence_fails_anti_make_work_check(tmp_path):
+    now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(journal_path, {"entries": []})
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_claimed": {
+                    "run_id": "codex_claimed",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "final_message": (
+                        "STATUS\nCompleted HAD-271 recovery triage. "
+                        "Next step is continued monitoring."
+                    ),
+                    "exit_code": 0,
+                }
+            }
+        },
+    )
+    _write_json(
+        ctx_path,
+        {"sessions": {"ctx_1": {"session_id": "ctx_1", "active": False, "updated_at": recent}}},
+    )
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    anti_make_work = benchmark["checks"]["anti_make_work_check"]
+    assert anti_make_work["status"] == "fail"
+    assert anti_make_work["metrics"]["assessed_work_item_count"] == 1
+    assert anti_make_work["metrics"]["shallow_codex_work_item_count"] == 1
+    assert anti_make_work["metrics"]["status_language_only_count"] == 1
+    codex_example = anti_make_work["metrics"]["shallow_examples"][0]
+    assert codex_example["source"] == "codex_runs"
+    assert codex_example["id"] == "codex_claimed"
+    assert codex_example["issue"] == "status_language_without_value_category_evidence"
+    assert codex_example["backfill_fields"] == [
+        "operatorDecisionSupport or nextDecision",
+        "changedFiles, tests, commitShas, pullRequests, or artifactPaths",
+        "controlOwnershipPreserved, incidentRiskReduced, or systemCapabilityChanged when applicable",
+    ]
+    assert "Backfill completed Codex run codex_claimed" in codex_example["remediation"]
+    assert "anti_make_work_check" in benchmark["critical_failures"]
 
 
 def test_operator_decision_support_passes_anti_make_work_value_category(tmp_path):

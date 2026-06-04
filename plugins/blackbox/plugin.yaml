@@ -1,0 +1,10 @@
+name: blackbox
+version: "1.1"
+description: Turn telemetry and cost alert cards. Records per-turn cost/tokens/tools to a per-profile SQLite store; alerts over threshold; /cost to investigate.
+author: Aegis
+provides_hooks:
+  - on_session_start
+  - post_tool_call
+  - on_session_end
+provides_commands:
+  - cost

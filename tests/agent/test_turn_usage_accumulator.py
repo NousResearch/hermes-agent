@@ -1,0 +1,60 @@
+"""T1 core: per-turn token accumulator + on_session_end turn_usage enrichment.
+
+These tests assert the Blackbox core enrichment in agent/conversation_loop.py:
+the _turn_calls local sums every successful API call into the turn_usage kwarg
+passed to on_session_end, without leaking into agent global state.
+"""
+import inspect
+import agent.conversation_loop as cl
+
+
+def test_turn_calls_initialized_local_not_agent_attr():
+    """_turn_calls must be a LOCAL var in run_conversation, never agent._turn."""
+    src = inspect.getsource(cl.run_conversation)
+    assert "_turn_calls: List[Dict[str, Any]] = []" in src, "local accumulator not initialized"
+    assert "agent._turn_calls" not in src, "accumulator must not be an agent attribute (re-entrancy)"
+
+
+def test_append_inside_success_block_only():
+    """The append must sit with the session_*_tokens commit, not in retry/except."""
+    src = inspect.getsource(cl.run_conversation)
+    # The append and the session_api_calls increment must be in the same block.
+    assert "_turn_calls.append(" in src
+    i_append = src.index("_turn_calls.append(")
+    i_commit = src.index("agent.session_api_calls += 1")
+    # append comes shortly AFTER the cumulative commit (same success block)
+    assert 0 < (i_append - i_commit) < 3000, "append not adjacent to success commit block"
+
+
+def test_on_session_end_carries_turn_usage_kwarg():
+    src = inspect.getsource(cl.run_conversation)
+    assert '"on_session_end",' in src
+    # turn_usage kwarg present in the fire call
+    fire = src[src.index('"on_session_end",'):]
+    assert "turn_usage=" in fire, "on_session_end not enriched with turn_usage"
+    assert "user_message=original_user_message" in fire
+    assert "final_response=final_response" in fire
+
+
+def test_turn_usage_fold_sums_calls():
+    """Simulate the fold logic on a 2-call turn → summed totals."""
+    _turn_calls = [
+        {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 80,
+         "cache_write_tokens": 5, "reasoning_tokens": 2, "total_tokens": 110, "latency_s": 1.5},
+        {"input_tokens": 200, "output_tokens": 20, "cache_read_tokens": 150,
+         "cache_write_tokens": 0, "reasoning_tokens": 3, "total_tokens": 220, "latency_s": 2.0},
+    ]
+    summary = {
+        "api_calls": len(_turn_calls),
+        "input_tokens": sum(c["input_tokens"] for c in _turn_calls),
+        "output_tokens": sum(c["output_tokens"] for c in _turn_calls),
+        "cache_read_tokens": sum(c["cache_read_tokens"] for c in _turn_calls),
+        "total_tokens": sum(c["total_tokens"] for c in _turn_calls),
+        "latency_s": sum(c["latency_s"] for c in _turn_calls),
+    }
+    assert summary["api_calls"] == 2
+    assert summary["input_tokens"] == 300
+    assert summary["output_tokens"] == 30
+    assert summary["cache_read_tokens"] == 230
+    assert summary["total_tokens"] == 330
+    assert summary["latency_s"] == 3.5

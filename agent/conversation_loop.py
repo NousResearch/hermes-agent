@@ -727,6 +727,11 @@ def run_conversation(
 
     # Main conversation loop
     api_call_count = 0
+    # Blackbox: per-turn token/cost/latency accumulator. LOCAL to this
+    # run_conversation frame (re-entrant-safe across subagents). Each
+    # successful provider call appends a dict at the usage-commit site below;
+    # folded into the on_session_end `turn_usage` kwarg at the end of the turn.
+    _turn_calls: List[Dict[str, Any]] = []
     final_response = None
     interrupted = False
     failed = False
@@ -1936,6 +1941,29 @@ def run_conversation(
                         "completion_tokens": completion_tokens,
                         "total_tokens": total_tokens,
                     }
+                    # Blackbox per-TURN accumulator (separate from the per-CALL
+                    # snapshot above). INVARIANT: this append lives INSIDE the
+                    # successful-usage commit block — the same place that mutates
+                    # session_*_tokens — and MUST NOT be moved into any retry or
+                    # exception branch, or a retried 5xx would double-count.
+                    # `_turn_calls` is a LOCAL list (initialized at the top of
+                    # run_conversation), never an agent attribute, so concurrent
+                    # subagents running their own run_conversation frame cannot
+                    # stomp each other's accumulator.
+                    try:
+                        _turn_calls.append({
+                            "input_tokens": canonical_usage.input_tokens,
+                            "output_tokens": canonical_usage.output_tokens,
+                            "cache_read_tokens": canonical_usage.cache_read_tokens,
+                            "cache_write_tokens": canonical_usage.cache_write_tokens,
+                            "reasoning_tokens": canonical_usage.reasoning_tokens,
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": total_tokens,
+                            "latency_s": api_duration,
+                        })
+                    except Exception:
+                        pass  # telemetry must never break the conversation loop
 
                     # Log API call details for debugging/observability
                     _cache_pct = ""
@@ -4886,10 +4914,44 @@ def run_conversation(
     # _reset_session).
 
     # Plugin hook: on_session_end
-    # Fired at the very end of every run_conversation call.
-    # Plugins can use this for cleanup, flushing buffers, etc.
+    # Fired at the very end of every run_conversation call (i.e. once per TURN,
+    # despite the name). Plugins can use this for cleanup, flushing buffers,
+    # and per-turn telemetry. The `turn_usage` kwarg is an ADDITIVE, optional
+    # payload (Blackbox plugin) — existing consumers take **kwargs and ignore
+    # it; invoke_hook wraps each callback in try/except so a strict-signature
+    # callback cannot break the loop.
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        # Fold the per-turn accumulator into a compact summary. Telemetry must
+        # never break the turn, so guard the fold.
+        _turn_usage = None
+        try:
+            if _turn_calls:
+                _turn_usage = {
+                    "api_calls": len(_turn_calls),
+                    "input_tokens": sum(c["input_tokens"] for c in _turn_calls),
+                    "output_tokens": sum(c["output_tokens"] for c in _turn_calls),
+                    "cache_read_tokens": sum(c["cache_read_tokens"] for c in _turn_calls),
+                    "cache_write_tokens": sum(c["cache_write_tokens"] for c in _turn_calls),
+                    "reasoning_tokens": sum(c["reasoning_tokens"] for c in _turn_calls),
+                    "total_tokens": sum(c["total_tokens"] for c in _turn_calls),
+                    "latency_s": sum(c.get("latency_s", 0.0) for c in _turn_calls),
+                    # Per-call breakdown so the plugin can price each call
+                    # against tiered pricing and reconcile cost_status worst-of.
+                    "calls": list(_turn_calls),
+                    "context_used": getattr(agent.context_compressor, "last_prompt_tokens", 0)
+                        if getattr(agent, "context_compressor", None) else 0,
+                    "context_length": getattr(agent.context_compressor, "context_length", 0)
+                        if getattr(agent, "context_compressor", None) else 0,
+                    # Subagent attribution (set by delegate_tool before run; absent at top level).
+                    "parent_turn_id": getattr(agent, "_blackbox_parent_turn_id", None),
+                    "parent_platform": getattr(agent, "_blackbox_parent_platform", None),
+                    "parent_chat_id": getattr(agent, "_blackbox_parent_chat_id", None),
+                    "parent_chat_name": getattr(agent, "_blackbox_parent_chat_name", None),
+                    "is_subagent": bool(getattr(agent, "_blackbox_is_subagent", False)),
+                }
+        except Exception:
+            _turn_usage = None
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,
@@ -4899,6 +4961,10 @@ def run_conversation(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            provider=getattr(agent, "provider", None) or "",
+            user_message=original_user_message,
+            final_response=final_response,
+            turn_usage=_turn_usage,
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

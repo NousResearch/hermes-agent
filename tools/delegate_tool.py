@@ -1203,6 +1203,25 @@ def _build_child_agent(
     except Exception:
         logger.debug("subagent_start hook invocation failed", exc_info=True)
 
+    # Blackbox subagent attribution (decision #3): a subagent is recorded as
+    # its OWN turn but attributed to the parent agent + parent session channel.
+    # contextvars do NOT cross the ThreadPoolExecutor boundary that runs the
+    # child (tools/delegate_tool.py), so capture the parent's channel identity
+    # HERE — in the parent thread, before submit() — and stash it on the child.
+    # The blackbox plugin reads these off the child agent in its on_session_end
+    # handler. Best-effort: never let attribution break delegation.
+    try:
+        from gateway.session_context import get_session_env as _gse
+        child._blackbox_is_subagent = True
+        child._blackbox_parent_turn_id = _gse("HERMES_SESSION_KEY", "") or getattr(
+            parent_agent, "session_id", None)
+        child._blackbox_parent_platform = (
+            _gse("HERMES_SESSION_PLATFORM", "") or getattr(parent_agent, "platform", "") or "")
+        child._blackbox_parent_chat_id = _gse("HERMES_SESSION_CHAT_ID", "") or ""
+        child._blackbox_parent_chat_name = _gse("HERMES_SESSION_CHAT_NAME", "") or ""
+    except Exception as _bb_exc:
+        logger.debug("blackbox subagent attribution skipped: %s", _bb_exc)
+
     return child
 
 

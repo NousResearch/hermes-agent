@@ -902,6 +902,8 @@ if _config_path.exists():
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
                 os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
+            if "max_tokens" in _agent_cfg and "HERMES_MAX_TOKENS" not in os.environ:
+                os.environ["HERMES_MAX_TOKENS"] = str(_agent_cfg["max_tokens"])
             if "gateway_timeout" in _agent_cfg:
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
             if "gateway_timeout_warning" in _agent_cfg:
@@ -7210,9 +7212,10 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
 
-            # /codex-runtime must not be used while the agent is running.
-            # Switching mid-turn would split a turn across two transports.
-            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
+            # /codex-runtime and /claude-runtime must not be used while the
+            # agent is running.  Switching mid-turn would split a turn
+            # across two transports.
+            if _cmd_def_inner and _cmd_def_inner.name in ("codex-runtime", "claude-runtime"):
                 return ("Agent is running — wait or /stop first, then "
                         "change runtime.")
 
@@ -7581,6 +7584,9 @@ class GatewayRunner:
 
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
+
+        if canonical == "claude-runtime":
+            return await self._handle_claude_runtime_command(event)
 
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -10640,6 +10646,49 @@ class GatewayRunner:
         prefix = "✓" if result.success else "✗"
         return f"{prefix} {result.message}"
 
+    async def _handle_claude_runtime_command(self, event: MessageEvent) -> str:
+        """Handle /claude-runtime command in the gateway.
+
+        Same surface as /codex-runtime but for Anthropic's ``claude`` CLI:
+            /claude-runtime                    — show current state
+            /claude-runtime auto               — default Hermes runtime (API key)
+            /claude-runtime claude_subprocess  — claude CLI subprocess (subscription)
+            /claude-runtime on / off           — synonyms
+
+        On change, the cached agent for this session is evicted so the next
+        message creates a fresh AIAgent with the new api_mode wired in."""
+        from hermes_cli import claude_runtime_switch as crs
+
+        raw_args = event.get_command_args().strip() if event else ""
+        new_value, errors = crs.parse_args(raw_args)
+        if errors:
+            return "❌ " + "\n❌ ".join(errors)
+
+        try:
+            from hermes_cli.config import load_config, save_config
+        except Exception as exc:
+            return f"❌ Could not load config: {exc}"
+        cfg = load_config()
+
+        result = crs.apply(
+            cfg,
+            new_value,
+            persist_callback=(save_config if new_value is not None else None),
+        )
+
+        # On a real change, evict the cached agent so the new runtime takes
+        # effect on the next message rather than waiting for cache TTL.
+        if result.success and new_value is not None and result.requires_new_session:
+            try:
+                session_key = self._session_key_for_source(event.source)
+                self._evict_cached_agent(session_key)
+            except Exception:
+                logger.debug("could not evict cached agent after claude-runtime change",
+                             exc_info=True)
+
+        prefix = "✓" if result.success else "✗"
+        return f"{prefix} {result.message}"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from hermes_constants import display_hermes_home
@@ -11773,6 +11822,7 @@ class GatewayRunner:
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_tokens = agent_cfg.get("max_tokens") or None
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -11800,6 +11850,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+                    max_tokens=max_tokens,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
@@ -15935,6 +15986,7 @@ class GatewayRunner:
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        max_tokens_cfg = agent_cfg_local.get("max_tokens") or None
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -16774,6 +16826,7 @@ class GatewayRunner:
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
+                    max_tokens=max_tokens_cfg,
                     quiet_mode=True,
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,

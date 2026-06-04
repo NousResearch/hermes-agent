@@ -286,6 +286,35 @@ def _maybe_apply_codex_app_server_runtime(
     return api_mode
 
 
+def _maybe_apply_claude_subprocess_runtime(
+    *,
+    provider: str,
+    api_mode: str,
+    model_cfg: Optional[Dict[str, Any]],
+) -> str:
+    """Optional opt-in: rewrite api_mode → "claude_subprocess" for Anthropic
+    providers when the user has explicitly enabled that runtime via
+    `model.claude_runtime: claude_subprocess` in config.yaml.
+
+    When enabled, Hermes spawns the ``claude`` CLI as a subprocess and pipes
+    turns through it.  The CLI authenticates via macOS Keychain OAuth tokens,
+    so usage bills against the user's Claude Pro/Max subscription instead of
+    consuming API credits.
+
+    Default behavior is preserved: when the key is unset, "auto", or empty,
+    this function is a no-op.  Only the ``anthropic`` provider is eligible.
+
+    Returns the (possibly-rewritten) api_mode."""
+    if not model_cfg:
+        return api_mode
+    if provider != "anthropic":
+        return api_mode
+    runtime = str(model_cfg.get("claude_runtime") or "").strip().lower()
+    if runtime == "claude_subprocess":
+        return "claude_subprocess"
+    return api_mode
+
+
 def _resolve_runtime_from_pool_entry(
     *,
     provider: str,
@@ -409,6 +438,13 @@ def _resolve_runtime_from_pool_entry(
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
     api_mode = _maybe_apply_codex_app_server_runtime(
+        provider=provider, api_mode=api_mode, model_cfg=model_cfg
+    )
+
+    # Optional opt-in: route Anthropic/Claude turns through `claude -p`
+    # subprocess (uses subscription tokens instead of API credits).
+    # Inert when `model.claude_runtime` is unset or "auto".
+    api_mode = _maybe_apply_claude_subprocess_runtime(
         provider=provider, api_mode=api_mode, model_cfg=model_cfg
     )
 

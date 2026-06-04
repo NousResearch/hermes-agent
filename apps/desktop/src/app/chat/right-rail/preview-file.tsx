@@ -11,6 +11,7 @@ import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { PageLoader } from '@/components/page-loader'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -481,7 +482,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.language])
 
   if (state.loading) {
-    return <div className="grid h-full place-items-center text-xs text-muted-foreground">Loading preview…</div>
+    return <PageLoader label="Loading preview" />
   }
 
   if (state.error) {

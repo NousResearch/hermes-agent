@@ -1,7 +1,7 @@
-import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -28,9 +28,9 @@ import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icon
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
-import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
-import { titlebarHeaderBaseClass } from '../shell/titlebar'
-import type { SetTitlebarToolGroup } from '../shell/titlebar-controls'
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
+import { OverlayMain, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
+import { OverlayView } from '../overlays/overlay-view'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -40,26 +40,18 @@ function isValidProfileName(name: string): boolean {
   return PROFILE_NAME_RE.test(name.trim())
 }
 
-interface ProfilesViewProps extends React.ComponentProps<'section'> {
-  setStatusbarItemGroup?: SetStatusbarItemGroup
-  setTitlebarToolGroup?: SetTitlebarToolGroup
+interface ProfilesViewProps {
+  onClose: () => void
 }
 
-export function ProfilesView({
-  setStatusbarItemGroup: _setStatusbarItemGroup,
-  setTitlebarToolGroup,
-  ...props
-}: ProfilesViewProps) {
+export function ProfilesView({ onClose }: ProfilesViewProps) {
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
-  const [refreshing, setRefreshing] = useState(false)
   const [selectedName, setSelectedName] = useState<null | string>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
-    setRefreshing(true)
-
     try {
       const { profiles: list } = await getProfiles()
       setProfiles(list)
@@ -72,32 +64,14 @@ export function ProfilesView({
       })
     } catch (err) {
       notifyError(err, 'Failed to load profiles')
-    } finally {
-      setRefreshing(false)
     }
   }, [])
+
+  useRefreshHotkey(refresh)
 
   useEffect(() => {
     void refresh()
   }, [refresh])
-
-  useEffect(() => {
-    if (!setTitlebarToolGroup) {
-      return
-    }
-
-    setTitlebarToolGroup('profiles', [
-      {
-        disabled: refreshing,
-        icon: <Codicon name="refresh" spinning={refreshing} />,
-        id: 'refresh-profiles',
-        label: refreshing ? 'Refreshing profiles' : 'Refresh profiles',
-        onSelect: () => void refresh()
-      }
-    ])
-
-    return () => setTitlebarToolGroup('profiles', [])
-  }, [refresh, refreshing, setTitlebarToolGroup])
 
   const selected = useMemo(() => {
     if (!profiles) {
@@ -164,62 +138,58 @@ export function ProfilesView({
   }, [pendingDelete, refresh])
 
   return (
-    <section {...props} className="flex h-full min-w-0 flex-col overflow-hidden rounded-b-[0.9375rem] bg-background">
-      <header className={titlebarHeaderBaseClass}>
-        <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">Profiles</h2>
-        <span className="pointer-events-auto text-xs text-muted-foreground">
-          {profiles ? `${profiles.length} ${profiles.length === 1 ? 'profile' : 'profiles'}` : ''}
-        </span>
-      </header>
+    <OverlayView closeLabel="Close profiles" onClose={onClose}>
+      {!profiles ? (
+        <PageLoader label="Loading profiles..." />
+      ) : (
+        <OverlaySplitLayout>
+          <OverlaySidebar>
+            <div className="mb-1 flex items-center justify-between gap-2 pl-1.5 pr-0.5">
+              <span className="text-[0.7rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+                Profiles
+              </span>
+              <Button
+                aria-label="New profile"
+                className="text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                onClick={() => setCreateOpen(true)}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="add" size="0.875rem" />
+              </Button>
+            </div>
+            {profiles.map(profile => (
+              <ProfileRow
+                active={selected?.name === profile.name}
+                key={profile.name}
+                onSelect={() => setSelectedName(profile.name)}
+                profile={profile}
+              />
+            ))}
+            {profiles.length === 0 && (
+              <p className="px-1.5 py-3 text-xs text-muted-foreground">No profiles yet.</p>
+            )}
+          </OverlaySidebar>
 
-      <div className="min-h-0 flex-1 overflow-hidden rounded-b-[1.0625rem] border border-border/50 bg-background/85">
-        {!profiles ? (
-          <PageLoader label="Loading profiles..." />
-        ) : (
-          <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border/50 lg:border-b-0 lg:border-r">
-              <div className="border-b border-border/40 p-2">
-                <Button className="w-full" onClick={() => setCreateOpen(true)} size="sm">
-                  <Codicon name="add" />
-                  New profile
-                </Button>
-              </div>
-              <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-                {profiles.map(profile => (
-                  <li key={profile.name}>
-                    <ProfileRow
-                      active={selected?.name === profile.name}
-                      onSelect={() => setSelectedName(profile.name)}
-                      profile={profile}
-                    />
-                  </li>
-                ))}
-                {profiles.length === 0 && (
-                  <li className="px-2 py-4 text-center text-xs text-muted-foreground">No profiles yet.</li>
-                )}
-              </ul>
-            </aside>
-
-            <main className="min-h-0 overflow-hidden">
-              {selected ? (
-                <ProfileDetail
-                  key={selected.name}
-                  onDelete={() => setPendingDelete(selected)}
-                  onRename={newName => handleRename(selected.name, newName)}
-                  profile={selected}
-                />
-              ) : (
-                <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
-                  <div>
-                    <Users className="mx-auto size-6 text-muted-foreground/60" />
-                    <p className="mt-3">Select a profile to view its details.</p>
-                  </div>
+          <OverlayMain className="px-0">
+            {selected ? (
+              <ProfileDetail
+                key={selected.name}
+                onDelete={() => setPendingDelete(selected)}
+                onRename={newName => handleRename(selected.name, newName)}
+                profile={selected}
+              />
+            ) : (
+              <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
+                <div>
+                  <Users className="mx-auto size-6 text-muted-foreground/60" />
+                  <p className="mt-3">Select a profile to view its details.</p>
                 </div>
-              )}
-            </main>
-          </div>
-        )}
-      </div>
+              </div>
+            )}
+          </OverlayMain>
+        </OverlaySplitLayout>
+      )}
 
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
@@ -250,7 +220,7 @@ export function ProfilesView({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </section>
+    </OverlayView>
   )
 }
 
@@ -258,8 +228,10 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
   return (
     <button
       className={cn(
-        'flex w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left transition-colors',
-        active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
+        'flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors',
+        active
+          ? 'bg-(--ui-row-active-background) text-foreground'
+          : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background) hover:text-foreground'
       )}
       onClick={onSelect}
       type="button"
@@ -311,38 +283,30 @@ function ProfileDetail({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-xl font-semibold tracking-tight">{profile.name}</h3>
-                  {profile.is_default && (
-                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[0.65rem] font-medium text-primary">
-                      Default
-                    </span>
-                  )}
-                  {profile.has_env && (
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
-                      .env
-                    </span>
-                  )}
+                  {profile.is_default && <Badge>Default</Badge>}
+                  {profile.has_env && <Badge variant="muted">.env</Badge>}
                 </div>
                 <p className="mt-1 font-mono text-[0.7rem] text-muted-foreground" title={profile.path}>
                   {profile.path}
                 </p>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
+              <div className="flex shrink-0 items-center gap-3">
                 {!profile.is_default && (
-                  <Button onClick={() => setRenameOpen(true)} size="sm" variant="outline">
+                  <Button onClick={() => setRenameOpen(true)} size="sm" variant="text">
                     <Pencil />
                     Rename
                   </Button>
                 )}
-                <Button disabled={copying} onClick={() => void handleCopySetup()} size="sm" variant="outline">
+                <Button disabled={copying} onClick={() => void handleCopySetup()} size="sm" variant="text">
                   <Terminal />
                   {copying ? 'Copying...' : 'Copy setup'}
                 </Button>
                 {!profile.is_default && (
                   <Button
-                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    className="hover:text-destructive hover:no-underline"
                     onClick={onDelete}
                     size="sm"
-                    variant="ghost"
+                    variant="text"
                   >
                     <Trash2 />
                     Delete
@@ -351,7 +315,7 @@ function ProfileDetail({
               </div>
             </div>
 
-            <dl className="grid gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-3 text-xs sm:grid-cols-2">
+            <dl className="grid gap-2 text-xs sm:grid-cols-2">
               <DetailRow label="Model">
                 {profile.model ? (
                   <>
@@ -387,7 +351,7 @@ function DetailRow({ children, label }: { children: React.ReactNode; label: stri
   return (
     <div className="flex flex-wrap items-baseline gap-2">
       <dt className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</dt>
-      <dd className="text-sm text-foreground">{children}</dd>
+      <dd className="text-xs text-foreground">{children}</dd>
     </div>
   )
 }
@@ -458,9 +422,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
       </div>
 
       {loading ? (
-        <div className="grid h-44 place-items-center rounded-md border border-border/40 bg-background/60 text-xs text-muted-foreground">
-          Loading SOUL.md...
-        </div>
+        <PageLoader className="min-h-44" label="Loading SOUL.md" />
       ) : (
         <Textarea
           className="min-h-72 font-mono text-xs leading-5"

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
@@ -121,7 +122,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
               {revealed !== null ? <EyeOff /> : <Eye />}
             </Button>
           )}
-          <Button onClick={() => setEditing(e => !e)} size="xs" variant="outline">
+          <Button onClick={() => setEditing(e => !e)} size="xs" variant="textStrong">
             {isSet ? 'Replace' : 'Set'}
           </Button>
           {isSet && (
@@ -150,7 +151,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
             Save
           </Button>
-          <Button onClick={() => setEditing(false)} size="sm" variant="outline">
+          <Button onClick={() => setEditing(false)} size="sm" variant="text">
             Cancel
           </Button>
         </div>
@@ -210,6 +211,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       (cfg?.active_provider ? providers.find(p => p.name === cfg.active_provider) : undefined) ??
       providers.find(p => providerConfigured(p, envState)) ??
       providers[0]
+
     setActiveProvider(selected.name)
   }, [activeProvider, providers, envState, cfg])
 
@@ -250,12 +252,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   }, [cfg, loading, providers.length])
 
   if (loading) {
-    return (
-      <div className="flex items-center gap-2 px-1 py-3 text-xs text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" />
-        Loading configuration...
-      </div>
-    )
+    return <PageLoader className="min-h-32" label="Loading configuration" />
   }
 
   if (emptyMessage) {

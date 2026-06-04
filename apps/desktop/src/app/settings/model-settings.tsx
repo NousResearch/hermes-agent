@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/select'
 import { getAuxiliaryModels, getGlobalModelInfo, getGlobalModelOptions, setModelAssignment } from '@/hermes'
 import type { AuxiliaryModelsResponse, ModelOptionProvider } from '@/hermes'
-import { Cpu, Loader2, Sparkles } from '@/lib/icons'
+import { Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { CONTROL_TEXT } from './constants'
@@ -204,11 +204,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   return (
     <div className="grid gap-6">
       <section>
-        <SectionHeading
-          icon={Sparkles}
-          meta={mainModel ? `${mainModel.provider} / ${mainModel.model}` : undefined}
-          title="Main model"
-        />
         <p className="mb-3 text-xs text-muted-foreground">
           Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.
         </p>
@@ -238,7 +233,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             </SelectContent>
           </Select>
           <Button disabled={!selectedProvider || !selectedModel || applying} onClick={() => void applyMainModel()} size="sm">
-            {applying ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+            {applying && <Loader2 className="size-3.5 animate-spin" />}
             {applying ? 'Applying...' : 'Apply'}
           </Button>
         </div>
@@ -252,7 +247,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             disabled={!mainModel || applying}
             onClick={() => void resetAuxiliaryModels()}
             size="sm"
-            variant="outline"
+            variant="textStrong"
           >
             Reset all to main
           </Button>
@@ -260,7 +255,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         <p className="mb-2 text-xs text-muted-foreground">
           Helper tasks run on the main model by default. Assign a dedicated model to any task to override.
         </p>
-        <div className="divide-y divide-border/40">
+        <div className="grid gap-1">
           {AUX_TASKS.map(meta => {
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
@@ -275,7 +270,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         disabled={!mainModel || applying}
                         onClick={() => void setAuxiliaryToMain(meta.key)}
                         size="sm"
-                        variant="ghost"
+                        variant="text"
                       >
                         Set to main
                       </Button>
@@ -283,7 +278,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         disabled={!providers.length || applying}
                         onClick={() => beginAuxiliaryEdit(meta.key)}
                         size="sm"
-                        variant="outline"
+                        variant="textStrong"
                       >
                         Change
                       </Button>
@@ -292,7 +287,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 }
                 below={
                   isEditing && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border/40 pt-2">
+                    <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
                       <Select
                         onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
                         value={auxDraft.provider}

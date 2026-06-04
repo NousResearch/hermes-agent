@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-arborist'
 
+import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
@@ -121,11 +122,7 @@ export function ProjectTree({
 }
 
 function TreeSizingState() {
-  return (
-    <div className="flex h-full min-h-24 items-center justify-center px-3 text-[0.68rem] text-(--ui-text-tertiary)">
-      Loading files...
-    </div>
-  )
+  return <PageLoader aria-label="Loading files" className="min-h-24 px-3" />
 }
 
 function ProjectTreeRow({

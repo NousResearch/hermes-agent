@@ -1934,6 +1934,55 @@ function Install-NodeDeps {
     }
 }
 
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache - most often a partial download resumed
+# into the same file, leaving concatenated junk - makes electron-builder's
+# `app-builder unpack-electron` extract a tree MISSING the electron binary, so
+# the final `electron` -> `Hermes` rename dies with ENOENT and every re-run
+# repeats the broken extraction forever.
+#
+# We deliberately do not validate the zip ourselves: the common
+# prepended/concatenated-junk corruption slips past naive checks, so a
+# self-rolled gate would skip the real-world case. We unconditionally drop the
+# cached electron-*.zip (loose copy and any @electron/get hash-subdir copy) plus
+# the stale unpacked dir, then let the caller retry once - @electron/get
+# re-downloads with its own SHASUM verification, the real source of truth.
+#
+# Returns the removed paths. Best-effort: never throws.
+function Clear-ElectronBuildCache {
+    param([string]$DesktopDir)
+    $removed = @()
+
+    # Per-user Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the Windows default (%LOCALAPPDATA%\electron\Cache).
+    $cacheDirs = @()
+    if ($env:electron_config_cache) { $cacheDirs += $env:electron_config_cache }
+    if ($env:ELECTRON_CACHE)        { $cacheDirs += $env:ELECTRON_CACHE }
+    if ($env:LOCALAPPDATA)          { $cacheDirs += (Join-Path $env:LOCALAPPDATA 'electron\Cache') }
+    $cacheDirs += (Join-Path $HOME 'AppData\Local\electron\Cache')
+
+    foreach ($dir in $cacheDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        # Recurse: the bad copy may be the top-level zip OR a copy inside an
+        # @electron/get hash subdir.
+        $removed += @(Get-ChildItem -LiteralPath $dir -Recurse -Filter 'electron-*.zip' -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop; $_.FullName } catch { }
+        })
+    }
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed (win-unpacked / win-arm64-unpacked).
+    $releaseDir = Join-Path $DesktopDir 'release'
+    if (Test-Path -LiteralPath $releaseDir) {
+        $removed += @(Get-ChildItem -LiteralPath $releaseDir -Directory -Filter '*-unpacked' -ErrorAction SilentlyContinue | ForEach-Object {
+            try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop; $_.FullName } catch { }
+        })
+    }
+
+    return $removed
+}
+
 function Install-Desktop {
     # Build apps/desktop into a launchable Hermes.exe. Only called from
     # Stage-Desktop, which is itself only included in the manifest when
@@ -2067,6 +2116,22 @@ function Install-Desktop {
         $env:WIN_CSC_KEY_PASSWORD = ""
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
+        if ($code -ne 0) {
+            # A corrupt cached Electron zip makes `pack` fail with an opaque
+            # ENOENT on the final `electron` -> `Hermes` rename: app-builder's
+            # unpack-electron extracted a partial tree (missing the binary) from
+            # the bad zip, and re-running reuses the poisoned cache forever.
+            # Purge the cached download + any stale unpacked output and retry
+            # once; @electron/get re-downloads with its own SHASUM check. Without
+            # this a corrupt download hard-fails the whole installer.
+            $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
+            if ($purged.Count -gt 0) {
+                Write-Warn "Desktop build failed - cleared cached Electron download, retrying once:"
+                foreach ($p in $purged) { Write-Info "  - $p" }
+                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                $code = $LASTEXITCODE
+            }
+        }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
             $errText = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue

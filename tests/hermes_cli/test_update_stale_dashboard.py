@@ -23,6 +23,7 @@ import pytest
 from hermes_cli.main import (
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _restart_managed_dashboard_service,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -47,6 +48,7 @@ def _refresh_bindings_against_live_module():
     """
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
+    global _restart_managed_dashboard_service
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
@@ -55,6 +57,7 @@ def _refresh_bindings_against_live_module():
 
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _restart_managed_dashboard_service = live._restart_managed_dashboard_service
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -331,6 +334,69 @@ class TestKillStaleDashboardPosix:
         out = capsys.readouterr().out
         assert "✓ stopped PID 12345" in out
         assert "failed to stop" not in out
+
+    def test_update_path_restarts_managed_dashboard_instead_of_killing(self, capsys):
+        """A systemd-managed dashboard must be restarted through systemd.
+
+        Raw-killing the unit's main PID makes systemd record a clean stop, so
+        Restart=on-failure does not recover the Cloudflare origin.
+        """
+        calls: list[list[str]] = []
+
+        def fake_run(args, *a, **kw):
+            calls.append(list(args))
+            if args[:2] == ["systemctl", "list-unit-files"]:
+                return MagicMock(returncode=0, stdout="hermes-dashboard.service enabled enabled\n", stderr="")
+            if args[:2] == ["systemctl", "is-active"]:
+                return MagicMock(returncode=0, stdout="active\n", stderr="")
+            if args[:2] == ["systemctl", "is-enabled"]:
+                return MagicMock(returncode=0, stdout="enabled\n", stderr="")
+            if args == ["systemctl", "restart", "hermes-dashboard.service"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected subprocess.run call: {args}")
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]) as find_pids, \
+             patch("os.kill") as kill:
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert ["systemctl", "restart", "hermes-dashboard.service"] in calls
+        find_pids.assert_not_called()
+        kill.assert_not_called()
+
+        out = capsys.readouterr().out
+        assert "Restarting managed dashboard service" in out
+        assert "✓ restarted hermes-dashboard.service" in out
+
+    def test_managed_dashboard_restart_failure_does_not_raw_kill(self, capsys):
+        """If systemd restart cannot run, print the fix and do not kill the PID."""
+        def fake_run(args, *a, **kw):
+            if args[:2] == ["systemctl", "list-unit-files"]:
+                return MagicMock(returncode=0, stdout="hermes-dashboard.service enabled enabled\n", stderr="")
+            if args[:2] == ["systemctl", "is-active"]:
+                return MagicMock(returncode=0, stdout="active\n", stderr="")
+            if args[:2] == ["systemctl", "is-enabled"]:
+                return MagicMock(returncode=0, stdout="enabled\n", stderr="")
+            if args == ["systemctl", "restart", "hermes-dashboard.service"]:
+                return MagicMock(returncode=1, stdout="", stderr="Interactive authentication required.\n")
+            if args == ["sudo", "-n", "systemctl", "restart", "hermes-dashboard.service"]:
+                return MagicMock(returncode=1, stdout="", stderr="a password is required\n")
+            raise AssertionError(f"unexpected subprocess.run call: {args}")
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.main._find_stale_dashboard_pids",
+                   return_value=[12345]) as find_pids, \
+             patch("os.kill") as kill:
+            _kill_stale_dashboard_processes(restart_managed=True)
+
+        find_pids.assert_not_called()
+        kill.assert_not_called()
+
+        out = capsys.readouterr().out
+        assert "failed to restart hermes-dashboard.service" in out
+        assert "not raw-killing its PID" in out
+        assert "sudo systemctl restart hermes-dashboard.service" in out
 
 
 class TestKillStaleDashboardWindows:

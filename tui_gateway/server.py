@@ -4154,6 +4154,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             approval_token = set_current_session_key(session["session_key"])
             session_tokens = _set_session_context(session["session_key"])
+            # The sudo password callback is thread-local (tools.terminal_tool
+            # _callback_tls), so wiring it on the build thread doesn't reach this
+            # turn thread — terminal sudo prompts would fall through to /dev/tty
+            # and hang the headless gateway. Re-wire here so the prompt routes to
+            # the sudo.request overlay. (secret capture is a module global, so
+            # re-running is a harmless no-op.)
+            _wire_callbacks(sid)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)

@@ -13,6 +13,7 @@ import { useLocation } from 'react-router-dom'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
 import { NotificationStack } from '@/components/notifications'
+import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
@@ -315,6 +316,7 @@ export function ChatView({
       />
 
       <NotificationStack />
+      <PromptOverlays />
 
       <div
         className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"

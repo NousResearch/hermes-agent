@@ -101,12 +101,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                 // memory. `onMouseDown` swallows the middle-button press so
                 // Chromium doesn't switch into autoscroll mode.
                 onAuxClick={event => {
-                  if (event.button !== 1) return
+                  if (event.button !== 1) {
+                    return
+                  }
+
                   event.preventDefault()
                   closeRightRailTab(tab.id)
                 }}
                 onMouseDown={event => {
-                  if (event.button === 1) event.preventDefault()
+                  if (event.button === 1) {
+                    event.preventDefault()
+                  }
                 }}
               >
                 {active && (

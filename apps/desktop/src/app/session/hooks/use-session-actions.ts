@@ -36,8 +36,8 @@ import {
   setMessages,
   setSelectedStoredSessionId,
   setSessions,
-  setSessionsTotal,
   setSessionStartedAt,
+  setSessionsTotal,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -311,74 +311,77 @@ export function useSessionActions({
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
   )
 
-  const createBackendSessionForSend = useCallback(async (preview: string | null = null): Promise<string | null> => {
-    const startingActiveSessionId = activeSessionIdRef.current
-    const startingStoredSessionId = selectedStoredSessionIdRef.current
-    const startingRouteToken = getRouteToken()
+  const createBackendSessionForSend = useCallback(
+    async (preview: string | null = null): Promise<string | null> => {
+      const startingActiveSessionId = activeSessionIdRef.current
+      const startingStoredSessionId = selectedStoredSessionIdRef.current
+      const startingRouteToken = getRouteToken()
 
-    creatingSessionRef.current = true
+      creatingSessionRef.current = true
 
-    try {
-      const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
-      const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
-      const stored = created.stored_session_id ?? null
+      try {
+        const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
+        const created = await requestGateway<SessionCreateResponse>('session.create', { cols: 96, ...(cwd && { cwd }) })
+        const stored = created.stored_session_id ?? null
 
-      if (
-        activeSessionIdRef.current !== startingActiveSessionId ||
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
-      ) {
-        await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
+        if (
+          activeSessionIdRef.current !== startingActiveSessionId ||
+          selectedStoredSessionIdRef.current !== startingStoredSessionId ||
+          getRouteToken() !== startingRouteToken
+        ) {
+          await requestGateway('session.close', { session_id: created.session_id }).catch(() => undefined)
 
-        return null
+          return null
+        }
+
+        activeSessionIdRef.current = created.session_id
+        selectedStoredSessionIdRef.current = stored
+        ensureSessionState(created.session_id, stored)
+
+        if (stored) {
+          // Seed the sidebar preview with the user's first message so the row
+          // reads meaningfully while the turn is in flight, instead of flashing
+          // "Untitled session" until the turn persists and auto-title runs. The
+          // server later returns its own preview/title and supersedes this.
+          upsertOptimisticSession(created, stored, null, preview?.trim() || null)
+          navigate(sessionRoute(stored), { replace: true })
+        }
+
+        setFreshDraftReady(false)
+        setActiveSessionId(created.session_id)
+        setSelectedStoredSessionId(stored)
+        setSessionStartedAt(Date.now())
+        const yoloArmed = $yoloActive.get()
+        const runtimeInfo = applyRuntimeInfo(created.info)
+
+        if (runtimeInfo) {
+          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
+        }
+
+        // User may have armed YOLO on the new-chat draft before the runtime
+        // session existed — apply it to the freshly created session.
+        if (yoloArmed) {
+          await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
+        }
+
+        return created.session_id
+      } finally {
+        window.setTimeout(() => {
+          creatingSessionRef.current = false
+        }, 0)
       }
-
-      activeSessionIdRef.current = created.session_id
-      selectedStoredSessionIdRef.current = stored
-      ensureSessionState(created.session_id, stored)
-
-      if (stored) {
-        // Seed the sidebar preview with the user's first message so the row
-        // reads meaningfully while the turn is in flight, instead of flashing
-        // "Untitled session" until the turn persists and auto-title runs. The
-        // server later returns its own preview/title and supersedes this.
-        upsertOptimisticSession(created, stored, null, preview?.trim() || null)
-        navigate(sessionRoute(stored), { replace: true })
-      }
-
-      setFreshDraftReady(false)
-      setActiveSessionId(created.session_id)
-      setSelectedStoredSessionId(stored)
-      setSessionStartedAt(Date.now())
-      const yoloArmed = $yoloActive.get()
-      const runtimeInfo = applyRuntimeInfo(created.info)
-
-      if (runtimeInfo) {
-        updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
-      }
-
-      // User may have armed YOLO on the new-chat draft before the runtime
-      // session existed — apply it to the freshly created session.
-      if (yoloArmed) {
-        await setSessionYolo(requestGateway, created.session_id, true).catch(() => undefined)
-      }
-
-      return created.session_id
-    } finally {
-      window.setTimeout(() => {
-        creatingSessionRef.current = false
-      }, 0)
-    }
-  }, [
-    activeSessionIdRef,
-    creatingSessionRef,
-    ensureSessionState,
-    getRouteToken,
-    navigate,
-    requestGateway,
-    selectedStoredSessionIdRef,
-    updateSessionState
-  ])
+    },
+    [
+      activeSessionIdRef,
+      creatingSessionRef,
+      ensureSessionState,
+      getRouteToken,
+      navigate,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      updateSessionState
+    ]
+  )
 
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {

@@ -199,6 +199,7 @@ describe('saveOnboardingLocalEndpoint', () => {
 
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {
     const calls: { body?: unknown; path: string }[] = []
+
     const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
       calls.push({ body, path })
 

@@ -584,7 +584,9 @@ export function ApiKeyForm({
           className="font-mono"
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && void submit()}
-          placeholder={currentRedacted ?? (alreadySet ? 'Replace current value' : option.placeholder || 'Paste API key')}
+          placeholder={
+            currentRedacted ?? (alreadySet ? 'Replace current value' : option.placeholder || 'Paste API key')
+          }
           type={isLocal ? 'text' : 'password'}
           value={value}
         />
@@ -676,8 +678,8 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
     return (
       <Step title={`Sign in with ${title}`}>
         <p className="text-sm text-muted-foreground">
-          We opened {title} in your browser. Authorize Hermes there and you'll be connected
-          automatically — nothing to copy or paste.
+          We opened {title} in your browser. Authorize Hermes there and you'll be connected automatically — nothing to
+          copy or paste.
         </p>
         <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open sign-in page</DocsLink>}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">

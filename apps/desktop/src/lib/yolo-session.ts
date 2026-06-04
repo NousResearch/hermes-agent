@@ -1,9 +1,6 @@
 import { setYoloActive } from '@/store/session'
 
-export type GatewayRequester = <T = unknown>(
-  method: string,
-  params?: Record<string, unknown>
-) => Promise<T>
+export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
 /**
  * Toggle per-session YOLO (approval bypass) via gateway `config.set` — the same

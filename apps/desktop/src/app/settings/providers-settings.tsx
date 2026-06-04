@@ -29,7 +29,11 @@ export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
 
 const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
-  info.description?.trim() || key.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())
+  info.description?.trim() ||
+  key
+    .replace(/_/g, ' ')
+    .toLowerCase()
+    .replace(/\b\w/g, c => c.toUpperCase())
 
 // Advanced (non-primary) fields are mostly base-URL / endpoint overrides, not
 // keys — so don't reuse the "Paste key" placeholder that makes them read as a
@@ -196,9 +200,7 @@ function KeyField({
   return (
     <div className="grid gap-1.5">
       {label && (
-        <label className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          {label}
-        </label>
+        <label className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{label}</label>
       )}
       {dim ? (
         <div className="opacity-55 transition-opacity focus-within:opacity-100 hover:opacity-100">{control}</div>
@@ -251,7 +253,10 @@ function ProviderKeyCard({
       <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
         <div className="flex min-w-44 flex-1 items-center gap-2 py-1">
           <span
-            className={cn('size-2 shrink-0 rounded-full', group.hasAnySet ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
+            className={cn(
+              'size-2 shrink-0 rounded-full',
+              group.hasAnySet ? 'bg-primary' : 'bg-(--ui-stroke-secondary)'
+            )}
           />
           <span className="truncate text-[length:var(--conversation-text-font-size)] font-medium">{group.name}</span>
           {expandable && (

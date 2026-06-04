@@ -1,5 +1,3 @@
-import type { ComponentType, SVGProps } from 'react'
-
 import {
   SiApple,
   SiBilibili,
@@ -14,6 +12,7 @@ import {
   SiWechat,
   SiWhatsapp
 } from '@icons-pack/react-simple-icons'
+import type { ComponentType, SVGProps } from 'react'
 
 import { Globe, Link as LinkIcon, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -69,10 +68,7 @@ export function PlatformAvatar({ className, platformId, platformName }: Platform
 
   if (!spec) {
     return (
-      <span
-        aria-hidden="true"
-        className={cn(baseClass, 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)')}
-      >
+      <span aria-hidden="true" className={cn(baseClass, 'bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)')}>
         {platformName.charAt(0).toUpperCase()}
       </span>
     )

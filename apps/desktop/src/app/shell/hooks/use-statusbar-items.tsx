@@ -4,7 +4,18 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { Activity, AlertCircle, ChevronDown, Clock, Command, Hash, Loader2, Sparkles, Zap, ZapFilled } from '@/lib/icons'
+import {
+  Activity,
+  AlertCircle,
+  ChevronDown,
+  Clock,
+  Command,
+  Hash,
+  Loader2,
+  Sparkles,
+  Zap,
+  ZapFilled
+} from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
@@ -311,7 +322,11 @@ export function useStatusbarItems({
       {
         className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
         hidden: !showYoloToggle,
-        icon: yoloActive ? <ZapFilled className="size-3.5 shrink-0" /> : <Zap className="size-3.5 shrink-0 opacity-70" />,
+        icon: yoloActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
         id: 'yolo',
         onSelect: () => void toggleYolo(),
         title: yoloActive

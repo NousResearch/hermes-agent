@@ -157,7 +157,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // Grayed text: active row shows live state (Fast + effort);
                 // others show a fast-capability hint.
                 const meta = isCurrent
-                  ? [fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null, reasoningEffortLabel(currentReasoningEffort) || 'Med']
+                  ? [
+                      fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null,
+                      reasoningEffortLabel(currentReasoningEffort) || 'Med'
+                    ]
                       .filter(Boolean)
                       .join(' ')
                   : caps?.fast || family.fastId

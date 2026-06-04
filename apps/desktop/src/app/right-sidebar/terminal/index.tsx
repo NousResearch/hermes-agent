@@ -31,6 +31,7 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
     if (takeover) {
       setRightSidebarTab('terminal')
     }
+
     setTerminalTakeover(!takeover)
   }
 

@@ -419,14 +419,16 @@ export function CronView({ onClose }: CronViewProps) {
   return (
     <OverlayView closeLabel="Close cron" onClose={onClose}>
       <div className="flex min-h-0 flex-1 flex-col pt-[calc(var(--titlebar-height)+0.5rem)]">
-        <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 pb-2">
-          <SearchField
-            containerClassName="max-w-[60vw]"
-            onChange={setQuery}
-            placeholder="Search cron jobs…"
-            value={query}
-          />
-        </div>
+        {totalCount > 0 && (
+          <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 pb-2">
+            <SearchField
+              containerClassName="max-w-[60vw]"
+              onChange={setQuery}
+              placeholder="Search cron jobs…"
+              value={query}
+            />
+          </div>
+        )}
         {!jobs ? (
           <PageLoader label="Loading cron jobs..." />
         ) : visibleJobs.length === 0 ? (

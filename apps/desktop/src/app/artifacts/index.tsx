@@ -501,6 +501,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
+      searchHidden={counts.all === 0}
       searchPlaceholder="Search artifacts..."
       searchValue={query}
       tabs={

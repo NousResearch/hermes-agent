@@ -57,7 +57,12 @@ def create_checker(component: str) -> BaseChecker:
 def run_inspections(components: List[str]) -> Dict[str, Any]:
     """运行多个组件的巡检，返回汇总结果。"""
     reports = []
-    summary = {"total": len(components), "normal": 0, "warning": 0, "critical": 0, "components": {}}
+    summary = {
+        "total": len(components),
+        "normal": 0, "warning": 0, "critical": 0,
+        "components": {},
+        "nodes": {},
+    }
 
     for component in components:
         try:
@@ -65,6 +70,13 @@ def run_inspections(components: List[str]) -> Dict[str, Any]:
             report = checker.check()
             status_name = report.status.name
             summary["components"][component] = status_name
+
+            # 按节点统计
+            node_statuses = report.metadata.get("nodes", {})
+            for node_name, node_status in node_statuses.items():
+                if node_name not in summary["nodes"]:
+                    summary["nodes"][node_name] = {}
+                summary["nodes"][node_name][component] = node_status
 
             if report.status == ExitCode.NORMAL:
                 summary["normal"] += 1

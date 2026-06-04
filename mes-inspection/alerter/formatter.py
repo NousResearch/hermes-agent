@@ -30,6 +30,7 @@ def format_feishu_card(
     level: Optional[str] = None,
     timestamp: Optional[str] = None,
     ai_diagnosis: Optional[str] = None,
+    node_grouped: bool = False,
 ) -> Dict[str, Any]:
     """格式化飞书交互式卡片消息。
 
@@ -42,33 +43,15 @@ def format_feishu_card(
 
     tag_info = LEVEL_TAGS.get(level, LEVEL_TAGS["P3"])
 
-    # 标题
     title = f"{tag_info['emoji']} MES {component.upper()} 巡检 - {tag_info['label']}"
 
-    # 构建检查项摘要
-    check_lines = []
-    for c in checks:
-        status_icon = "✅" if c.get("status_code", 0) == 0 else ("⚠️" if c.get("status_code", 0) == 1 else "🚨")
-        name = c.get("name", "unknown")
-        message = c.get("message", "")
-        value = c.get("value", "")
-        threshold = c.get("threshold", "")
+    if node_grouped:
+        check_text = _format_checks_by_node(checks)
+    else:
+        check_text = _format_checks_flat(checks)
 
-        line = f"{status_icon} **{name}**"
-        if value != "":
-            line += f": {value}"
-        if threshold != "":
-            line += f" (阈值: {threshold})"
-        if message:
-            line += f"\n   {message}"
-        check_lines.append(line)
-
-    check_text = "\n".join(check_lines) if check_lines else "无检查项"
-
-    # 分隔线
     separator = "━" * 24
 
-    # 构建正文
     body_parts = [
         f"⏰ **时间**: {timestamp}",
         f"🏷 **组件**: {component}",
@@ -83,7 +66,6 @@ def format_feishu_card(
 
     body_text = "\n".join(body_parts)
 
-    # 飞书卡片结构
     card = {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -101,6 +83,71 @@ def format_feishu_card(
     return card
 
 
+def _format_checks_flat(checks: List[Dict[str, Any]]) -> str:
+    """平铺格式化检查项。"""
+    check_lines = []
+    for c in checks:
+        status_icon = "✅" if c.get("status_code", 0) == 0 else ("⚠️" if c.get("status_code", 0) == 1 else "🚨")
+        name = c.get("name", "unknown")
+        message = c.get("message", "")
+        value = c.get("value", "")
+        threshold = c.get("threshold", "")
+
+        line = f"{status_icon} **{name}**"
+        if value != "":
+            line += f": {value}"
+        if threshold != "":
+            line += f" (阈值: {threshold})"
+        if message:
+            line += f"\n   {message}"
+        check_lines.append(line)
+    return "\n".join(check_lines) if check_lines else "无检查项"
+
+
+def _format_checks_by_node(checks: List[Dict[str, Any]]) -> str:
+    """按节点分组格式化检查项。"""
+    node_map: Dict[str, List[Dict[str, Any]]] = {}
+    for c in checks:
+        node_name = c.get("details", {}).get("node_name", "")
+        if node_name:
+            node_map.setdefault(node_name, []).append(c)
+        else:
+            node_map.setdefault("_no_node", []).append(c)
+
+    lines = []
+    for node_name, node_checks in node_map.items():
+        if node_name == "_no_node":
+            for c in node_checks:
+                lines.append(_format_single_check(c, indent=""))
+            continue
+
+        worst = max(c.get("status_code", 0) for c in node_checks) if node_checks else 0
+        node_icon = "✅" if worst == 0 else ("⚠️" if worst == 1 else "🚨")
+        lines.append(f"{node_icon} **{node_name}**")
+        for c in node_checks:
+            lines.append(_format_single_check(c, indent="  "))
+
+    return "\n".join(lines) if lines else "无检查项"
+
+
+def _format_single_check(c: Dict[str, Any], indent: str = "") -> str:
+    """格式化单个检查项。"""
+    status_icon = "✅" if c.get("status_code", 0) == 0 else ("⚠️" if c.get("status_code", 0) == 1 else "🚨")
+    name = c.get("name", "unknown")
+    message = c.get("message", "")
+    value = c.get("value", "")
+    threshold = c.get("threshold", "")
+
+    line = f"{indent}{status_icon} **{name}**"
+    if value != "":
+        line += f": {value}"
+    if threshold != "":
+        line += f" (阈值: {threshold})"
+    if message:
+        line += f"\n{indent}   {message}"
+    return line
+
+
 def format_text_message(
     component: str,
     status_code: int,
@@ -109,6 +156,7 @@ def format_text_message(
     level: Optional[str] = None,
     timestamp: Optional[str] = None,
     ai_diagnosis: Optional[str] = None,
+    node_grouped: bool = False,
 ) -> str:
     """格式化纯文本消息（飞书卡片降级用）。"""
     if level is None:
@@ -128,22 +176,65 @@ def format_text_message(
         separator,
     ]
 
-    for c in checks:
-        status_icon = "✅" if c.get("status_code", 0) == 0 else ("⚠️" if c.get("status_code", 0) == 1 else "🚨")
-        name = c.get("name", "unknown")
-        message = c.get("message", "")
-        value = c.get("value", "")
-        line = f"{status_icon} {name}"
-        if value != "":
-            line += f": {value}"
-        if message:
-            line += f" — {message}"
-        lines.append(line)
+    if node_grouped:
+        lines.append(_format_checks_by_node_text(checks))
+    else:
+        for c in checks:
+            status_icon = "✅" if c.get("status_code", 0) == 0 else ("⚠️" if c.get("status_code", 0) == 1 else "🚨")
+            name = c.get("name", "unknown")
+            message = c.get("message", "")
+            value = c.get("value", "")
+            line = f"{status_icon} {name}"
+            if value != "":
+                line += f": {value}"
+            if message:
+                line += f" — {message}"
+            lines.append(line)
 
     if ai_diagnosis:
         lines.extend([separator, "🧠 AI 诊断:", ai_diagnosis])
 
     return "\n".join(lines)
+
+
+def _format_checks_by_node_text(checks: List[Dict[str, Any]]) -> str:
+    """按节点分组格式化检查项（纯文本版）。"""
+    node_map: Dict[str, List[Dict[str, Any]]] = {}
+    for c in checks:
+        node_name = c.get("details", {}).get("node_name", "")
+        if node_name:
+            node_map.setdefault(node_name, []).append(c)
+        else:
+            node_map.setdefault("_no_node", []).append(c)
+
+    lines = []
+    for node_name, node_checks in node_map.items():
+        if node_name == "_no_node":
+            for c in node_checks:
+                lines.append(_format_single_check_text(c))
+            continue
+
+        worst = max(c.get("status_code", 0) for c in node_checks) if node_checks else 0
+        node_icon = "✅" if worst == 0 else ("⚠️" if worst == 1 else "🚨")
+        lines.append(f"{node_icon} {node_name}")
+        for c in node_checks:
+            lines.append(f"  {_format_single_check_text(c)}")
+
+    return "\n".join(lines) if lines else "无检查项"
+
+
+def _format_single_check_text(c: Dict[str, Any]) -> str:
+    """格式化单个检查项（纯文本版）。"""
+    status_icon = "✅" if c.get("status_code", 0) == 0 else ("⚠️" if c.get("status_code", 0) == 1 else "🚨")
+    name = c.get("name", "unknown")
+    message = c.get("message", "")
+    value = c.get("value", "")
+    line = f"{status_icon} {name}"
+    if value != "":
+        line += f": {value}"
+    if message:
+        line += f" — {message}"
+    return line
 
 
 def format_memory_entry(

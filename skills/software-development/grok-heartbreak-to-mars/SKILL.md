@@ -171,3 +171,75 @@ bash ${HERMES_SKILL_DIR}/scripts/run-heartbreak-to-mars.sh "the type of heartbre
 This is the type. Heartbreak is the goal. Let's go to Mars. 🚀💔
 
 (References: Genius for "Astronaut" lyrics, web sources for her space red flag and album promo. All built inside Grok Build with Grok OAuth.)
+## Everything and Nothing Extension
+
+The heartbreak that is **everything and nothing**.
+
+From Olivia's new song "begged" (SNL performance, full lyrics on Genius/Reddit):
+
+[Verse 1]
+All that I want is to know undoubtedly
+That you just have eyes for me
+Could you make it clear?
+All that I want is to sit here silently
+And watch movies on TV
+What a shame, you're not here
+Here to witness my devotion
+And my endless well of needs
+I'm an anchor in the ocean
+You know I could never leave
+
+[Chorus]
+So, I'm patient, you're learning, pretend it's not hurting, oh, woah (Oh, woah)
+'Cause they say it's a virtue to not let good love slip away ('Way)
+So, I'm cool and forgiving, I'll take what you're giving, oh, woah (Oh, ah)
+But nothing's quite enough when I know that to get it, I beg
+Yeah, to get it, I beg
+
+This is the heartbreak: everything (endless well of needs, devotion, anchor that could never leave, patience, cool and forgiving, virtue of not letting love slip) that is nothing (nothing's quite enough, no matter how much you beg, the superficial, pointless, I don't wanna live, drift and dissolve).
+
+The type that gets us to Mars: the anchor in the ocean becomes the rocket to the stars. The "I could never leave" becomes "I have to go". The begging for love becomes reaching for the red planet where love doesn't slip away – you create the world where it's enough because you made it.
+
+## New Lyrics: "Everything and Nothing (Heartbreak to Mars)"
+
+[Verse - inspired by "begged"]
+All that I want is to know undoubtedly
+That the stars have eyes only for me
+Could you make it clear? The ground is too small
+All that I want is to sit here silently
+In the void, no more TV, no more calls
+What a shame, you're not here
+Here to witness my devotion
+And my endless well of needs
+I'm an anchor no more, I'm breaking free
+You know I had to leave
+
+[Chorus - extended with Mars]
+So, I'm patient no more, I'm learning the thrust
+'Cause they say it's a virtue to not let good love slip away
+But nothing's quite enough, so I beg no more
+This heartbreak is everything and it's nothing
+The anchor I dragged, now the fuel for the something
+Heartbreak to Mars, where the love is the launch
+Where "nothing's quite enough" becomes the infinite "a lot"
+
+[Bridge]
+You wanted the beach, the rational, the tied down
+I was the astronaut, the one who had to leave town
+The ocean of needs, the static dread
+Now I'm the rocket, the one who gets ahead
+To Mars, where the heartbreak is the goal
+Everything you took, nothing you stole
+I begged for the ground, now I reach for the sky
+This pain is the everything that makes me fly
+
+[Outro]
+Your little astronaut, no longer begging
+Everything and nothing – to Mars, I'm heading
+Ah (ah, ah)
+I'll be okay... in the everything of the nothing
+
+Use in prompts: "Using grok-heartbreak-to-mars, create the heartbreak that is everything and nothing, using 'begged' and 'Astronaut' as inspo, that gets us to Mars."
+
+This is the full "everytrhing. and nothing."
+

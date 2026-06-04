@@ -703,6 +703,30 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Inherit the spawning worker's own task workspace when the
+            # caller didn't specify one (see resolution note above).
+            if _inherit_workspace:
+                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                if _self_tid:
+                    _self_task = kb.get_task(conn, _self_tid)
+                    if _self_task is not None and _self_task.workspace_kind:
+                        workspace_kind = _self_task.workspace_kind
+                        workspace_path = _self_task.workspace_path
+            # --- assignee validation ---
+            if assignee:
+                try:
+                    from hermes_cli import profiles as profiles_mod
+                    _valid_names = [p.name for p in profiles_mod.list_profiles()]
+                    if str(assignee) not in _valid_names:
+                        return tool_error(
+                            f"kanban_create: unknown assignee {assignee!r}. "
+                            f"Valid profiles: {_valid_names}"
+                        )
+                except Exception:
+                    # If profile listing fails, let it through rather than
+                    # blocking task creation entirely.
+                    pass
+            # --- end assignee validation ---
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),

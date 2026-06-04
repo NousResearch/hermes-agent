@@ -678,6 +678,18 @@ def run_conversation(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
+                # Fix: update current_turn_user_idx after compression.
+                # Compression replaces the messages list with [summary, ...tail],
+                # making the old index stale. Find the current turn's user
+                # message in the compressed list so memory/plugin context
+                # injection at line 954 targets the correct message.
+                for _new_idx in range(len(messages) - 1, -1, -1):
+                    _msg = messages[_new_idx]
+                    if (isinstance(_msg, dict) and _msg.get("role") == "user"
+                            and _msg.get("content") == user_message):
+                        current_turn_user_idx = _new_idx
+                        agent._persist_user_message_idx = _new_idx
+                        break
                 # Re-estimate after compression
                 _preflight_tokens = estimate_request_tokens_rough(
                     messages,

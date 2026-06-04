@@ -1168,6 +1168,37 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    # ── User-downloaded skills (skills_user/) ────────────────────────────
+    # Scan directly, same as external dirs.  Local + external skills take
+    # precedence over user-downloaded skills on name collision.
+    from hermes_constants import get_user_skills_dir
+    user_dir = get_user_skills_dir()
+    if user_dir.exists():
+        for skill_file in iter_skill_index_files(user_dir, "SKILL.md"):
+            try:
+                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                if not is_compatible:
+                    continue
+                entry = _build_snapshot_entry(skill_file, user_dir, frontmatter, desc)
+                skill_name = entry["skill_name"]
+                frontmatter_name = entry["frontmatter_name"]
+                if frontmatter_name in seen_skill_names:
+                    continue
+                if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if not _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                ):
+                    continue
+                seen_skill_names.add(frontmatter_name)
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (frontmatter_name, entry["description"])
+                )
+            except Exception as e:
+                logger.debug("Error reading user skill %s: %s", skill_file, e)
+
     if not skills_by_category:
         result = ""
     else:

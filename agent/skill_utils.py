@@ -275,42 +275,8 @@ def _collect_builtin_skill_names() -> Set[str]:
                 names.add(str(name).strip())
             except Exception:
                 continue
-    return names
-
-
-def _collect_all_skill_names() -> Set[str]:
-    """Scan all skill directories for available skill names."""
-    names = _collect_builtin_skill_names()
     if names:
         logger.debug("内置 skills 已加载：%s", ", ".join(sorted(names)))
-    for ext_dir in get_external_skills_dirs():
-        if ext_dir.exists():
-            ext_names: Set[str] = set()
-            for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
-                try:
-                    content = skill_md.read_text(encoding="utf-8")[:2000]
-                    frontmatter, _ = parse_frontmatter(content)
-                    name = frontmatter.get("name", skill_md.parent.name)
-                    ext_names.add(str(name).strip())
-                except Exception:
-                    continue
-            if ext_names:
-                names |= ext_names
-                logger.debug("外部 skills 已加载（%s）：%s", ext_dir, ", ".join(sorted(ext_names)))
-    user_dir = get_user_skills_dir()
-    if user_dir.exists():
-        user_names: Set[str] = set()
-        for skill_md in iter_skill_index_files(user_dir, "SKILL.md"):
-            try:
-                content = skill_md.read_text(encoding="utf-8")[:2000]
-                frontmatter, _ = parse_frontmatter(content)
-                name = frontmatter.get("name", skill_md.parent.name)
-                user_names.add(str(name).strip())
-            except Exception:
-                continue
-        if user_names:
-            names |= user_names
-            logger.debug("用户 skills 已加载（%s）：%s", user_dir, ", ".join(sorted(user_names)))
     return names
 
 

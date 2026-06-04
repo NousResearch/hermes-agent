@@ -40,7 +40,7 @@ import sys
 # different version can clobber that version's changes to the shared core files
 # (cli.py, run_agent.py, ...). We warn (not block) since every write is backed up.
 BUILT_FOR_VERSION = "0.15.1"
-BASE_COMMIT = "bd12b3c2321b591d6c924ee9b62b52667a314dd0"
+BASE_COMMIT = "aeec88c77ffcb5c3c201f771d5079ebdb199ea88"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -124,7 +124,10 @@ MANIFEST = [
     "tests/caduceus/test_auto_router.py",
     "tests/caduceus/test_route_worker_model.py",
     "tests/caduceus/test_local_mode.py",
+    # Installer-only tests depend on install_caduceus.py, which is repo-meta and
+    # intentionally not overlaid into target installs.
     "tests/hermes_cli/test_user_providers_model_switch.py",
+    "tests/run_agent/test_run_agent.py",
     "tests/tools/test_delegate_leaf_streaming_timeout.py",
     "tests/workflow/__init__.py",
     "tests/workflow/test_loom_offline.py",
@@ -140,7 +143,7 @@ _MODIFIED_CORE = {
     "apps/desktop/src/app/session/hooks/use-message-stream.ts",
     "apps/desktop/src/app/settings/constants.ts", "apps/desktop/src/app/shell/app-shell.tsx",
     "apps/desktop/src/app/shell/hooks/use-statusbar-items.tsx",
-    "tests/hermes_cli/test_user_providers_model_switch.py",
+    "tests/hermes_cli/test_user_providers_model_switch.py", "tests/run_agent/test_run_agent.py",
 }
 
 BACKUP_ROOT = ".caduceus-backups"
@@ -332,7 +335,22 @@ def do_install(target: str, dry_run: bool, force: bool) -> int:
                  "may clobber the target's edits to shared files.")
             warn("Re-run with --force to proceed anyway (reversible with --uninstall).")
             return 3
-        # "behind"/"unknown"/"same" → fall through; version guard handles the rest.
+        if relation == "behind":
+            warn(f"Target git HEAD predates this build's base ({BASE_COMMIT[:9]}). "
+                 "Overlaying newer Caduceus files onto older non-overlaid companions "
+                 "can break mismatched type/API contracts.")
+            warn("Update the target Hermes install to this base, or re-run with --force "
+                 "to proceed anyway (everything is backed up and reversible with --uninstall).")
+            return 3
+        if relation == "unknown":
+            warn(f"Target git history does not contain this build's base "
+                 f"({BASE_COMMIT[:9]}). This usually means a shallow clone, a "
+                 "different fork/history, or an install whose ancestry cannot be "
+                 "verified.")
+            warn("Fetch the base commit or re-run with --force to proceed anyway "
+                 "(everything is backed up and reversible with --uninstall).")
+            return 3
+        # "same" → fall through; version guard handles the rest.
 
     # Version guard (warn, don't block — every write is backed up).
     tv = read_version(target)
@@ -451,12 +469,27 @@ def do_uninstall(target: str) -> int:
 
 
 def _find_packaged_asar(desktop: str) -> str | None:
-    """Locate a packaged app.asar under apps/desktop/release/*/resources/."""
+    """Locate a packaged app.asar under apps/desktop/release/.
+
+    electron-builder uses platform-specific layouts. Linux/Windows unpack to
+    ``release/<dir>/resources/app.asar`` while macOS nests the archive inside
+    ``release/<dir>/Hermes.app/Contents/Resources/app.asar``.
+    """
     release = os.path.join(desktop, "release")
     if not os.path.isdir(release):
         return None
-    for entry in os.listdir(release):
-        asar = os.path.join(release, entry, "resources", "app.asar")
+    candidates: list[str] = []
+    for entry in sorted(os.listdir(release)):
+        base = os.path.join(release, entry)
+        candidates.append(os.path.join(base, "resources", "app.asar"))
+        candidates.append(os.path.join(base, "Resources", "app.asar"))
+        if os.path.isdir(base):
+            for child in sorted(os.listdir(base)):
+                if child.endswith(".app"):
+                    candidates.append(
+                        os.path.join(base, child, "Contents", "Resources", "app.asar")
+                    )
+    for asar in candidates:
         if os.path.exists(asar):
             return asar
     return None

@@ -2647,11 +2647,38 @@ class TestConcurrentToolExecution:
         assert post_call[1]["result"] == '{"ok":true}'
         assert post_call[1]["status"] == "ok"
 
+    def test_sequential_workflow_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Workflow is agent-dispatched and must close observer tool spans."""
+        tool_call = _mock_tool_call(name="Workflow", arguments='{"script":"async def main():\\n    return 1"}', call_id="wf-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+
+        with patch.object(agent, "_dispatch_workflow", return_value='{"success":true}') as dispatch:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        dispatch.assert_called_once()
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "Workflow"
+        assert post_call[1]["tool_call_id"] == "wf-1"
+        assert post_call[1]["result"] == '{"success":true}'
+        assert post_call[1]["status"] == "ok"
+
     def test_agent_runtime_post_hook_ownership_predicate_covers_agent_tools(self, agent):
         """Sequential and concurrent agent-level paths share post-hook ownership."""
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
 
-        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task"):
+        for tool_name in ("todo", "session_search", "memory", "clarify", "delegate_task", "Workflow"):
             assert agent_runtime_owns_post_tool_hook(agent, tool_name) is True
 
         agent._context_engine_tool_names = {"context_query"}

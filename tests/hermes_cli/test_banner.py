@@ -166,4 +166,3 @@ def test_build_welcome_banner_disabled_mcp_shows_disabled_not_failed():
     # A genuinely unreachable server still reads "failed"
     assert "broken" in output
     assert "failed" in output
-

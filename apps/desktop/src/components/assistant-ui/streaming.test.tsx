@@ -263,6 +263,20 @@ function StreamingHarness() {
   )
 }
 
+function StaticThreadHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [userMessage(), assistantMessage('complete response', false)],
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
 function ManualStreamingHarness({
   isRunning,
   loading,

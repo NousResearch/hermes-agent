@@ -749,4 +749,20 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
         console.print(_logo)
         console.print()
-    console.print(outer_panel)
+    previous_legacy_windows = getattr(console, "legacy_windows", None)
+    if release_info and previous_legacy_windows:
+        # Rich suppresses OSC-8 hyperlinks on legacy Windows consoles. Modern
+        # terminals handle the sequence, and the release link is part of the
+        # banner contract, so render only this panel with hyperlink support.
+        try:
+            console.legacy_windows = False
+        except Exception:
+            pass
+    try:
+        console.print(outer_panel)
+    finally:
+        if previous_legacy_windows is not None:
+            try:
+                console.legacy_windows = previous_legacy_windows
+            except Exception:
+                pass

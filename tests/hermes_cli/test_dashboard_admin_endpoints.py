@@ -590,4 +590,3 @@ class TestDebugShareEndpoint:
             headers={self.header: "wrong-token"},
         )
         assert r.status_code == 401
-

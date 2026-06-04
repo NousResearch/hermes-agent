@@ -3756,16 +3756,9 @@ class TestPtyWebSocket:
         import asyncio
         from hermes_cli import web_server as ws_mod
 
-        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
-        pub_path = f"/api/pub?{qs}"
-        sub_path = f"/api/events?{qs}"
-        payload = '{"type":"tool.start","payload":{"tool_id":"t1"}}'
-        broadcasts = []
-
-        async def fake_broadcast(channel, frame):
-            broadcasts.append((channel, frame))
-
-        monkeypatch.setattr(ws_mod, "_broadcast_event", fake_broadcast)
+        class _FakeSub:
+            def __init__(self):
+                self.sent: list[str] = []
 
             async def send_text(self, payload: str) -> None:
                 self.sent.append(payload)
@@ -3793,17 +3786,15 @@ class TestPtyWebSocket:
                     event_channels.pop("broadcast-test", None)
                     event_channels.pop("other-channel", None)
 
-            with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text(payload)
-                deadline = time.monotonic() + 5.0
-                while time.monotonic() < deadline:
-                    if broadcasts:
-                        break
-                    time.sleep(0.01)
-                else:
-                    raise AssertionError("pub frame was not broadcast within 5s")
+            return sub_a1, sub_a2, sub_other, frame
 
-        assert broadcasts == [("broadcast-test", payload)]
+        sub_a1, sub_a2, sub_other, frame = asyncio.run(_run())
+
+        # Every subscriber on the channel got the frame verbatim, exactly once.
+        assert sub_a1.sent == [frame]
+        assert sub_a2.sent == [frame]
+        # A subscriber on a different channel got nothing.
+        assert sub_other.sent == []
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect

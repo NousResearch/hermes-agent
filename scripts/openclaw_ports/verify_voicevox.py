@@ -1,6 +1,5 @@
-"""Ported from clawdbot-main/scripts/tools — run via: py -3 scripts/openclaw_ports/<name>"""
+"""Ported from clawdbot-main/scripts/tools — run via: py -3 scripts/openclaw_ports/<name>
 
-"""
 VOICEVOX ENGINE HTTP verification (version + optional synthesis).
 Caption: English log lines for tooling; user-facing messages may be Japanese.
 """

@@ -230,7 +230,27 @@ export function ChatSidebar({
   const [workspaceOrderIds, setWorkspaceOrderIds] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const trimmedQuery = searchQuery.trim()
+
+  // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
+  // the shortcut visibly pings its affordance in the sidebar.
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+
+    const onShortcut = () => {
+      setNewSessionKbdFlash(true)
+      clearTimeout(timeout)
+      timeout = setTimeout(() => setNewSessionKbdFlash(false), 140)
+    }
+
+    window.addEventListener('hermes:new-session-shortcut', onShortcut)
+
+    return () => {
+      window.removeEventListener('hermes:new-session-shortcut', onShortcut)
+      clearTimeout(timeout)
+    }
+  }, [])
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
 
@@ -449,7 +469,10 @@ export function ChatSidebar({
                         <>
                           <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{item.label}</span>
                           {item.id === 'new-session' && (
-                            <KbdGroup className="ml-auto max-[46.25rem]:hidden" keys={[...NEW_SESSION_KBD]} />
+                            <KbdGroup
+                              className={cn('ml-auto max-[46.25rem]:hidden', newSessionKbdFlash && 'opacity-100!')}
+                              keys={[...NEW_SESSION_KBD]}
+                            />
                           )}
                         </>
                       )}

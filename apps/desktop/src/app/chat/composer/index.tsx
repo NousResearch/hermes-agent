@@ -81,6 +81,31 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
 
+// Resting composer placeholders. New sessions get open-ended starters; an
+// existing chat gets phrasings that read as a continuation of the thread.
+// One is picked at random per session (stable until the session changes).
+const NEW_SESSION_PLACEHOLDERS = [
+  'What are we building?',
+  'Give Hermes a task',
+  "What's on your mind?",
+  'Describe what you need',
+  'What should we tackle?',
+  'Ask anything',
+  'Start with a goal'
+]
+
+const FOLLOW_UP_PLACEHOLDERS = [
+  'Send a follow-up',
+  'Add more context',
+  'Refine the request',
+  "What's next?",
+  'Keep it going',
+  'Push it further',
+  'Adjust or continue'
+]
+
+const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
+
 interface QueueEditState {
   attachments: ComposerAttachment[]
   draft: string
@@ -163,6 +188,33 @@ export function ChatBar({
 
   const gatewayState = useStore($gatewayState)
 
+  // Resting placeholder: a starter for brand-new sessions, a continuation for
+  // existing ones. Picked once and only re-rolled when we genuinely move to a
+  // *different* conversation. Critically, the first id assignment of a freshly
+  // started session (null → id, on the first send) is treated as the same
+  // conversation so the placeholder doesn't visibly flip mid-stream.
+  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
+    pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS)
+  )
+  const prevSessionIdRef = useRef(sessionId)
+
+  useEffect(() => {
+    const prev = prevSessionIdRef.current
+    prevSessionIdRef.current = sessionId
+
+    if (prev === sessionId) {
+      return
+    }
+
+    // null → id: the new session we're already in just got persisted. Keep the
+    // starter we showed instead of swapping to a follow-up under the user.
+    if (prev == null && sessionId) {
+      return
+    }
+
+    setRestingPlaceholder(pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS))
+  }, [sessionId])
+
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
@@ -170,7 +222,7 @@ export function ChatBar({
     ? gatewayState === 'closed' || gatewayState === 'error'
       ? 'Reconnecting to Hermes…'
       : 'Starting Hermes...'
-    : 'Send follow-up'
+    : restingPlaceholder
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -1285,7 +1337,7 @@ export function ChatBar({
                     'grid w-full',
                     stacked
                       ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                      : 'grid-cols-[auto_1fr_auto] items-end gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+                      : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                   )}
                 >
                   <div className="flex items-center [grid-area:menu]">{contextMenu}</div>

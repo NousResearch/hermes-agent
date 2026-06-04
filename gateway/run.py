@@ -1900,6 +1900,13 @@ class GatewayRunner:
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
+        # Last normalized inbound user MessageEvent per session, captured just
+        # before the agent runs. /retry replays this so reply context, media,
+        # and the native image attach path survive a retry instead of
+        # collapsing to a text-only copy. Holds a sanitized subset of fields
+        # (never the raw platform object — see _remember_last_user_event).
+        # Cleared on /new and /reset.
+        self._last_user_event_by_session: Dict[str, MessageEvent] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -8698,6 +8705,50 @@ class GatewayRunner:
             return []
         return list(pending_native.pop(session_key, []) or [])
 
+    def _remember_last_user_event(self, session_key: str, event: "MessageEvent") -> None:
+        """Stash a sanitized copy of the last inbound user event for /retry.
+
+        Only the normalized fields are kept (text, media, reply context,
+        channel prompt/context, auto-skill) — never ``raw_message``, which can
+        hold un-replayable platform handles. /retry replays this copy so an
+        image / reply / voice turn is reconstructed faithfully through the
+        normal pipeline (which re-derives the reply pointer and rebuilds the
+        native image attach path) instead of degrading to a text-only resend.
+        """
+        if not session_key or event is None:
+            return
+        # Synthetic events (background-process notifications, etc.) are not
+        # user turns and must never be replayed by /retry.
+        if getattr(event, "internal", False):
+            return
+        store = getattr(self, "_last_user_event_by_session", None)
+        if store is None:
+            store = {}
+            self._last_user_event_by_session = store
+        try:
+            store[session_key] = MessageEvent(
+                text=event.text or "",
+                message_type=event.message_type,
+                media_urls=list(event.media_urls or []),
+                media_types=list(event.media_types or []),
+                reply_to_message_id=event.reply_to_message_id,
+                reply_to_text=event.reply_to_text,
+                auto_skill=event.auto_skill,
+                channel_prompt=event.channel_prompt,
+                channel_context=event.channel_context,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to remember last user event for %s", session_key, exc_info=True
+            )
+
+    def _recall_last_user_event(self, session_key: Optional[str]) -> Optional["MessageEvent"]:
+        """Return the last remembered user event for a session, if any."""
+        store = getattr(self, "_last_user_event_by_session", None)
+        if not store or not session_key:
+            return None
+        return store.get(session_key)
+
     def _cache_session_source(self, session_key: str, source) -> None:
         if not session_key or source is None:
             return
@@ -8763,6 +8814,9 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
+        # Capture the structured inbound event so /retry can replay it with
+        # reply context, media, and the native image attach path intact.
+        self._remember_last_user_event(session_key, event)
         if self._is_telegram_topic_lane(source):
             try:
                 binding = self._session_db.get_telegram_topic_binding(
@@ -9972,6 +10026,12 @@ class GatewayRunner:
         _qe = getattr(self, "_queued_events", None)
         if _qe is not None:
             _qe.pop(session_key, None)
+
+        # Drop the remembered last-user event — /retry must not replay a turn
+        # from the previous conversation after a reset boundary.
+        _lue = getattr(self, "_last_user_event_by_session", None)
+        if _lue is not None:
+            _lue.pop(session_key, None)
 
         try:
             from tools.env_passthrough import clear_env_passthrough
@@ -11411,11 +11471,20 @@ class GatewayRunner:
         return t("gateway.personality.unknown", name=args, available=available)
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:
-        """Handle /retry command - re-send the last user message."""
+        """Handle /retry command — re-run the last user turn.
+
+        Replays the original *structured* user event (reply context, media,
+        and the native image attach path) when one was captured for this
+        session, so retrying an image / reply / voice turn reconstructs the
+        same input instead of a text-only copy. Falls back to a text-only
+        replay of the last transcript turn when no structured event is
+        available — e.g. the gateway restarted since the original turn, so the
+        in-memory capture is gone.
+        """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
         # Find the last user message
         last_user_msg = None
         last_user_idx = None
@@ -11424,25 +11493,57 @@ class GatewayRunner:
                 last_user_msg = history[i].get("content", "")
                 last_user_idx = i
                 break
-        
-        if not last_user_msg:
+
+        if last_user_idx is None:
             return t("gateway.retry.no_previous")
-        
+
+        remembered = self._recall_last_user_event(
+            getattr(session_entry, "session_key", None)
+        )
+
+        # Nothing structured to replay and no text to fall back on (e.g. a
+        # media-only turn after a restart) — bail before mutating the
+        # transcript so /retry stays a no-op.
+        if remembered is None and not last_user_msg:
+            return t("gateway.retry.no_previous")
+
         # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
         self.session_store.rewrite_transcript(session_entry.session_id, truncated)
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
-        
-        # Re-send by creating a fake text event with the old message
-        retry_event = MessageEvent(
-            text=last_user_msg,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=event.raw_message,
-            channel_prompt=event.channel_prompt,
-        )
-        
+
+        if remembered is not None:
+            # Replay the original structured event. Rebuild a fresh event so
+            # the current /retry source and raw_message drive routing/reply
+            # anchoring, while the captured content (text, media, reply
+            # context) flows back through the normal pipeline — which
+            # re-injects the reply pointer and rebuilds the native image
+            # attach path from media_urls.
+            retry_event = MessageEvent(
+                text=remembered.text,
+                message_type=remembered.message_type,
+                source=source,
+                raw_message=event.raw_message,
+                media_urls=list(remembered.media_urls or []),
+                media_types=list(remembered.media_types or []),
+                reply_to_message_id=remembered.reply_to_message_id,
+                reply_to_text=remembered.reply_to_text,
+                auto_skill=remembered.auto_skill,
+                channel_prompt=event.channel_prompt,
+                channel_context=remembered.channel_context,
+            )
+        else:
+            # No structured event captured — fall back to the historical
+            # text-only replay of the last user turn.
+            retry_event = MessageEvent(
+                text=last_user_msg,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=event.raw_message,
+                channel_prompt=event.channel_prompt,
+            )
+
         # Let the normal message handler process it
         return await self._handle_message(retry_event)
 

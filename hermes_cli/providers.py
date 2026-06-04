@@ -365,18 +365,18 @@ ALIASES: Dict[str, str] = {
 # not in the catalog.
 
 _LABEL_OVERRIDES: Dict[str, str] = {
-    "nous": "Nous Portal",
-    "openai-codex": "OpenAI Codex",
-    "copilot-acp": "GitHub Copilot ACP",
-    "stepfun": "StepFun Step Plan",
-    "xiaomi": "Xiaomi MiMo",
-    "gmi": "GMI Cloud",
-    "tencent-tokenhub": "Tencent TokenHub",
-    "lmstudio": "LM Studio",
-    "local": "Local endpoint",
-    "bedrock": "AWS Bedrock",
-    "ollama-cloud": "Ollama Cloud",
-    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "nous": "Nous Portal [sub]",
+    "openai-codex": "OpenAI Codex [sub]",
+    "copilot-acp": "GitHub Copilot ACP [sub]",
+    "stepfun": "StepFun Step Plan [sub]",
+    "xiaomi": "Xiaomi MiMo [pay]",
+    "gmi": "GMI Cloud [pay]",
+    "tencent-tokenhub": "Tencent TokenHub [pay]",
+    "lmstudio": "LM Studio [local]",
+    "local": "Local endpoint [local]",
+    "bedrock": "AWS Bedrock [pay]",
+    "ollama-cloud": "Ollama Cloud [pay]",
+    "xai-oauth": "xAI Grok OAuth [sub]",
 }
 
 

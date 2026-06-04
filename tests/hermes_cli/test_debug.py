@@ -1273,3 +1273,110 @@ class TestShareIncludesAutoDelete:
 
         out = capsys.readouterr().out
         assert "public paste service" not in out
+
+
+# ---------------------------------------------------------------------------
+# build_debug_share — structured core used by the dashboard endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDebugShare:
+    """The shared core that returns structured paste URLs (not printed text).
+
+    Backs both ``hermes debug share`` (CLI) and ``POST /api/ops/debug-share``
+    (dashboard). The dashboard renders ``urls`` as real, copyable links, so the
+    contract here is the return value, not stdout.
+    """
+
+    def test_returns_structured_urls(self, hermes_home):
+        from hermes_cli.debug import build_debug_share, DebugShareResult
+
+        count = [0]
+
+        def _upload(content, expiry_days=7):
+            count[0] += 1
+            return f"https://paste.rs/p{count[0]}"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert isinstance(result, DebugShareResult)
+        # All four seeded logs (agent/gateway/desktop) + the summary report.
+        assert "Report" in result.urls
+        assert "agent.log" in result.urls
+        assert "gateway.log" in result.urls
+        assert "desktop.log" in result.urls
+        assert result.failures == []
+        assert result.redacted is True
+        assert result.auto_delete_seconds == 21600
+
+    def test_skips_missing_logs_without_failure(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        # Remove desktop.log so it should be neither uploaded nor reported failed.
+        (hermes_home / "logs" / "desktop.log").unlink()
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin",
+            side_effect=lambda c, expiry_days=7: "https://paste.rs/x",
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert "desktop.log" not in result.urls
+        assert result.failures == []
+
+    def test_redaction_keeps_secrets_out_of_payload(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        secret = "sk-proj-SUPERSECRETtoken1234567890"
+        (hermes_home / "logs" / "agent.log").write_text(
+            f"line one\nauthorization token={secret}\nline three\n"
+        )
+
+        uploaded = []
+
+        def _upload(content, expiry_days=7):
+            uploaded.append(content)
+            return "https://paste.rs/x"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert result.redacted is True
+        joined = "\n".join(uploaded)
+        assert secret not in joined, "secret leaked into upload payload"
+
+    def test_optional_log_failure_is_collected_not_raised(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        count = [0]
+
+        def _upload(content, expiry_days=7):
+            count[0] += 1
+            # First call (the required Report) succeeds; a later one fails.
+            if count[0] == 2:
+                raise RuntimeError("paste service hiccup")
+            return f"https://paste.rs/p{count[0]}"
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin", side_effect=_upload
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            result = build_debug_share(log_lines=50, redact=True)
+
+        assert "Report" in result.urls
+        assert len(result.failures) == 1
+        assert "paste service hiccup" in result.failures[0]
+
+    def test_required_report_failure_raises(self, hermes_home):
+        from hermes_cli.debug import build_debug_share
+
+        with patch("hermes_cli.dump.run_dump"), patch(
+            "hermes_cli.debug.upload_to_pastebin",
+            side_effect=RuntimeError("all paste services down"),
+        ), patch("hermes_cli.debug._schedule_auto_delete"):
+            with pytest.raises(RuntimeError, match="all paste services down"):
+                build_debug_share(log_lines=50, redact=True)

@@ -9,8 +9,7 @@ import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
 import { MODE_OPTIONS } from './constants'
-import { prettyName } from './helpers'
-import { Pill, SettingsContent } from './primitives'
+import { SettingsContent } from './primitives'
 
 function ThemePreview({ name }: { name: string }) {
   const t = BUILTIN_THEMES[name]
@@ -52,16 +51,16 @@ function ThemePreview({ name }: { name: string }) {
   )
 }
 
-function SectionHead({ title, description, pill }: { title: string; description: string; pill?: ReactNode }) {
+function SectionHead({ title, description, control }: { title: string; description: string; control?: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <div>
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="min-w-0">
         <div className="text-[length:var(--conversation-text-font-size)] font-medium">{title}</div>
         <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
           {description}
         </div>
       </div>
-      {pill}
+      {control && <div className="shrink-0">{control}</div>}
     </div>
   )
 }
@@ -76,7 +75,7 @@ function SegmentedControl<T extends string>({
   onChange: (id: T) => void
 }) {
   return (
-    <div className="inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-md bg-(--ui-bg-tertiary) p-0.5">
+    <div className="inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5">
       {options.map(({ id, label, icon: Icon }) => {
         const active = value === id
 
@@ -84,7 +83,7 @@ function SegmentedControl<T extends string>({
           <button
             aria-pressed={active}
             className={cn(
-              'flex items-center justify-center gap-1.5 rounded-[3px] px-3.5 py-1.5 text-xs font-medium transition-colors',
+              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors',
               active
                 ? 'bg-background text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
@@ -93,7 +92,7 @@ function SegmentedControl<T extends string>({
             onClick={() => onChange(id)}
             type="button"
           >
-            {Icon && <Icon className="size-3.5" />}
+            {Icon && <Icon className="size-3" />}
             {label}
           </button>
         )
@@ -105,7 +104,6 @@ function SegmentedControl<T extends string>({
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
-  const activeTheme = availableThemes.find(t => t.name === themeName)
 
   return (
     <SettingsContent>
@@ -115,49 +113,47 @@ export function AppearanceSettings() {
           chat surface styling.
         </p>
 
-        <section className="grid gap-3">
+        <section>
           <SectionHead
+            control={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('crisp')
+                  setMode(id)
+                }}
+                options={MODE_OPTIONS}
+                value={mode}
+              />
+            }
             description="Pick a fixed mode or let Hermes follow your system setting."
-            pill={<Pill>{prettyName(mode)}</Pill>}
             title="Color Mode"
           />
-          <SegmentedControl
-            onChange={id => {
-              triggerHaptic('crisp')
-              setMode(id)
-            }}
-            options={MODE_OPTIONS}
-            value={mode}
-          />
         </section>
 
-        <section className="grid gap-3">
+        <section>
           <SectionHead
+            control={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setToolViewMode(id)
+                }}
+                options={
+                  [
+                    { id: 'product', label: 'Product' },
+                    { id: 'technical', label: 'Technical' }
+                  ] as const
+                }
+                value={toolViewMode}
+              />
+            }
             description="Product hides raw tool payloads; Technical shows full input/output."
-            pill={<Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>}
             title="Tool Call Display"
           />
-          <SegmentedControl
-            onChange={id => {
-              triggerHaptic('selection')
-              setToolViewMode(id)
-            }}
-            options={
-              [
-                { id: 'product', label: 'Product' },
-                { id: 'technical', label: 'Technical' }
-              ] as const
-            }
-            value={toolViewMode}
-          />
         </section>
 
         <section className="grid gap-3">
-          <SectionHead
-            description="Desktop palettes only. The selected mode is applied on top."
-            pill={activeTheme ? <Pill>{activeTheme.label}</Pill> : undefined}
-            title="Theme"
-          />
+          <SectionHead description="Desktop palettes only. The selected mode is applied on top." title="Theme" />
           <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2 xl:grid-cols-3">
             {availableThemes.map(theme => {
               const active = themeName === theme.name

@@ -21,7 +21,7 @@ let
 
   # Single npm deps fetch from the workspace root lockfile.
   # All workspace packages share this derivation.
-  npmDepsHash = "sha256-N057/aMaDHfsBzOESdf8rOdSghyr0gO5eYr6NU5ZTh8=";
+  npmDepsHash = "sha256-7yqRDvoPogPp/9AzyDyG12bJWW0D8NascN7UVlPMS1Q=";
 
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
@@ -234,14 +234,26 @@ in
         | sed -E 's/npmDepsHash = "(.*)"/\1/')
 
       if [ "$NEW_HASH" = "$OLD_HASH" ]; then
-        echo "ok"
-        if [ -n "''${GITHUB_OUTPUT:-}" ]; then
-          {
-            echo "stale=false"
-            echo "changed=false"
-          } >> "$GITHUB_OUTPUT"
+        VERIFY_OUTPUT=$(nix build ".#${attr}.npmDeps" --no-link --print-build-logs 2>&1)
+        VERIFY_STATUS=$?
+        if [ "$VERIFY_STATUS" -eq 0 ]; then
+          echo "ok"
+          if [ -n "''${GITHUB_OUTPUT:-}" ]; then
+            {
+              echo "stale=false"
+              echo "changed=false"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
         fi
-        exit 0
+
+        CORRECT_HASH=$(echo "$VERIFY_OUTPUT" | awk '/got:/ {print $2; exit}')
+        if [ -z "$CORRECT_HASH" ]; then
+          echo "npm deps verification failed with no hash mismatch:" >&2
+          echo "$VERIFY_OUTPUT" | tail -40 >&2
+          exit 1
+        fi
+        NEW_HASH="$CORRECT_HASH"
       fi
 
       HASH_LINE=$(grep -n 'npmDepsHash = "sha256-' "$LIB_FILE" | head -1 | cut -d: -f1)

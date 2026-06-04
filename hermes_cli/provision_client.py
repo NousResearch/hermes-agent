@@ -2,30 +2,36 @@
 
 A new "sibling" client bot is just a new Hermes profile: the gateway runs a
 supervised per-profile s6 service that ``hermes profile create`` registers and
-starts live (see hermes_cli/profiles.py). This orchestrator wraps the whole
-flow behind a single deterministic call so a *cheap* model (e.g. DeepSeek),
-driven by the ``provision-client`` skill, can run it reliably:
+starts live (see hermes_cli/profiles.py). A per-profile gateway runs with
+``HERMES_HOME`` pointed at its own profile dir, so it reads the *fixed* var
+``TELEGRAM_BOT_TOKEN`` from ``<profile_dir>/.env`` (see config.get_env_value).
 
-  1. record the client in the registry + drop a 0600 token secret stub
-     (in-volume; never touches the host);
-  2. write the Telegram token into the secret if supplied;
-  3. guard: refuse to *activate* a bot whose token is still empty (a cheap
-     model shouldn't spin up a dead bot);
-  4. create + launch the profile via ``hermes profile create`` (cloning a
-     template profile so the bot inherits a known config — e.g. a cheap
-     default model — instead of starting blank).
+This orchestrator wraps the whole flow behind a single deterministic call so a
+*cheap* model (e.g. DeepSeek), driven by the ``provision-client`` skill, can run
+it reliably:
 
-It is idempotent: re-running for an already-created profile is a no-op for
-both the registry and the profile.
+  1. record the client in the registry (bookkeeping: which clients exist,
+     their env + model);
+  2. guard: refuse to *activate* a bot with no token (no dead bots);
+  3. create + launch the profile via ``hermes profile create`` (cloning a
+     template so the bot inherits a known config -- e.g. a cheap default model);
+  4. write the token into the *profile's own* ``.env`` as ``TELEGRAM_BOT_TOKEN``
+     -- overriding any value cloned from the template -- then restart that
+     gateway so it picks the token up.
+
+Idempotent: re-running for an already-created profile skips creation but still
+reconciles the token + restarts, so "stage now, add token later, re-run" works.
 
 Out of scope (host-level, deliberately not automated here): creating sibling
-*volumes* / *containers* (client_split, compose_gen) — those need host Docker
-and stay a separate, human-approved step.
+*volumes* / *containers* (client_split, compose_gen). The registry's separate
+``/opt/data/secrets/<name>.env`` (``<NAME>_TG_TOKEN``) stub belongs to that
+container path, not to the profile path this command provisions.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import subprocess
 import sys
@@ -33,21 +39,24 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from hermes_cli.add_client import add_client
-from hermes_cli.clients import load_registry, profile_dir, secret_env_path
+from hermes_cli.clients import load_registry, profile_dir
 
 Runner = Callable[[Sequence[str]], None]
+
+# A per-profile gateway reads this fixed env var from its profile's .env.
+TELEGRAM_TOKEN_VAR = "TELEGRAM_BOT_TOKEN"
 
 
 def _default_runner(argv: Sequence[str]) -> None:
     subprocess.run(list(argv), check=True)
 
 
-def token_value(secret_path: Path, token_ref: str) -> str | None:
-    """Return the non-empty value of ``token_ref`` in an env file, else None."""
-    if not secret_path.is_file():
+def token_value(env_path: Path, var: str = TELEGRAM_TOKEN_VAR) -> str | None:
+    """Return the non-empty value of ``var`` in an env file, else None."""
+    if not env_path.is_file():
         return None
-    prefix = f"{token_ref}="
-    for line in secret_path.read_text(encoding="utf-8").splitlines():
+    prefix = f"{var}="
+    for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith(prefix):
             value = line[len(prefix):].strip()
@@ -55,24 +64,23 @@ def token_value(secret_path: Path, token_ref: str) -> str | None:
     return None
 
 
-def write_token(secret_path: Path, token_ref: str, value: str) -> None:
-    """Set ``token_ref`` to ``value`` in the secret env file (0600), preserving
-    any other lines."""
-    secret_path.parent.mkdir(parents=True, exist_ok=True)
-    prefix = f"{token_ref}="
+def write_token(env_path: Path, value: str, var: str = TELEGRAM_TOKEN_VAR) -> None:
+    """Set ``var`` to ``value`` in an env file (0600), preserving other lines."""
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = f"{var}="
     lines: list[str] = []
     found = False
-    if secret_path.is_file():
-        for line in secret_path.read_text(encoding="utf-8").splitlines():
+    if env_path.is_file():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.strip().startswith(prefix):
-                lines.append(f"{token_ref}={value}")
+                lines.append(f"{var}={value}")
                 found = True
             else:
                 lines.append(line)
     if not found:
-        lines.append(f"{token_ref}={value}")
-    secret_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.chmod(secret_path, 0o600)
+        lines.append(f"{var}={value}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(env_path, 0o600)
 
 
 def profile_is_created(pdir: Path) -> bool:
@@ -88,6 +96,10 @@ def build_create_command(name: str, *, clone_from: str | None, description: str 
     if description:
         cmd += ["--description", description]
     return cmd
+
+
+def build_restart_command(name: str) -> list[str]:
+    return ["hermes", "gateway", "restart", "--profile", name]
 
 
 def provision_client(
@@ -106,61 +118,69 @@ def provision_client(
 ) -> bool:
     """Provision (or reconcile) a client bot. Returns True if the profile was
     newly created."""
-    # 1. Registry entry + profile dir + secret stub (idempotent, in-volume).
-    add_client(
-        name, env, model=model,
-        registry_path=registry_path, hermes_root=hermes_root, out=out,
-    )
-
+    # 1. Registry bookkeeping. add_client's container-path "set <NAME>_TG_TOKEN"
+    #    messaging doesn't apply to the profile flow, so swallow its output and
+    #    print profile-correct guidance below.
+    add_client(name, env, model=model, registry_path=registry_path,
+               hermes_root=hermes_root, out=io.StringIO())
     registry = load_registry(registry_path)
     client = registry.get(name)
     assert client is not None
-    secret = secret_env_path(client, hermes_root)
+    print(f"recorded '{name}' ({env}) in registry", file=out)
 
-    # 2. Write the token if provided.
-    if token and client.telegram_token_ref:
-        write_token(secret, client.telegram_token_ref, token)
-        print(f"  wrote token into {secret}", file=out)
+    pdir = profile_dir(client, hermes_root)        # <hermes_root>/profiles/<name>
+    profile_env = pdir / ".env"
 
-    # 3. Guard: don't activate a bot with no token.
-    has_token = bool(
-        client.telegram_token_ref and token_value(secret, client.telegram_token_ref)
-    )
-    if require_token and client.telegram_token_ref and not has_token:
+    # 2. Guard: don't activate a bot with no token (neither passed nor already
+    #    present in the profile's .env).
+    has_token = bool(token) or token_value(profile_env) is not None
+    if require_token and not has_token:
         raise ValueError(
-            f"refusing to activate '{name}': {client.telegram_token_ref} is not "
-            f"set in {secret}. Pass --token, fill the secret, or use "
+            f"refusing to activate '{name}': no Telegram token. Pass --token, "
+            f"put {TELEGRAM_TOKEN_VAR} in {profile_env}, or use "
             "--allow-empty-token to stage without starting the gateway."
         )
 
-    # 4. Create + launch the profile, unless already created.
-    pdir = profile_dir(client, hermes_root)
-    if profile_is_created(pdir):
-        print(f"  profile '{name}' already created — skipping (no-op)", file=out)
-        return False
+    # 3. Create + launch the profile, unless already created.
+    newly_created = not profile_is_created(pdir)
+    if newly_created:
+        cmd = build_create_command(name, clone_from=clone_from, description=description)
+        print(f"  creating + launching profile: {' '.join(cmd)}", file=out)
+        runner(cmd)
+    else:
+        print(f"  profile '{name}' already created — reconciling", file=out)
 
-    cmd = build_create_command(name, clone_from=clone_from, description=description)
-    print(f"  creating + launching profile: {' '.join(cmd)}", file=out)
-    runner(cmd)
-    print(f"provisioned '{name}' ({env}); gateway registered and started", file=out)
-    return True
+    # 4. Write the token into the profile's own .env (what the gateway reads),
+    #    overriding any value cloned from the template, then restart.
+    if token:
+        write_token(profile_env, token)
+        print(f"  wrote {TELEGRAM_TOKEN_VAR} into {profile_env}", file=out)
+        runner(build_restart_command(name))
+        print(f"provisioned '{name}' ({env}); gateway restarted with token", file=out)
+    else:
+        print(
+            f"staged '{name}' ({env}); add {TELEGRAM_TOKEN_VAR} to {profile_env} "
+            f"and run `hermes gateway restart --profile {name}` to activate",
+            file=out,
+        )
+    return newly_created
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="hermes-provision-client",
-        description="Provision a new client bot (registry + secret + live profile gateway).",
+        description="Provision a new client bot (registry + live profile gateway + token).",
     )
     parser.add_argument("name")
     parser.add_argument("--env", default="prod", choices=["prod", "dev"])
-    parser.add_argument("--token", help="Telegram bot token value (written to the secret, 0600)")
+    parser.add_argument("--token", help="Telegram bot token value (written to the profile's .env, 0600)")
     parser.add_argument("--model", help="model slug recorded for this client (e.g. a cheap default)")
     parser.add_argument("--clone-from", help="template profile to clone config from")
     parser.add_argument("--description", help="role description for task routing")
     parser.add_argument("--registry", help="path to clients.yaml (default: $HERMES_CLIENTS_REGISTRY)")
     parser.add_argument("--hermes-root", default="/opt/data")
     parser.add_argument("--allow-empty-token", action="store_true",
-                        help="stage the client without a token (does not start the gateway)")
+                        help="stage the client without a token (does not start a working gateway)")
     args = parser.parse_args(argv)
 
     try:

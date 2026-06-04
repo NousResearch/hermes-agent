@@ -66,19 +66,28 @@ python -m hermes_cli.provision_client <name> \
   --model deepseek-v4-flash \
   --clone-from cheap-template
 ```
-This will, in order: add the registry entry, write the token to
-`/opt/data/secrets/<name>.env` (0600), refuse to continue if the token is
-empty, then run `hermes profile create <name> --clone --clone-from cheap-template`
-which registers and starts the gateway.
+This will, in order: record the registry entry; refuse to continue if no token
+is available; run `hermes profile create <name> --clone --clone-from cheap-template`
+(registers + starts the gateway); write the token into the **profile's own**
+`.env` as `TELEGRAM_BOT_TOKEN` — which is exactly what a per-profile gateway
+reads (it runs with `HERMES_HOME` = its profile dir), overriding any token
+cloned from the template; then `hermes gateway restart --profile <name>` so the
+gateway picks it up.
+
+> Token location: a profile bot reads `TELEGRAM_BOT_TOKEN` from
+> `/opt/data/profiles/<name>/.env`. The registry's separate
+> `/opt/data/secrets/<name>.env` (`<NAME>_TG_TOKEN`) is only for the
+> container-isolation path and is NOT read by a profile gateway.
 
 ### 3. Handle the two common cases
 - **3a. You have the token** → run the command above. Done.
-- **3b. Token not available yet** → stage without starting the gateway:
+- **3b. Token not available yet** → stage without a working gateway:
   ```bash
   python -m hermes_cli.provision_client <name> --env prod --allow-empty-token --model deepseek-v4-flash
   ```
-  Tell the user to put the token in `/opt/data/secrets/<name>.env`, then re-run
-  step 2 (it's idempotent — it only completes the missing activation).
+  When you get the token, re-run step 2 with `--token` (idempotent: it skips
+  re-creating the profile, writes the token into the profile's `.env`, and
+  restarts the gateway).
 
 ## Verification
 
@@ -88,10 +97,11 @@ After provisioning, confirm the bot is actually live:
    running.
 3. Send a test message to the client's Telegram bot and confirm a reply.
 
-If the gateway is registered but the bot doesn't answer, the usual cause is the
-profile's `config.yaml` not picking up the token — verify how this deployment
-maps `<NAME>_TG_TOKEN` / the secret into the profile's Telegram config, and that
-the profile's model/provider is set (cloning a known-good template avoids this).
+If the gateway is registered but the bot doesn't answer, check
+`/opt/data/profiles/<name>/.env` actually contains a valid `TELEGRAM_BOT_TOKEN`
+and that you restarted the gateway after writing it (`hermes gateway restart
+--profile <name>`). Also confirm the profile's model/provider is set (cloning a
+known-good template avoids this).
 
 ## Idempotency & safety
 

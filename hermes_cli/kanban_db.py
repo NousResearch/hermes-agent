@@ -1729,6 +1729,13 @@ def create_task(
 
     now = int(time.time())
 
+    # 역할 worker 카드면 결정적 게이트(②plan + ①artifact)를 자동 부착한다.
+    # 호출자가 gate_recipe 를 명시하면 그대로 존중하고, 미등록 역할(default
+    # 등)이면 None 이라 기존 동작과 동일하다.
+    if gate_recipe is None:
+        from hermes_cli import role_gate as _rg
+        gate_recipe = _rg.gate_recipe_for_assignee(assignee)
+
     # Resolve workspace_path from board-level default_workdir when the
     # caller did not specify one explicitly. Board defaults represent
     # persistent project checkouts, so only persistent workspace kinds may
@@ -3087,6 +3094,27 @@ def _evaluate_gate_recipe(
             elif ctype == "no_child_cards":
                 children = child_ids(conn, task_id)
                 findings.append({"type": ctype, "ok": not children, "children": children})
+            elif ctype == "plan_gate":
+                # ② 결정적 계획 게이트. 워커가 kanban_submit_plan으로 제출한
+                # 계획을 완료 시점에 role_gate.check_plan으로 RE-RUN(무신뢰).
+                # 계획 미제출 또는 범위/킬스위치/의존성 위반이면 done 차단.
+                policy = str(check.get("policy") or "read-only")
+                prow = conn.execute(
+                    "SELECT payload FROM task_events WHERE task_id = ? "
+                    "AND kind = 'plan_submitted' ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if not prow or not prow["payload"]:
+                    findings.append({"type": ctype, "ok": False, "policy": policy,
+                                     "reason": "no plan submitted — call kanban_submit_plan before completing"})
+                else:
+                    from hermes_cli import role_gate as _rg
+                    plan = (json.loads(prow["payload"]) or {}).get("plan") or ""
+                    res = _rg.check_plan(plan, policy)
+                    bad = [f["type"] for f in res["findings"] if not f.get("ok")]
+                    findings.append({"type": ctype, "ok": res["passed"], "policy": policy,
+                                     "reason": None if res["passed"] else f"plan gate failed: {bad}",
+                                     "plan_findings": res["findings"]})
             else:
                 findings.append({"type": ctype or "unknown", "ok": False, "reason": "unknown check type"})
         except Exception as exc:
@@ -3164,6 +3192,57 @@ def _record_verification_failure(
                 {"reason": "verification_failed"},
                 run_id=run_id,
             )
+
+def _task_plan_policy(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Return the ② plan-gate policy declared on the task's gate_recipe.
+
+    Looks for a ``{"type": "plan_gate", "policy": ...}`` check. None when the
+    task has no plan gate (legacy / non-role tasks are unaffected).
+    """
+    row = conn.execute(
+        "SELECT gate_recipe FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    raw = row["gate_recipe"] if row and "gate_recipe" in row.keys() else None
+    recipe, _errors = _parse_gate_recipe(raw)
+    if not recipe:
+        return None
+    for check in recipe.get("checks", []):
+        if str(check.get("type") or "") == "plan_gate":
+            return str(check.get("policy") or "read-only")
+    return None
+
+
+def record_plan_submission(
+    conn: sqlite3.Connection,
+    task_id: str,
+    plan_text: str,
+    *,
+    run_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """② 계획 게이트 — 워커가 실행 전 계획을 제출한다.
+
+    계획을 ``plan_submitted`` 이벤트로 저장하고 :func:`role_gate.check_plan`
+    으로 즉시 평가해 ``{"passed", "findings"}`` 를 돌려준다(거절 시 워커가
+    수정하도록 피드백). **최종 강제는 신뢰하지 않는다** — ``complete_task()``
+    안의 ``plan_gate`` recipe check 가 완료 시점에 저장된 계획으로 check_plan
+    을 RE-RUN 하므로, 여기서 통과해도 이후 계획을 바꿔치기하면 막힌다.
+    """
+    from hermes_cli import role_gate as _rg
+    policy = _task_plan_policy(conn, task_id) or "read-only"
+    result = _rg.check_plan(plan_text or "", policy)
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "plan_submitted",
+            {
+                "plan": plan_text,
+                "policy": policy,
+                "passed": result["passed"],
+                "findings": result["findings"],
+            },
+            run_id=run_id,
+        )
+    return result
+
 
 def complete_task(
     conn: sqlite3.Connection,
@@ -3902,6 +3981,19 @@ def specify_triage_task(
             sets.append("assignee = ?")
             params.append(assignee)
             changed_fields.append("assignee")
+        # 역할 worker로 확정되면(신규 지정이든 기존 유지든) 결정적 게이트를
+        # 자동 부착한다 — 기존 gate_recipe 가 없을 때만(명시 recipe 존중).
+        final_assignee = assignee if assignee is not None else (existing["assignee"] or None)
+        from hermes_cli import role_gate as _rg
+        _auto_recipe = _rg.gate_recipe_for_assignee(final_assignee)
+        if _auto_recipe is not None:
+            cur_recipe = conn.execute(
+                "SELECT gate_recipe FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if not (cur_recipe and cur_recipe["gate_recipe"]):
+                sets.append("gate_recipe = ?")
+                params.append(_normalise_gate_recipe_for_storage(_auto_recipe))
+                changed_fields.append("gate_recipe")
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
@@ -4053,11 +4145,19 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            # 역할 worker 카드면 결정적 게이트(②plan + ①artifact)를 자동 부착.
+            # 미등록 역할(default 등)은 None → 게이트 없이 기존 동작.
+            from hermes_cli import role_gate as _rg
+            _auto_recipe = _rg.gate_recipe_for_assignee(assignee)
+            _recipe_str = (
+                _normalise_gate_recipe_for_storage(_auto_recipe)
+                if _auto_recipe else None
+            )
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                " tenant, created_at, created_by, gate_recipe) "
+                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -4066,6 +4166,7 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    _recipe_str,
                 ),
             )
             _append_event(

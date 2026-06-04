@@ -436,6 +436,45 @@ def _verification_failed_tool_error(ver_err) -> str:
     )
 
 
+def _handle_submit_plan(args: dict, **kw) -> str:
+    """② plan gate — submit the execution plan for a deterministic scope check."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    plan = args.get("plan")
+    if not plan or not str(plan).strip():
+        return tool_error(
+            "plan is required — text plan with [read]/[write:<target>] step "
+            "tags, a kill switch / 중단 조건, and dependencies/inputs."
+        )
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            res = kb.record_plan_submission(conn, tid, str(plan))
+            return _ok(
+                task_id=tid,
+                passed=res["passed"],
+                findings=res["findings"],
+                note=(
+                    "plan gate PASSED — proceed with execution"
+                    if res["passed"]
+                    else "plan gate REJECTED — revise the plan to fix the "
+                    "failing checks and resubmit before completing"
+                ),
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_submit_plan failed")
+        return tool_error(f"kanban_submit_plan: {e}")
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -1233,6 +1272,41 @@ KANBAN_CREATE_SCHEMA = {
     },
 }
 
+KANBAN_SUBMIT_PLAN_SCHEMA = {
+    "name": "kanban_submit_plan",
+    "description": (
+        "② plan gate. Submit your execution plan BEFORE doing the work. "
+        "The plan is checked deterministically: a kill switch / 중단 조건 must "
+        "be declared, every step must carry a [read] or [write:<target>] scope "
+        "tag, and dependencies/inputs must be stated. For read-only roles, each "
+        "write step's target must be the allowed deliverable note — any other "
+        "write or external-call step fails the gate. The SAME check is re-run at "
+        "completion, so a task whose plan never passed cannot reach 'done'. If "
+        "rejected, fix the failing checks and resubmit."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "plan": {
+                "type": "string",
+                "description": (
+                    "Step-by-step plan. Tag each step [read] or "
+                    "[write:<target>]; include a kill switch / 중단 조건 and the "
+                    "inputs and output path."
+                ),
+            },
+            "task_id": {
+                "type": "string",
+                "description": (
+                    "Task id (defaults to the current HERMES_KANBAN_TASK)."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["plan"],
+    },
+}
+
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
@@ -1292,6 +1366,15 @@ registry.register(
     handler=_handle_list,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="📋",
+)
+
+registry.register(
+    name="kanban_submit_plan",
+    toolset="kanban",
+    schema=KANBAN_SUBMIT_PLAN_SCHEMA,
+    handler=_handle_submit_plan,
+    check_fn=_check_kanban_mode,
+    emoji="📝",
 )
 
 registry.register(

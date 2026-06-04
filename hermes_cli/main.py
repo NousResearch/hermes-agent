@@ -7156,6 +7156,82 @@ def _desktop_stamp_path() -> Path:
     return get_hermes_home() / "desktop-build-stamp.json"
 
 
+def _run_git_text(project_root: Path, args: list[str]) -> str | None:
+    try:
+        proc = subprocess.Popen(
+            ["git", *args],
+            cwd=project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        output, _ = proc.communicate(timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return output.strip() or None
+
+
+def _normalize_github_repository(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if value.startswith("git@github.com:"):
+        value = value.removeprefix("git@github.com:")
+    elif value.startswith("https://github.com/"):
+        value = value.removeprefix("https://github.com/")
+    else:
+        return None
+    value = value.removesuffix(".git").rstrip("/")
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _current_desktop_install_identity(project_root: Path) -> dict[str, str | None] | None:
+    commit = _run_git_text(project_root, ["rev-parse", "HEAD"])
+    if not commit:
+        return None
+    branch = _run_git_text(project_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if branch == "HEAD":
+        branch = None
+    remote_name = None
+    if branch:
+        remote_name = _run_git_text(project_root, ["config", "--get", f"branch.{branch}.remote"])
+    remote_url = _run_git_text(project_root, ["remote", "get-url", remote_name or "origin"])
+    repository = _normalize_github_repository(remote_url)
+    return {
+        "commit": commit,
+        "branch": branch,
+        "repository": repository,
+    }
+
+
+def _desktop_packaged_install_stamp_path(packaged_executable: Path) -> Path | None:
+    if sys.platform == "darwin":
+        # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app/Contents/Resources/install-stamp.json
+        return packaged_executable.parent.parent / "Resources" / "install-stamp.json"
+    if sys.platform == "win32":
+        return packaged_executable.parent / "resources" / "install-stamp.json"
+    return packaged_executable.parent / "resources" / "install-stamp.json"
+
+
+def _read_desktop_install_identity(stamp_path: Path) -> dict[str, str | None] | None:
+    try:
+        payload = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("commit"):
+        return None
+    return {
+        "commit": payload.get("commit"),
+        "branch": payload.get("branch"),
+        "repository": payload.get("repository"),
+    }
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """Return True when the desktop build output is stale or missing.
 
@@ -7164,12 +7240,24 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     ``hermes update`` that pulled new source but hasn't built yet).
     """
     # If there's no build output at all, we definitely need to build
+    packaged_executable = None
     if source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
     else:
-        if _desktop_packaged_executable(desktop_dir) is None:
+        packaged_executable = _desktop_packaged_executable(desktop_dir)
+        if packaged_executable is None:
             return True
+        current_identity = _current_desktop_install_identity(project_root)
+        if current_identity:
+            embedded_stamp_path = _desktop_packaged_install_stamp_path(packaged_executable)
+            embedded_identity = (
+                _read_desktop_install_identity(embedded_stamp_path)
+                if embedded_stamp_path is not None and embedded_stamp_path.is_file()
+                else None
+            )
+            if embedded_identity != current_identity:
+                return True
 
     stamp_file = _desktop_stamp_path()
     if not stamp_file.is_file():
@@ -7183,6 +7271,12 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     # If the mode changed (source vs packaged), force a rebuild
     if stamp_data.get("sourceMode") != source_mode:
         return True
+
+    if not source_mode:
+        current_identity = _current_desktop_install_identity(project_root)
+        saved_identity = stamp_data.get("installIdentity")
+        if current_identity and saved_identity and saved_identity != current_identity:
+            return True
 
     saved_hash = stamp_data.get("contentHash")
     if not saved_hash:
@@ -7204,6 +7298,10 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
             "sourceMode": source_mode,
             "builtAt": datetime.now(timezone.utc).isoformat(),
         }
+        if not source_mode:
+            identity = _current_desktop_install_identity(project_root)
+            if identity:
+                stamp_data["installIdentity"] = identity
         stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
     except Exception as exc:
         # Never let stamp-writing block or fail a build

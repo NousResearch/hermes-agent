@@ -785,6 +785,30 @@ class TestGetModelContextLength:
 
         assert result == CONTEXT_PROBE_TIERS[0]
 
+    @patch("agent.model_metadata._query_anthropic_context_length", return_value=None)
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=None)
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    def test_custom_anthropic_endpoint_falls_through_to_catalog_default(
+        self,
+        mock_cache,
+        mock_fetch,
+        mock_endpoint_ctx,
+        mock_ollama,
+        mock_anthropic,
+    ):
+        """A proxied Anthropic base URL should not stop before catalog defaults."""
+        with patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            result = get_model_context_length(
+                "claude-opus-4-8",
+                provider="anthropic",
+                base_url="https://gateway.example.com/v1/claude",
+                api_key="sk-ant-test",
+            )
+
+        assert result == 1_000_000
+
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_custom_endpoint_single_model_fallback(self, mock_endpoint_fetch, mock_fetch):

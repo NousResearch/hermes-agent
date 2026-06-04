@@ -254,6 +254,18 @@ DEFAULT_CONTEXT_LENGTHS = {
     "zai-org/GLM-5": 202752,
 }
 
+
+def _lookup_default_context_length(model: str) -> Optional[int]:
+    """Return the hardcoded catalog match for a model, if any."""
+    model_lower = model.lower()
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if default_model in model_lower:
+            return length
+    return None
+
+
 # xAI Grok models that ACCEPT the `reasoning.effort` parameter on
 # api.x.ai. Verified live against /v1/responses 2026-05-10:
 #
@@ -1657,6 +1669,18 @@ def get_model_context_length(
                     if provider != "lmstudio":
                         save_context_length(model, base_url, local_ctx)
                     return local_ctx
+            catalog_ctx = (
+                _lookup_default_context_length(model)
+                if provider == "anthropic"
+                else None
+            )
+            if catalog_ctx is not None:
+                logger.info(
+                    "Could not detect context length for model %r at %s; "
+                    "using hardcoded catalog default %s tokens.",
+                    model, base_url, f"{catalog_ctx:,}",
+                )
+                return catalog_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
@@ -1773,12 +1797,9 @@ def get_model_context_length(
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
-    model_lower = model.lower()
-    for default_model, length in sorted(
-        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
-    ):
-        if default_model in model_lower:
-            return length
+    catalog_ctx = _lookup_default_context_length(model)
+    if catalog_ctx is not None:
+        return catalog_ctx
 
     # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):

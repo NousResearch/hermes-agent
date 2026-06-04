@@ -1894,11 +1894,23 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        # Auto-title the cron session so it's identifiable in session listings
+        if _session_db:
+            try:
+                _session_db.set_session_title(_cron_session_id, job_name)
+            except Exception:
+                pass
         return True, output, final_response, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        # Auto-title the cron session even on failure
+        if _session_db:
+            try:
+                _session_db.set_session_title(_cron_session_id, job_name)
+            except Exception:
+                pass
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

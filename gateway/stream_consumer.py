@@ -302,6 +302,20 @@ class GatewayStreamConsumer:
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
         self._before_finalize_notified = False
+        # Native streaming transport (e.g. WeCom msgtype: "stream"). Unlike
+        # drafts, native streaming is the *only* delivery channel for the
+        # turn — first frame, mid-stream updates, and the final answer all
+        # flow through ``adapter.send_stream_frame()`` and the adapter
+        # manages the stream lifecycle (init → cumulative updates →
+        # finish=true). Resolved at the start of run() and disabled on
+        # any failure so the consumer falls back to edit/send.
+        self._use_native_streaming = False
+        # Number of visible characters last successfully pushed to the
+        # native stream. Used for "send only when enough new content has
+        # accumulated" throttling so we don't spam frames at WeCom's
+        # 30 frames/min rate ceiling.
+        self._native_last_pushed_len = 0
+
 
     def _metadata_for_send(
         self,
@@ -688,19 +702,49 @@ class GatewayStreamConsumer:
         _raw_limit = self._raw_message_limit()
         _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
 
-        # Resolve native draft streaming once per run.  When enabled the
-        # consumer routes mid-stream frames through adapter.send_draft and
-        # leaves _message_id=None so the existing got_done path delivers the
-        # final answer as a regular sendMessage (drafts have no message_id
-        # to edit).
-        self._use_draft_streaming = self._resolve_draft_streaming()
-        if self._use_draft_streaming:
-            type(self)._draft_id_counter += 1
-            self._draft_id = type(self)._draft_id_counter
+        # Resolve transport once per run. Native streaming wins over draft
+        # because the only adapters that declare it (WeCom) cannot edit
+        # messages at all — there is no edit path to fall back to mid-turn.
+        # When native is selected we send an empty seed frame immediately so
+        # the user sees the platform's "typing" indicator before the LLM
+        # produces any tokens; if that seed fails (no req_id, transport
+        # error) we disable native and let the consumer take the regular
+        # edit path (which will in turn refuse and fall back to fallback
+        # send via the gateway, since SUPPORTS_MESSAGE_EDITING=False).
+        self._use_native_streaming = self._resolve_native_streaming()
+        if self._use_native_streaming:
             logger.debug(
-                "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
-                self.chat_id, self._draft_id,
+                "Stream consumer using native-stream transport (chat=%s)",
+                self.chat_id,
             )
+            try:
+                seed_ok = await self.adapter.send_stream_frame(
+                    "",
+                    chat_id=self.chat_id,
+                    reply_to=self._initial_reply_to_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Native streaming seed frame raised; disabling native",
+                    exc_info=True,
+                )
+                seed_ok = False
+            if not seed_ok:
+                self._use_native_streaming = False
+
+        # Resolve native draft streaming (Telegram drafts) only when native
+        # streaming is not in use — they target the same first-frame slot.
+        if self._use_native_streaming:
+            self._use_draft_streaming = False
+        else:
+            self._use_draft_streaming = self._resolve_draft_streaming()
+            if self._use_draft_streaming:
+                type(self)._draft_id_counter += 1
+                self._draft_id = type(self)._draft_id_counter
+                logger.debug(
+                    "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
+                    self.chat_id, self._draft_id,
+                )
 
         try:
             while True:
@@ -803,8 +847,13 @@ class GatewayStreamConsumer:
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
+                    # Native streaming bypasses this entirely — the adapter's
+                    # send_stream_frame handles byte-level truncation against
+                    # the stream protocol's larger limit (e.g. WeCom's 20480
+                    # bytes vs. MAX_MESSAGE_LENGTH's 4000 codepoints).
                     if (
-                        _len_fn(self._accumulated) > _safe_limit
+                        not self._use_native_streaming
+                        and _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
                     ):
                         # No existing message to edit (first message or after a
@@ -952,7 +1001,26 @@ class GatewayStreamConsumer:
                     # here instead of letting the base gateway path send the
                     # full response again.
                     if self._accumulated:
-                        if self._fallback_final_send:
+                        if self._use_native_streaming:
+                            # Native streaming routes the finalize frame via
+                            # the same _send_or_edit call above (line 604) when
+                            # got_done — that call already passed finalize=True
+                            # and the native branch sent finish=true. If the
+                            # mid-stream visible update already landed, mark
+                            # delivered without re-sending. Otherwise emit one
+                            # explicit finalize=True frame to close the stream
+                            # (e.g. very short responses where the finalize
+                            # check above was skipped by `should_edit`).
+                            if current_update_visible:
+                                self._final_response_sent = True
+                                self._final_content_delivered = True
+                            else:
+                                self._final_response_sent = await self._send_or_edit(
+                                    self._accumulated, finalize=True,
+                                )
+                                if self._final_response_sent:
+                                    self._final_content_delivered = True
+                        elif self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif self._final_response_sent:
                             # A finalize=True tick above already delivered the
@@ -1594,6 +1662,44 @@ class GatewayStreamConsumer:
             return False
         return True
 
+    def _resolve_native_streaming(self) -> bool:
+        """Decide whether this run should use the native-streaming transport.
+
+        Native streaming (e.g. WeCom's ``msgtype: "stream"``) routes ALL
+        frames — first send, mid-stream updates, and the final ``finish=true``
+        — through ``adapter.send_stream_frame()``. It takes precedence over
+        both edit and draft transports because it provides the best client
+        experience on platforms whose API is built for it (the WeCom client,
+        for example, renders cumulative content updates in-place with a
+        built-in typing animation while the stream stays open).
+
+        Adapter eligibility:
+          1. Must subclass :class:`BasePlatformAdapter` (MagicMock test
+             adapters fall back to edit).
+          2. Must declare ``SUPPORTS_NATIVE_STREAMING = True`` at the class
+             level.
+          3. Must provide ``supports_native_streaming(chat_type, metadata)``
+             returning truthy for this chat.
+        """
+        if not isinstance(self.adapter, _BasePlatformAdapter):
+            return False
+        if not getattr(type(self.adapter), "SUPPORTS_NATIVE_STREAMING", False):
+            return False
+        probe = getattr(self.adapter, "supports_native_streaming", None)
+        if probe is None:
+            return False
+        try:
+            supported = probe(
+                chat_type=self.cfg.chat_type or None,
+                metadata=self.metadata,
+            )
+        except Exception:
+            logger.debug(
+                "supports_native_streaming probe raised", exc_info=True,
+            )
+            return False
+        return bool(supported)
+
     async def _send_draft_frame(self, text: str) -> bool:
         """Emit a single animated draft frame for the current accumulated text.
 
@@ -1972,7 +2078,60 @@ class GatewayStreamConsumer:
                 and len(_visible_stripped) < _MIN_NEW_MSG_CHARS):
             return True  # too short for a standalone message — accumulate more
 
-        # Native draft streaming: route mid-stream frames through send_draft.
+        # Native streaming transport (e.g. WeCom): every frame — first send,
+        # mid-stream updates, and the final answer — flows through
+        # adapter.send_stream_frame(), which manages the underlying stream
+        # lifecycle (init seed → cumulative updates → finish=true). The
+        # adapter's send/edit_message paths are NOT touched in this mode.
+        #
+        # Throttling: WeCom AI Bot caps replies at ~30 frames/min, so we
+        # additionally require ``_MIN_NEW_VISIBLE_CHARS`` of new content
+        # since the last successful push before sending an interim frame.
+        # This caps the per-turn frame count well below the rate ceiling
+        # while still feeling responsive (humans can't read faster than
+        # ~20 chars updating a few times per second).
+        if self._use_native_streaming:
+            _MIN_NEW_VISIBLE_CHARS = 20
+            new_visible_chars = len(text) - self._native_last_pushed_len
+            if (
+                not finalize
+                and (text == self._last_sent_text
+                     or new_visible_chars < _MIN_NEW_VISIBLE_CHARS)
+            ):
+                return True  # too small / unchanged — accumulate more
+
+            ok = False
+            try:
+                ok = await self.adapter.send_stream_frame(
+                    text,
+                    finalize=finalize,
+                    chat_id=self.chat_id,
+                    reply_to=self._initial_reply_to_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "send_stream_frame raised, disabling native streaming: %s", e,
+                )
+                ok = False
+
+            if ok:
+                self._already_sent = True
+                self._last_sent_text = text
+                self._native_last_pushed_len = len(text)
+                if finalize:
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                return True
+
+            # Native streaming refused / failed — switch off so this and
+            # subsequent frames take the edit/send fallback path below.
+            # The adapter is responsible for marking the chat as expired
+            # so it doesn't keep retrying the dead stream session.
+            self._use_native_streaming = False
+            # Fall through to the edit/send paths so any accumulated text
+            # still reaches the user as a one-shot proactive markdown send.
+
+
         # The final answer is delivered via the regular sendMessage path
         # below — drafts have no message_id so we can't finalize them
         # in-place; the regular sendMessage clears the draft naturally on

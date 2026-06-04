@@ -5,7 +5,9 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  group_batch_delay_seconds=None, group_batch_chats=None,
+                  group_batch_max_messages=None):
     from gateway.platforms.whatsapp import WhatsAppAdapter
 
     extra = {}
@@ -23,6 +25,12 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_policy"] = group_policy
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if group_batch_delay_seconds is not None:
+        extra["group_batch_delay_seconds"] = group_batch_delay_seconds
+    if group_batch_chats is not None:
+        extra["group_batch_chats"] = group_batch_chats
+    if group_batch_max_messages is not None:
+        extra["group_batch_max_messages"] = group_batch_max_messages
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -34,6 +42,11 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()
+    adapter._group_batch_delay_seconds = float(extra.get("group_batch_delay_seconds") or 0.0)
+    adapter._group_batch_max_messages = max(1, int(float(extra.get("group_batch_max_messages") or 20)))
+    adapter._group_batch_chats = WhatsAppAdapter._coerce_allow_list(extra.get("group_batch_chats"))
+    adapter._group_batch_buffers = {}
+    adapter._group_batch_tasks = {}
     return adapter
 
 
@@ -254,7 +267,11 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
         "  dm_policy: disabled\n"
         "  group_policy: allowlist\n"
         "  group_allow_from:\n"
-        "    - \"120363001234567890@g.us\"\n",
+        "    - \"120363001234567890@g.us\"\n"
+        "  group_batch_chats:\n"
+        "    - \"120363001234567890@g.us\"\n"
+        "  group_batch_delay_seconds: 35\n"
+        "  group_batch_max_messages: 12\n",
         encoding="utf-8",
     )
 
@@ -262,6 +279,9 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     monkeypatch.delenv("WHATSAPP_DM_POLICY", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_POLICY", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("WHATSAPP_GROUP_BATCH_CHATS", raising=False)
+    monkeypatch.delenv("WHATSAPP_GROUP_BATCH_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("WHATSAPP_GROUP_BATCH_MAX_MESSAGES", raising=False)
 
     config = load_gateway_config()
 
@@ -269,9 +289,15 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     assert config.platforms[Platform.WHATSAPP].extra["dm_policy"] == "disabled"
     assert config.platforms[Platform.WHATSAPP].extra["group_policy"] == "allowlist"
     assert config.platforms[Platform.WHATSAPP].extra["group_allow_from"] == ["120363001234567890@g.us"]
+    assert config.platforms[Platform.WHATSAPP].extra["group_batch_chats"] == ["120363001234567890@g.us"]
+    assert config.platforms[Platform.WHATSAPP].extra["group_batch_delay_seconds"] == 35
+    assert config.platforms[Platform.WHATSAPP].extra["group_batch_max_messages"] == 12
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "disabled"
     assert __import__("os").environ["WHATSAPP_GROUP_POLICY"] == "allowlist"
     assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
+    assert __import__("os").environ["WHATSAPP_GROUP_BATCH_CHATS"] == "120363001234567890@g.us"
+    assert __import__("os").environ["WHATSAPP_GROUP_BATCH_DELAY_SECONDS"] == "35"
+    assert __import__("os").environ["WHATSAPP_GROUP_BATCH_MAX_MESSAGES"] == "12"
 
 
 def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):
@@ -370,3 +396,94 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+# --- Passive group batching ---
+
+
+def _message_event(text="hello", *, sender_name="Eliza", sender_id="111@s.whatsapp.net", message_id="m1", **raw_overrides):
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    raw = _group_message(
+        text,
+        senderName=sender_name,
+        senderId=sender_id,
+        messageId=message_id,
+        **raw_overrides,
+    )
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id=raw["chatId"],
+            chat_name="Familie",
+            chat_type="group",
+            user_id=sender_id,
+            user_name=sender_name,
+        ),
+        raw_message=raw,
+        message_id=message_id,
+    )
+
+
+def test_group_batching_is_opt_in_by_delay():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["120363001234567890@g.us"],
+    )
+
+    assert adapter._should_batch_group_event(_message_event("ordinary chatter")) is False
+
+
+def test_group_batching_batches_ordinary_free_response_group_text():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["120363001234567890@g.us"],
+        group_batch_delay_seconds=30,
+    )
+
+    assert adapter._should_batch_group_event(_message_event("ordinary chatter")) is True
+
+
+def test_group_batching_does_not_delay_direct_triggers_or_media():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["120363001234567890@g.us"],
+        group_batch_delay_seconds=30,
+    )
+
+    assert adapter._should_batch_group_event(_message_event("/status")) is False
+    assert adapter._should_batch_group_event(
+        _message_event("hermi zi ceva", mentionedIds=["15551230000@s.whatsapp.net"])
+    ) is False
+
+    media_event = _message_event("[image received]")
+    media_event.message_type = MessageType.PHOTO
+    media_event.media_urls = ["/tmp/photo.jpg"]
+    assert adapter._should_batch_group_event(media_event) is False
+
+
+def test_merge_group_batch_events_preserves_senders_and_passive_instruction():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_chats=["120363001234567890@g.us"],
+        group_batch_delay_seconds=30,
+    )
+
+    merged = adapter._merge_group_batch_events([
+        _message_event("uite ce face Rares", sender_name="Eliza", sender_id="111@s.whatsapp.net", message_id="a"),
+        _message_event("mor 😂", sender_name="Razvan", sender_id="222@s.whatsapp.net", message_id="b"),
+    ])
+
+    assert "WhatsApp group batch: 2 recent messages" in merged.text
+    assert "Treat them as one conversation update" in merged.text
+    assert "If no reply is needed, return an empty response" in merged.text
+    assert "[Eliza] uite ce face Rares" in merged.text
+    assert "[Razvan] mor 😂" in merged.text
+    assert merged.source.user_name is None
+    assert merged.message_id == "b"
+    assert merged.raw_message["batched"] is True

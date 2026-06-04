@@ -23,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, appendFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -45,9 +45,22 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
-const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
-const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
-const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+const IMAGE_CACHE_DIR = process.env.WHATSAPP_IMAGE_CACHE_DIR || path.join(process.env.HOME || '~', '.hermes', 'image_cache');
+const DOCUMENT_CACHE_DIR = process.env.WHATSAPP_DOCUMENT_CACHE_DIR || path.join(process.env.HOME || '~', '.hermes', 'document_cache');
+const AUDIO_CACHE_DIR = process.env.WHATSAPP_AUDIO_CACHE_DIR || path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+const DEFAULT_MEDIA_ARCHIVE_DIR = existsSync('/Volumes/WorkSSD')
+  ? '/Volumes/WorkSSD/Hermi/WhatsApp Media'
+  : existsSync('/Volumes/ExternalSSD 1')
+    ? '/Volumes/ExternalSSD 1/Hermi/WhatsApp Media'
+    : path.join(process.env.HOME || '~', '.hermes', 'whatsapp-media-archive');
+const MEDIA_ARCHIVE_DIR = process.env.WHATSAPP_MEDIA_ARCHIVE_DIR || DEFAULT_MEDIA_ARCHIVE_DIR;
+const CHAT_ARCHIVE_LABELS = (() => {
+  try {
+    return JSON.parse(process.env.WHATSAPP_MEDIA_ARCHIVE_CHAT_LABELS || '{"120363426787004518@g.us":"Familie"}');
+  } catch {
+    return { '120363426787004518@g.us': 'Familie' };
+  }
+})();
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
@@ -77,6 +90,57 @@ function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
   });
   return Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
     .finally(() => clearTimeout(timer));
+}
+
+function safeSegment(value, fallback = 'unknown') {
+  return String(value || fallback)
+    .replace(/@.*/, '')
+    .replace(/[^a-zA-Z0-9._ -]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || fallback;
+}
+
+function archiveIncomingMedia(buf, { chatId, senderId, senderName, messageId, mediaType, mime, ext, caption }) {
+  if (!MEDIA_ARCHIVE_DIR || !buf) return null;
+  try {
+    const now = new Date();
+    const yyyy = String(now.getFullYear());
+    const yyyyMm = `${yyyy}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const yyyyMmDd = `${yyyyMm}-${String(now.getDate()).padStart(2, '0')}`;
+    const chatLabel = safeSegment(CHAT_ARCHIVE_LABELS[chatId] || chatId, 'chat');
+    const typeFolder = mediaType === 'image' ? 'photos' : mediaType === 'video' ? 'videos' : mediaType || 'media';
+    const archiveDir = path.join(MEDIA_ARCHIVE_DIR, chatLabel, yyyy, yyyyMm, yyyyMmDd, typeFolder);
+    mkdirSync(archiveDir, { recursive: true });
+
+    const stamp = now.toISOString().replace(/[:.]/g, '-');
+    const sender = safeSegment(senderName || senderId, 'sender');
+    const msg = safeSegment(messageId, randomBytes(4).toString('hex'));
+    const archivePath = path.join(archiveDir, `${stamp}_${sender}_${msg}${ext}`);
+    writeFileSync(archivePath, buf);
+
+    const metadata = {
+      archivedAt: now.toISOString(),
+      chatId,
+      chatLabel,
+      senderId,
+      senderName,
+      messageId,
+      mediaType,
+      mime,
+      caption: caption || '',
+      filePath: archivePath,
+      bytes: buf.length,
+    };
+    writeFileSync(`${archivePath}.json`, JSON.stringify(metadata, null, 2));
+    const indexDir = path.join(MEDIA_ARCHIVE_DIR, '_index');
+    mkdirSync(indexDir, { recursive: true });
+    appendFileSync(path.join(indexDir, 'media-index.jsonl'), JSON.stringify(metadata) + '\n');
+    return archivePath;
+  } catch (err) {
+    console.error('[bridge] Failed to archive incoming media:', err.message);
+    return null;
+  }
 }
 
 function formatOutgoingMessage(message) {
@@ -204,6 +268,9 @@ async function startSocket() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      try {
+        writeFileSync(path.join(tmpdir(), 'hermes-whatsapp-qr.txt'), qr, 'utf8');
+      } catch {}
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       console.log('\nWaiting for scan...\n');
@@ -344,6 +411,18 @@ async function startSocket() {
           mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
           const filePath = path.join(IMAGE_CACHE_DIR, `img_${randomBytes(6).toString('hex')}${ext}`);
           writeFileSync(filePath, buf);
+          if (isGroup) {
+            archiveIncomingMedia(buf, {
+              chatId,
+              senderId,
+              senderName: msg.pushName || senderNumber,
+              messageId: msg.key.id,
+              mediaType: 'image',
+              mime,
+              ext,
+              caption: body,
+            });
+          }
           mediaUrls.push(filePath);
         } catch (err) {
           console.error('[bridge] Failed to download image:', err.message);
@@ -359,6 +438,18 @@ async function startSocket() {
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
           const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
           writeFileSync(filePath, buf);
+          if (isGroup) {
+            archiveIncomingMedia(buf, {
+              chatId,
+              senderId,
+              senderName: msg.pushName || senderNumber,
+              messageId: msg.key.id,
+              mediaType: 'video',
+              mime,
+              ext,
+              caption: body,
+            });
+          }
           mediaUrls.push(filePath);
         } catch (err) {
           console.error('[bridge] Failed to download video:', err.message);

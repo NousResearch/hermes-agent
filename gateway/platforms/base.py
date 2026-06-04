@@ -4169,6 +4169,9 @@ class BasePlatformAdapter(ABC):
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
+                        if getattr(tts_result, "success", False) and not telegram_tts_caption:
+                            # Voice was delivered; do not duplicate the same reply as text.
+                            text_content = ""
                     finally:
                         try:
                             os.remove(_tts_path)

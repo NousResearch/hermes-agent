@@ -102,7 +102,30 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _looks_like_group_guid(chat_guid: Optional[str], is_group: bool = False) -> bool:
+    """Return True when a BlueBubbles chat GUID represents a group chat."""
+    return bool(is_group or (";+;" in (chat_guid or "")))
 
+
+def _stable_session_chat_id(
+    *,
+    chat_guid: Optional[str],
+    chat_identifier: Optional[str],
+    sender: Optional[str],
+    is_group: bool = False,
+) -> Optional[str]:
+    """Choose the stable Hermes session id for an inbound BlueBubbles chat.
+
+    BlueBubbles may send the same one-to-one iMessage with either a raw chat
+    GUID (for example ``any;-;user@example.com``) or just the address
+    (``user@example.com``), depending on payload shape.  Using the raw GUID for
+    some events and the address for others splits a single DM into two Hermes
+    contexts.  For DMs, prefer the human address.  For groups, keep the raw GUID
+    because display names and participants are not stable unique identifiers.
+    """
+    if _looks_like_group_guid(chat_guid, is_group):
+        return chat_guid or chat_identifier or sender
+    return chat_identifier or sender or chat_guid
 
 
 # ---------------------------------------------------------------------------
@@ -993,8 +1016,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
-        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        is_group = bool(record.get("isGroup")) or _looks_like_group_guid(chat_guid)
+        session_chat_id = _stable_session_chat_id(
+            chat_guid=chat_guid,
+            chat_identifier=chat_identifier,
+            sender=sender,
+            is_group=is_group,
+        )
+        if not session_chat_id:
+            return web.json_response({"error": "missing message fields"}, status=400)
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug(

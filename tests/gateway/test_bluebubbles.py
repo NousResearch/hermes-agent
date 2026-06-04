@@ -264,6 +264,36 @@ class TestBlueBubblesMentionGating:
 
 
 class TestBlueBubblesWebhookParsing:
+    def test_dm_session_id_prefers_identifier_over_raw_guid(self, monkeypatch):
+        from gateway.platforms.bluebubbles import _stable_session_chat_id
+
+        assert _stable_session_chat_id(
+            chat_guid="any;-;user@example.com",
+            chat_identifier="user@example.com",
+            sender="user@example.com",
+            is_group=False,
+        ) == "user@example.com"
+
+    def test_dm_session_id_falls_back_to_sender_when_identifier_missing(self, monkeypatch):
+        from gateway.platforms.bluebubbles import _stable_session_chat_id
+
+        assert _stable_session_chat_id(
+            chat_guid="any;-;+15551234567",
+            chat_identifier=None,
+            sender="+15551234567",
+            is_group=False,
+        ) == "+15551234567"
+
+    def test_group_session_id_keeps_raw_guid(self, monkeypatch):
+        from gateway.platforms.bluebubbles import _stable_session_chat_id
+
+        assert _stable_session_chat_id(
+            chat_guid="any;+;chat-uuid-abc123",
+            chat_identifier="Family",
+            sender="+15551234567",
+            is_group=True,
+        ) == "any;+;chat-uuid-abc123"
+
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {

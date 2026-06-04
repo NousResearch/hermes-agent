@@ -16,6 +16,7 @@ with different backends via a bridge pattern.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ import subprocess
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 
 from hermes_constants import get_hermes_dir
 
@@ -265,6 +266,23 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         self._mention_patterns = self._compile_mention_patterns()
+        self._group_batch_delay_seconds = self._config_float(
+            "group_batch_delay_seconds",
+            "WHATSAPP_GROUP_BATCH_DELAY_SECONDS",
+            0.0,
+        )
+        self._group_batch_max_messages = max(1, int(self._config_float(
+            "group_batch_max_messages",
+            "WHATSAPP_GROUP_BATCH_MAX_MESSAGES",
+            20,
+        )))
+        self._group_batch_chats = self._coerce_allow_list(
+            config.extra.get("group_batch_chats")
+            or config.extra.get("groupBatchChats")
+            or os.getenv("WHATSAPP_GROUP_BATCH_CHATS")
+        )
+        self._group_batch_buffers: Dict[str, List[MessageEvent]] = {}
+        self._group_batch_tasks: Dict[str, asyncio.Task] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
@@ -349,6 +367,24 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _config_float(self, config_key: str, env_key: str, default: float) -> float:
+        raw = self.config.extra.get(config_key)
+        if raw is None:
+            raw = os.getenv(env_key)
+        if raw is None or raw == "":
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Invalid WhatsApp %s=%r; using %s",
+                self.name,
+                config_key,
+                raw,
+                default,
+            )
+            return default
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
@@ -526,6 +562,139 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._message_mentions_bot(data):
             return True
         return self._message_matches_mention_patterns(data)
+
+    def _is_direct_group_trigger(self, data: Dict[str, Any]) -> bool:
+        """True when a group message explicitly asks the bot to engage now."""
+        body = str(data.get("body") or "").strip()
+        return (
+            body.startswith("/")
+            or self._message_is_reply_to_bot(data)
+            or self._message_mentions_bot(data)
+            or self._message_matches_mention_patterns(data)
+        )
+
+    def _group_batch_enabled_for_chat(self, chat_id: str) -> bool:
+        """Return whether passive batching is enabled for this WhatsApp group."""
+        if self._group_batch_delay_seconds <= 0:
+            return False
+        if self._group_batch_chats:
+            return chat_id in self._group_batch_chats
+        # If no explicit batch list is set, only batch free-response groups.
+        # Mention-gated groups already have explicit triggers and should stay
+        # immediate unless the operator opts in with group_batch_chats.
+        return chat_id in self._whatsapp_free_response_chats()
+
+    def _should_batch_group_event(self, event: MessageEvent) -> bool:
+        """True for ordinary group text that should wait for a short quiet window."""
+        source = event.source
+        if getattr(source, "chat_type", None) != "group":
+            return False
+        if event.message_type != MessageType.TEXT or event.media_urls:
+            return False
+        if event.is_command():
+            return False
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        if not self._group_batch_enabled_for_chat(chat_id):
+            return False
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        if self._is_direct_group_trigger(raw):
+            return False
+        return True
+
+    async def _queue_group_batch_event(self, event: MessageEvent) -> bool:
+        """Debounce passive WhatsApp group chatter into one agent turn.
+
+        Family/group chats often send several fragments for the same thought.
+        Without a quiet-window buffer, each fragment becomes a separate agent
+        run and Hermi replies line-by-line. This queues ordinary text updates
+        briefly, then flushes them as one conversation update. Commands,
+        mentions, replies to the bot, and media still go through immediately.
+        """
+        if not self._should_batch_group_event(event):
+            return False
+        chat_id = str(event.source.chat_id or "")
+        buffer = self._group_batch_buffers.setdefault(chat_id, [])
+        buffer.append(event)
+        if len(buffer) > self._group_batch_max_messages:
+            del buffer[:-self._group_batch_max_messages]
+
+        existing = self._group_batch_tasks.get(chat_id)
+        if existing and not existing.done():
+            existing.cancel()
+        self._group_batch_tasks[chat_id] = asyncio.create_task(
+            self._flush_group_batch_after_delay(chat_id)
+        )
+        logger.debug(
+            "[%s] Queued WhatsApp group batch item for %s (%d buffered)",
+            self.name,
+            chat_id,
+            len(buffer),
+        )
+        return True
+
+    async def _flush_group_batch_after_delay(self, chat_id: str) -> None:
+        try:
+            await asyncio.sleep(self._group_batch_delay_seconds)
+            events = self._group_batch_buffers.pop(chat_id, [])
+            self._group_batch_tasks.pop(chat_id, None)
+            if not events:
+                return
+            await self.handle_message(self._merge_group_batch_events(events))
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning("[%s] Failed to flush WhatsApp group batch %s: %s", self.name, chat_id, exc)
+
+    def _merge_group_batch_events(self, events: List[MessageEvent]) -> MessageEvent:
+        """Build one MessageEvent from a quiet-window group message batch."""
+        if len(events) == 1:
+            original = events[0]
+            source = dataclasses.replace(original.source, user_name=None)
+            text = (
+                "[WhatsApp group passive-mode note: this is ordinary group chatter. "
+                "Reply only if useful, asked, mentioned, or if a warm short reaction genuinely adds value. "
+                "If no reply is needed, return an empty response.]\n\n"
+                f"{original.text or ''}"
+            )
+            return dataclasses.replace(
+                original,
+                text=text,
+                source=source,
+                raw_message={"batched": True, "messages": [original.raw_message]},
+            )
+
+        lines = []
+        for item in events:
+            sender = (
+                getattr(item.source, "user_name", None)
+                or getattr(item.source, "user_id", None)
+                or "Unknown"
+            )
+            body = (item.text or "").strip()
+            if body:
+                lines.append(f"[{sender}] {body}")
+
+        first = events[0]
+        last = events[-1]
+        merged_source = dataclasses.replace(last.source, user_name=None)
+        merged_text = (
+            f"[WhatsApp group batch: {len(events)} recent messages in the same chat. "
+            "Treat them as one conversation update, not separate prompts. "
+            "Passive family/group mode: reply only if useful, asked, mentioned, or if a warm short reaction genuinely adds value. "
+            "If no reply is needed, return an empty response.]\n\n"
+            + "\n".join(lines)
+        )
+        return dataclasses.replace(
+            last,
+            text=merged_text,
+            source=merged_source,
+            raw_message={
+                "batched": True,
+                "messageCount": len(events),
+                "messages": [event.raw_message for event in events],
+            },
+            message_id=last.message_id or first.message_id,
+        )
     
     async def connect(self) -> bool:
         """
@@ -828,6 +997,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
             (self._session_path / "bridge.pid").unlink(missing_ok=True)
         except OSError:
             pass
+
+        # Cancel pending passive group batch flushes.
+        for task in list(getattr(self, "_group_batch_tasks", {}).values()):
+            if task and not task.done():
+                task.cancel()
+        self._group_batch_tasks.clear()
+        self._group_batch_buffers.clear()
 
         # Cancel the poll task explicitly
         if self._poll_task and not self._poll_task.done():
@@ -1181,6 +1357,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
                             if event:
+                                if await self._queue_group_batch_event(event):
+                                    continue
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:

@@ -889,6 +889,12 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                if "group_batch_chats" in platform_cfg:
+                    bridged["group_batch_chats"] = platform_cfg["group_batch_chats"]
+                if "group_batch_delay_seconds" in platform_cfg:
+                    bridged["group_batch_delay_seconds"] = platform_cfg["group_batch_delay_seconds"]
+                if "group_batch_max_messages" in platform_cfg:
+                    bridged["group_batch_max_messages"] = platform_cfg["group_batch_max_messages"]
                 if "group_allow_admin_from" in platform_cfg:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
@@ -1103,6 +1109,15 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(gaf, list):
                         gaf = ",".join(str(v) for v in gaf)
                     os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
+                gbc = whatsapp_cfg.get("group_batch_chats")
+                if gbc is not None and not os.getenv("WHATSAPP_GROUP_BATCH_CHATS"):
+                    if isinstance(gbc, list):
+                        gbc = ",".join(str(v) for v in gbc)
+                    os.environ["WHATSAPP_GROUP_BATCH_CHATS"] = str(gbc)
+                if "group_batch_delay_seconds" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_BATCH_DELAY_SECONDS"):
+                    os.environ["WHATSAPP_GROUP_BATCH_DELAY_SECONDS"] = str(whatsapp_cfg["group_batch_delay_seconds"])
+                if "group_batch_max_messages" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_BATCH_MAX_MESSAGES"):
+                    os.environ["WHATSAPP_GROUP_BATCH_MAX_MESSAGES"] = str(whatsapp_cfg["group_batch_max_messages"])
 
             # Signal settings → env vars (env vars take precedence)
             signal_cfg = yaml_cfg.get("signal", {})

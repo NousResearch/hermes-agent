@@ -950,6 +950,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     el_config = tts_config.get("elevenlabs", {})
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
+    voice_settings_config = el_config.get("voice_settings") or el_config.get("voiceSettings") or {}
 
     # Determine output format based on file extension
     if output_path.endswith(".ogg"):
@@ -958,13 +959,36 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
         output_format = "mp3_44100_128"
 
     ElevenLabs = _import_elevenlabs()
+    voice_settings = None
+    if isinstance(voice_settings_config, dict) and voice_settings_config:
+        try:
+            from elevenlabs import VoiceSettings
+            voice_settings = VoiceSettings(
+                stability=voice_settings_config.get("stability"),
+                similarity_boost=voice_settings_config.get(
+                    "similarity_boost",
+                    voice_settings_config.get("similarityBoost"),
+                ),
+                style=voice_settings_config.get("style"),
+                use_speaker_boost=voice_settings_config.get(
+                    "use_speaker_boost",
+                    voice_settings_config.get("useSpeakerBoost"),
+                ),
+                speed=voice_settings_config.get("speed"),
+            )
+        except Exception as exc:
+            logger.warning("Invalid ElevenLabs voice_settings ignored: %s", exc)
+            voice_settings = None
     client = ElevenLabs(api_key=api_key)
-    audio_generator = client.text_to_speech.convert(
-        text=text,
-        voice_id=voice_id,
-        model_id=model_id,
-        output_format=output_format,
-    )
+    convert_kwargs = {
+        "text": text,
+        "voice_id": voice_id,
+        "model_id": model_id,
+        "output_format": output_format,
+    }
+    if voice_settings is not None:
+        convert_kwargs["voice_settings"] = voice_settings
+    audio_generator = client.text_to_speech.convert(**convert_kwargs)
 
     # audio_generator yields chunks -- write them all
     with open(output_path, "wb") as f:

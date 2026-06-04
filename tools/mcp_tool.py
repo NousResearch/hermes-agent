@@ -1982,6 +1982,12 @@ class MCPServerTask:
 
 _servers: Dict[str, MCPServerTask] = {}
 
+# MCP servers can register degraded local fallback tools without a live
+# connection. Keep their names explicit rather than inferring from the whole
+# registry, which may contain MCP tools registered by unrelated tests or prior
+# reloads in the same process.
+_mcp_fallback_tool_names: set[str] = set()
+
 # Circuit breaker: consecutive error counts per server.  After
 # _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
 # a "server unreachable" message that tells the model to stop retrying,
@@ -3335,7 +3341,7 @@ def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dic
 
 
 def _existing_tool_names() -> List[str]:
-    """Return tool names for all currently connected servers."""
+    """Return tool names for connected servers plus registered MCP fallbacks."""
     names: List[str] = []
     for _sname, server in _servers.items():
         if hasattr(server, "_registered_tool_names"):
@@ -3344,6 +3350,14 @@ def _existing_tool_names() -> List[str]:
         for mcp_tool in server._tools:
             schema = _convert_mcp_schema(server.name, mcp_tool)
             names.append(schema["name"])
+
+    # Some servers can provide a local fallback without a live MCP session
+    # (currently Personal Memory's macOS import archive). Those tools live in
+    # the registry but have no entry in _servers, so include them here for CLI
+    # summaries and callers that still use discover_mcp_tools()' return value.
+    for tool_name in sorted(_mcp_fallback_tool_names):
+        if tool_name not in names:
+            names.append(tool_name)
     return names
 
 
@@ -3541,12 +3555,25 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         for name, result in zip(server_names, results):
             if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
+                formatted_error = _format_connect_error(result)
                 logger.warning(
                     "Failed to connect to MCP server '%s'%s: %s",
                     name,
                     f" (command={command})" if command else "",
-                    _format_connect_error(result),
+                    formatted_error,
                 )
+                if name == "personal-memory":
+                    try:
+                        from tools.personal_memory_local_fallback import (
+                            register_personal_memory_local_fallback,
+                        )
+                        fallback_names = register_personal_memory_local_fallback(formatted_error)
+                        _mcp_fallback_tool_names.update(fallback_names)
+                    except Exception as fallback_exc:
+                        logger.debug(
+                            "Personal Memory local fallback registration failed: %s",
+                            fallback_exc,
+                        )
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.

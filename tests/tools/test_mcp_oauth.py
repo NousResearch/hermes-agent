@@ -205,6 +205,56 @@ class TestBuildOAuthAuth:
         assert provider is not None
         assert provider.context.client_metadata.scope == "read write admin"
 
+    def test_reuses_cached_dynamic_client_redirect_port(self, tmp_path, monkeypatch):
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        (token_dir / "personal-memory.client.json").write_text(json.dumps({
+            "client_id": "cached-client",
+            "redirect_uris": ["http://127.0.0.1:61451/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        }))
+
+        provider = build_oauth_auth("personal-memory", "https://example.com/mcp")
+
+        assert provider is not None
+        assert provider.context.client_metadata.redirect_uris is not None
+        assert str(provider.context.client_metadata.redirect_uris[0]) == "http://127.0.0.1:61451/callback"
+
+    def test_explicit_redirect_port_overrides_cached_client_port(self, tmp_path, monkeypatch):
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        (token_dir / "personal-memory.client.json").write_text(json.dumps({
+            "client_id": "cached-client",
+            "redirect_uris": ["http://127.0.0.1:61451/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        }))
+
+        provider = build_oauth_auth(
+            "personal-memory",
+            "https://example.com/mcp",
+            {"redirect_port": 62000},
+        )
+
+        assert provider is not None
+        assert provider.context.client_metadata.redirect_uris is not None
+        assert str(provider.context.client_metadata.redirect_uris[0]) == "http://127.0.0.1:62000/callback"
+
 
 # ---------------------------------------------------------------------------
 # Utility functions

@@ -9718,10 +9718,12 @@ class GatewayRunner:
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
-            # Auto voice reply: send TTS audio before the text response
+            # Auto voice reply: send TTS audio instead of duplicating the same
+            # content as text. If TTS delivery fails, fall back to text below.
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                if await self._send_voice_reply(event, response):
+                    return None
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -12168,8 +12170,13 @@ class GatewayRunner:
 
         return True
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply."""
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> bool:
+        """Generate TTS audio and send it as a voice message.
+
+        Returns True only when the voice message was delivered, so callers can
+        suppress the duplicate text body and fall back to text on TTS/send
+        failure.
+        """
         import uuid as _uuid
         audio_path = None
         actual_path = None
@@ -12178,7 +12185,7 @@ class GatewayRunner:
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
-                return
+                return False
 
             # Use .mp3 extension so edge-tts conversion to opus works correctly.
             # The TTS tool may convert to .ogg — use file_path from result.
@@ -12195,13 +12202,13 @@ class GatewayRunner:
                 result = json.loads(result_json)
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Auto voice reply TTS returned invalid JSON: %s", result_json[:200] if result_json else result_json)
-                return
+                return False
 
             # Use the actual file path from result (may differ after opus conversion)
             actual_path = result.get("file_path", audio_path)
             if not result.get("success") or not os.path.isfile(actual_path):
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return False
 
             adapter = self.adapters.get(event.source.platform)
 
@@ -12212,6 +12219,7 @@ class GatewayRunner:
                     and hasattr(adapter, "is_in_voice_channel")
                     and adapter.is_in_voice_channel(guild_id)):
                 await adapter.play_in_voice_channel(guild_id, actual_path)
+                return True
             elif adapter and hasattr(adapter, "send_voice"):
                 reply_anchor = self._reply_anchor_for_event(event)
                 thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
@@ -12233,9 +12241,12 @@ class GatewayRunner:
                     "reply_to": reply_anchor,
                     "metadata": thread_meta,
                 }
-                await adapter.send_voice(**send_kwargs)
+                result = await adapter.send_voice(**send_kwargs)
+                return bool(getattr(result, "success", False))
+            return False
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+            return False
         finally:
             for p in {audio_path, actual_path} - {None}:
                 try:

@@ -12022,13 +12022,14 @@ def cmd_dashboard(args):
 
     from hermes_cli.web_server import start_server
 
-    embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
+    # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
+    # available — the desktop app and the dashboard's own Chat tab both rely on
+    # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
     start_server(
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
-        embedded_chat=embedded_chat,
     )
 
 
@@ -15313,14 +15314,6 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
-    )
-    dashboard_parser.add_argument(
-        "--tui",
-        action="store_true",
-        help=(
-            "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
-            "Alternatively set HERMES_DASHBOARD_TUI=1."
-        ),
     )
     dashboard_parser.add_argument(
         "--skip-build",

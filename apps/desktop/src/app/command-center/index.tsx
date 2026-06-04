@@ -6,14 +6,7 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import {
-  getActionStatus,
-  getLogs,
-  getStatus,
-  getUsageAnalytics,
-  restartGateway,
-  updateHermes
-} from '@/hermes'
+import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { Activity, AlertCircle, BarChart3, type IconComponent, Pin } from '@/lib/icons'
@@ -128,12 +121,7 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
   )
 }
 
-export function CommandCenterView({
-  initialSection,
-  onClose,
-  onDeleteSession,
-  onOpenSession
-}: CommandCenterViewProps) {
+export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 

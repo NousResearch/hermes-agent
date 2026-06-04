@@ -187,6 +187,7 @@ export function GatewaySettings() {
   // While probing (or after a probe error), the scheme is unknown and we show
   // the probe status row instead of a control.
   const hasSavedRemote = state.remoteTokenSet || state.remoteOauthConnected
+
   const authResolved = useMemo(() => {
     if (probeStatus === 'done') {
       return true

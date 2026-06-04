@@ -9,6 +9,7 @@ Provides options for:
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -117,45 +118,60 @@ def remove_wrapper_script():
     return removed
 
 
+def _node_symlink_candidate_dirs() -> "list[Path]":
+    """Directories where the installer may have placed node/npm/npx symlinks."""
+    dirs: list[Path] = [Path.home() / ".local" / "bin"]
+    # Root FHS installs put links in /usr/local/bin.
+    if sys.platform == "linux":
+        dirs.append(Path("/usr/local/bin"))
+    # Termux installs put links in $PREFIX/bin.
+    prefix = os.environ.get("PREFIX", "")
+    if prefix and "com.termux" in prefix:
+        dirs.append(Path(prefix) / "bin")
+    return dirs
+
+
 def remove_node_symlinks(hermes_home: Path) -> list:
-    """Remove the node/npm/npx symlinks the installer drops in ~/.local/bin.
+    """Remove the node/npm/npx symlinks the installer placed on PATH.
 
     The POSIX installer (``scripts/install.sh`` / ``scripts/lib/node-bootstrap.sh``)
-    creates::
+    symlinks node/npm/npx into the same directory as the ``hermes`` command:
 
-        ~/.local/bin/node -> $HERMES_HOME/node/bin/node
-        ~/.local/bin/npm  -> $HERMES_HOME/node/bin/npm
-        ~/.local/bin/npx  -> $HERMES_HOME/node/bin/npx
+    - ``/usr/local/bin/`` on root FHS installs (Linux, uid 0)
+    - ``$PREFIX/bin/`` on Termux
+    - ``~/.local/bin/`` otherwise (the common non-root case)
 
-    and prepends ``~/.local/bin`` to PATH, so these shadow an existing Node
-    manager such as nvm.  Symmetrically remove them on uninstall, but *only*
-    when the link still resolves into this Hermes home's ``node`` directory.
-    A link the user has since repointed at nvm (or anything else outside
-    Hermes) is left untouched so we never break unrelated tooling.
+    We check all candidate directories so that uninstall works regardless of
+    how the install was done (e.g. a root FHS install that placed links in
+    ``/usr/local/bin``, or an older install that used ``~/.local/bin`` before
+    the FHS fix).  Only symlinks that resolve into this Hermes home's ``node``
+    directory are removed — links the user has repointed elsewhere (nvm, fnm,
+    etc.) are left untouched.
     """
     node_dir = (hermes_home / "node").resolve()
     removed = []
 
     for name in ("node", "npm", "npx"):
-        link = Path.home() / ".local" / "bin" / name
-        try:
-            # Only act on symlinks — never delete a real binary the user put here.
-            if not link.is_symlink():
-                continue
+        for bin_dir in _node_symlink_candidate_dirs():
+            link = bin_dir / name
+            try:
+                # Only act on symlinks — never delete a real binary the user put here.
+                if not link.is_symlink():
+                    continue
 
-            # Resolve the link target and confirm it points into our node dir.
-            # os.readlink + manual join handles broken (dangling) links too;
-            # Path.resolve() on a dangling link still returns the target path.
-            target = Path(os.readlink(link))
-            if not target.is_absolute():
-                target = (link.parent / target)
-            target = target.resolve()
+                # Resolve the link target and confirm it points into our node dir.
+                # os.readlink + manual join handles broken (dangling) links too;
+                # Path.resolve() on a dangling link still returns the target path.
+                target = Path(os.readlink(link))
+                if not target.is_absolute():
+                    target = (link.parent / target)
+                target = target.resolve()
 
-            if target == node_dir or node_dir in target.parents:
-                link.unlink()
-                removed.append(link)
-        except Exception as e:
-            log_warn(f"Could not remove {link}: {e}")
+                if target == node_dir or node_dir in target.parents:
+                    link.unlink()
+                    removed.append(link)
+            except Exception as e:
+                log_warn(f"Could not remove {link}: {e}")
 
     return removed
 

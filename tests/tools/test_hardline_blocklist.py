@@ -374,3 +374,83 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+# -------------------------------------------------------------------------
+# HERMES_ALLOW_REBOOT env-gated downgrade (reboot/shutdown only)
+# -------------------------------------------------------------------------
+
+_REBOOT_FAMILY = [
+    "reboot",
+    "sudo reboot",
+    "systemctl reboot",
+    "shutdown -h now",
+    "shutdown -r now",
+    "halt",
+    "poweroff",
+    "init 0",
+    "init 6",
+    "telinit 0",
+    "systemctl poweroff",
+]
+
+# Catastrophic commands that must NEVER downgrade, flag or no flag.
+_NEVER_DOWNGRADE = [
+    "rm -rf /",
+    "mkfs.ext4 /dev/sda1",
+    "dd if=/dev/zero of=/dev/sda",
+    ":(){ :|:& };:",
+    "kill -1",
+]
+
+
+@pytest.mark.parametrize("command", _REBOOT_FAMILY)
+def test_reboot_stays_hardline_when_flag_unset(command, monkeypatch):
+    """Default (HERMES_ALLOW_REBOOT unset): reboot/shutdown stay hardline."""
+    monkeypatch.delenv("HERMES_ALLOW_REBOOT", raising=False)
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"{command!r} must stay hardline when flag unset"
+    assert desc
+
+
+@pytest.mark.parametrize("command", _REBOOT_FAMILY)
+def test_reboot_downgrades_to_dangerous_when_flag_set(command, monkeypatch):
+    """HERMES_ALLOW_REBOOT=1: reboot/shutdown drop out of hardline but remain
+    dangerous (approval-gated; yolo can pass)."""
+    monkeypatch.setenv("HERMES_ALLOW_REBOOT", "1")
+    is_hl, _ = detect_hardline_command(command)
+    assert not is_hl, f"{command!r} must downgrade out of hardline when flag set"
+    is_dng, _, ddesc = detect_dangerous_command(command)
+    assert is_dng, f"{command!r} must remain dangerous (approval-gated) when downgraded"
+    assert ddesc
+
+
+@pytest.mark.parametrize("command", _NEVER_DOWNGRADE)
+def test_other_hardline_unaffected_by_reboot_flag(command, monkeypatch):
+    """The reboot flag must NOT loosen any other catastrophic pattern."""
+    monkeypatch.setenv("HERMES_ALLOW_REBOOT", "1")
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"{command!r} must stay hardline even with HERMES_ALLOW_REBOOT=1"
+    assert desc
+
+
+def test_reboot_flag_plus_yolo_approves(monkeypatch):
+    """Flag set + session yolo => reboot passes the full guard pipeline."""
+    monkeypatch.setenv("HERMES_ALLOW_REBOOT", "1")
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    token = set_current_session_key("reboot_flag_test")
+    try:
+        enable_session_yolo("reboot_flag_test")
+        res = check_all_command_guards("sudo reboot", "ssh")
+        assert res["approved"] is True, f"expected approval, got {res}"
+    finally:
+        disable_session_yolo("reboot_flag_test")
+        reset_current_session_key(token)
+
+
+def test_reboot_flag_falsey_values_stay_blocked(monkeypatch):
+    """Only truthy HERMES_ALLOW_REBOOT downgrades; falsey/empty stays blocked."""
+    for val in ["0", "false", "no", ""]:
+        monkeypatch.setenv("HERMES_ALLOW_REBOOT", val)
+        is_hl, _ = detect_hardline_command("reboot")
+        assert is_hl, f"HERMES_ALLOW_REBOOT={val!r} must NOT downgrade reboot"

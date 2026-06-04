@@ -317,6 +317,31 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+# Reboot/shutdown hardline descriptions that may be downgraded to the
+# DANGEROUS layer when HERMES_ALLOW_REBOOT is opted into. Kept in sync with
+# the reboot/shutdown entries in HARDLINE_PATTERNS below.
+_REBOOT_HARDLINE_DESCS = {
+    "system shutdown/reboot",
+    "init 0/6 (shutdown/reboot)",
+    "systemctl poweroff/reboot",
+    "telinit 0/6 (shutdown/reboot)",
+}
+
+
+def _reboot_shutdown_allowed() -> bool:
+    """Whether the reboot/shutdown family is opted out of the hardline floor.
+
+    When ``HERMES_ALLOW_REBOOT`` is set truthy, reboot/shutdown commands
+    downgrade from the unconditional hardline block to the DANGEROUS layer
+    (approval-gated; yolo / approvals.mode=off can pass them). This is for
+    fleet/ops agents that legitimately need to reboot hosts they manage.
+    Default (unset) preserves the historical unconditional block — no other
+    catastrophic pattern is affected.
+    """
+    from utils import env_var_enabled
+    return env_var_enabled("HERMES_ALLOW_REBOOT")
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
@@ -324,8 +349,18 @@ def detect_hardline_command(command: str) -> tuple:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
+    allow_reboot = _reboot_shutdown_allowed()
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
+            # Opt-in escape hatch: when HERMES_ALLOW_REBOOT is set, the
+            # reboot/shutdown family downgrades out of the hardline floor and
+            # is handled by the DANGEROUS_PATTERNS layer instead (approval-
+            # gated; yolo can pass it through). Every other catastrophic
+            # pattern (rm -rf /, mkfs, dd to raw device, fork bomb, kill -1)
+            # stays unconditionally hardline. Default (flag unset) is byte-
+            # identical to the historical always-block behavior.
+            if allow_reboot and description in _REBOOT_HARDLINE_DESCS:
+                continue
             return (True, description)
     return (False, None)
 
@@ -382,6 +417,14 @@ DANGEROUS_PATTERNS = [
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
+    # Reboot/shutdown family — normally HARDLINE-blocked. They only reach this
+    # DANGEROUS layer when HERMES_ALLOW_REBOOT downgrades them (see
+    # detect_hardline_command). Listed here so that, once downgraded, they are
+    # still approval-gated (and yolo-bypassable) rather than silently allowed.
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     # killall with SIGKILL (parallel to pkill -9). Catches -9 / -KILL /

@@ -71,11 +71,9 @@ ok "git $(git --version | awk '{print $3}')"
 command -v curl    &>/dev/null || die "需要 curl"
 ok "curl 已安装"
 
-# uv
+# uv (仅检查，不安装到本机)
 if ! command -v uv &>/dev/null; then
-    sub "安装 uv ..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
+    die "需要 uv。安装: curl -LsSf https://astral.sh/uv/install.sh | sh"
 fi
 ok "uv $(uv --version 2>/dev/null | awk '{print $2}')"
 

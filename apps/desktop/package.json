@@ -20,6 +20,7 @@
     "start": "npm run build && electron .",
     "build": "node scripts/assert-root-install.cjs && node scripts/write-build-stamp.cjs && node scripts/stage-native-deps.cjs && tsc -b && vite build && npm run postbuild",
     "postbuild": "node scripts/assert-dist-built.cjs",
+    "prebuilder": "node scripts/patch-electron-builder-mac-binary.cjs",
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 electron-builder",
     "pack": "npm run build && npm run builder -- --dir",
     "dist": "npm run build && npm run builder",
@@ -134,6 +135,7 @@
   },
   "build": {
     "electronVersion": "40.9.3",
+    "electronDist": "../../node_modules/electron/dist",
     "appId": "com.nousresearch.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",

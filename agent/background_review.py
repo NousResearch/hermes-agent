@@ -449,6 +449,7 @@ def _run_review_in_thread(
             # if a future code path bypasses the cache.
             review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            review_agent.compression_enabled = False
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (

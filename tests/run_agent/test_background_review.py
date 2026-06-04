@@ -313,3 +313,47 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
         "the fork leaks harness prompts into the user's real memory "
         "namespace via on_turn_start / prefetch_all / sync_all."
     )
+
+
+def test_background_review_fork_disables_compression(monkeypatch):
+    """The review fork must not compress the foreground session_id.
+
+    The fork intentionally inherits the parent's session_id for prompt-cache
+    parity. If it also keeps compression enabled, the short-lived review agent
+    can rotate that shared parent session and leave the gateway holding a stale
+    parent, allowing the next foreground turn to create a sibling child.
+    """
+    observed: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self.compression_enabled = True
+            self.session_id = None
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            observed["compression_enabled"] = self.compression_enabled
+            observed["session_id"] = self.session_id
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert observed["session_id"] == agent.session_id
+    assert observed["compression_enabled"] is False, (
+        "Background review forks share the foreground session_id, so they "
+        "must not be allowed to rotate it via context compression."
+    )

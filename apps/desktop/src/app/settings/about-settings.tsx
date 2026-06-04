@@ -126,7 +126,7 @@ export function AboutSettings() {
               size="sm"
               variant="textStrong"
             >
-              {checking ? <Loader2 className="size-3 animate-spin" /> : null}
+              {checking && <Loader2 className="size-3 animate-spin" />}
               {checking ? 'Checking…' : 'Check now'}
             </Button>
 

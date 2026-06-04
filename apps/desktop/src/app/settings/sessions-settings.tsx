@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
@@ -11,6 +10,7 @@ import { setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 const ARCHIVED_FETCH_LIMIT = 200
 
@@ -34,7 +34,6 @@ export function SessionsSettings() {
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [searchParams, setSearchParams] = useSearchParams()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -88,39 +87,11 @@ export function SessionsSettings() {
     }
   }, [])
 
-  // Deep-link target from the command palette (?session=<id>): scroll the row
-  // into view and flash it.
-  const targetSession = searchParams.get('session')
-
-  useEffect(() => {
-    if (!targetSession || loading || !sessions.some(session => session.id === targetSession)) {
-      return
-    }
-
-    const scrollTimeout = window.setTimeout(() => {
-      const element = document.getElementById(`archived-session-${targetSession}`)
-
-      if (!element) {
-        return
-      }
-
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      element.classList.add('setting-field-highlight')
-      window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
-    }, 80)
-
-    setSearchParams(
-      previous => {
-        const next = new URLSearchParams(previous)
-        next.delete('session')
-
-        return next
-      },
-      { replace: true }
-    )
-
-    return () => window.clearTimeout(scrollTimeout)
-  }, [loading, sessions, setSearchParams, targetSession])
+  useDeepLinkHighlight({
+    elementId: id => `archived-session-${id}`,
+    param: 'session',
+    ready: id => !loading && sessions.some(session => session.id === id)
+  })
 
   if (loading) {
     return <LoadingState label="Loading archived sessions…" />
@@ -152,31 +123,31 @@ export function SessionsSettings() {
               <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
                 <ListRow
                   action={
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      disabled={busy}
-                      onClick={() => void unarchive(session)}
-                      size="sm"
-                      type="button"
-                      variant="textStrong"
-                    >
-                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                      <span>Unarchive</span>
-                    </Button>
-                    <Button
-                      aria-label="Delete permanently"
-                      className="text-muted-foreground hover:text-destructive"
-                      disabled={busy}
-                      onClick={() => void remove(session)}
-                      size="icon"
-                      title="Delete permanently"
-                      type="button"
-                      variant="ghost"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                }
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        disabled={busy}
+                        onClick={() => void unarchive(session)}
+                        size="sm"
+                        type="button"
+                        variant="textStrong"
+                      >
+                        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
+                        <span>Unarchive</span>
+                      </Button>
+                      <Button
+                        aria-label="Delete permanently"
+                        className="text-muted-foreground hover:text-destructive"
+                        disabled={busy}
+                        onClick={() => void remove(session)}
+                        size="icon"
+                        title="Delete permanently"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  }
                   description={session.preview || undefined}
                   hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
                   title={sessionTitle(session)}
@@ -213,7 +184,10 @@ function DefaultProjectDirSetting() {
     let alive = true
 
     void settings.getDefaultProjectDir().then(result => {
-      if (!alive) {return}
+      if (!alive) {
+        return
+      }
+
       setDir(result.dir)
       setFallback(result.defaultLabel)
     })
@@ -226,7 +200,9 @@ function DefaultProjectDirSetting() {
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) {return}
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 
@@ -250,7 +226,9 @@ function DefaultProjectDirSetting() {
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) {return}
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 

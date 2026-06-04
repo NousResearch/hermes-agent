@@ -100,6 +100,8 @@ DEFAULT_THRESHOLDS = {
         "eval_model": "openai/gpt-4.1-mini",
         "hermes_repo": "",
         "skills_dir": "",
+        "base_url": "",
+        "api_key_env": "OPENAI_API_KEY",
     },
     "model": {
         "provider": "custom",

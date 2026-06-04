@@ -215,6 +215,10 @@ evolution:
   hermes_repo: ""
   # Skills 目录（留空则使用默认路径）
   skills_dir: ""
+  # API Key 环境变量名（默认 OPENAI_API_KEY）
+  api_key_env: "QWEN_API_KEY"
+  # 自定义模型 base_url（私有部署时填写）
+  base_url: ""
 
 # ============================================================
 # 模型配置

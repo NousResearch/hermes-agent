@@ -3495,3 +3495,171 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction in error surfaces (security bug #37733)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorCredentialRedaction:
+    """Verify that raw exception strings containing credentials are redacted
+    before they reach any outward-facing surface: HTTP JSON error bodies,
+    SSE stream error events, and persisted response snapshots."""
+
+    _CRED_URL = "https://user:sk-secret-key-abc123@api.provider.com/v1/chat"
+    _CRED_EXCEPTION_MSG = f"Connection failed: GET {_CRED_URL}"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_exception_redacted_in_http_error(self, adapter):
+        """Agent exception with credential URL must not appear verbatim in 500 body."""
+        cred_exc = RuntimeError(self._CRED_EXCEPTION_MSG)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", side_effect=cred_exc
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hello"}]},
+                )
+                assert resp.status == 500
+                data = await resp.json()
+                msg = data["error"]["message"]
+                # Must not contain the raw secret
+                assert "sk-secret-key-abc123" not in msg, (
+                    f"Credential leaked in HTTP error body: {msg!r}"
+                )
+                # The error message itself should still be present (redacted form)
+                assert "Connection failed" in msg or "Internal server error" in msg
+
+    @pytest.mark.asyncio
+    async def test_responses_exception_redacted_in_http_error(self, adapter):
+        """Agent exception with credential URL must not appear verbatim in 500 body on /v1/responses."""
+        cred_exc = RuntimeError(self._CRED_EXCEPTION_MSG)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", side_effect=cred_exc
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "hello"},
+                )
+                assert resp.status == 500
+                data = await resp.json()
+                msg = data["error"]["message"]
+                assert "sk-secret-key-abc123" not in msg, (
+                    f"Credential leaked in /v1/responses error body: {msg!r}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_result_error_redacted_in_hard_fail(self, adapter):
+        """result['error'] with credential text must be redacted in the 502 envelope."""
+        cred_error = f"Provider rejected: {self._CRED_URL}"
+        mock_result = {
+            "final_response": "",
+            "failed": True,
+            "partial": False,
+            "completed": False,
+            "error": cred_error,
+        }
+        mock_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", return_value=(mock_result, mock_usage)
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hello"}]},
+                )
+                assert resp.status == 502
+                data = await resp.json()
+                msg = data["error"]["message"]
+                assert "sk-secret-key-abc123" not in msg, (
+                    f"Credential leaked in hard-fail body: {msg!r}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_result_error_redacted_in_hermes_extension(self, adapter):
+        """result['error'] with credential text must be redacted in the hermes extension field."""
+        cred_error = f"Provider rejected: {self._CRED_URL}"
+        mock_result = {
+            "final_response": "partial text",
+            "failed": False,
+            "partial": True,
+            "completed": False,
+            "error": cred_error,
+        }
+        mock_usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", return_value=(mock_result, mock_usage)
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hello"}]},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                hermes_err = data.get("hermes", {}).get("error", "")
+                assert "sk-secret-key-abc123" not in (hermes_err or ""), (
+                    f"Credential leaked in hermes.error field: {hermes_err!r}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_responses_fallback_content_redacted(self, adapter):
+        """result['error'] used as fallback assistant content must be redacted in response body."""
+        cred_error = f"Provider rejected: {self._CRED_URL}"
+        mock_result = {
+            "final_response": "",
+            "failed": False,
+            "partial": False,
+            "completed": True,
+            "error": cred_error,
+            "messages": [],
+        }
+        mock_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", return_value=(mock_result, mock_usage)
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"input": "hello", "store": False},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                # Check that the raw secret is not in any output item text
+                raw_body = json.dumps(data)
+                assert "sk-secret-key-abc123" not in raw_body, (
+                    f"Credential leaked in /v1/responses output body"
+                )
+
+    def test_openai_error_helper_redacts_message(self):
+        """_openai_error() must redact secrets in the message before building the envelope."""
+        from gateway.platforms.api_server import _openai_error
+        cred_msg = f"Connection failed at {self._CRED_URL}"
+        envelope = _openai_error(cred_msg)
+        msg = envelope["error"]["message"]
+        assert "sk-secret-key-abc123" not in msg, (
+            f"_openai_error did not redact credential: {msg!r}"
+        )
+
+    def test_redact_error_helper_strips_known_prefix(self):
+        """_redact_error() standalone must strip sk-... prefixed tokens."""
+        from gateway.platforms.api_server import _redact_error
+        raw = "auth failed: Bearer sk-abc123def456"
+        redacted = _redact_error(raw)
+        assert "sk-abc123def456" not in redacted, (
+            f"_redact_error did not strip Bearer token: {redacted!r}"
+        )
+
+    def test_redact_error_handles_none_and_empty(self):
+        """_redact_error() must not raise on None or empty input."""
+        from gateway.platforms.api_server import _redact_error
+        assert _redact_error(None) is None
+        assert _redact_error("") == ""

@@ -1039,6 +1039,32 @@ class WeComAdapter(BasePlatformAdapter):
         self._active_stream_req_id = None
         self._active_stream_chat_id = None
 
+    async def _force_reconnect_on_stale_subscription(self, errcode: int) -> None:
+        """Force-close the WS when server rejects our subscription (846609).
+
+        WeCom errcode 846609 means the server no longer considers this WS
+        session subscribed — all sends will fail until we reconnect. Rather
+        than waiting for the WS to close naturally (can take 2+ minutes of
+        timeouts), we proactively close it to trigger _listen_loop's
+        reconnect cycle immediately.
+        """
+        if errcode != STREAM_NOT_SUBSCRIBED_ERRCODE:
+            return
+        logger.warning(
+            "[%s] Got errcode %d (subscription lost) — forcing WS reconnect",
+            self.name, errcode,
+        )
+        # Invalidate all cached req_ids — they're bound to the dead session.
+        self._last_chat_req_ids.clear()
+        self._reply_req_ids.clear()
+        self._reset_native_stream_state()
+        # Close WS — _listen_loop will detect the closure and reconnect.
+        try:
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+        except Exception:
+            pass
+
     def _reply_req_id_for_message(self, reply_to: Optional[str]) -> Optional[str]:
         normalized = str(reply_to or "").strip()
         if not normalized or normalized.startswith("quote:"):
@@ -1647,10 +1673,24 @@ class WeComAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
             logger.error("[%s] Send failed: %s", self.name, exc)
+            # Detect 846609 (subscription lost) and trigger reconnect so
+            # subsequent messages don't fail for 2+ minutes while the dead
+            # WS connection lingers.
+            exc_str = str(exc)
+            if str(STREAM_NOT_SUBSCRIBED_ERRCODE) in exc_str:
+                asyncio.ensure_future(
+                    self._force_reconnect_on_stale_subscription(STREAM_NOT_SUBSCRIBED_ERRCODE)
+                )
             return SendResult(success=False, error=str(exc))
 
         error = self._response_error(response)
         if error:
+            # Also check the response-level errcode for 846609.
+            errcode = response.get("errcode", 0)
+            if errcode == STREAM_NOT_SUBSCRIBED_ERRCODE:
+                asyncio.ensure_future(
+                    self._force_reconnect_on_stale_subscription(errcode)
+                )
             return SendResult(success=False, error=error)
 
         return SendResult(

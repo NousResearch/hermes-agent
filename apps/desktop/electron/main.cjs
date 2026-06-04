@@ -27,6 +27,7 @@ const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -3747,23 +3748,67 @@ async function testDesktopConnectionConfig(input = {}) {
   // for local we fall back to the resolved/started backend.
   let baseUrl
   let token = null
+  let authMode = 'token'
   if (config.mode === 'remote') {
     baseUrl = normalizeRemoteBaseUrl(config.remote.url)
-    if ((config.remote.authMode || 'token') !== 'oauth') {
+    authMode = config.remote.authMode === 'oauth' ? 'oauth' : 'token'
+    if (authMode !== 'oauth') {
       token = decryptDesktopSecret(config.remote.token)
     }
   } else {
     const remote = (await resolveRemoteBackend()) || (await startHermes())
     baseUrl = remote.baseUrl
     token = remote.token
+    authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
   }
   const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
+
+  // The HTTP status check above proves the backend is reachable, but the chat
+  // surface only works once the renderer's live WebSocket to ``/api/ws``
+  // connects — a separate transport with separate server-side guards (Host/
+  // Origin, ws-ticket/token auth). Validating only the HTTP side produced a
+  // false-positive "reachable" while the real boot still failed with "Could not
+  // connect to Hermes gateway". Mirror the renderer's connect here so the test
+  // reflects the full path the app actually uses.
+  const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token)
+  // Skip the WS leg only when the runtime genuinely lacks a WebSocket (so an
+  // older Electron/Node never fails the test spuriously); Electron's main
+  // process ships a global WebSocket on every supported version.
+  if (wsUrl && typeof globalThis.WebSocket === 'function') {
+    const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+    if (!probe.ok) {
+      throw new Error(
+        `Reached the gateway over HTTP, but the live WebSocket (/api/ws) connection failed: ${probe.reason} ` +
+          'The HTTP check can pass while the WebSocket is blocked by a proxy, firewall, or gateway auth/origin guard.'
+      )
+    }
+  }
 
   return {
     ok: true,
     baseUrl,
     version: status?.version || null
   }
+}
+
+// Build the WS URL the renderer would connect with, so the connection test can
+// exercise the same transport. OAuth gateways need a freshly minted single-use
+// ticket; token/local gateways carry a long-lived token in the query string. A
+// null return means we can't form a credentialed URL (e.g. OAuth without a live
+// session) and the WS leg of the test is skipped rather than failing spuriously.
+async function resolveTestWsUrl(baseUrl, authMode, token) {
+  if (authMode === 'oauth') {
+    try {
+      const ticket = await mintGatewayWsTicket(baseUrl)
+      return buildGatewayWsUrlWithTicket(baseUrl, ticket)
+    } catch {
+      return null
+    }
+  }
+  if (!token) {
+    return null
+  }
+  return buildGatewayWsUrl(baseUrl, token)
 }
 
 function resetBootProgressForReconnect() {

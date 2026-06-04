@@ -103,24 +103,22 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
 
   return (
     <div className="mt-1 flex items-center gap-1 ps-5" data-slot="tool-approval-inline">
-      <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-(--ui-stroke-secondary) bg-background">
+      <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
         <Button
-          className="h-full gap-1 rounded-none px-2 text-xs font-normal"
+          className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
           disabled={busy}
           onClick={() => void respond('once')}
           variant="ghost"
         >
           {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : 'Run'}
-          {submitting !== 'once' && (
-            <span className="text-[0.625rem] text-(--ui-text-tertiary)">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>
-          )}
+          {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
         </Button>
-        <span aria-hidden className="w-px self-stretch bg-(--ui-stroke-secondary)" />
+        <span aria-hidden className="w-px self-stretch bg-primary/20" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               aria-label="More approval options"
-              className="h-full rounded-none px-1"
+              className="h-full rounded-none px-1 text-primary hover:bg-primary/15 hover:text-primary"
               disabled={busy}
               variant="ghost"
             >

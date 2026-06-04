@@ -235,12 +235,10 @@ function ProfilesMenuButton({ navigate }: { navigate: ReturnType<typeof useNavig
 }
 
 function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
-  const className = cn(
-    titlebarButtonClass,
-    'bg-transparent select-none',
-    tool.active && 'bg-(--ui-control-active-background)! text-foreground!',
-    tool.className
-  )
+  // Titlebar actions never show an active background — state reads from the
+  // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
+  // for a11y.
+  const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
 
   if (tool.href) {
     return (

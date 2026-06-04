@@ -24,7 +24,8 @@ import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { triggerHaptic } from '@/lib/haptics'
 import { profileColor, profileColorSoft } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
@@ -41,8 +42,11 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
+import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
+import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
+import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
@@ -84,6 +88,8 @@ export function ProfileRail() {
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
+  const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
+  const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // A plain mouse wheel only emits deltaY; map it to horizontal scroll so the
@@ -212,6 +218,8 @@ export function ProfileRail() {
                     color={profileColor(profile.name)}
                     key={profile.name}
                     label={profile.name}
+                    onDelete={() => setPendingDelete(profile)}
+                    onRename={() => setPendingRename(profile)}
                     onSelect={() => selectProfile(profile.name)}
                   />
                 ))}
@@ -236,7 +244,39 @@ export function ProfileRail() {
         <ProfilePill active={false} glyph="ellipsis" label="Manage profiles…" onSelect={() => navigate(PROFILES_ROUTE)} />
       )}
 
-      <CreateProfileDialog onClose={() => setCreateOpen(false)} onCreated={refreshActiveProfile} open={createOpen} />
+      {/* Land in the new profile on a fresh chat (selectProfile triggers the
+          new-session reset), not stuck on the session you were just in. */}
+      <CreateProfileDialog
+        onClose={() => setCreateOpen(false)}
+        onCreated={async name => {
+          await refreshActiveProfile()
+          selectProfile(name)
+        }}
+        open={createOpen}
+      />
+
+      <RenameProfileDialog
+        currentName={pendingRename?.name ?? ''}
+        onClose={() => setPendingRename(null)}
+        onRenamed={refreshActiveProfile}
+        open={pendingRename !== null}
+      />
+
+      <DeleteProfileDialog
+        onClose={() => setPendingDelete(null)}
+        onDeleted={async () => {
+          // Deleting the profile you're currently in would strand the gateway on
+          // a dead profile — fall back to default.
+          const wasActive = pendingDelete != null && normalizeProfileKey(pendingDelete.name) === activeKey
+          await refreshActiveProfile()
+
+          if (wasActive) {
+            selectProfile('default')
+          }
+        }}
+        open={pendingDelete !== null}
+        profile={pendingDelete}
+      />
     </div>
   )
 }
@@ -275,13 +315,18 @@ interface ProfileSquareProps {
   color: null | string
   label: string
   onSelect: () => void
+  onRename: () => void
+  onDelete: () => void
 }
 
 // A profile *is* its colored square — no icon-button chrome. Soft profile-tint
 // fill + the initial in the full color; the active one pops to full opacity with
 // a color ring. These pack tightly so the rail reads as a strip of profiles,
-// and drag-sort to reorder (a tap below the drag threshold still selects).
-function ProfileSquare({ active, color, label, onSelect }: ProfileSquareProps) {
+// drag-sort to reorder (a tap below the drag threshold still selects), and
+// right-click to rename/delete. The button carries both the tooltip and
+// context-menu triggers via nested asChild Slots, so a single element keeps the
+// dnd listeners, hover tip, and right-click menu.
+function ProfileSquare({ active, color, label, onSelect, onRename, onDelete }: ProfileSquareProps) {
   const hue = color ?? 'var(--ui-text-quaternary)'
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
@@ -294,32 +339,58 @@ function ProfileSquare({ active, color, label, onSelect }: ProfileSquareProps) {
   const lift = isDragging ? '0 6px 16px -4px rgb(0 0 0 / 0.4)' : ''
 
   return (
-    <Tip label={label}>
-      <button
-        className={cn(
-          'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
-          active ? 'opacity-100' : 'opacity-55',
-          isDragging && 'z-10 cursor-grabbing opacity-100'
-        )}
-        onClick={onSelect}
-        ref={setNodeRef}
-        style={{
-          backgroundColor: profileColorSoft(hue, active ? 30 : 22),
-          boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
-          color: color ?? undefined,
-          // Glide the dragged square between snapped cells with a little overshoot
-          // (no scale — the overflow-x strip would clip it).
-          transform: base,
-          transition: isDragging ? DRAG_TRANSITION : transition
-        }}
-        type="button"
-        {...attributes}
-        {...listeners}
-        aria-label={label}
-        aria-pressed={active}
+    <ContextMenu>
+      <TooltipProvider delayDuration={0}>
+        <Tooltip>
+          <ContextMenuTrigger asChild>
+            <TooltipTrigger asChild>
+              <button
+                className={cn(
+                  'grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                  active ? 'opacity-100' : 'opacity-55',
+                  isDragging && 'z-10 cursor-grabbing opacity-100'
+                )}
+                onClick={onSelect}
+                ref={setNodeRef}
+                style={{
+                  backgroundColor: profileColorSoft(hue, active ? 30 : 22),
+                  boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
+                  color: color ?? undefined,
+                  // Glide the dragged square between snapped cells with a little
+                  // overshoot (no scale — the overflow-x strip would clip it).
+                  transform: base,
+                  transition: isDragging ? DRAG_TRANSITION : transition
+                }}
+                type="button"
+                {...attributes}
+                {...listeners}
+                aria-label={label}
+                aria-pressed={active}
+              >
+                {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+              </button>
+            </TooltipTrigger>
+          </ContextMenuTrigger>
+          <TooltipContent>{label}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+
+      {/* The rail sits at the very bottom, so pad off the chrome (esp. the
+          statusbar) — Radix then flips the menu up instead of squishing it. */}
+      <ContextMenuContent
+        aria-label={`Actions for ${label}`}
+        className="w-40"
+        collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
       >
-        {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
-      </button>
-    </Tip>
+        <ContextMenuItem onSelect={onRename}>
+          <Codicon name="edit" size="0.875rem" />
+          <span>Rename</span>
+        </ContextMenuItem>
+        <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
+          <Codicon name="trash" size="0.875rem" />
+          <span>Delete</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

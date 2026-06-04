@@ -29,7 +29,7 @@ import {
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import { normalizeProfileKey, refreshActiveProfile } from '../store/profile'
+import { $freshSessionRequest, normalizeProfileKey, refreshActiveProfile } from '../store/profile'
 import {
   $activeSessionId,
   $currentCwd,
@@ -491,6 +491,20 @@ export function DesktopController() {
 
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [startFreshSessionDraft])
+
+  // A profile switch/create drops to a fresh new-session draft so the previously
+  // open session doesn't bleed across contexts. Skip the initial value.
+  const freshSessionRequest = useStore($freshSessionRequest)
+  const lastFreshRef = useRef(freshSessionRequest)
+
+  useEffect(() => {
+    if (freshSessionRequest === lastFreshRef.current) {
+      return
+    }
+
+    lastFreshRef.current = freshSessionRequest
+    startFreshSessionDraft()
+  }, [freshSessionRequest, startFreshSessionDraft])
 
   const composer = useComposerActions({
     activeSessionId,

@@ -7,32 +7,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
-import {
-  createProfile,
-  deleteProfile,
-  getProfiles,
-  getProfileSoul,
-  type ProfileInfo,
-  renameProfile,
-  updateProfileSoul
-} from '@/hermes'
+import { createProfile, getProfiles, getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { AlertTriangle, Save, Users } from '@/lib/icons'
 import { profileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
@@ -42,7 +25,9 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
-import { CreateProfileDialog, isValidProfileName, PROFILE_NAME_HINT } from './create-profile-dialog'
+import { CreateProfileDialog } from './create-profile-dialog'
+import { DeleteProfileDialog } from './delete-profile-dialog'
+import { RenameProfileDialog } from './rename-profile-dialog'
 
 // Pick a free "<source>-copy" name for a duplicated profile, appending a numeric
 // suffix when the base is taken. Source is truncated to leave room for the
@@ -77,9 +62,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingRename, setPendingRename] = useState<null | ProfileInfo>(null)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
-  const [deleting, setDeleting] = useState(false)
-  const [deleted, setDeleted] = useState(false)
-  const [deleteError, setDeleteError] = useState<null | string>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
 
   const refresh = useCallback(async () => {
@@ -100,13 +82,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
     }
   }, [])
 
-  useEffect(() => {
-    if (pendingDelete) {
-      setDeleted(false)
-      setDeleteError(null)
-    }
-  }, [pendingDelete])
-
   useRefreshHotkey(refresh)
 
   useEffect(() => {
@@ -120,25 +95,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
     return profiles.find(p => p.name === selectedName) ?? profiles[0] ?? null
   }, [profiles, selectedName])
-
-  const handleRename = useCallback(
-    async (from: string, to: string): Promise<void> => {
-      const target = to.trim()
-
-      if (target === from) {
-        return
-      }
-
-      if (!isValidProfileName(target)) {
-        throw new Error(PROFILE_NAME_HINT)
-      }
-
-      await renameProfile(from, target)
-      setSelectedName(target)
-      await refresh()
-    },
-    [refresh]
-  )
 
   const handleClone = useCallback(
     async (source: ProfileInfo) => {
@@ -165,29 +121,6 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       setLoadError(err instanceof Error ? err.message : `Failed to switch to ${profile.name}`)
     }
   }, [])
-
-  const handleConfirmDelete = useCallback(async () => {
-    if (!pendingDelete || deleting || deleted) {
-      return
-    }
-
-    setDeleting(true)
-    setDeleteError(null)
-
-    try {
-      await deleteProfile(pendingDelete.name)
-      setDeleted(true)
-      window.setTimeout(() => {
-        setPendingDelete(null)
-        setSelectedName(null)
-        void refresh()
-      }, 700)
-    } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : 'Failed to delete profile')
-    } finally {
-      setDeleting(false)
-    }
-  }, [deleted, deleting, pendingDelete, refresh])
 
   return (
     <OverlayView closeLabel="Close profiles" onClose={onClose}>
@@ -258,53 +191,22 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       <RenameProfileDialog
         currentName={pendingRename?.name ?? ''}
         onClose={() => setPendingRename(null)}
-        onRename={async newName => {
-          if (pendingRename) {
-            await handleRename(pendingRename.name, newName)
-          }
+        onRenamed={async name => {
+          setSelectedName(name)
+          await refresh()
         }}
         open={pendingRename !== null}
       />
 
-      <Dialog
-        onOpenChange={open => !open && !deleting && !deleted && setPendingDelete(null)}
+      <DeleteProfileDialog
+        onClose={() => setPendingDelete(null)}
+        onDeleted={async () => {
+          setSelectedName(null)
+          await refresh()
+        }}
         open={pendingDelete !== null}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete profile?</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? (
-                <>
-                  This will delete <span className="font-medium text-foreground">{pendingDelete.name}</span> and remove
-                  its <span className="font-mono text-xs">{pendingDelete.path}</span> directory. This cannot be undone.
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-
-          {deleteError && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{deleteError}</span>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button disabled={deleting || deleted} onClick={() => setPendingDelete(null)} type="button" variant="ghost">
-              Cancel
-            </Button>
-            <Button disabled={deleting || deleted} onClick={() => void handleConfirmDelete()} variant="destructive">
-              <ActionStatus
-                busy="Deleting…"
-                done="Deleted"
-                idle="Delete"
-                state={deleted ? 'done' : deleting ? 'saving' : 'idle'}
-              />
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        profile={pendingDelete}
+      />
     </OverlayView>
   )
 }
@@ -603,109 +505,3 @@ function SoulEditor({ profileName }: { profileName: string }) {
   )
 }
 
-function RenameProfileDialog({
-  currentName,
-  onClose,
-  onRename,
-  open
-}: {
-  currentName: string
-  onClose: () => void
-  onRename: (newName: string) => Promise<void>
-  open: boolean
-}) {
-  const [name, setName] = useState(currentName)
-  const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
-  const [error, setError] = useState<null | string>(null)
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    setName(currentName)
-    setError(null)
-    setStatus('idle')
-  }, [currentName, open])
-
-  const trimmed = name.trim()
-  const unchanged = trimmed === currentName
-  const invalid = trimmed !== '' && !unchanged && !isValidProfileName(trimmed)
-  const busy = status === 'saving' || status === 'done'
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-
-    if (unchanged) {
-      onClose()
-
-      return
-    }
-
-    if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
-
-      return
-    }
-
-    setStatus('saving')
-    setError(null)
-
-    try {
-      await onRename(trimmed)
-      setStatus('done')
-      window.setTimeout(onClose, 800)
-    } catch (err) {
-      setStatus('idle')
-      setError(err instanceof Error ? err.message : 'Failed to rename profile')
-    }
-  }
-
-  return (
-    <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Rename profile</DialogTitle>
-          <DialogDescription>
-            Renaming updates the profile directory and any wrapper scripts in{' '}
-            <span className="font-mono">~/.local/bin</span>.
-          </DialogDescription>
-        </DialogHeader>
-
-        <form className="grid gap-3" onSubmit={handleSubmit}>
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="rename-profile-name">
-              New name
-            </label>
-            <Input
-              aria-invalid={invalid}
-              autoFocus
-              id="rename-profile-name"
-              onChange={event => setName(event.target.value)}
-              value={name}
-            />
-            <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
-            </p>
-          </div>
-
-          {error && (
-            <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
-              Cancel
-            </Button>
-            <Button disabled={busy || invalid || unchanged} type="submit">
-              <ActionStatus busy="Renaming…" done="Renamed" idle="Rename" state={status} />
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}

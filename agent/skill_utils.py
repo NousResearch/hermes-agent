@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import get_config_path, get_skills_dir, get_user_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -224,11 +224,12 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     enabled = skills_cfg.get("enabled")
     if enabled is not None:
         enabled_set = _normalize_string_set(enabled)
-        all_names = _collect_all_skill_names(include_external=False)
-        disabled = all_names - enabled_set
+        # 白名单只对内置 skills 生效，用户下载的 skills 不受影响
+        builtin_names = _collect_builtin_skill_names()
+        disabled = builtin_names - enabled_set
         logger.debug(
             "技能白名单模式：已启用=%d 内置总量=%d 被禁用=%d%s",
-            len(enabled_set), len(all_names), len(disabled),
+            len(enabled_set), len(builtin_names), len(disabled),
             f" platform={resolved_platform}" if resolved_platform else "",
         )
         # Platform-specific overrides still apply on top
@@ -257,8 +258,12 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return result
 
 
-def _collect_all_skill_names(*, include_external: bool = True) -> Set[str]:
-    """Scan all skill directories for available skill names."""
+def _collect_builtin_skill_names() -> Set[str]:
+    """Scan only the built-in skills directory.
+
+    Used by the allowlist mode so that user-downloaded skills are not
+    accidentally disabled.
+    """
     names: Set[str] = set()
     skills_dir = get_skills_dir()
     if skills_dir and skills_dir.exists():
@@ -270,17 +275,32 @@ def _collect_all_skill_names(*, include_external: bool = True) -> Set[str]:
                 names.add(str(name).strip())
             except Exception:
                 continue
-    if include_external:
-        for ext_dir in get_external_skills_dirs():
-            if ext_dir.exists():
-                for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
-                    try:
-                        content = skill_md.read_text(encoding="utf-8")[:2000]
-                        frontmatter, _ = parse_frontmatter(content)
-                        name = frontmatter.get("name", skill_md.parent.name)
-                        names.add(str(name).strip())
-                    except Exception:
-                        continue
+    return names
+
+
+def _collect_all_skill_names() -> Set[str]:
+    """Scan all skill directories for available skill names."""
+    names = _collect_builtin_skill_names()
+    for ext_dir in get_external_skills_dirs():
+        if ext_dir.exists():
+            for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
+                try:
+                    content = skill_md.read_text(encoding="utf-8")[:2000]
+                    frontmatter, _ = parse_frontmatter(content)
+                    name = frontmatter.get("name", skill_md.parent.name)
+                    names.add(str(name).strip())
+                except Exception:
+                    continue
+    user_dir = get_user_skills_dir()
+    if user_dir.exists():
+        for skill_md in iter_skill_index_files(user_dir, "SKILL.md"):
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:2000]
+                frontmatter, _ = parse_frontmatter(content)
+                name = frontmatter.get("name", skill_md.parent.name)
+                names.add(str(name).strip())
+            except Exception:
+                continue
     return names
 
 

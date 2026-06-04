@@ -377,9 +377,17 @@ def get_config_path() -> Path:
 
 
 def get_skills_dir() -> Path:
-    """Return the path to the skills directory under HERMES_HOME."""
+    """Return the path to the built-in skills directory under HERMES_HOME."""
     return get_hermes_home() / "skills"
 
+
+def get_user_skills_dir() -> Path:
+    """Return the path to user-downloaded skills under HERMES_HOME.
+
+    Skills installed by setup_skills.sh go here, isolated from the
+    built-in skills so that ``skills.enabled`` does not affect them.
+    """
+    return get_hermes_home() / "skills_user"
 
 
 def get_env_path() -> Path:

@@ -38,6 +38,7 @@ fi
 
 CONFIG_FILE="$HERMES_HOME/config.yaml"
 SKILLS_DIR="$HERMES_HOME/skills"
+SKILLS_USER_DIR="$HERMES_HOME/skills_user"
 SOUL_FILE="$HERMES_HOME/SOUL.md"
 MEMORIES_DIR="$HERMES_HOME/memories"
 MEMORY_FILE="$MEMORIES_DIR/MEMORY.md"
@@ -45,7 +46,8 @@ MEMORY_FILE="$MEMORIES_DIR/MEMORY.md"
 echo "HERMES_HOME: $HERMES_HOME"
 echo "AGENT_TOOLKIT_SERVER: $AGENT_TOOLKIT_SERVER"
 echo "CONFIG_FILE: $CONFIG_FILE"
-echo "SKILLS_DIR: $SKILLS_DIR"
+echo "SKILLS_DIR: $SKILLS_DIR (内置)"
+echo "SKILLS_USER_DIR: $SKILLS_USER_DIR (下载)"
 echo "SOUL_FILE: $SOUL_FILE"
 echo "MEMORY_FILE: $MEMORY_FILE"
 echo ""
@@ -114,15 +116,6 @@ else
         echo ""
         echo "正在下载 skill: id=$SKILL_ID, version=$SKILL_VERSION"
 
-        SKILL_DIR_NAME="$SKILL_ID"
-        TARGET_DIR="$SKILLS_DIR/$SKILL_DIR_NAME"
-
-        # 如果已存在则跳过（Agent 运行时可能修改了 skill）
-        if [ -d "$TARGET_DIR" ]; then
-            echo "  skill 已存在，跳过: $TARGET_DIR"
-            continue
-        fi
-
         # 构造下载URL
         DOWNLOAD_URL="${AGENT_TOOLKIT_SERVER}/agent-toolkit/openapi/skills/${SKILL_ID}/download?version=${SKILL_VERSION}"
 
@@ -141,20 +134,24 @@ else
         fi
 
         # 从 Content-Disposition 响应头提取原始文件名，格式如 {name}-{version}.zip
-        # 然后用名称替换 id 作为目录名
+        # 然后用名称替换 id 作为目录名，安装到 skills_user 目录
+        SKILL_DIR_NAME="$SKILL_ID"
         ZIP_FILENAME=$(grep -i "Content-Disposition" "$TEMP_DIR/headers.txt" | sed -n 's/.*filename="\?\([^";]*\)"\?.*/\1/p' || true)
         if [ -n "$ZIP_FILENAME" ]; then
             SKILL_NAME=$(echo "$ZIP_FILENAME" | sed "s/-${SKILL_VERSION}\.zip$//" || true)
             if [ -n "$SKILL_NAME" ]; then
                 SKILL_DIR_NAME="$SKILL_NAME"
-                TARGET_DIR="$SKILLS_DIR/$SKILL_DIR_NAME"
-                # 重设目录名后重新检查是否已存在
-                if [ -d "$TARGET_DIR" ]; then
-                    echo "  skill 已存在，跳过: $TARGET_DIR"
-                    rm -rf "$TEMP_DIR"
-                    continue
-                fi
             fi
+        fi
+
+        # 下载的 skills 安装到 skills_user 目录，与内置 skills 隔离
+        # 这样 skills.enabled 白名单不会误过滤用户下载的 skills
+        TARGET_DIR="$SKILLS_USER_DIR/$SKILL_DIR_NAME"
+        mkdir -p "$SKILLS_USER_DIR"
+        if [ -d "$TARGET_DIR" ]; then
+            echo "  skill 已存在，跳过: $TARGET_DIR"
+            rm -rf "$TEMP_DIR"
+            continue
         fi
 
         # 检查下载的文件大小

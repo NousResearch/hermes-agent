@@ -241,6 +241,15 @@ def get_skills_directory_mount(
     except ImportError:
         pass
 
+    # Mount user-downloaded skills (skills_user/)
+    user_skills_dir = hermes_home / "skills_user"
+    if user_skills_dir.is_dir():
+        host_path = _safe_skills_path(user_skills_dir)
+        mounts.append({
+            "host_path": host_path,
+            "container_path": f"{container_base.rstrip('/')}/skills_user",
+        })
+
     return mounts
 
 

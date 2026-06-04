@@ -695,6 +695,70 @@ class TestV2TaxonomyRendering:
         assert "Orphan Triage" in md
 
 
+# ── UA-P6-003: Orphan Report Summarization ───────────────────────────────
+
+class TestUA_P6_003_OrphanReportSummarization:
+    """UA-P6-003: rendered human report summarizes orphan noise."""
+
+    def test_many_orphans_render_grouped_counts_not_every_raw_warning(self):
+        raw_warnings = [
+            f"Orphan node: 'file:.beads/bead_{i}.md' is not referenced by any edge"
+            for i in range(10)
+        ] + [
+            f"Orphan node: 'file:docs/doc_{i}.md' is not referenced by any edge"
+            for i in range(10)
+        ] + [
+            f"Orphan node: 'file:assets/img_{i}.png' is not referenced by any edge"
+            for i in range(10)
+        ]
+        report = _make_report_data(
+            sections={
+                "scan": {
+                    "project_root": "/tmp/p",
+                    "scanned_at": "",
+                    "total_files": 31,
+                    "total_lines": 310,
+                    "languages": {},
+                    "categories": {},
+                    "frameworks": [],
+                },
+                "orphan_triage": {
+                    "categories": {"expected": 30, "entrypoint_candidate": 0, "suspicious": 2, "unknown": 0},
+                    "totals": {"total_orphans": 32},
+                    "summary": {
+                        "category_counts": {"expected_planning_doc": 10, "expected_doc": 10, "expected_asset": 10, "possible_dead_source": 1, "import_resolution_anomaly": 1},
+                        "representative_examples": {
+                            "expected_planning_doc": ["file:.beads/bead_0.md", "file:.beads/bead_1.md", "file:.beads/bead_2.md"],
+                            "expected_doc": ["file:docs/doc_0.md", "file:docs/doc_1.md", "file:docs/doc_2.md"],
+                            "expected_asset": ["file:assets/img_0.png", "file:assets/img_1.png", "file:assets/img_2.png"],
+                        },
+                        "top_suspicious_examples": [
+                            {"node_id": "file:src/broken.py", "category": "import_resolution_anomaly", "reason": "unresolved imports"},
+                            {"node_id": "file:src/legacy.py", "category": "possible_dead_source", "reason": "unreferenced source"},
+                        ],
+                    },
+                },
+                "graph_analysis": {
+                    "nodes_count": 31,
+                    "file_nodes_count": 31,
+                    "edges_count": 1,
+                    "analytics": {},
+                    "warnings": raw_warnings,
+                    "warning_summary": {"orphan_node": 30},
+                    "warning_examples": {"orphan_node": raw_warnings[:3]},
+                },
+            },
+        )
+        md = render_report.render_report_data(report)
+        assert "### Orphan summary" in md
+        assert "expected_planning_doc" in md
+        assert "file:.beads/bead_0.md" in md
+        assert "file:.beads/bead_9.md" not in md
+        assert "file:docs/doc_9.md" not in md
+        assert "file:assets/img_9.png" not in md
+        assert "30 orphan_node warning(s); showing 3 representative example(s)" in md
+
+
 # ── UA-P5-006: Confidence Labels and Report Boundary Rendering ─────────────
 
 class TestUA_P5_006_BoundaryRendering:

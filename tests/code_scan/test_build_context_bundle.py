@@ -664,6 +664,83 @@ class TestRecommendedFiles:
         # Should contain at least some paths from the scan
         assert len(data["recommended_files"]) > 0
 
+    def test_recommended_files_deprioritize_lockfiles_and_images(self, tmp_path: Path):
+        """Large lock/image assets must not rank above source/auth/API files."""
+        bundle = _make_minimal_bundle(tmp_path)
+        scan_path = bundle / "scan.json"
+        scan = json.loads(scan_path.read_text())
+        scan["total_files"] = 6
+        scan["total_lines"] = 15075
+        scan["languages"] = {"json": 1, "png": 1, "typescript": 4}
+        scan["files"] = [
+            {"path": "package-lock.json", "lines": 9000, "language": "json"},
+            {"path": "public/logo.png", "lines": 5000, "language": "png"},
+            {"path": "src/auth/session.ts", "lines": 130, "language": "typescript"},
+            {"path": "src/api/users.ts", "lines": 90, "language": "typescript"},
+            {"path": "src/main.ts", "lines": 55, "language": "typescript"},
+            {"path": "tests/auth.test.ts", "lines": 300, "language": "typescript"},
+        ]
+        scan_path.write_text(json.dumps(scan, indent=2))
+
+        out = tmp_path / "context.json"
+        _run_build_context(bundle, out)
+        recommended = json.loads(out.read_text())["recommended_files"]
+
+        ranked_paths = [entry["path"] for entry in recommended]
+        assert ranked_paths.index("src/auth/session.ts") < ranked_paths.index("package-lock.json")
+        assert ranked_paths.index("src/api/users.ts") < ranked_paths.index("package-lock.json")
+        assert ranked_paths.index("src/auth/session.ts") < ranked_paths.index("public/logo.png")
+        assert ranked_paths.index("src/api/users.ts") < ranked_paths.index("public/logo.png")
+
+    def test_recommended_files_are_bucketed_deterministic_and_reasoned(self, tmp_path: Path):
+        """Recommendations must include stable buckets, score details, and reasons."""
+        bundle = _make_minimal_bundle(tmp_path)
+        scan_path = bundle / "scan.json"
+        scan = json.loads(scan_path.read_text())
+        scan["files"] = [
+            {"path": "AGENTS.md", "lines": 40, "language": "markdown"},
+            {"path": "src/main.ts", "lines": 55, "language": "typescript"},
+            {"path": "src/auth/session.ts", "lines": 130, "language": "typescript"},
+            {"path": "src/api/users.ts", "lines": 90, "language": "typescript"},
+            {"path": "supabase/functions/invite/index.ts", "lines": 75, "language": "typescript"},
+            {"path": "supabase/migrations/20260601000000_rls.sql", "lines": 80, "language": "sql"},
+            {"path": "Dockerfile", "lines": 30, "language": "dockerfile"},
+            {"path": "tests/auth.test.ts", "lines": 300, "language": "typescript"},
+            {"path": "README.md", "lines": 200, "language": "markdown"},
+        ]
+        scan_path.write_text(json.dumps(scan, indent=2))
+        (bundle / "graph_analytics.json").write_text(json.dumps({
+            "hub_nodes": [
+                {"node_id": "file:src/api/users.ts", "degree": 7, "label": "users.ts"},
+            ],
+        }, indent=2))
+
+        out1 = tmp_path / "context1.json"
+        out2 = tmp_path / "context2.json"
+        _run_build_context(bundle, out1)
+        _run_build_context(bundle, out2)
+        recommended1 = json.loads(out1.read_text())["recommended_files"]
+        recommended2 = json.loads(out2.read_text())["recommended_files"]
+
+        assert recommended1 == recommended2
+        buckets = {entry.get("bucket") for entry in recommended1}
+        assert {
+            "project identity",
+            "entrypoints",
+            "auth/security",
+            "data/API",
+            "backend/serverless",
+            "DB/RLS",
+            "runtime/deployment",
+            "tests",
+            "docs/process",
+        } <= buckets
+        for entry in recommended1:
+            assert isinstance(entry.get("score"), (int, float))
+            assert isinstance(entry.get("score_details"), dict)
+            assert entry.get("bucket")
+            assert entry.get("reason")
+
 
 # ── FULL: integration via CLI ───────────────────────────────────────────
 

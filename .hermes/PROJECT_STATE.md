@@ -586,3 +586,40 @@ No merge, deploy, production mutation, origin push, main push, dependency change
 - Handoff: `.hermes/handoffs/20260603T221541Z-ua-p6-001-handoff.md`.
 - Guardrails preserved: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying.
 - Approval gate: no commit/push performed; separate JC approval required for checkpoint commit/push.
+
+## UA Phase 6 Trustworthy Handoff and Security-Review Readiness — Wave 1 Micro-Swarm Start
+- Timestamp: 2026-06-03T23:25:26Z.
+- Branch: `feat/ua-phase6-trustworthy-handoff-security-review` at `f8e2647f5`.
+- Approval quote: '[JC] I authorize UA Phase 6 Wave 1 micro-swarm execution on branch `feat/ua-phase6-trustworthy-handoff-security-review`.\n\nApproved beads:\n- P6-002 Recommended-files relevance ranking\n- P6-003 Orphan report summarization\n- P6-004 Graph issue likely-cause classification\n\nExecution may run in parallel only with exclusive file ownership:\n- P6-002 owns `scripts/code-scan/build_context_bundle.py`, optional new `scripts/code-scan/recommended_files.py`, and `tests/code_scan/test_build_context_bundle.py`.\n- P6-003 owns `scripts/code-scan/triage_orphans.py`, `scripts/code-scan/report_data.py`, `scripts/code-scan/render_report.py`, and orphan/report tests.\n- P6-004 owns `scripts/code-scan/graph_schema.py`, optional `scripts/code-scan/assemble_graph.py`, and graph tests.\n\nHard stop: P6-002 must not edit `report_data.py` or `render_report.py`; if needed, stop and defer integration.\n\nRequired gates: Hermes-owned focused tests, full `python -m pytest tests/code_scan -q`, py_compile for touched scanner scripts, `git diff --check`, added-lines secret scan, diff artifacts, and reviewer PASS before any acceptance/checkpoint.\n\nNo commit, push, merge, deploy, production mutation, origin push, main push, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying is approved.'.
+- Authorized beads: `UA-P6-002`, `UA-P6-003`, `UA-P6-004`.
+- Execution pattern: isolated worktrees for exclusive file ownership, no commit/push authority for workers.
+- Worktrees:
+  - `UA-P6-002`: `/home/jarrad/work/hermes-agent-ua-p6-002-worktree` on `swarm/p6-002-wave1`.
+  - `UA-P6-003`: `/home/jarrad/work/hermes-agent-ua-p6-003-worktree` on `swarm/p6-003-wave1`.
+  - `UA-P6-004`: `/home/jarrad/work/hermes-agent-ua-p6-004-worktree` on `swarm/p6-004-wave1`.
+- Hard stop: P6-002 must not edit `scripts/code-scan/report_data.py` or `scripts/code-scan/render_report.py`; if required, stop and defer integration.
+- Required gates before acceptance/checkpoint: Hermes-owned focused tests, full `python -m pytest tests/code_scan -q`, py_compile, `git diff --check`, added-lines secret scan, diff artifacts, reviewer PASS.
+- Still not approved: commit, push, merge, deploy, production mutation, origin push, main push, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, PRL/Muster source copying.
+
+### 2026-06-04T00:16:40Z — UA Phase 6 Wave 1 micro-swarm complete (P6-002/P6-003/P6-004)
+- Branch: feat/ua-phase6-trustworthy-handoff-security-review
+- Execution model: isolated per-bead worktrees, then verified patches integrated into main branch worktree; no commit/push/deploy.
+- P6-002 Recommended-files relevance ranking: implemented via `scripts/code-scan/recommended_files.py`, integrated from `build_context_bundle.py`, tests expanded in `tests/code_scan/test_build_context_bundle.py`.
+- P6-003 Orphan report summarization: implemented grouped/bounded orphan summaries in `triage_orphans.py`, `report_data.py`, `render_report.py` plus focused tests.
+- P6-004 Graph issue likely-cause classification: implemented additive `classified_issues` metadata in `graph_schema.py` plus focused tests.
+- Fast-coder P6-003 first lane stalled; partial diff preserved at `/tmp/ua-p6-003-fast-coder-stall-partial.diff`, reset clean, recovered with `codex-coder`.
+- Hermes-owned combined verification PASS:
+  - P6-002 focused: 134 passed in 4.60s
+  - P6-003 focused: 196 passed in 3.04s
+  - P6-004 focused: 100 passed in 1.09s
+  - Full `python -m pytest tests/code_scan -q`: 1025 passed in 123.63s
+  - py_compile PASS for touched scanner scripts plus `assemble_graph.py`
+  - `git diff --check` PASS
+  - added-lines secret scan PASS
+- Reviewer gate: PASS for P6-002, PASS for P6-003, PASS for P6-004.
+- Diff artifacts:
+  - `/tmp/ua-p6-002-hermes-verified.diff`
+  - `/tmp/ua-p6-003-hermes-verified.diff`
+  - `/tmp/ua-p6-004-hermes-verified.diff`
+  - `/tmp/ua-p6-wave1-combined-final.diff`
+- Scope: no commit, push, merge, deploy, production mutation, dependency change, dashboard/UI, auto-injection, SQLite/vector store, tree-sitter/WASM, LLM/provider scanner calls, or PRL/Muster source copying performed.

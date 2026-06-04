@@ -295,17 +295,56 @@ def _render_orphan_triage(orphan_triage: Any) -> str:
         lines.append("")
         return "\n".join(lines)
 
-    categories = orphan_triage.get("categories", {})
+    summary = orphan_triage.get("summary", {}) if isinstance(orphan_triage, dict) else {}
+    category_counts = orphan_triage.get("category_counts", {}) or summary.get("category_counts", {})
+    representative_examples = (
+        orphan_triage.get("representative_examples", {})
+        or summary.get("representative_examples", {})
+    )
+    top_suspicious = (
+        orphan_triage.get("top_suspicious_examples", [])
+        or summary.get("top_suspicious_examples", [])
+    )
     totals = orphan_triage.get("totals", {})
 
-    lines.append("| Category | Count |")
-    lines.append("|----------|-------|")
-    for cat in sorted(categories.keys()):
-        lines.append(f"| {cat} | {categories[cat]} |")
+    lines.append("### Orphan summary")
     lines.append("")
+    lines.append("| Orphan category | Count | Representative examples |")
+    lines.append("|-----------------|-------|-------------------------|")
+    if category_counts:
+        for cat in sorted(category_counts.keys()):
+            examples = representative_examples.get(cat, [])
+            example_text = ", ".join(f"`{example}`" for example in examples) or "—"
+            lines.append(f"| {cat} | {category_counts[cat]} | {example_text} |")
+    else:
+        categories = orphan_triage.get("categories", {})
+        for cat in sorted(categories.keys()):
+            lines.append(f"| {cat} | {categories[cat]} | — |")
+    lines.append("")
+
+    if top_suspicious:
+        lines.append("### Top suspicious orphan examples")
+        lines.append("")
+        lines.append("| File | Category | Reason | Recommended action |")
+        lines.append("|------|----------|--------|--------------------|")
+        for example in top_suspicious:
+            if not isinstance(example, dict):
+                continue
+            lines.append(
+                "| "
+                f"`{example.get('node_id', '')}` | "
+                f"{example.get('category', '')} | "
+                f"{example.get('reason', '')} | "
+                f"{example.get('recommended_action', '')} |"
+            )
+        lines.append("")
 
     total_orphans = totals.get("total_orphans", 0)
     lines.append(f"**{total_orphans}** total orphan files detected.")
+    lines.append(
+        "Full deterministic orphan evidence is retained in validation JSON; "
+        "this human report shows grouped counts and bounded examples only."
+    )
     lines.append("")
 
     return "\n".join(lines)
@@ -631,8 +670,40 @@ def _render_graph_analysis(graph: Any) -> str:
                 lines.append(f"| `{nid}` | {deg} |")
             lines.append("")
 
+    warning_summary = graph.get("warning_summary", {}) if isinstance(graph, dict) else {}
+    warning_counts = warning_summary.get("counts", {}) if isinstance(warning_summary, dict) else {}
+    if not warning_counts and isinstance(warning_summary, dict):
+        warning_counts = {
+            key: value
+            for key, value in warning_summary.items()
+            if isinstance(value, int)
+        }
+    warning_examples = (
+        warning_summary.get("representative_examples", {})
+        if isinstance(warning_summary, dict)
+        else {}
+    )
+    if not warning_examples:
+        warning_examples = graph.get("warning_examples", {})
     graph_warnings = graph.get("warnings", [])
-    if graph_warnings:
+    if warning_counts:
+        lines.append("### Graph warning summary")
+        lines.append("")
+        for category in sorted(warning_counts.keys()):
+            examples = warning_examples.get(category, [])
+            lines.append(
+                f"{warning_counts[category]} {category} warning(s); "
+                f"showing {len(examples)} representative example(s)."
+            )
+            for example in examples:
+                lines.append(f"- `{example}`")
+            lines.append("")
+        lines.append(
+            "Raw graph warnings are retained in validation JSON; "
+            "this human report summarizes repeated orphan warnings."
+        )
+        lines.append("")
+    elif graph_warnings:
         lines.append("### Graph warnings")
         lines.append("")
         for w in graph_warnings:

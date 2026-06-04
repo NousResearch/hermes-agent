@@ -30,6 +30,8 @@ from typing import Any, Optional
 MAX_READING_PLAN = 100
 MAX_SUSPICIOUS_ORPHANS = 50
 MAX_HUB_RANKINGS = 20
+MAX_ORPHAN_REPRESENTATIVE_EXAMPLES = 3
+MAX_ORPHAN_TOP_SUSPICIOUS = 5
 
 # ── Schema version ─────────────────────────────────────────────────────
 
@@ -132,6 +134,84 @@ def _load_artifact(
         return None
 
 
+def _orphan_entry_category(entry: dict, fallback: str) -> str:
+    """Return the fine-grained orphan category for an entry."""
+    return entry.get("category") or entry.get("orphan_type") or fallback
+
+
+def _orphan_entry_sort_key(entry: dict) -> tuple:
+    return (_orphan_entry_category(entry, ""), entry.get("node_id", ""))
+
+
+def _suspicious_orphan_sort_key(entry: dict) -> tuple:
+    priority = {"import_resolution_anomaly": 0, "possible_dead_source": 1}
+    category = _orphan_entry_category(entry, "suspicious")
+    return (priority.get(category, 9), entry.get("node_id", ""))
+
+
+def _build_orphan_summary(orphans: dict) -> dict:
+    """Build category counts and bounded representative examples."""
+    category_counts: dict[str, int] = {}
+    category_entries: dict[str, list[dict]] = {}
+    for group in ("expected", "entrypoint_candidate", "suspicious", "unknown"):
+        for entry in orphans.get(group, []) or []:
+            if not isinstance(entry, dict):
+                continue
+            category = _orphan_entry_category(entry, group)
+            category_counts[category] = category_counts.get(category, 0) + 1
+            category_entries.setdefault(category, []).append(entry)
+
+    representative_examples = {}
+    for category, entries in sorted(category_entries.items()):
+        representative_examples[category] = [
+            entry.get("node_id", "")
+            for entry in sorted(entries, key=_orphan_entry_sort_key)[
+                :MAX_ORPHAN_REPRESENTATIVE_EXAMPLES
+            ]
+        ]
+
+    top_suspicious_examples = []
+    for entry in sorted(
+        orphans.get("suspicious", []) or [], key=_suspicious_orphan_sort_key
+    )[:MAX_ORPHAN_TOP_SUSPICIOUS]:
+        if not isinstance(entry, dict):
+            continue
+        top_suspicious_examples.append({
+            "node_id": entry.get("node_id", ""),
+            "category": _orphan_entry_category(entry, "suspicious"),
+            "reason": entry.get("reason", ""),
+            "recommended_action": entry.get("recommended_action", ""),
+        })
+
+    return {
+        "category_counts": dict(sorted(category_counts.items())),
+        "representative_examples": representative_examples,
+        "top_suspicious_examples": top_suspicious_examples,
+        "example_limit_per_category": MAX_ORPHAN_REPRESENTATIVE_EXAMPLES,
+        "top_suspicious_limit": MAX_ORPHAN_TOP_SUSPICIOUS,
+    }
+
+
+def _warning_bucket(warning: str) -> str:
+    if warning.startswith("Orphan node:"):
+        return "orphan_node"
+    return "other"
+
+
+def _summarize_graph_warnings(raw_warnings: list) -> tuple[dict, dict]:
+    """Summarize graph warnings for reports while retaining raw warnings in JSON."""
+    counts: dict[str, int] = {}
+    examples: dict[str, list[str]] = {}
+    for warning in raw_warnings:
+        warning_text = str(warning)
+        bucket = _warning_bucket(warning_text)
+        counts[bucket] = counts.get(bucket, 0) + 1
+        examples.setdefault(bucket, [])
+        if len(examples[bucket]) < MAX_ORPHAN_REPRESENTATIVE_EXAMPLES:
+            examples[bucket].append(warning_text)
+    return dict(sorted(counts.items())), {k: examples[k] for k in sorted(examples)}
+
+
 # ── Section builders ───────────────────────────────────────────────────
 
 
@@ -225,12 +305,21 @@ def _build_graph_section(
         file_nodes = [
             n for n in nodes if n.get("node_type") == "file"
         ]
+        raw_warnings = graph.get("warnings", [])
+        warning_counts, warning_examples = _summarize_graph_warnings(raw_warnings)
         return {
             "nodes_count": len(nodes),
             "file_nodes_count": len(file_nodes),
             "edges_count": len(edges),
             "analytics": analytics,
-            "warnings": graph.get("warnings", []),
+            "warnings": raw_warnings,
+            "warning_summary": {
+                **warning_counts,
+                "counts": warning_counts,
+                "representative_examples": warning_examples,
+                "raw_count": len(raw_warnings),
+                "example_limit_per_category": MAX_ORPHAN_REPRESENTATIVE_EXAMPLES,
+            },
         }
     except Exception as exc:
         warnings.append(f"graph: error extracting data ({exc})")
@@ -245,6 +334,7 @@ def _build_orphan_triage_section(
         return "not_available"
     try:
         orphans = triage.get("orphans", {})
+        summary = triage.get("summary") or _build_orphan_summary(orphans)
         return {
             "categories": {
                 "expected": len(orphans.get("expected", [])),
@@ -252,6 +342,16 @@ def _build_orphan_triage_section(
                 "suspicious": len(orphans.get("suspicious", [])),
                 "unknown": len(orphans.get("unknown", [])),
             },
+            "summary": summary,
+            "category_counts": summary.get("category_counts", {}),
+            "representative_examples": summary.get("representative_examples", {}),
+            "top_suspicious_examples": summary.get("top_suspicious_examples", []),
+            "example_limit_per_category": summary.get(
+                "example_limit_per_category", MAX_ORPHAN_REPRESENTATIVE_EXAMPLES
+            ),
+            "top_suspicious_limit": summary.get(
+                "top_suspicious_limit", MAX_ORPHAN_TOP_SUSPICIOUS
+            ),
             "totals": triage.get("totals", {}),
         }
     except Exception as exc:

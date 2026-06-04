@@ -165,6 +165,81 @@ def validate_edge(edge: dict, known_node_ids: Set[str]) -> List[str]:
     return issues
 
 
+def classify_issue(
+    issue_message: str,
+    edge: dict | None = None,
+    source_node: dict | None = None,
+    target_node: dict | None = None,
+) -> dict:
+    """Classify a deterministic validation issue with reviewer-facing metadata.
+
+    The returned metadata is advisory only. It never suppresses, rewrites, or
+    changes the deterministic validation fact held in ``issue_message``.
+    """
+    classification = {
+        "message": issue_message,
+        "issue_type": "validation_issue",
+        "likely_cause": "schema_or_reference_mismatch",
+        "runtime_relevance": "unknown",
+        "recommended_action": "Inspect the raw validation issue and graph input data.",
+    }
+
+    if not issue_message.startswith("Self-referencing edge:"):
+        return classification
+
+    classification.update({
+        "issue_type": "self_referencing_edge",
+        "likely_cause": "self_dependency_or_scanner_artifact",
+        "runtime_relevance": "unknown",
+        "recommended_action": (
+            "Inspect the edge source, target, type, and scanner metadata before "
+            "treating this as a runtime architecture cycle."
+        ),
+    })
+
+    if _looks_like_js_ts_type_resolution_self_edge(edge, source_node, target_node):
+        classification.update({
+            "likely_cause": "type_resolution_self_reference_artifact",
+            "runtime_relevance": "low",
+            "recommended_action": (
+                "Review scanner import-resolution metadata before treating this as "
+                "a runtime architecture cycle."
+            ),
+        })
+
+    return classification
+
+
+def _looks_like_js_ts_type_resolution_self_edge(
+    edge: dict | None,
+    source_node: dict | None,
+    target_node: dict | None,
+) -> bool:
+    """Return True for deterministic JS/TS type-resolution self-edge artifacts."""
+    if not edge or edge.get("edge_type") != EdgeType.IMPORTS.value:
+        return False
+    if edge.get("source") != edge.get("target"):
+        return False
+
+    node = source_node or target_node or {}
+    file_path = str(node.get("filePath") or edge.get("source") or "").lower()
+    language = str(node.get("language") or "").lower()
+    meta = edge.get("meta") or {}
+    raw_import = str(meta.get("raw_import") or "").lower()
+    strategy = str(meta.get("strategy") or "").lower()
+
+    js_ts_file = file_path.endswith((".ts", ".tsx", ".js", ".jsx"))
+    js_ts_language = language in {"javascript", "typescript", "js", "ts"}
+    typeish_file = (
+        file_path.endswith(("/types.ts", "/types.tsx", "/types.js", "/types.jsx"))
+        or file_path.endswith((".d.ts", ".d.tsx"))
+    )
+    typeish_meta = any(token in strategy for token in ("type", "jsdoc", "typedef"))
+    selfish_import = raw_import in {"./types", "types"} or raw_import.endswith("/types")
+
+    return (js_ts_file or js_ts_language) and (typeish_file or typeish_meta or selfish_import)
+
+
 def _classify_orphan_severity(node_id: str, node_data: dict) -> WarningSeverity:
     """Classify the severity of an orphan node warning using deterministic heuristics.
 
@@ -242,6 +317,7 @@ def build_warning_summary(classified_warnings: List[dict]) -> Dict[str, int]:
 def validate_graph(graph: dict) -> dict:
     """Validate an entire graph dict. Returns {
         "issues": [...], "warnings": [...],
+        "classified_issues": [{"message": ..., "issue_type": ...}, ...],
         "severity_summary": {"info": N, "minor": N, "moderate": N, "major": N},
         "severity_classified_warnings": [{"severity": ..., "message": ...}, ...]
     }.
@@ -250,21 +326,27 @@ def validate_graph(graph: dict) -> dict:
     by any edge) as warnings with deterministic severity classification.
 
     Backward compatibility: 'issues' and 'warnings' are always present as
-    lists of strings, matching the pre-UA-002 contract.
+    lists of strings, matching the pre-UA-002 contract. 'classified_issues'
+    adds advisory metadata but never rewrites or suppresses raw issues.
     """
     result = {
         "issues": [],
         "warnings": [],
+        "classified_issues": [],
         "severity_summary": {s.value: 0 for s in WarningSeverity},
         "severity_classified_warnings": [],
     }
 
     # Require nodes and edges keys
     if "nodes" not in graph:
-        result["issues"].append("Missing required key: nodes")
+        issue = "Missing required key: nodes"
+        result["issues"].append(issue)
+        result["classified_issues"].append(classify_issue(issue))
         return result
     if "edges" not in graph:
-        result["issues"].append("Missing required key: edges")
+        issue = "Missing required key: edges"
+        result["issues"].append(issue)
+        result["classified_issues"].append(classify_issue(issue))
         return result
 
     nodes = graph["nodes"]
@@ -280,6 +362,9 @@ def validate_graph(graph: dict) -> dict:
             _node_id_to_data[node_id] = node
         node_issues = validate_node(node)
         result["issues"].extend(node_issues)
+        result["classified_issues"].extend(
+            classify_issue(issue) for issue in node_issues
+        )
 
     # Validate each edge
     referenced_nodes: Set[str] = set()
@@ -292,6 +377,15 @@ def validate_graph(graph: dict) -> dict:
             referenced_nodes.add(target)
         edge_issues = validate_edge(edge, node_ids)
         result["issues"].extend(edge_issues)
+        result["classified_issues"].extend(
+            classify_issue(
+                issue,
+                edge=edge,
+                source_node=_node_id_to_data.get(source, {}),
+                target_node=_node_id_to_data.get(target, {}),
+            )
+            for issue in edge_issues
+        )
 
     # Report orphan nodes (not referenced by any edge) as warnings with severity
     orphan_ids = node_ids - referenced_nodes

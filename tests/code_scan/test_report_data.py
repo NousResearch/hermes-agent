@@ -736,6 +736,52 @@ class TestV2TaxonomyBackwardCompat:
         triage = result["sections"]["orphan_triage"]
         assert triage["categories"]["expected"] == 1
         assert triage["categories"]["suspicious"] == 1
+class TestUA_P6_003_OrphanSummary:
+    """UA-P6-003: report-data keeps raw orphan evidence but adds summary rows."""
+
+    def test_orphan_summary_table_data_and_raw_warnings_are_preserved(self):
+        warnings = [
+            f"Orphan node: 'file:.beads/bead_{i}.md' is not referenced by any edge"
+            for i in range(8)
+        ]
+        warnings += [
+            f"Orphan node: 'file:docs/doc_{i}.md' is not referenced by any edge"
+            for i in range(7)
+        ]
+        graph = {"nodes": [], "edges": [], "warnings": warnings}
+        orphan_triage = {
+            "schema_version": "1.0.0",
+            "orphans": {
+                "expected": [
+                    {"node_id": f"file:.beads/bead_{i}.md", "category": "expected_planning_doc", "reason": "planning bead"}
+                    for i in range(8)
+                ] + [
+                    {"node_id": f"file:docs/doc_{i}.md", "category": "expected_doc", "reason": "documentation file"}
+                    for i in range(7)
+                ],
+                "entrypoint_candidate": [],
+                "suspicious": [
+                    {"node_id": "file:src/broken.py", "category": "import_resolution_anomaly", "reason": "unresolved imports"},
+                    {"node_id": "file:src/legacy.py", "category": "possible_dead_source", "reason": "unreferenced source"},
+                ],
+                "unknown": [],
+            },
+            "totals": {"total_orphans": 17, "expected": 15, "entrypoint_candidate": 0, "suspicious": 2, "unknown": 0},
+        }
+        result = report_data.build_report_data(
+            scan=_load_fixture("scan.json"),
+            graph=graph,
+            orphan_triage=orphan_triage,
+        )
+        triage = result["sections"]["orphan_triage"]
+        assert triage["summary"]["category_counts"]["expected_planning_doc"] == 8
+        assert triage["summary"]["category_counts"]["expected_doc"] == 7
+        assert len(triage["summary"]["representative_examples"]["expected_planning_doc"]) == 3
+        assert triage["summary"]["top_suspicious_examples"][0]["category"] == "import_resolution_anomaly"
+        assert result["sections"]["graph_analysis"]["warnings"] == warnings
+        assert result["sections"]["graph_analysis"]["warning_summary"]["orphan_node"] == 15
+
+
 class TestUA_P5_006_ConfidenceLabelModel:
     """UA-P5-006: report-data must expose deterministic boundary/confidence label model with the six required labels."""
 

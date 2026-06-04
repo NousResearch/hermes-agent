@@ -197,6 +197,47 @@ class TestValidateGraph:
         result = validate_graph(graph)
         assert len(result["issues"]) > 0
 
+    def test_typescript_type_file_self_edge_is_classified_without_altering_issue(self):
+        """JSDoc/type-resolution self-edges keep raw validation facts plus metadata."""
+        graph = {
+            "nodes": [
+                {
+                    "node_type": "file",
+                    "node_id": "file:src/types.ts",
+                    "filePath": "src/types.ts",
+                    "language": "typescript",
+                },
+            ],
+            "edges": [
+                {
+                    "edge_type": "imports",
+                    "source": "file:src/types.ts",
+                    "target": "file:src/types.ts",
+                    "meta": {
+                        "raw_import": "./types",
+                        "strategy": "relative_ts_jsdoc_resolution",
+                    },
+                },
+            ],
+        }
+
+        result = validate_graph(graph)
+
+        raw_issue = "Self-referencing edge: source and target are both 'file:src/types.ts'"
+        assert result["issues"] == [raw_issue]
+        assert result["classified_issues"] == [
+            {
+                "message": raw_issue,
+                "issue_type": "self_referencing_edge",
+                "likely_cause": "type_resolution_self_reference_artifact",
+                "runtime_relevance": "low",
+                "recommended_action": (
+                    "Review scanner import-resolution metadata before treating this as "
+                    "a runtime architecture cycle."
+                ),
+            }
+        ]
+
     def test_graph_with_orphan_node(self):
         """Node not referenced by any edge should produce a warning."""
         graph = {

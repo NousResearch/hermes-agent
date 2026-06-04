@@ -48,11 +48,12 @@ _SOURCE_LANGUAGES = {
 
 # Directory prefixes that indicate expected orphans (non-source)
 _EXPECTED_DIR_PREFIXES = [
-    "docs/", ".docs/", "documentation/",
+    ".beads/", "beads/",
+    "docs/", ".docs/", "documentation/", "manuals/", "manual/",
     "tests/", "test/", "testsuite/", "testing/",
     "fixtures/", "fixture/", "test/fixtures/",
     ".github/workflows/", ".gitlab/", "ci/",
-    "assets/", "images/", "media/", "static/", "img/",
+    "assets/", "images/", "media/", "static/", "img/", "public/",
     "templates/", "views/",
     "data/", "resources/",
 ]
@@ -128,6 +129,7 @@ _EXT_TO_V2_CATEGORY = {
 
 # V2 category recommended actions
 _V2_RECOMMENDED_ACTIONS = {
+    "expected_planning_doc": "no_action_needed",
     "expected_doc": "no_action_needed",
     "expected_asset": "no_action_needed",
     "expected_config": "no_action_needed",
@@ -142,6 +144,7 @@ _V2_RECOMMENDED_ACTIONS = {
 
 # V2 category default confidence
 _V2_DEFAULT_CONFIDENCE = {
+    "expected_planning_doc": 0.95,
     "expected_doc": 0.95,
     "expected_asset": 0.95,
     "expected_config": 0.9,
@@ -153,6 +156,23 @@ _V2_DEFAULT_CONFIDENCE = {
     "import_resolution_anomaly": 0.6,
     "unknown": 0.1,
 }
+
+_V2_REASON_LABELS = {
+    "expected_planning_doc": "planning bead or handoff document",
+    "expected_doc": "documentation file",
+    "expected_asset": "asset file",
+    "expected_config": "configuration file",
+    "expected_test_fixture": "test or fixture file",
+    "expected_migration": "migration file",
+    "expected_static_template": "static template file",
+    "entrypoint_candidate": "marked as entrypoint",
+    "possible_dead_source": "unreferenced source",
+    "import_resolution_anomaly": "unresolved imports",
+    "unknown": "missing metadata",
+}
+
+MAX_REPRESENTATIVE_EXAMPLES = 3
+MAX_TOP_SUSPICIOUS_EXAMPLES = 5
 
 
 def _is_expected_orphan(node: dict) -> Tuple[str, bool]:
@@ -171,8 +191,13 @@ def _is_expected_orphan(node: dict) -> Tuple[str, bool]:
     basename = Path(file_path).name.lower() if file_path else Path(node_id).name.lower()
     ext = Path(file_path).suffix.lower() if file_path else ""
 
+    # ── planning / handoff docs ──
+    for prefix in [".beads/", "beads/"]:
+        if fp_lower.startswith(prefix):
+            return ("expected_planning_doc", True)
+
     # ── documentation ──
-    for prefix in ["docs/", ".docs/", "documentation/"]:
+    for prefix in ["docs/", ".docs/", "documentation/", "manuals/", "manual/"]:
         if fp_lower.startswith(prefix):
             return ("expected_doc", True)
 
@@ -211,7 +236,7 @@ def _is_expected_orphan(node: dict) -> Tuple[str, bool]:
                 return ("expected_migration", True)
 
     # ── assets/images ──
-    for prefix in ["assets/", "images/", "media/", "static/"]:
+    for prefix in ["assets/", "images/", "media/", "static/", "public/"]:
         if fp_lower.startswith(prefix):
             return ("expected_asset", True)
 
@@ -299,6 +324,61 @@ def _make_entry(
         "confidence_label": _confidence_label(conf),
         "reason": reason,
         "recommended_action": action,
+    }
+
+
+def _entry_sort_key(entry: dict) -> tuple:
+    """Sort orphan entries deterministically by category, then node_id."""
+    return (entry.get("category", ""), entry.get("node_id", ""))
+
+
+def _suspicious_sort_key(entry: dict) -> tuple:
+    """Sort suspicious examples by review value, then node_id."""
+    priority = {
+        "import_resolution_anomaly": 0,
+        "possible_dead_source": 1,
+    }
+    return (priority.get(entry.get("category", ""), 9), entry.get("node_id", ""))
+
+
+def build_orphan_summary(orphans: dict) -> dict:
+    """Build grouped counts and bounded representative orphan examples.
+
+    The raw orphan entries remain in ``orphans``. This companion summary is for
+    human reports, where dumping every expected doc/asset/migration is noisy.
+    """
+    category_counts: Dict[str, int] = {}
+    category_entries: Dict[str, List[dict]] = {}
+    for group in ("expected", "entrypoint_candidate", "suspicious", "unknown"):
+        for entry in orphans.get(group, []) or []:
+            category = entry.get("category") or entry.get("orphan_type") or group
+            category_counts[category] = category_counts.get(category, 0) + 1
+            category_entries.setdefault(category, []).append(entry)
+
+    representative_examples = {}
+    for category, entries in sorted(category_entries.items()):
+        representative_examples[category] = [
+            entry.get("node_id", "")
+            for entry in sorted(entries, key=_entry_sort_key)[:MAX_REPRESENTATIVE_EXAMPLES]
+        ]
+
+    suspicious_entries = []
+    for entry in orphans.get("suspicious", []) or []:
+        suspicious_entries.append({
+            "node_id": entry.get("node_id", ""),
+            "category": entry.get("category") or entry.get("orphan_type") or "suspicious",
+            "reason": entry.get("reason", ""),
+            "recommended_action": entry.get("recommended_action", ""),
+        })
+
+    return {
+        "category_counts": dict(sorted(category_counts.items())),
+        "representative_examples": representative_examples,
+        "top_suspicious_examples": sorted(
+            suspicious_entries, key=_suspicious_sort_key
+        )[:MAX_TOP_SUSPICIOUS_EXAMPLES],
+        "example_limit_per_category": MAX_REPRESENTATIVE_EXAMPLES,
+        "top_suspicious_limit": MAX_TOP_SUSPICIOUS_EXAMPLES,
     }
 
 
@@ -481,6 +561,7 @@ def triage_orphans(
     return {
         "schema_version": SCHEMA_VERSION,
         "orphans": result,
+        "summary": build_orphan_summary(result),
         "totals": totals,
     }
 

@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from recommended_files import build_recommended_files
+
 HANDOFF_VERSION = "1.0.0"
 
 
@@ -359,51 +361,8 @@ def _build_recommended_files(
     severity: Optional[dict],
     analytics: Optional[dict],
 ) -> list[dict]:
-    """Build a list of files recommended for subagent review."""
-    recommended: list[dict] = []
-    seen = set()
-
-    # Files from scan data, sorted by lines (larger files first)
-    if scan:
-        files = scan.get("files", [])
-        sorted_files = sorted(files, key=lambda f: f.get("lines", 0), reverse=True)
-        for f in sorted_files:
-            path = f.get("path", "")
-            if path and path not in seen:
-                recommended.append({
-                    "path": path,
-                    "reason": "listed in scan",
-                    "lines": f.get("lines", 0),
-                    "language": f.get("language", ""),
-                })
-                seen.add(path)
-
-    # Hub nodes from graph analytics (UA-003)
-    if analytics:
-        for hub in analytics.get("hub_nodes", []):
-            node_id = hub.get("node_id", "")
-            # Extract path from node_id like "file:src/utils.py"
-            if node_id.startswith("file:"):
-                path = node_id[len("file:"):]
-                if path not in seen:
-                    recommended.append({
-                        "path": path,
-                        "reason": f"hub node (degree={hub.get('degree', '?')})",
-                    })
-                    seen.add(path)
-
-    # Files mentioned in severity analysis (UA-002)
-    if severity:
-        for item in severity.get("items", []):
-            path = item.get("file", "")
-            if path and path not in seen:
-                recommended.append({
-                    "path": path,
-                    "reason": f"severity: {item.get('severity', 'unknown')}",
-                })
-                seen.add(path)
-
-    return recommended
+    """Build a deterministic source/security-aware reading plan."""
+    return build_recommended_files(scan, graph, severity, analytics)
 
 
 # ── Reading budget ────────────────────────────────────────────────────────────

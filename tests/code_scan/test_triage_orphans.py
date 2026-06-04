@@ -1249,3 +1249,60 @@ class TestFixtureIntegration:
         assert "module:os" in unknown_ids, "Expected module:os in unknown"
         assert "file:src/compiled.dat" in unknown_ids, \
             "Expected file:src/compiled.dat in unknown"
+
+
+class TestUA_P6_003_OrphanSummary:
+    """UA-P6-003: triage emits deterministic grouped summary data."""
+
+    def test_beads_manuals_and_root_assets_have_distinct_expected_categories(self):
+        classify = _import_triage()[1]
+        cases = [
+            ("file:.beads/p6.md", ".beads/p6.md", "markdown", "expected_planning_doc"),
+            ("file:manuals/admin.md", "manuals/admin.md", "markdown", "expected_doc"),
+            ("file:screenshot.png", "screenshot.png", "unknown", "expected_asset"),
+            ("file:public/logo.svg", "public/logo.svg", "unknown", "expected_asset"),
+        ]
+        for node_id, path, language, expected_category in cases:
+            group, _, entry = classify(
+                {"node_id": node_id, "filePath": path, "language": language}, None
+            )
+            assert group == "expected"
+            assert entry["category"] == expected_category
+
+    def test_triage_summary_groups_counts_and_representative_examples(self):
+        triage_func = _import_triage()[0]
+        nodes = [
+            {"node_id": "file:connected.py", "filePath": "connected.py", "language": "python"},
+            *[
+                {"node_id": f"file:.beads/bead_{i}.md", "filePath": f".beads/bead_{i}.md", "language": "markdown"}
+                for i in range(6)
+            ],
+            *[
+                {"node_id": f"file:docs/page_{i}.md", "filePath": f"docs/page_{i}.md", "language": "markdown"}
+                for i in range(5)
+            ],
+            *[
+                {"node_id": f"file:assets/img_{i}.png", "filePath": f"assets/img_{i}.png", "language": "unknown"}
+                for i in range(4)
+            ],
+            *[
+                {"node_id": f"file:supabase/migrations/{i:03d}.sql", "filePath": f"supabase/migrations/{i:03d}.sql", "language": "sql"}
+                for i in range(3)
+            ],
+            {"node_id": "file:src/legacy.py", "filePath": "src/legacy.py", "language": "python"},
+            {"node_id": "file:src/broken.py", "filePath": "src/broken.py", "language": "python", "unresolved_imports": ["missing"]},
+        ]
+        result = triage_func(
+            {"nodes": nodes, "edges": [{"source": "file:connected.py", "target": "file:connected.py"}]},
+            {"files": []},
+            None,
+        )
+        summary = result["summary"]
+        assert summary["category_counts"]["expected_planning_doc"] == 6
+        assert summary["category_counts"]["expected_doc"] == 5
+        assert summary["category_counts"]["expected_asset"] == 4
+        assert summary["category_counts"]["expected_migration"] == 3
+        assert summary["category_counts"]["possible_dead_source"] == 1
+        assert summary["category_counts"]["import_resolution_anomaly"] == 1
+        assert len(summary["representative_examples"]["expected_planning_doc"]) == 3
+        assert summary["top_suspicious_examples"][0]["category"] == "import_resolution_anomaly"

@@ -536,6 +536,12 @@ class _RawResponse:
     async def read(self):
         return self.body
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
 
 def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
     """Return True when ``hostname`` matches a ``NO_PROXY`` entry.

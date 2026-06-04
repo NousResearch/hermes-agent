@@ -1033,3 +1033,351 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+# === NATIVE STREAMING (msgtype: stream) ===
+
+
+class TestWeComNativeStreamingCapability:
+    """SUPPORTS_NATIVE_STREAMING + supports_native_streaming() probe."""
+
+    def test_class_attribute_declares_native_streaming(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.SUPPORTS_NATIVE_STREAMING is True
+
+    def test_supports_native_streaming_returns_true_for_dm(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter.supports_native_streaming(chat_type="dm") is True
+
+    def test_supports_native_streaming_returns_true_for_group(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter.supports_native_streaming(chat_type="group") is True
+
+    def test_max_stream_content_length_is_20480(self):
+        from gateway.platforms.wecom import (
+            MAX_STREAM_CONTENT_LENGTH, WeComAdapter,
+        )
+
+        assert MAX_STREAM_CONTENT_LENGTH == 20480
+        assert WeComAdapter.MAX_STREAM_CONTENT_LENGTH == 20480
+
+    def test_stream_expired_errcode_constant(self):
+        from gateway.platforms.wecom import STREAM_EXPIRED_ERRCODE
+
+        assert STREAM_EXPIRED_ERRCODE == 846608
+
+# === STREAM TESTS PLACEHOLDER ===
+
+
+class TestResolveStreamReqId:
+    """`_resolve_stream_req_id` precedence: reply_to → cached chat → None."""
+
+    def test_prefers_explicit_reply_to(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-123"] = "explicit-req"
+        adapter._last_chat_req_ids["chat-1"] = "cached-req"
+
+        assert adapter._resolve_stream_req_id("chat-1", "msg-123") == "explicit-req"
+
+    def test_falls_back_to_cached_chat_req_id(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "cached-req"
+
+        assert adapter._resolve_stream_req_id("chat-1", reply_to=None) == "cached-req"
+
+    def test_returns_none_when_no_anchor(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert adapter._resolve_stream_req_id("unknown-chat", None) is None
+
+    def test_quoted_reply_to_falls_through_to_chat_cache(self):
+        """``quote:msg-id`` (quote-context marker) is not a real reply anchor."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "cached-req"
+
+        assert adapter._resolve_stream_req_id("chat-1", "quote:m-1") == "cached-req"
+
+
+# === LIFECYCLE TESTS PLACEHOLDER ===
+
+
+class TestSendStreamFrame:
+    """`send_stream_frame` lifecycle: init → cumulative updates → finalize."""
+
+    @pytest.mark.asyncio
+    async def test_first_call_seeds_empty_frame_then_returns_true(self):
+        """First frame for a chat must be an empty seed (triggers typing UI)."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"errcode": 0, "errmsg": "ok"},
+        )
+
+        ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
+
+        assert ok is True
+        # Two calls: empty seed + content frame.
+        assert adapter._send_reply_request.await_count == 2
+        seed_call_args = adapter._send_reply_request.await_args_list[0]
+        assert seed_call_args.args[0] == "req-1"
+        assert seed_call_args.args[1]["msgtype"] == "stream"
+        assert seed_call_args.args[1]["stream"]["content"] == ""
+        assert seed_call_args.args[1]["stream"]["finish"] is False
+
+        content_call_args = adapter._send_reply_request.await_args_list[1]
+        assert content_call_args.args[1]["stream"]["content"] == "hello"
+        assert content_call_args.args[1]["stream"]["finish"] is False
+
+    @pytest.mark.asyncio
+    async def test_first_and_second_call_share_stream_id(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"errcode": 0},
+        )
+
+        await adapter.send_stream_frame("alpha", chat_id="chat-1")
+        await adapter.send_stream_frame("alpha beta", chat_id="chat-1")
+
+        assert adapter._send_reply_request.await_count == 3  # seed + alpha + alpha beta
+        ids = [
+            call.args[1]["stream"]["id"]
+            for call in adapter._send_reply_request.await_args_list
+        ]
+        assert ids[0] == ids[1] == ids[2]
+        assert ids[0].startswith("stream_")
+
+    @pytest.mark.asyncio
+    async def test_finalize_sends_finish_true_and_resets_state(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+
+        await adapter.send_stream_frame("partial", chat_id="chat-1")
+        assert adapter._active_stream_id is not None
+
+        ok = await adapter.send_stream_frame(
+            "partial final", chat_id="chat-1", finalize=True,
+        )
+
+        assert ok is True
+        assert adapter._active_stream_id is None
+        assert adapter._active_stream_req_id is None
+        assert adapter._active_stream_chat_id is None
+        # Last call must carry finish=true with the full final text.
+        last_call = adapter._send_reply_request.await_args_list[-1]
+        assert last_call.args[1]["stream"]["finish"] is True
+        assert last_call.args[1]["stream"]["content"] == "partial final"
+
+# === FAILURE TESTS PLACEHOLDER ===
+
+
+class TestSendStreamFrameFailures:
+    """Behavior when no req_id, 846608 expiry, or generic transport errors."""
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_req_id_available(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # No reply_to, nothing in _last_chat_req_ids.
+        adapter._send_reply_request = AsyncMock()
+
+        ok = await adapter.send_stream_frame("hi", chat_id="unknown-chat")
+
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_chat_id_missing_on_first_call(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock()
+
+        ok = await adapter.send_stream_frame("hi", chat_id=None)
+
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_846608_marks_chat_expired_and_returns_false(self):
+        from gateway.platforms.wecom import (
+            STREAM_EXPIRED_ERRCODE, WeComAdapter,
+        )
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        # Seed succeeds; first content frame expires.
+        adapter._send_reply_request = AsyncMock(
+            side_effect=[
+                {"errcode": 0},
+                {"errcode": STREAM_EXPIRED_ERRCODE, "errmsg": "stream expired"},
+            ],
+        )
+
+        ok = await adapter.send_stream_frame("hello", chat_id="chat-1")
+
+        assert ok is False
+        assert "chat-1" in adapter._stream_expired_chats
+        # State must reset so the next inbound req_id can rebuild a new stream.
+        assert adapter._active_stream_id is None
+
+    @pytest.mark.asyncio
+    async def test_subsequent_call_to_expired_chat_short_circuits(self):
+        """Once a chat is in ``_stream_expired_chats``, send_stream_frame
+        bails immediately without touching the WS — caller must use send()."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_expired_chats.add("chat-1")
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock()
+
+        ok = await adapter.send_stream_frame("hi", chat_id="chat-1")
+
+        assert ok is False
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inbound_message_clears_expired_marker(self):
+        """A fresh inbound req_id must resurrect the stream channel."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_expired_chats.add("chat-1")
+
+        adapter._remember_chat_req_id("chat-1", "fresh-req-id")
+
+        assert "chat-1" not in adapter._stream_expired_chats
+
+    @pytest.mark.asyncio
+    async def test_generic_transport_error_resets_state(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=RuntimeError("ws disconnected"),
+        )
+
+        ok = await adapter.send_stream_frame("hi", chat_id="chat-1")
+
+        assert ok is False
+        # Generic error resets state but does NOT mark chat as expired —
+        # next call may still try (e.g. ws reconnects).
+        assert adapter._active_stream_id is None
+        assert "chat-1" not in adapter._stream_expired_chats
+
+# === SEND_TYPING TESTS PLACEHOLDER ===
+
+
+class TestSendTypingTriggersThinking:
+    """``send_typing`` is implemented as an empty stream-seed frame."""
+
+    @pytest.mark.asyncio
+    async def test_send_typing_sends_empty_seed_frame(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(return_value={"errcode": 0})
+
+        await adapter.send_typing("chat-1")
+
+        # Exactly one frame: empty seed. send_stream_frame's empty
+        # path opens the stream with the seed and then would send another
+        # empty content frame; we accept either 1 or 2 calls but the seed
+        # MUST be there with empty content + finish=False.
+        assert adapter._send_reply_request.await_count >= 1
+        first = adapter._send_reply_request.await_args_list[0]
+        assert first.args[1]["msgtype"] == "stream"
+        assert first.args[1]["stream"]["content"] == ""
+        assert first.args[1]["stream"]["finish"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_typing_idempotent_when_stream_already_active(self):
+        """If a stream is mid-flight, send_typing must be a no-op."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._active_stream_id = "stream_abc"
+        adapter._send_reply_request = AsyncMock()
+
+        await adapter.send_typing("chat-1")
+
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_typing_skips_expired_chats(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._stream_expired_chats.add("chat-1")
+        adapter._send_reply_request = AsyncMock()
+
+        await adapter.send_typing("chat-1")
+
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_typing_swallows_errors(self):
+        """Typing failure is best-effort and must not raise to caller."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["chat-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            side_effect=RuntimeError("nope"),
+        )
+
+        # Must not raise.
+        await adapter.send_typing("chat-1")
+
+
+class TestStreamContentTruncation:
+    """Bytes (not codepoints) are truncated to MAX_STREAM_CONTENT_LENGTH."""
+
+    def test_ascii_below_limit_passes_through(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        out = WeComAdapter._truncate_stream_content("hello", 1000)
+        assert out == "hello"
+
+    def test_ascii_above_limit_is_byte_capped(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        big = "x" * 30000
+        out = WeComAdapter._truncate_stream_content(big, 20480)
+        assert len(out.encode("utf-8")) <= 20480
+
+    def test_multibyte_truncation_does_not_split_codepoints(self):
+        """A 3-byte CJK char must not be sliced mid-byte and emit garbage."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        # Each "你" is 3 UTF-8 bytes.  Limit at 5 bytes — must keep one
+        # full char and drop the half-cut second char rather than emit ï¿½.
+        out = WeComAdapter._truncate_stream_content("你你", 5)
+        assert out == "你"
+        # Crucially, must be valid UTF-8 (no replacement chars from
+        # mid-byte slices).
+        assert "�" not in out
+

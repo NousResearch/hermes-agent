@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
-import { Check } from '@/lib/icons'
+import { Check, type IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
@@ -66,6 +66,40 @@ function SectionHead({ title, description, pill }: { title: string; description:
   )
 }
 
+function OptionRow({
+  icon: Icon,
+  label,
+  description,
+  active,
+  onClick
+}: {
+  icon?: IconComponent
+  label: string
+  description: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      className={cn(
+        'group flex items-center gap-3 rounded-md px-3 py-2 text-left transition hover:bg-(--chrome-action-hover)',
+        active && 'bg-(--ui-bg-tertiary)'
+      )}
+      onClick={onClick}
+      type="button"
+    >
+      {Icon && <Icon className={cn('size-4 shrink-0', active ? 'text-foreground' : 'text-muted-foreground')} />}
+      <div className="min-w-0 flex-1">
+        <div className="text-[length:var(--conversation-text-font-size)] font-medium">{label}</div>
+        <div className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {description}
+        </div>
+      </div>
+      <Check className={cn('size-4 shrink-0 text-primary transition-opacity', active ? 'opacity-100' : 'opacity-0')} />
+    </button>
+  )
+}
+
 export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
@@ -85,40 +119,20 @@ export function AppearanceSettings() {
             pill={<Pill>{prettyName(mode)}</Pill>}
             title="Color Mode"
           />
-          <div className="grid gap-2 sm:grid-cols-3">
-            {MODE_OPTIONS.map(({ id, label, description, icon: Icon }) => {
-              const active = mode === id
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  key={id}
-                  onClick={() => {
-                    triggerHaptic('crisp')
-                    setMode(id)
-                  }}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="flex size-9 items-center justify-center rounded-lg bg-muted text-foreground transition group-hover:bg-background">
-                      <Icon className="size-4" />
-                    </span>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-2 text-[length:var(--conversation-text-font-size)] font-medium">{label}</div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {description}
-                  </div>
-                </button>
-              )
-            })}
+          <div className="grid gap-0.5">
+            {MODE_OPTIONS.map(({ id, label, description, icon }) => (
+              <OptionRow
+                active={mode === id}
+                description={description}
+                icon={icon}
+                key={id}
+                label={label}
+                onClick={() => {
+                  triggerHaptic('crisp')
+                  setMode(id)
+                }}
+              />
+            ))}
           </div>
         </section>
 
@@ -128,7 +142,7 @@ export function AppearanceSettings() {
             pill={<Pill>{toolViewMode === 'technical' ? 'Technical' : 'Product'}</Pill>}
             title="Tool Call Display"
           />
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-0.5">
             {(
               [
                 {
@@ -142,36 +156,18 @@ export function AppearanceSettings() {
                   description: 'Include raw tool args/results and low-level details.'
                 }
               ] as const
-            ).map(option => {
-              const active = toolViewMode === option.id
-
-              return (
-                <button
-                  className={cn(
-                    'group rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2.5 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
-                  key={option.id}
-                  onClick={() => {
-                    triggerHaptic('selection')
-                    setToolViewMode(option.id)
-                  }}
-                  type="button"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="text-[length:var(--conversation-text-font-size)] font-medium">{option.label}</div>
-                    {active && (
-                      <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                    {option.description}
-                  </div>
-                </button>
-              )
-            })}
+            ).map(option => (
+              <OptionRow
+                active={toolViewMode === option.id}
+                description={option.description}
+                key={option.id}
+                label={option.label}
+                onClick={() => {
+                  triggerHaptic('selection')
+                  setToolViewMode(option.id)
+                }}
+              />
+            ))}
           </div>
         </section>
 
@@ -181,16 +177,13 @@ export function AppearanceSettings() {
             pill={activeTheme ? <Pill>{activeTheme.label}</Pill> : undefined}
             title="Theme"
           />
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2 xl:grid-cols-3">
             {availableThemes.map(theme => {
               const active = themeName === theme.name
 
               return (
                 <button
-                  className={cn(
-                    'rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-2 text-left transition hover:bg-(--chrome-action-hover)',
-                    active && 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-                  )}
+                  className="group text-left"
                   key={theme.name}
                   onClick={() => {
                     triggerHaptic('crisp')
@@ -198,8 +191,17 @@ export function AppearanceSettings() {
                   }}
                   type="button"
                 >
-                  <ThemePreview name={theme.name} />
-                  <div className="mt-3 flex items-start justify-between gap-3 px-1">
+                  <div
+                    className={cn(
+                      'rounded-xl transition',
+                      active
+                        ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
+                        : 'opacity-90 group-hover:opacity-100'
+                    )}
+                  >
+                    <ThemePreview name={theme.name} />
+                  </div>
+                  <div className="mt-2.5 flex items-start justify-between gap-2 px-0.5">
                     <div className="min-w-0">
                       <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium">
                         {theme.label}
@@ -208,11 +210,7 @@ export function AppearanceSettings() {
                         {theme.description}
                       </div>
                     </div>
-                    {active && (
-                      <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground">
-                        <Check className="size-3.5" />
-                      </span>
-                    )}
+                    {active && <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
                   </div>
                 </button>
               )

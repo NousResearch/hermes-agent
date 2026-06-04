@@ -1570,7 +1570,9 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
         npm_cwd = _workspace_root(tui_dir)
-        npm_workspace_args: tuple[str, ...] = ()
+        # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
+        # See #38772.
+        npm_workspace_args: tuple[str, ...] = ("--workspace", "ui-tui")
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
@@ -7109,7 +7111,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r1)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
@@ -7151,7 +7153,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         )
         _relay(r2)
         if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
+            _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
     _say("  ✓ Web UI built")
     return True

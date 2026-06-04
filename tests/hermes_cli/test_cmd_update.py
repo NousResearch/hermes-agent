@@ -272,7 +272,7 @@ class TestCmdUpdateBranchFallback:
             # The web/ install runs from the workspace root when the root
             # lockfile exists (npm workspaces hoist node_modules upward).
             assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT),
+                (["/usr/bin/npm", "ci", "--silent", "--workspace", "web"], PROJECT_ROOT),
             ]
 
         # The web UI build itself went through the streaming helper.

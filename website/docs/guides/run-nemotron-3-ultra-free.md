@@ -6,7 +6,7 @@ description: "Try NVIDIA Nemotron 3 Ultra on Nous Portal — free June 4–18 �
 
 # Run Nemotron 3 Ultra free in Hermes Agent
 
-We partnered with **NVIDIA** and **Nebius** to put **Nemotron 3 Ultra** on [Nous Portal](https://portal.nousresearch.com) with day 0 support, free for two weeks (**June 4th – June 18th**). Follow the instructions below to try the model in your Hermes Agent today.
+Nous Research has been inducted into the **Nemotron Coalition** of leading AI labs working with **NVIDIA** to advance open frontier foundation models. In honor of this, we've partnered with **Nebius** to provide **Nemotron 3 Ultra** free on [Nous Portal](https://portal.nousresearch.com) for two weeks (**June 4th – June 18th**). Follow the instructions below to try the model in your Hermes Agent today.
 
 :::info Limited-time offer
 The `nvidia/nemotron-3-ultra:free` tier is available from **June 4th to June 18th**. The `:free` tag is what keeps it on the no-cost plan — pick that exact variant.
